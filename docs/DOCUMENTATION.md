@@ -11,6 +11,7 @@ keyboard.
 - [GNOME Online Accounts](#gnome-online-accounts)
 - [OAuth (Google / Microsoft)](#oauth-google--microsoft)
 - [Cloud attachments (Nextcloud, OneDrive, Dropbox, Seafile)](#cloud-attachments-nextcloud-onedrive-dropbox-seafile)
+- [LDAP directories](#ldap-directories)
 - [Writing in Markdown or HTML](#writing-in-markdown-or-html)
 - [OpenPGP (encrypted and signed mail)](#openpgp-encrypted-and-signed-mail)
 - [Send with Hylki from GNOME Files](#send-with-hylki-from-gnome-files)
@@ -336,6 +337,36 @@ of the generated one.
   empty. Link passwords and expiry dates are a paid Dropbox feature; on a
   Basic plan leave both off, or the share step reports it.
 
+### LDAP directories
+
+Settings → LDAP Directories holds the directories the composer looks
+recipients up in. Once three characters of a name or address are typed in
+To, Cc or Bcc, each directory that is switched on is asked for people whose
+name, surname or address starts with them, and the answers join the
+suggestions from GNOME Contacts and your mail. Nothing is copied from the
+directory to your machine.
+
+A directory is an address book in Evolution Data Server, the service GNOME
+Contacts and Evolution keep theirs in. Hylki adds no LDAP client of its own,
+so a directory set up in Evolution is listed here as well, and one added
+here shows in Evolution. Removing one removes it for both.
+
+- **Server** and **Port**: 389 for StartTLS or no encryption, 636 for TLS
+  (LDAPS). The port follows the encryption unless you set another.
+- **Search base**: where in the directory people are, such as
+  `ou=people,dc=example,dc=com`. **Search** takes the whole tree under it or
+  only its first level.
+- **Sign in as**: the entry to bind as, such as
+  `cn=jane,ou=people,dc=example,dc=com`, and its password. Leave both empty
+  for a directory that can be searched anonymously. The password is kept in
+  the keyring and handed to Evolution Data Server when the directory asks
+  for it.
+
+Saving checks the connection and says whether the directory answered, or
+why not (a password it refused, a server it could not reach). The Flatpak
+reaches the desktop's Evolution Data Server, which has to be installed on
+the system, as it is with GNOME.
+
 ### Where the signature goes
 
 In a reply or forward the account's signature is placed above the quoted
@@ -343,6 +374,12 @@ message, so it closes what you wrote rather than what the other person did.
 **Settings → Composing → Signature in replies** moves it below the quoted
 message instead, the placement Hylki had before 1.38. The setting applies
 when a composer opens; a draft keeps its signature wherever it was saved.
+
+The signature follows a blank line and nothing else. **Settings → Composing →
+Separator line above the signature** puts the traditional `-- ` line (two
+dashes and a space) between them, as Hylki did before 1.42. Thunderbird,
+Evolution and Mutt use that line to show the signature dimmed and to leave it
+out when they quote your message; Gmail, Apple Mail and Outlook ignore it.
 
 ### Replies and forwards
 
@@ -508,6 +545,11 @@ means it was signed. Green: everything checks out against a trusted key.
 Amber: a doubt, such as an unknown or untrusted key, or an expired one. Red:
 a failure, such as a signature that does not match or a message that could not
 be decrypted. Click the icon for the details.
+
+To have the result in words as well, switch on *Settings → Reading → Name the
+OpenPGP result*. The icons then sit in a label that reads **Signed**,
+**Encrypted**, **Encrypted and signed**, or what is wrong, such as **Bad
+signature** or **Signed, unknown key**.
 
 **If something goes wrong**
 

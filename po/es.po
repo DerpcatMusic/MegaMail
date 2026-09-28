@@ -984,6 +984,21 @@ msgstr "Libreta de direcciones CardDAV"
 msgid "{date} at {time}"
 msgstr "{date} a las {time}"
 
+msgid "Evolution Data Server is not available"
+msgstr ""
+
+msgid "The directory needs a password. Add it in Settings → LDAP Directories."
+msgstr ""
+
+msgid "The directory did not accept the password."
+msgstr ""
+
+msgid "{used} of {limit} used"
+msgstr ""
+
+msgid "{free} free ({pct}%)"
+msgstr ""
+
 msgid "Encrypted message"
 msgstr "Mensaje cifrado"
 
@@ -1035,6 +1050,48 @@ msgstr "Firmado por {signer} con una clave revocada"
 
 msgid "Signed by {signer}; the signature has expired"
 msgstr "Firmado por {signer}; la firma ha caducado"
+
+msgid "Not decrypted"
+msgstr ""
+
+#, fuzzy
+msgid "Encrypted"
+msgstr "Mensaje cifrado"
+
+#, fuzzy
+msgid "Signature not checked"
+msgstr "Firma en las respuestas"
+
+#, fuzzy
+msgid "Encrypted and signed"
+msgstr "Cifrado y firmado por {signer}"
+
+#, fuzzy
+msgid "Signed"
+msgstr "Firma"
+
+msgid "Signed, key not trusted"
+msgstr ""
+
+#, fuzzy
+msgid "Bad signature"
+msgstr "Firma"
+
+#, fuzzy
+msgid "Signed, unknown key"
+msgstr "Firmado con la clave {id}."
+
+#, fuzzy
+msgid "Signed, key expired"
+msgstr "Firmado con la clave {id}."
+
+#, fuzzy
+msgid "Signed, key revoked"
+msgstr "Firmado por: {d}"
+
+#, fuzzy
+msgid "Signature expired"
+msgstr "Firma en las respuestas"
 
 msgid "This message hasn't been checked."
 msgstr "Este mensaje no se ha comprobado."
@@ -1309,6 +1366,10 @@ msgstr ""
 
 msgid "Open Online Accounts…"
 msgstr "Abrir Cuentas en línea…"
+
+#, fuzzy
+msgid "Storage"
+msgstr "Almacenamiento en la nube"
 
 msgid "Mail Account"
 msgstr "Cuenta de correo"
@@ -2768,6 +2829,102 @@ msgstr "Añadir teléfono"
 msgid "Add website"
 msgstr "Añadir sitio web"
 
+msgid "LDAP Directories"
+msgstr ""
+
+msgid "LDAP directories"
+msgstr ""
+
+msgid ""
+"The composer looks up recipients in these directories as you type an "
+"address. They are kept by Evolution Data Server, so a directory set up in "
+"Evolution is listed here too."
+msgstr ""
+
+#, fuzzy
+msgid "Add Directory…"
+msgstr "Añadir filtro…"
+
+msgid "No directories yet."
+msgstr ""
+
+msgid "LDAP Directory"
+msgstr ""
+
+msgid ""
+"Evolution Data Server, which keeps the directories, is not available on this "
+"system."
+msgstr ""
+
+msgid ""
+"The directory is removed from Evolution Data Server, so Evolution and other "
+"apps that use it stop seeing it too. Nothing on the server changes."
+msgstr ""
+
+#, fuzzy
+msgid "Connected to {name}"
+msgstr "Mover a {name}"
+
+msgid "{name} did not answer: {error}"
+msgstr ""
+
+#, fuzzy
+msgid "Edit Directory"
+msgstr "Editar filtro"
+
+#, fuzzy
+msgid "Add Directory"
+msgstr "Añadir filtro"
+
+msgid "Look up recipients in this directory"
+msgstr ""
+
+#, fuzzy
+msgid "Server"
+msgstr "Servicio"
+
+#, fuzzy
+msgid "Encryption"
+msgstr "Mensaje cifrado"
+
+#, fuzzy
+msgid "StartTLS"
+msgstr "Destacar"
+
+msgid "TLS (LDAPS)"
+msgstr ""
+
+msgid "Port"
+msgstr "Puerto"
+
+msgid "Search base, such as dc=example,dc=com"
+msgstr ""
+
+msgid "Whole tree"
+msgstr ""
+
+#, fuzzy
+msgid "First level"
+msgstr "Nombre"
+
+#, fuzzy
+msgid "Sign-in"
+msgstr "Firma"
+
+msgid ""
+"Leave these empty for a directory that can be searched without signing in."
+msgstr ""
+
+msgid "Sign in as, such as cn=jane,ou=people,dc=example,dc=com"
+msgstr ""
+
+#, fuzzy
+msgid "Password (saved; type to replace it)"
+msgstr "Contraseña (déjala vacía para conservarla)"
+
+msgid "Enter the directory's server."
+msgstr ""
+
 #, fuzzy
 msgid "Attach"
 msgstr "Archivos adjuntos"
@@ -3249,6 +3406,30 @@ msgstr "La clave del remitente se ha obtenido e importado."
 msgid "The sender's key was already in your keyring."
 msgstr "La clave del remitente ya estaba en tu llavero."
 
+#, fuzzy
+msgid "Open Link"
+msgstr "Abrir enlaces en"
+
+#, fuzzy
+msgid "Copy Email Address"
+msgstr "Dirección de correo electrónico"
+
+#, fuzzy
+msgid "Copy Link Address"
+msgstr "Dirección de correo electrónico"
+
+#, fuzzy
+msgid "Save Image As…"
+msgstr "Guardar imagen"
+
+#, fuzzy
+msgid "Copy Image"
+msgstr "Imágenes"
+
+#, fuzzy
+msgid "Copy Image Address"
+msgstr "Dirección de correo electrónico"
+
 msgid "Load attachments from server"
 msgstr "Cargar archivos adjuntos desde el servidor"
 
@@ -3653,6 +3834,18 @@ msgid ""
 msgstr ""
 "El editor de etiquetas está abierto. Guarda los cambios o descártalos antes "
 "de continuar."
+
+#, fuzzy
+msgid "Save the directory?"
+msgstr "¿Guardar el filtro?"
+
+#, fuzzy
+msgid ""
+"The directory editor is open. Save what you changed, or discard it, before "
+"moving on."
+msgstr ""
+"El editor de filtros está abierto. Guarda los cambios o descártalos antes de "
+"continuar."
 
 msgid "Save the account?"
 msgstr "¿Guardar la cuenta?"
@@ -4398,6 +4591,14 @@ msgstr ""
 "la etiqueta de destinatarios. Con un solo destinatario, la etiqueta "
 "desaparece por completo."
 
+msgid "Name the OpenPGP result"
+msgstr ""
+
+msgid ""
+"Beside the sender, say in words whether a message is signed or encrypted and "
+"whether it checks out. Off shows the lock and shield icons alone."
+msgstr ""
+
 msgid "Reader View switch"
 msgstr "Interruptor de Vista de lectura"
 
@@ -4498,6 +4699,15 @@ msgid ""
 msgstr ""
 "Dónde se coloca la firma en una respuesta o reenvío. Sobre el mensaje citado "
 "cierra lo que escribiste; debajo aparece tras toda la conversación."
+
+msgid "Separator line above the signature"
+msgstr ""
+
+msgid ""
+"Puts the standard “-- ” line above the signature. Thunderbird, Evolution and "
+"Mutt use it to dim the signature and to leave it out when they quote your "
+"message."
+msgstr ""
 
 msgid "Spelling"
 msgstr "Ortografía"
@@ -5283,9 +5493,6 @@ msgstr "Continuar"
 msgid "Sign In & Add"
 msgstr "Iniciar sesión y añadir"
 
-msgid "Port"
-msgstr "Puerto"
-
 msgid "Enter your email address and password first."
 msgstr "Introduce primero tu dirección de correo electrónico y contraseña."
 
@@ -5396,30 +5603,14 @@ msgstr ""
 "Se ha verificado {from}, pero las direcciones no coinciden con el nombre que "
 "aparece en el mensaje."
 
-msgid "Could not reach the JMAP server: {e}"
-msgstr "No se pudo contactar con el servidor JMAP: {e}"
-
-msgid "Could not list folders: {e}"
-msgstr "No se pudieron listar las carpetas: {e}"
-
-msgid "Sending…"
-msgstr "Enviando…"
-
-msgid "Still could not send “{subject}”: {e}"
-msgstr "Todavía no se pudo enviar «{subject}»: {e}"
-
-#, fuzzy
-msgid "The attachment is no longer in the message on the server"
-msgstr "Esa carpeta no está en el servidor"
-
-msgid "Could not load message: {e}"
-msgstr "No se pudo cargar el mensaje: {e}"
-
 msgid "Syncing…"
 msgstr "Sincronizando…"
 
 msgid "Could not fetch mail: {e}"
 msgstr "No se pudo obtener el correo: {e}"
+
+msgid "Could not load message: {e}"
+msgstr "No se pudo cargar el mensaje: {e}"
 
 msgid "Could not load source: {e}"
 msgstr "No se pudo cargar el código fuente: {e}"
@@ -5469,21 +5660,11 @@ msgstr "Guardando borrador…"
 msgid "Could not save draft: {e}"
 msgstr "No se pudo guardar el borrador: {e}"
 
-msgid "Could not save draft: unknown folder"
-msgstr "No se pudo guardar el borrador: carpeta desconocida"
+msgid "Sending…"
+msgstr "Enviando…"
 
-msgid ""
-"Send failed: {e}. The message is in the Outbox and will be sent when the "
-"connection is back."
-msgstr ""
-"El envío ha fallado: {e}. El mensaje está en la Bandeja de salida y se "
-"enviará cuando vuelva la conexión."
-
-msgid "Send failed: {e}"
-msgstr "El envío ha fallado: {e}"
-
-msgid "Could not reach the server"
-msgstr "No se pudo contactar con el servidor"
+msgid "A Microsoft account can't receive mail from another account"
+msgstr "Una cuenta de Microsoft no puede recibir correo de otra cuenta"
 
 #, fuzzy
 msgid "Removing the attachment…"
@@ -5492,6 +5673,25 @@ msgstr "Cargando archivos adjuntos…"
 #, fuzzy
 msgid "Could not remove the attachment: {e}"
 msgstr "No se pudieron cargar los archivos adjuntos: {e}"
+
+msgid "Could not list folders: {e}"
+msgstr "No se pudieron listar las carpetas: {e}"
+
+#, fuzzy
+msgid "The attachment is no longer in the message on the server"
+msgstr "Esa carpeta no está en el servidor"
+
+msgid "Still could not send “{subject}”: {e}"
+msgstr "Todavía no se pudo enviar «{subject}»: {e}"
+
+msgid "Could not reach the JMAP server: {e}"
+msgstr "No se pudo contactar con el servidor JMAP: {e}"
+
+msgid "Could not save draft: unknown folder"
+msgstr "No se pudo guardar el borrador: carpeta desconocida"
+
+msgid "Could not reach the server"
+msgstr "No se pudo contactar con el servidor"
 
 msgid "That folder is not on the server"
 msgstr "Esa carpeta no está en el servidor"
@@ -5568,6 +5768,16 @@ msgid_plural "Downloading attachments… {n} remaining"
 msgstr[0] "Descargando archivos adjuntos… queda {n}"
 msgstr[1] "Descargando archivos adjuntos… quedan {n}"
 
+msgid ""
+"Send failed: {e}. The message is in the Outbox and will be sent when the "
+"connection is back."
+msgstr ""
+"El envío ha fallado: {e}. El mensaje está en la Bandeja de salida y se "
+"enviará cuando vuelva la conexión."
+
+msgid "Send failed: {e}"
+msgstr "El envío ha fallado: {e}"
+
 msgid "“{subject}” will be sent {when}"
 msgstr "«{subject}» se enviará {when}"
 
@@ -5600,9 +5810,6 @@ msgstr ""
 
 msgid "Inbox"
 msgstr "Bandeja de entrada"
-
-msgid "A Microsoft account can't receive mail from another account"
-msgstr "Una cuenta de Microsoft no puede recibir correo de otra cuenta"
 
 msgid "Email Client"
 msgstr "Cliente de correo electrónico"

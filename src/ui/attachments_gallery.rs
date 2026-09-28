@@ -203,7 +203,7 @@ pub enum GalleryInput {
     SetFetching(bool),
     /// A message's attachments arrived: fill in the bytes for every loaded row
     /// of that message, so its thumbnail and preview appear in place.
-    Fetched { account_id: u32, uid: u32, items: Vec<crate::models::Attachment> },
+    Fetched { account_id: u32, path: String, uid: u32, items: Vec<crate::models::Attachment> },
     /// Filter the grid to items matching this search text (sender, subject,
     /// filename, folder, and type keywords like "pdf" or "spreadsheet").
     /// Debounced — the query itself runs on [`GalleryInput::ApplyQuery`].
@@ -936,12 +936,14 @@ impl Component for AttachmentsGallery {
             }
             GalleryInput::ScanStatus(remaining) => self.scan_remaining = remaining,
             GalleryInput::SetFetching(on) => self.fetching = on,
-            GalleryInput::Fetched { account_id, uid, items } => {
+            GalleryInput::Fetched { account_id, path, uid, items } => {
                 let mut touched = false;
                 for row in self
                     .all_items
                     .iter_mut()
-                    .filter(|i| i.account_id == account_id && i.uid == uid && i.data.is_none())
+                    .filter(|i| {
+                        i.account_id == account_id && i.folder_path == path && i.uid == uid && i.data.is_none()
+                    })
                 {
                     // Match on the name rather than the index: the scan numbers
                     // parts as the server describes them and the fetch numbers
@@ -2398,7 +2400,7 @@ const PREVIEW_RENDER_WIDTH: f64 = 1600.0;
 /// Render a PDF's first page to a texture at `target_width`, by way of an
 /// in-memory PNG — the same route every other thumbnail here already goes
 /// through, so cropping, caching, and format all stay uniform.
-fn pdf_page_texture(data: &[u8], target_width: f64) -> Option<gdk::Texture> {
+pub(crate) fn pdf_page_texture(data: &[u8], target_width: f64) -> Option<gdk::Texture> {
     // One PDF render at a time, process-wide. Poppler's color management
     // (lcms2) shares state across documents: two thumbnail threads rendering
     // concurrently crashed with heap corruption — one thread tearing down its

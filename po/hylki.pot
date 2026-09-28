@@ -915,6 +915,21 @@ msgstr ""
 msgid "{date} at {time}"
 msgstr ""
 
+msgid "Evolution Data Server is not available"
+msgstr ""
+
+msgid "The directory needs a password. Add it in Settings → LDAP Directories."
+msgstr ""
+
+msgid "The directory did not accept the password."
+msgstr ""
+
+msgid "{used} of {limit} used"
+msgstr ""
+
+msgid "{free} free ({pct}%)"
+msgstr ""
+
 msgid "Encrypted message"
 msgstr ""
 
@@ -962,6 +977,39 @@ msgid "Signed by {signer} with a revoked key"
 msgstr ""
 
 msgid "Signed by {signer}; the signature has expired"
+msgstr ""
+
+msgid "Not decrypted"
+msgstr ""
+
+msgid "Encrypted"
+msgstr ""
+
+msgid "Signature not checked"
+msgstr ""
+
+msgid "Encrypted and signed"
+msgstr ""
+
+msgid "Signed"
+msgstr ""
+
+msgid "Signed, key not trusted"
+msgstr ""
+
+msgid "Bad signature"
+msgstr ""
+
+msgid "Signed, unknown key"
+msgstr ""
+
+msgid "Signed, key expired"
+msgstr ""
+
+msgid "Signed, key revoked"
+msgstr ""
+
+msgid "Signature expired"
 msgstr ""
 
 msgid "This message hasn't been checked."
@@ -1206,6 +1254,9 @@ msgid ""
 msgstr ""
 
 msgid "Open Online Accounts…"
+msgstr ""
+
+msgid "Storage"
 msgstr ""
 
 msgid "Mail Account"
@@ -2511,6 +2562,92 @@ msgstr ""
 msgid "Add website"
 msgstr ""
 
+msgid "LDAP Directories"
+msgstr ""
+
+msgid "LDAP directories"
+msgstr ""
+
+msgid ""
+"The composer looks up recipients in these directories as you type an "
+"address. They are kept by Evolution Data Server, so a directory set up in "
+"Evolution is listed here too."
+msgstr ""
+
+msgid "Add Directory…"
+msgstr ""
+
+msgid "No directories yet."
+msgstr ""
+
+msgid "LDAP Directory"
+msgstr ""
+
+msgid ""
+"Evolution Data Server, which keeps the directories, is not available on this "
+"system."
+msgstr ""
+
+msgid ""
+"The directory is removed from Evolution Data Server, so Evolution and other "
+"apps that use it stop seeing it too. Nothing on the server changes."
+msgstr ""
+
+msgid "Connected to {name}"
+msgstr ""
+
+msgid "{name} did not answer: {error}"
+msgstr ""
+
+msgid "Edit Directory"
+msgstr ""
+
+msgid "Add Directory"
+msgstr ""
+
+msgid "Look up recipients in this directory"
+msgstr ""
+
+msgid "Server"
+msgstr ""
+
+msgid "Encryption"
+msgstr ""
+
+msgid "StartTLS"
+msgstr ""
+
+msgid "TLS (LDAPS)"
+msgstr ""
+
+msgid "Port"
+msgstr ""
+
+msgid "Search base, such as dc=example,dc=com"
+msgstr ""
+
+msgid "Whole tree"
+msgstr ""
+
+msgid "First level"
+msgstr ""
+
+msgid "Sign-in"
+msgstr ""
+
+msgid ""
+"Leave these empty for a directory that can be searched without signing in."
+msgstr ""
+
+msgid "Sign in as, such as cn=jane,ou=people,dc=example,dc=com"
+msgstr ""
+
+msgid "Password (saved; type to replace it)"
+msgstr ""
+
+msgid "Enter the directory's server."
+msgstr ""
+
 msgid "Attach"
 msgstr ""
 
@@ -2965,6 +3102,24 @@ msgstr ""
 msgid "The sender's key was already in your keyring."
 msgstr ""
 
+msgid "Open Link"
+msgstr ""
+
+msgid "Copy Email Address"
+msgstr ""
+
+msgid "Copy Link Address"
+msgstr ""
+
+msgid "Save Image As…"
+msgstr ""
+
+msgid "Copy Image"
+msgstr ""
+
+msgid "Copy Image Address"
+msgstr ""
+
 msgid "Load attachments from server"
 msgstr ""
 
@@ -3328,6 +3483,14 @@ msgstr ""
 msgid ""
 "The tag editor is open. Save what you changed, or discard it, before moving "
 "on."
+msgstr ""
+
+msgid "Save the directory?"
+msgstr ""
+
+msgid ""
+"The directory editor is open. Save what you changed, or discard it, before "
+"moving on."
 msgstr ""
 
 msgid "Save the account?"
@@ -3924,6 +4087,14 @@ msgid ""
 "recipients chip. With one recipient the chip is dropped entirely."
 msgstr ""
 
+msgid "Name the OpenPGP result"
+msgstr ""
+
+msgid ""
+"Beside the sender, say in words whether a message is signed or encrypted and "
+"whether it checks out. Off shows the lock and shield icons alone."
+msgstr ""
+
 msgid "Reader View switch"
 msgstr ""
 
@@ -4000,6 +4171,15 @@ msgstr ""
 msgid ""
 "Where the signature goes in a reply or forward. Above the quoted message it "
 "closes what you wrote; below, it follows the whole conversation."
+msgstr ""
+
+msgid "Separator line above the signature"
+msgstr ""
+
+msgid ""
+"Puts the standard “-- ” line above the signature. Thunderbird, Evolution and "
+"Mutt use it to dim the signature and to leave it out when they quote your "
+"message."
 msgstr ""
 
 msgid "Spelling"
@@ -4690,9 +4870,6 @@ msgstr ""
 msgid "Sign In & Add"
 msgstr ""
 
-msgid "Port"
-msgstr ""
-
 msgid "Enter your email address and password first."
 msgstr ""
 
@@ -4788,28 +4965,13 @@ msgid ""
 "{from} checks out, but the addressing doesn't match the name on the message."
 msgstr ""
 
-msgid "Could not reach the JMAP server: {e}"
-msgstr ""
-
-msgid "Could not list folders: {e}"
-msgstr ""
-
-msgid "Sending…"
-msgstr ""
-
-msgid "Still could not send “{subject}”: {e}"
-msgstr ""
-
-msgid "The attachment is no longer in the message on the server"
-msgstr ""
-
-msgid "Could not load message: {e}"
-msgstr ""
-
 msgid "Syncing…"
 msgstr ""
 
 msgid "Could not fetch mail: {e}"
+msgstr ""
+
+msgid "Could not load message: {e}"
 msgstr ""
 
 msgid "Could not load source: {e}"
@@ -4860,24 +5022,34 @@ msgstr ""
 msgid "Could not save draft: {e}"
 msgstr ""
 
-msgid "Could not save draft: unknown folder"
+msgid "Sending…"
 msgstr ""
 
-msgid ""
-"Send failed: {e}. The message is in the Outbox and will be sent when the "
-"connection is back."
-msgstr ""
-
-msgid "Send failed: {e}"
-msgstr ""
-
-msgid "Could not reach the server"
+msgid "A Microsoft account can't receive mail from another account"
 msgstr ""
 
 msgid "Removing the attachment…"
 msgstr ""
 
 msgid "Could not remove the attachment: {e}"
+msgstr ""
+
+msgid "Could not list folders: {e}"
+msgstr ""
+
+msgid "The attachment is no longer in the message on the server"
+msgstr ""
+
+msgid "Still could not send “{subject}”: {e}"
+msgstr ""
+
+msgid "Could not reach the JMAP server: {e}"
+msgstr ""
+
+msgid "Could not save draft: unknown folder"
+msgstr ""
+
+msgid "Could not reach the server"
 msgstr ""
 
 msgid "That folder is not on the server"
@@ -4950,6 +5122,14 @@ msgid_plural "Downloading attachments… {n} remaining"
 msgstr[0] ""
 msgstr[1] ""
 
+msgid ""
+"Send failed: {e}. The message is in the Outbox and will be sent when the "
+"connection is back."
+msgstr ""
+
+msgid "Send failed: {e}"
+msgstr ""
+
 msgid "“{subject}” will be sent {when}"
 msgstr ""
 
@@ -4977,9 +5157,6 @@ msgid ""
 msgstr ""
 
 msgid "Inbox"
-msgstr ""
-
-msgid "A Microsoft account can't receive mail from another account"
 msgstr ""
 
 msgid "Email Client"

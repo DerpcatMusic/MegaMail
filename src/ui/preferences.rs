@@ -37,6 +37,8 @@ pub struct PrefInit {
     pub thread_newest_first: bool,
     /// Reader always shows the recipients line under the sender.
     pub always_show_recipients: bool,
+    /// The OpenPGP chip says its verdict in words (#300).
+    pub pgp_labels: bool,
     /// Lone messages render as inset cards, like conversation messages.
     pub single_message_card: bool,
     /// The Reader View switch is shown in the reader header.
@@ -108,6 +110,7 @@ pub struct PrefInit {
     pub reply_position: crate::config::ReplyPosition,
     /// Where the signature sits in a reply or forward (#237).
     pub signature_position: crate::config::SignaturePosition,
+    pub signature_dashes: bool,
     pub app_theme: AppTheme,
     pub text_scale: u32,
     /// The appearance theme's id ("system" for the stock GNOME colors).
@@ -375,10 +378,12 @@ pub struct Preferences {
     identities: Vec<(String, String)>,
     /// The Cloud Storage page (#144), likewise.
     cloud: Option<Controller<crate::ui::cloud_accounts::CloudAccounts>>,
+    /// The LDAP Directories page (#307), likewise.
+    directories: Option<Controller<crate::ui::directories::Directories>>,
     /// The account editor is up in the accounts slot: leaving it for another
     /// category asks about the unsaved changes first.
     editor_open: bool,
-    /// Which side page's editor is up: "accounts" or "cloud".
+    /// Which side page's editor is up: "accounts", "cloud" or "directories".
     editor_page: &'static str,
     /// The GNOME Files extension (#188): installed, loaded, loader present.
     nautilus: crate::nautilus_ext::State,
@@ -660,6 +665,7 @@ const SIDE_PAGES: &[(&str, &[SidePage])] = &[
             SidePage { id: "senders", title: i18n_noop("Senders"), icon: "contact-new-symbolic", accounts: true },
             SidePage { id: "openpgp", title: i18n_noop("OpenPGP"), icon: "channel-secure-symbolic", accounts: false },
             SidePage { id: "cloud", title: i18n_noop("Cloud Storage"), icon: "cloud-symbolic", accounts: false },
+            SidePage { id: "directories", title: i18n_noop("LDAP Directories"), icon: "x-office-address-book-symbolic", accounts: false },
         ],
     ),
     (
@@ -791,13 +797,7 @@ fn side_page(id: &str) -> Option<&'static SidePage> {
 
 #[derive(Debug)]
 pub enum PrefInput {
-    ToggleShowRemoteBanner(bool),
-    ToggleShowSpoofBanner(bool),
-    ToggleAutoRemoteContent(bool),
-    ToggleGravatar(bool),
     ToggleAvatars(bool),
-    ToggleOwnMailboxFace(bool),
-    ToggleSenderLogos(bool),
     ChangeDateStyle(u32),
     ChangeClockStyle(u32),
     ChangeLanguage(u32),
@@ -819,39 +819,17 @@ pub enum PrefInput {
     /// may have loaded the extension since).
     NautilusRefresh,
     ToggleThreading(bool),
-    ToggleThreadsExpanded(bool),
-    ToggleThreadNewestFirst(bool),
-    ToggleAlwaysShowRecipients(bool),
-    ToggleSingleMessageCard(bool),
-    ToggleReaderSwitch(bool),
     ChangeReaderDefault(u32),
     ChangeReaderZoom(u32),
-    ToggleCardAttachments(bool),
-    ToggleAttachmentDrawer(bool),
     ToggleThreadExpansion(bool),
-    ToggleThreadRowNewest(bool),
-    ToggleConfirmThreadDelete(bool),
     ChangeCardActionsMode(u32),
     ToggleListPalette(bool),
-    ToggleListPaletteHover(bool),
-    ToggleCardPaletteMenu(bool),
     ToggleSwipeEnabled(bool),
-    ToggleSwipeReversed(bool),
-    ChangeSwipeSensitivity(f64),
-    ToggleComposeInline(bool),
-    ToggleReplyInline(bool),
-    ToggleReplyFields(bool),
     /// The "Send new messages from" combo: 0 = the open folder's account,
     /// then `identities` in order.
     ChangeComposeDefaultFrom(u32),
-    TogglePastePlain(bool),
-    ToggleReturnParagraph(bool),
-    ToggleSpellcheck(bool),
-    SpellLangsEdited(String),
     ChangeFetchInterval(u32),
-    TogglePush(bool),
     ToggleNotifications(bool),
-    ToggleNotificationContent(bool),
     ToggleNotificationButton(crate::config::NotificationButton, bool),
     /// The new-mail sound (#292): on or off, which one (an index into the
     /// built-ins, then Custom File), pick a file, it was picked, hear it.
@@ -860,20 +838,16 @@ pub enum PrefInput {
     ChooseSound,
     SoundChosen(std::path::PathBuf),
     PlaySound,
-    ToggleAttachmentsRow(bool),
-    ToggleContactsRow(bool),
     ToggleShowUnified(bool),
     ToggleUnifiedChipAllInboxes(bool),
     ToggleUnifiedChipStarred(bool),
     ToggleUnifiedChipDrafts(bool),
     ToggleUnifiedChipArchive(bool),
     ToggleUnifiedChipFiltered(bool),
-    ToggleUnifiedFiltered(bool),
     ToggleUnifiedStarred(bool),
     ToggleUnifiedSent(bool),
     ToggleUnifiedDrafts(bool),
     ToggleUnifiedArchive(bool),
-    ToggleUnifiedTags(bool),
     ToggleShowAccounts(bool),
     /// One of Focus Mode's switches.
     ToggleFocus(crate::config::FocusPart, bool),
@@ -886,10 +860,6 @@ pub enum PrefInput {
     ChangeFolderSort(u32),
     ChangeFilteredPlacement(u32),
     ChangeTagsPlacement(u32),
-    ToggleSidebarHoverExpand(bool),
-    ToggleRememberSidebar(bool),
-    ToggleRememberRail(bool),
-    ToggleRailDots(bool),
     /// A reader toolbar chip was dropped: `key` names the button, `side`
     /// the zone (None = not shown), `index` its place in that zone.
     ToolbarDrop { key: String, side: Option<ToolbarSide>, index: usize },
@@ -907,33 +877,17 @@ pub enum PrefInput {
     ToggleRailFoldFiltered(bool),
     ToggleRailFoldTags(bool),
     ChangePreviewLines(u32),
-    ToggleSingleKey(bool),
-    ToggleConsoleMode(bool),
     ChangeReadMark(u32),
     ExportSettings,
     ExportLog,
     ImportSettings,
-    ToggleRunInBackground(bool),
-    ToggleAutostart(bool),
-    ToggleTray(bool),
     ChangeTrayIcon(u32),
-    ToggleTrayMail(bool),
-    ToggleLauncherCount(bool),
-    ChangeAppIcon(String),
-    ChangePaletteCollapse(u64),
-    ChangeCardPaletteCollapse(u64),
     ChangeMessageTheme(u32),
-    ToggleOverrideFonts(bool),
-    ChangeReaderFont(String),
-    ToggleOverrideColors(bool),
-    TogglePlainMonospace(bool),
-    ChangePlainFont(String),
     ChangeComposeFormat(u32),
     ChangeReplyPosition(u32),
     ChangeSignaturePosition(u32),
     ChangeAppTheme(u32),
     ChangeTextScale(u32),
-    ChangeTheme(String),
     ChangeSettingsOpen(u32),
     /// Switch the window to the Accounts panel (true) or Preferences (false).
     ShowAccounts(bool),
@@ -964,6 +918,8 @@ pub enum PrefInput {
     EditorOpen(Option<&'static str>),
     /// The Cloud Storage page's account editor is up (or gone).
     CloudEditorOpen(bool),
+    /// The LDAP Directories page's editor is up (or gone).
+    DirectoriesEditorOpen(bool),
 }
 
 #[derive(Debug)]
@@ -985,6 +941,7 @@ pub enum PrefOutput {
     SetThreadsExpanded(bool),
     SetThreadNewestFirst(bool),
     SetAlwaysShowRecipients(bool),
+    SetPgpLabels(bool),
     SetSingleMessageCard(bool),
     SetReaderSwitch(bool),
     SetReaderDefault(crate::config::ReaderDefault),
@@ -1069,6 +1026,7 @@ pub enum PrefOutput {
     SetComposeFormat(crate::config::ComposeFormat),
     SetReplyPosition(crate::config::ReplyPosition),
     SetSignaturePosition(crate::config::SignaturePosition),
+    SetSignatureDashes(bool),
     Closed,
 }
 
@@ -1411,6 +1369,10 @@ impl Preferences {
                 i18n("Save the tag?"),
                 i18n("The tag editor is open. Save what you changed, or discard it, before moving on."),
             ),
+            "directories" => (
+                i18n("Save the directory?"),
+                i18n("The directory editor is open. Save what you changed, or discard it, before moving on."),
+            ),
             _ => (
                 i18n("Save the account?"),
                 i18n("The account editor is open. Save what you changed, or discard it, before moving on."),
@@ -1427,15 +1389,21 @@ impl Preferences {
         let s = sender.clone();
         let accounts = self.accounts_sender.clone();
         let cloud = self.cloud.as_ref().map(|c| c.sender().clone());
+        let directories = self.directories.as_ref().map(|c| c.sender().clone());
         let editor_page = self.editor_page;
         let id = id.to_string();
         dialog.connect_response(None, move |_, resp| {
             let cloud_editor = editor_page == "cloud";
+            let directories_editor = editor_page == "directories";
             match resp {
                 "save" => {
                     if cloud_editor {
                         if let Some(c) = &cloud {
                             let _ = c.send(crate::ui::cloud_accounts::CloudAccountsInput::SaveClicked);
+                        }
+                    } else if directories_editor {
+                        if let Some(d) = &directories {
+                            let _ = d.send(crate::ui::directories::DirectoriesInput::SaveClicked);
                         }
                     } else {
                         let _ = accounts.send(crate::ui::accounts::AccountsInput::SaveOpenPage);
@@ -1446,6 +1414,10 @@ impl Preferences {
                     if cloud_editor {
                         if let Some(c) = &cloud {
                             let _ = c.send(crate::ui::cloud_accounts::CloudAccountsInput::CloseEditor);
+                        }
+                    } else if directories_editor {
+                        if let Some(d) = &directories {
+                            let _ = d.send(crate::ui::directories::DirectoriesInput::CloseEditor);
                         }
                     } else {
                         let _ = accounts.send(crate::ui::accounts::AccountsInput::CloseEditor);
@@ -1543,7 +1515,7 @@ impl Component for Preferences {
             set_default_width: 920,
             // The same size every time: the two-pane layout (#141) fits its
             // sidebar at this height, and nothing is remembered from a resize.
-            set_default_height: 810,
+            set_default_height: 848,
             set_title: Some(i18n("Settings").as_str()),
             // Closing hides: the window is kept and shown again next time.
             set_hide_on_close: true,
@@ -1638,6 +1610,10 @@ impl Component for Preferences {
                             #[name = "cloud_slot"]
                             add_named[Some("cloud")] = &adw::Bin {},
 
+                            // LDAP directories (#307), their own component.
+                            #[name = "directories_slot"]
+                            add_named[Some("directories")] = &adw::Bin {},
+
                             add_named[Some("general")] = &adw::PreferencesPage {
                                 add = &adw::PreferencesGroup {
                                     set_title: &i18n("General"),
@@ -1655,7 +1631,7 @@ impl Component for Preferences {
                                         set_title: &i18n("Instant new mail (IMAP push)"),
                                         set_subtitle: &i18n("Uses IMAP IDLE to receive messages the moment they arrive."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::TogglePush(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetPush(row.is_active()));
                                         },
                                     },
                                 },
@@ -1678,7 +1654,7 @@ impl Component for Preferences {
                                         set_sensitive: model.notifications,
                                         set_title: &i18n("Show sender and subject"),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleNotificationContent(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetNotificationContent(row.is_active()));
                                         },
                                     },
 
@@ -2092,7 +2068,7 @@ impl Component for Preferences {
                                         set_subtitle: &i18n("A shortcut for browsing every account's attachments, \
                                                        pinned at the bottom of the sidebar."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleAttachmentsRow(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetAttachmentsRow(row.is_active()));
                                         },
                                     },
 
@@ -2102,7 +2078,7 @@ impl Component for Preferences {
                                         set_subtitle: &i18n("A shortcut that opens your contacts, pinned at the \
                                                        bottom of the sidebar."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleContactsRow(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetContactsRow(row.is_active()));
                                         },
                                     },
 
@@ -2113,7 +2089,7 @@ impl Component for Preferences {
                                                        hovering it floats the full sidebar out over the \
                                                        panes; it stays out until you click outside it."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleSidebarHoverExpand(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetSidebarHoverExpand(row.is_active()));
                                         },
                                     },
 
@@ -2124,7 +2100,7 @@ impl Component for Preferences {
                                                        you left them. Off starts every launch with \
                                                        everything folded up."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleRememberSidebar(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetRememberSidebar(row.is_active()));
                                         },
                                     },
 
@@ -2134,7 +2110,7 @@ impl Component for Preferences {
                                         set_subtitle: &i18n("Reopen with icon rail in the last used state. Off \
                                                        starts every launch with the full sidebar."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleRememberRail(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetRememberRail(row.is_active()));
                                         },
                                     },
                                 },
@@ -2200,7 +2176,7 @@ impl Component for Preferences {
                                         set_subtitle: &i18n("List every folder your filter rules file into in a \
                                                        collapsible section of the unified view."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleUnifiedFiltered(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetUnifiedFiltered(row.is_active()));
                                         },
                                     },
 
@@ -2210,7 +2186,7 @@ impl Component for Preferences {
                                         set_subtitle: &i18n("The tags, each showing every account's mail with it. Each account keeps its own Tags \
                                                        section either way."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleUnifiedTags(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetUnifiedTags(row.is_active()));
                                         },
                                     },
 
@@ -2294,7 +2270,7 @@ impl Component for Preferences {
                                                        a dot in the accent color rather than the number \
                                                        of messages. The count stays in the tooltip."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleRailDots(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetRailDots(row.is_active()));
                                         },
                                     },
 
@@ -2405,7 +2381,7 @@ impl Component for Preferences {
                                                        picture or emoji, as its circle in the sidebar \
                                                        does."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleOwnMailboxFace(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetOwnMailboxFace(row.is_active()));
                                         },
                                     },
 
@@ -2439,7 +2415,7 @@ impl Component for Preferences {
                                         set_subtitle: &i18n("The message list's \u{22ef} actions palette slides \
                                                        open by itself while the pointer rests on a row."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleListPaletteHover(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetListPaletteHover(row.is_active()));
                                         },
                                     },
 
@@ -2462,7 +2438,7 @@ impl Component for Preferences {
                                         set_subtitle: &i18n("Turning this on swaps the swipe actions to: \
                                                        left archives, right deletes."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleSwipeReversed(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetSwipeReversed(row.is_active()));
                                         },
                                     },
 
@@ -2477,7 +2453,7 @@ impl Component for Preferences {
                                                        slide when you did not mean them to. Mouse drags \
                                                        are unaffected."),
                                         connect_value_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ChangeSwipeSensitivity(row.value()));
+                                            let _ = sender.output(PrefOutput::SetSwipeSensitivity(row.value()));
                                         },
                                     },
 
@@ -2487,7 +2463,7 @@ impl Component for Preferences {
                                         set_subtitle: &i18n("Seconds the message list's actions palette stays \
                                                        open after the cursor leaves it."),
                                         connect_value_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ChangePaletteCollapse(row.value() as u64));
+                                            let _ = sender.output(PrefOutput::SetPaletteCollapse(row.value() as u64));
                                         },
                                     },
                                 },
@@ -2529,7 +2505,7 @@ impl Component for Preferences {
                                                        When off, conversations start collapsed to their \
                                                        newest message."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleThreadsExpanded(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetThreadsExpanded(row.is_active()));
                                         },
                                     },
 
@@ -2540,7 +2516,7 @@ impl Component for Preferences {
                                                        the reading pane. Off reads oldest to newest, \
                                                        downward."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleThreadNewestFirst(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetThreadNewestFirst(row.is_active()));
                                         },
                                     },
 
@@ -2551,7 +2527,7 @@ impl Component for Preferences {
                                         set_title: &i18n("Show your own replies in the message list"),
                                         set_subtitle: &i18n("Off shows the last message that arrived."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleThreadRowNewest(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetThreadRowNewest(row.is_active()));
                                         },
                                     },
 
@@ -2574,7 +2550,7 @@ impl Component for Preferences {
                                                        conversation, so which file came with which message \
                                                        is clear. Click one to open it."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleCardAttachments(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetCardAttachments(row.is_active()));
                                         },
                                     },
 
@@ -2584,7 +2560,7 @@ impl Component for Preferences {
                                         set_subtitle: &i18n("Gather every attachment in the open conversation \
                                                        in a drawer beneath the messages."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleAttachmentDrawer(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetAttachmentDrawer(row.is_active()));
                                         },
                                     },
 
@@ -2595,7 +2571,7 @@ impl Component for Preferences {
                                                        selected, since every message in the thread goes \
                                                        with it."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleConfirmThreadDelete(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetConfirmThreadDelete(row.is_active()));
                                         },
                                     },
                                 },
@@ -2641,7 +2617,7 @@ impl Component for Preferences {
                                                        below instead of the sender's. Headings keep \
                                                        their relative size; code stays monospaced."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleOverrideFonts(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetOverrideFonts(row.is_active()));
                                         },
                                     },
 
@@ -2660,7 +2636,7 @@ impl Component for Preferences {
                                                     .font_desc()
                                                     .map(|d| d.to_string())
                                                     .unwrap_or_default();
-                                                sender.input(PrefInput::ChangeReaderFont(font));
+                                                let _ = sender.output(PrefOutput::SetReaderFont(font));
                                             },
                                         },
                                     },
@@ -2673,7 +2649,7 @@ impl Component for Preferences {
                                                        white on the reader's ground. Pictures are kept; \
                                                        links take the accent color."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleOverrideColors(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetOverrideColors(row.is_active()));
                                         },
                                     },
 
@@ -2684,7 +2660,7 @@ impl Component for Preferences {
                                                        font, so columns and code line up. Formatted \
                                                        messages are not affected."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::TogglePlainMonospace(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetPlainMonospace(row.is_active()));
                                         },
                                     },
 
@@ -2703,7 +2679,7 @@ impl Component for Preferences {
                                                     .font_desc()
                                                     .map(|d| d.to_string())
                                                     .unwrap_or_default();
-                                                sender.input(PrefInput::ChangePlainFont(font));
+                                                let _ = sender.output(PrefOutput::SetPlainFont(font));
                                             },
                                         },
                                     },
@@ -2724,7 +2700,7 @@ impl Component for Preferences {
                                         set_subtitle: &i18n("Seconds a card's actions palette stays open \
                                                        after the cursor leaves it."),
                                         connect_value_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ChangeCardPaletteCollapse(row.value() as u64));
+                                            let _ = sender.output(PrefOutput::SetCardPaletteCollapse(row.value() as u64));
                                         },
                                     },
 
@@ -2740,7 +2716,7 @@ impl Component for Preferences {
                                                        one a right-click shows, instead of sliding the \
                                                        actions palette out."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleCardPaletteMenu(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetCardPaletteMenu(row.is_active()));
                                         },
                                     },
 
@@ -2751,7 +2727,7 @@ impl Component for Preferences {
                                                        border as a conversation's messages. Off fills the \
                                                        pane edge to edge."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleSingleMessageCard(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetSingleMessageCard(row.is_active()));
                                         },
                                     },
 
@@ -2762,7 +2738,18 @@ impl Component for Preferences {
                                                        without clicking the recipients chip. With one \
                                                        recipient the chip is dropped entirely."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleAlwaysShowRecipients(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetAlwaysShowRecipients(row.is_active()));
+                                        },
+                                    },
+
+                                    #[name = "pgp_labels_row"]
+                                    adw::SwitchRow {
+                                        set_title: &i18n("Name the OpenPGP result"),
+                                        set_subtitle: &i18n("Beside the sender, say in words whether a message \
+                                                       is signed or encrypted and whether it checks out. \
+                                                       Off shows the lock and shield icons alone."),
+                                        connect_active_notify[sender] => move |row| {
+                                            let _ = sender.output(PrefOutput::SetPgpLabels(row.is_active()));
                                         },
                                     },
                                 },
@@ -2776,7 +2763,7 @@ impl Component for Preferences {
                                         set_title: &i18n("Reader View switch"),
                                         set_subtitle: &i18n("Show the switch in the message header, beside the account name."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleReaderSwitch(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetReaderSwitch(row.is_active()));
                                         },
                                     },
 
@@ -2802,7 +2789,7 @@ impl Component for Preferences {
                                                        like a reply — pop it out to a window from its \
                                                        header. Off = open a separate window directly."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleComposeInline(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetComposeInline(row.is_active()));
                                         },
                                     },
 
@@ -2813,7 +2800,7 @@ impl Component for Preferences {
                                                        beside the message it answers. Off = open a \
                                                        separate window."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleReplyInline(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetReplyInline(row.is_active()));
                                         },
                                     },
 
@@ -2824,7 +2811,7 @@ impl Component for Preferences {
                                                        showing. Off, they stay folded away behind a button in \
                                                        the panel's header."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleReplyFields(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetReplyFields(row.is_active()));
                                         },
                                     },
 
@@ -2846,7 +2833,7 @@ impl Component for Preferences {
                                                        keeps its formatting. Right-clicking \
                                                        the editor always offers both."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::TogglePastePlain(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetPastePlain(row.is_active()));
                                         },
                                     },
 
@@ -2859,7 +2846,7 @@ impl Component for Preferences {
                                                        paragraph. Shift+Return always does the \
                                                        other."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleReturnParagraph(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetReturnParagraph(row.is_active()));
                                         },
                                     },
 
@@ -2887,6 +2874,18 @@ impl Component for Preferences {
                                             sender.input(PrefInput::ChangeSignaturePosition(row.selected()));
                                         },
                                     },
+
+                                    #[name = "signature_dashes_row"]
+                                    adw::SwitchRow {
+                                        set_title: &i18n("Separator line above the signature"),
+                                        set_subtitle: &i18n("Puts the standard \u{201c}-- \u{201d} line \
+                                                       above the signature. Thunderbird, Evolution \
+                                                       and Mutt use it to dim the signature and to \
+                                                       leave it out when they quote your message."),
+                                        connect_active_notify[sender] => move |row| {
+                                            let _ = sender.output(PrefOutput::SetSignatureDashes(row.is_active()));
+                                        },
+                                    },
                                 },
 
                                 #[name = "spelling_group"]
@@ -2904,7 +2903,7 @@ impl Component for Preferences {
                                                        are underlined; right-click a word \
                                                        for corrections."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleSpellcheck(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetSpellcheck(row.is_active()));
                                         },
                                     },
 
@@ -2945,7 +2944,7 @@ impl Component for Preferences {
                                                        remote content can be used to track when and where \
                                                        you read a message."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleAutoRemoteContent(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetAutoRemoteContent(row.is_active()));
                                         },
                                     },
 
@@ -2956,7 +2955,7 @@ impl Component for Preferences {
                                                        off only hides the notice — remote content is still \
                                                        blocked just the same."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleShowRemoteBanner(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetShowRemoteBanner(row.is_active()));
                                         },
                                     },
 
@@ -2969,7 +2968,7 @@ impl Component for Preferences {
                                                        marks it, and a possible forgery always shows the \
                                                        banner."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleShowSpoofBanner(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetShowSpoofBanner(row.is_active()));
                                         },
                                     },
 
@@ -2979,7 +2978,7 @@ impl Component for Preferences {
                                         set_subtitle: &i18n("Local GNOME Contacts photos are always preferred. \
                                                        Gravatar sends a hash of the sender's email."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleGravatar(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetGravatar(row.is_active()));
                                         },
                                     },
 
@@ -2993,7 +2992,7 @@ impl Component for Preferences {
                                                        learns your IP address, as blocking remote content \
                                                        otherwise avoids."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleSenderLogos(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetSenderLogos(row.is_active()));
                                         },
                                     },
 
@@ -3049,7 +3048,7 @@ impl Component for Preferences {
                                                        mail still arrives. Hylki then appears under Background \
                                                        Apps in the system menu, where it can be quit."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleRunInBackground(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetRunInBackground(row.is_active()));
                                         },
                                     },
 
@@ -3059,7 +3058,7 @@ impl Component for Preferences {
                                         set_subtitle: &i18n("Start checking for mail when you log in. Hylki starts \
                                                        without a window and waits in the system menu."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleAutostart(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetAutostart(row.is_active()));
                                         },
                                     },
 
@@ -3071,7 +3070,7 @@ impl Component for Preferences {
                                                        needs the AppIndicator extension; other desktops show \
                                                        it as they are."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleTray(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetTray(row.is_active()));
                                         },
                                     },
 
@@ -3091,7 +3090,7 @@ impl Component for Preferences {
                                         set_subtitle: &i18n("List the newest unread inbox messages in the icon's \
                                                        menu; click one to open it."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleTrayMail(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetTrayMail(row.is_active()));
                                         },
                                     },
 
@@ -3102,7 +3101,7 @@ impl Component for Preferences {
                                                        icon in the dock or task manager. KDE Plasma shows it; \
                                                        GNOME needs a dock extension such as Dash to Dock."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleLauncherCount(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetLauncherCount(row.is_active()));
                                         },
                                     },
 
@@ -3112,7 +3111,7 @@ impl Component for Preferences {
                                         set_subtitle: &i18n("Act on mail with one key and no modifier — j/k to move, \
                                                        r to reply, a to archive. Press Ctrl+? for the full list."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleSingleKey(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetSingleKey(row.is_active()));
                                         },
                                     },
 
@@ -3122,7 +3121,7 @@ impl Component for Preferences {
                                         set_subtitle: &i18n("A verbose live console in the status bar showing \
                                                        everything Hylki is doing under the hood."),
                                         connect_active_notify[sender] => move |row| {
-                                            sender.input(PrefInput::ToggleConsoleMode(row.is_active()));
+                                            let _ = sender.output(PrefOutput::SetConsoleMode(row.is_active()));
                                         },
                                     },
 
@@ -3350,6 +3349,7 @@ impl Component for Preferences {
             pgp_keys: None,
             identities: init.identities.clone(),
             cloud: None,
+            directories: None,
             editor_open: false,
             editor_page: "accounts",
         };
@@ -3543,7 +3543,7 @@ impl Component for Preferences {
             let s = sender.clone();
             let gallery = crate::ui::theme_picker::gallery(
                 &init.theme,
-                std::rc::Rc::new(move |id: &str| s.input(PrefInput::ChangeTheme(id.to_string()))),
+                std::rc::Rc::new(move |id: &str| { let _ = s.output(PrefOutput::SetTheme(id.to_string())); }),
             );
             gallery.set_margin_top(10);
             body.append(&gallery);
@@ -3589,7 +3589,7 @@ impl Component for Preferences {
                     56,
                     std::rc::Rc::new(move |id: &str| {
                         note.set_visible(false);
-                        s.input(PrefInput::ChangeAppIcon(id.to_string()))
+                        let _ = s.output(PrefOutput::SetAppIcon(id.to_string()));
                     }),
                 );
                 strip.set_margin_top(6);
@@ -3642,6 +3642,7 @@ impl Component for Preferences {
         widgets.threads_expanded_row.set_active(init.threads_expanded);
         widgets.thread_newest_first_row.set_active(init.thread_newest_first);
         widgets.always_show_recipients_row.set_active(init.always_show_recipients);
+        widgets.pgp_labels_row.set_active(init.pgp_labels);
         widgets.single_message_card_row.set_active(init.single_message_card);
         widgets.reader_switch_row.set_active(init.reader_switch);
         widgets.reader_default_row.set_model(Some(&gtk::StringList::new(&[
@@ -3776,6 +3777,7 @@ impl Component for Preferences {
             crate::config::SignaturePosition::AboveQuote => 0,
             crate::config::SignaturePosition::BelowQuote => 1,
         });
+        widgets.signature_dashes_row.set_active(init.signature_dashes);
         widgets.reply_position_row.set_model(Some(&gtk::StringList::new(&[
             &i18n("Above the messages"),
             &i18n("Below the messages"),
@@ -3832,7 +3834,7 @@ impl Component for Preferences {
                 let i = row.selected() as usize;
                 let code =
                     if i == 0 { String::new() } else { dicts.get(i - 1).cloned().unwrap_or_default() };
-                s.input(PrefInput::SpellLangsEdited(code));
+                let _ = s.output(PrefOutput::SetSpellcheckLangs(code));
             });
                 gtk::glib::ControlFlow::Break
             });
@@ -4005,6 +4007,13 @@ impl Component for Preferences {
             });
         widgets.cloud_slot.set_child(Some(cloud.widget()));
         model.cloud = Some(cloud);
+        let directories = crate::ui::directories::Directories::builder()
+            .launch(())
+            .forward(sender.input_sender(), |o| match o {
+                crate::ui::directories::DirectoriesOutput::EditorOpen(open) => PrefInput::DirectoriesEditorOpen(open),
+            });
+        widgets.directories_slot.set_child(Some(directories.widget()));
+        model.directories = Some(directories);
         // The sidebar (#141): a heading per section, a row per category.
         tracing::debug!("settings window: prefs tail D (before sidebar rows) at {:?}", t_init.elapsed());
         for (section, pages) in SIDE_PAGES {
@@ -4117,12 +4126,6 @@ impl Component for Preferences {
 
     fn update(&mut self, message: Self::Input, sender: ComponentSender<Self>, root: &Self::Root) {
         match message {
-            PrefInput::ToggleOwnMailboxFace(on) => {
-                let _ = sender.output(PrefOutput::SetOwnMailboxFace(on));
-            }
-            PrefInput::ToggleSenderLogos(on) => {
-                let _ = sender.output(PrefOutput::SetSenderLogos(on));
-            }
             PrefInput::ChangeDateStyle(i) => {
                 if let Some((_, style)) = DATE_STYLES.get(i as usize) {
                     let _ = sender.output(PrefOutput::SetDateStyle(*style));
@@ -4221,12 +4224,6 @@ impl Component for Preferences {
                 self.avatars = on;
                 let _ = sender.output(PrefOutput::SetAvatars(on));
             }
-            PrefInput::ToggleGravatar(on) => {
-                let _ = sender.output(PrefOutput::SetGravatar(on));
-            }
-            PrefInput::ToggleAutoRemoteContent(on) => {
-                let _ = sender.output(PrefOutput::SetAutoRemoteContent(on));
-            }
             PrefInput::ToggleThreading(on) => {
                 self.threading = on;
                 let _ = sender.output(PrefOutput::SetThreading(on));
@@ -4234,27 +4231,6 @@ impl Component for Preferences {
             PrefInput::ToggleThreadExpansion(on) => {
                 self.thread_expansion = on;
                 let _ = sender.output(PrefOutput::SetThreadExpansion(on));
-            }
-            PrefInput::ToggleThreadRowNewest(on) => {
-                let _ = sender.output(PrefOutput::SetThreadRowNewest(on));
-            }
-            PrefInput::ToggleConfirmThreadDelete(on) => {
-                let _ = sender.output(PrefOutput::SetConfirmThreadDelete(on));
-            }
-            PrefInput::ToggleThreadsExpanded(on) => {
-                let _ = sender.output(PrefOutput::SetThreadsExpanded(on));
-            }
-            PrefInput::ToggleThreadNewestFirst(on) => {
-                let _ = sender.output(PrefOutput::SetThreadNewestFirst(on));
-            }
-            PrefInput::ToggleAlwaysShowRecipients(on) => {
-                let _ = sender.output(PrefOutput::SetAlwaysShowRecipients(on));
-            }
-            PrefInput::ToggleSingleMessageCard(on) => {
-                let _ = sender.output(PrefOutput::SetSingleMessageCard(on));
-            }
-            PrefInput::ToggleReaderSwitch(on) => {
-                let _ = sender.output(PrefOutput::SetReaderSwitch(on));
             }
             PrefInput::ChangeReaderDefault(idx) => {
                 let policy = match idx {
@@ -4268,12 +4244,6 @@ impl Component for Preferences {
                 if let Some(&z) = crate::config::READER_ZOOM_STEPS.get(idx as usize) {
                     let _ = sender.output(PrefOutput::SetReaderZoom(z));
                 }
-            }
-            PrefInput::ToggleCardAttachments(on) => {
-                let _ = sender.output(PrefOutput::SetCardAttachments(on));
-            }
-            PrefInput::ToggleAttachmentDrawer(on) => {
-                let _ = sender.output(PrefOutput::SetAttachmentDrawer(on));
             }
             PrefInput::ChangeCardActionsMode(index) => {
                 self.card_actions_hover = index == 0;
@@ -4291,24 +4261,9 @@ impl Component for Preferences {
                 self.list_palette = on;
                 let _ = sender.output(PrefOutput::SetListPalette(on));
             }
-            PrefInput::ToggleListPaletteHover(on) => {
-                let _ = sender.output(PrefOutput::SetListPaletteHover(on));
-            }
-            PrefInput::ToggleCardPaletteMenu(on) => {
-                let _ = sender.output(PrefOutput::SetCardPaletteMenu(on));
-            }
             PrefInput::ToggleSwipeEnabled(on) => {
                 self.swipe_enabled = on;
                 let _ = sender.output(PrefOutput::SetSwipeEnabled(on));
-            }
-            PrefInput::ToggleSwipeReversed(on) => {
-                let _ = sender.output(PrefOutput::SetSwipeReversed(on));
-            }
-            PrefInput::ChangeSwipeSensitivity(factor) => {
-                let _ = sender.output(PrefOutput::SetSwipeSensitivity(factor));
-            }
-            PrefInput::ToggleReplyFields(on) => {
-                let _ = sender.output(PrefOutput::SetReplyFields(on));
             }
             PrefInput::ChangeComposeDefaultFrom(index) => {
                 let addr = (index > 0)
@@ -4318,24 +4273,6 @@ impl Component for Preferences {
                     .unwrap_or_default();
                 let _ = sender.output(PrefOutput::SetComposeDefaultFrom(addr));
             }
-            PrefInput::ToggleComposeInline(on) => {
-                let _ = sender.output(PrefOutput::SetComposeInline(on));
-            }
-            PrefInput::ToggleReplyInline(on) => {
-                let _ = sender.output(PrefOutput::SetReplyInline(on));
-            }
-            PrefInput::TogglePastePlain(on) => {
-                let _ = sender.output(PrefOutput::SetPastePlain(on));
-            }
-            PrefInput::ToggleReturnParagraph(on) => {
-                let _ = sender.output(PrefOutput::SetReturnParagraph(on));
-            }
-            PrefInput::ToggleSpellcheck(on) => {
-                let _ = sender.output(PrefOutput::SetSpellcheck(on));
-            }
-            PrefInput::SpellLangsEdited(langs) => {
-                let _ = sender.output(PrefOutput::SetSpellcheckLangs(langs));
-            }
             PrefInput::ChangeFetchInterval(index) => {
                 let secs = FETCH_INTERVALS
                     .get(index as usize)
@@ -4343,15 +4280,9 @@ impl Component for Preferences {
                     .unwrap_or(0);
                 let _ = sender.output(PrefOutput::SetFetchInterval(secs));
             }
-            PrefInput::TogglePush(on) => {
-                let _ = sender.output(PrefOutput::SetPush(on));
-            }
             PrefInput::ToggleNotifications(on) => {
                 self.notifications = on;
                 let _ = sender.output(PrefOutput::SetNotifications(on));
-            }
-            PrefInput::ToggleNotificationContent(on) => {
-                let _ = sender.output(PrefOutput::SetNotificationContent(on));
             }
             PrefInput::ToggleNotificationButton(button, on) => {
                 // A greyed-out row cannot be switched, so a fourth never
@@ -4413,9 +4344,6 @@ impl Component for Preferences {
                     None => sender.input(PrefInput::ChooseSound),
                 }
             }
-            PrefInput::ToggleAttachmentsRow(on) => {
-                let _ = sender.output(PrefOutput::SetAttachmentsRow(on));
-            }
             PrefInput::ToggleShowUnified(on) => {
                 self.show_unified = on;
                 let _ = sender.output(PrefOutput::SetShowUnified(on));
@@ -4440,9 +4368,6 @@ impl Component for Preferences {
                 self.unified_chips.filtered = on;
                 let _ = sender.output(PrefOutput::SetUnifiedChips(self.unified_chips));
             }
-            PrefInput::ToggleUnifiedFiltered(on) => {
-                let _ = sender.output(PrefOutput::SetUnifiedFiltered(on));
-            }
             PrefInput::ToggleUnifiedStarred(on) => {
                 self.unified_kinds.starred = on;
                 let _ = sender.output(PrefOutput::SetUnifiedKinds(self.unified_kinds));
@@ -4458,9 +4383,6 @@ impl Component for Preferences {
             PrefInput::ToggleUnifiedArchive(on) => {
                 self.unified_kinds.archive = on;
                 let _ = sender.output(PrefOutput::SetUnifiedKinds(self.unified_kinds));
-            }
-            PrefInput::ToggleUnifiedTags(on) => {
-                let _ = sender.output(PrefOutput::SetUnifiedTags(on));
             }
             PrefInput::MountPages => self.mount_pages(),
             PrefInput::Search(text) => {
@@ -4535,18 +4457,6 @@ impl Component for Preferences {
             PrefInput::ChangeChevronSide(idx) => {
                 let _ = sender.output(PrefOutput::SetChevronsLeft(idx == 0));
             }
-            PrefInput::ToggleContactsRow(on) => {
-                let _ = sender.output(PrefOutput::SetContactsRow(on));
-            }
-            PrefInput::ToggleSidebarHoverExpand(on) => {
-                let _ = sender.output(PrefOutput::SetSidebarHoverExpand(on));
-            }
-            PrefInput::ToggleRememberSidebar(on) => {
-                let _ = sender.output(PrefOutput::SetRememberSidebar(on));
-            }
-            PrefInput::ToggleRememberRail(on) => {
-                let _ = sender.output(PrefOutput::SetRememberRail(on));
-            }
             PrefInput::ToolbarDrop { key, side, index } => {
                 if let Some(item) = ToolbarItem::from_key(&key) {
                     self.toolbar.place(item, side, index);
@@ -4573,9 +4483,6 @@ impl Component for Preferences {
                     self.rebuild_toolbar_chips();
                     let _ = sender.output(PrefOutput::SetReaderToolbar(self.toolbar.clone()));
                 }
-            }
-            PrefInput::ToggleRailDots(on) => {
-                let _ = sender.output(PrefOutput::SetRailDots(on));
             }
             PrefInput::ToggleRailFoldEnabled(on) => {
                 self.rail_fold.enabled = on;
@@ -4613,12 +4520,6 @@ impl Component for Preferences {
                 self.rail_fold.tags = on;
                 let _ = sender.output(PrefOutput::SetRailFold(self.rail_fold));
             }
-            PrefInput::ToggleSingleKey(on) => {
-                let _ = sender.output(PrefOutput::SetSingleKey(on));
-            }
-            PrefInput::ToggleConsoleMode(on) => {
-                let _ = sender.output(PrefOutput::SetConsoleMode(on));
-            }
             PrefInput::ChangeReadMark(idx) => {
                 let policy = match idx {
                     1 => crate::config::ReadMark::Delay,
@@ -4636,24 +4537,6 @@ impl Component for Preferences {
             PrefInput::ImportSettings => {
                 let _ = sender.output(PrefOutput::ImportSettings);
             }
-            PrefInput::ToggleRunInBackground(on) => {
-                let _ = sender.output(PrefOutput::SetRunInBackground(on));
-            }
-            PrefInput::ToggleAutostart(on) => {
-                let _ = sender.output(PrefOutput::SetAutostart(on));
-            }
-            PrefInput::ToggleTray(on) => {
-                let _ = sender.output(PrefOutput::SetTray(on));
-            }
-            PrefInput::ToggleTrayMail(on) => {
-                let _ = sender.output(PrefOutput::SetTrayMail(on));
-            }
-            PrefInput::ToggleLauncherCount(on) => {
-                let _ = sender.output(PrefOutput::SetLauncherCount(on));
-            }
-            PrefInput::ChangeAppIcon(id) => {
-                let _ = sender.output(PrefOutput::SetAppIcon(id));
-            }
             PrefInput::ChangeTrayIcon(index) => {
                 let icon = TRAY_ICONS
                     .get(index as usize)
@@ -4666,12 +4549,6 @@ impl Component for Preferences {
                 // the number of lines.
                 let _ = sender.output(PrefOutput::SetPreviewLines(index));
             }
-            PrefInput::ChangePaletteCollapse(secs) => {
-                let _ = sender.output(PrefOutput::SetPaletteCollapse(secs));
-            }
-            PrefInput::ChangeCardPaletteCollapse(secs) => {
-                let _ = sender.output(PrefOutput::SetCardPaletteCollapse(secs));
-            }
             PrefInput::ChangeAppTheme(index) => {
                 let theme = APP_THEMES
                     .get(index as usize)
@@ -4682,9 +4559,6 @@ impl Component for Preferences {
             PrefInput::ChangeTextScale(index) => {
                 let percent = crate::text_scale::STEPS.get(index as usize).copied().unwrap_or(100);
                 let _ = sender.output(PrefOutput::SetTextScale(percent));
-            }
-            PrefInput::ChangeTheme(id) => {
-                let _ = sender.output(PrefOutput::SetTheme(id));
             }
             PrefInput::ChangeSettingsOpen(index) => {
                 let _ = sender.output(PrefOutput::SetSettingsOpenAccounts(index == 1));
@@ -4740,33 +4614,19 @@ impl Component for Preferences {
                     header.set_visible(!open);
                 }
             }
+            PrefInput::DirectoriesEditorOpen(open) => {
+                self.editor_open = open;
+                self.editor_page = "directories";
+                if let Some(header) = &self.host_header {
+                    header.set_visible(!open);
+                }
+            }
             PrefInput::ChangeMessageTheme(index) => {
                 let theme = MESSAGE_THEMES
                     .get(index as usize)
                     .map(|(_, t)| *t)
                     .unwrap_or_default();
                 let _ = sender.output(PrefOutput::SetMessageTheme(theme));
-            }
-            PrefInput::ToggleShowRemoteBanner(on) => {
-                let _ = sender.output(PrefOutput::SetShowRemoteBanner(on));
-            }
-            PrefInput::ToggleShowSpoofBanner(on) => {
-                let _ = sender.output(PrefOutput::SetShowSpoofBanner(on));
-            }
-            PrefInput::ToggleOverrideFonts(on) => {
-                let _ = sender.output(PrefOutput::SetOverrideFonts(on));
-            }
-            PrefInput::ChangeReaderFont(font) => {
-                let _ = sender.output(PrefOutput::SetReaderFont(font));
-            }
-            PrefInput::ToggleOverrideColors(on) => {
-                let _ = sender.output(PrefOutput::SetOverrideColors(on));
-            }
-            PrefInput::TogglePlainMonospace(on) => {
-                let _ = sender.output(PrefOutput::SetPlainMonospace(on));
-            }
-            PrefInput::ChangePlainFont(font) => {
-                let _ = sender.output(PrefOutput::SetPlainFont(font));
             }
             PrefInput::ChangeComposeFormat(idx) => {
                 let format = match idx {

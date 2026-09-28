@@ -4,13 +4,14 @@ use adw::prelude::*;
 use relm4::prelude::*;
 
 use crate::contacts::Suggestion;
-use crate::models::DraftOrigin;
+use crate::models::{is_image_name, DraftOrigin};
 use crate::config::{ComposeFormat, SignaturePosition};
 use crate::ui::rich_editor::{self, RichEditor, SourceKind, js_escape};
 use crate::worker::OutgoingMessage;
 use crate::i18n::{i18n, i18n_f, i18n_noop};
 use crate::ui::context_menu::{show_context_menu, MenuEntry};
 use crate::ui::drop_zones::{DropChoice, DropContext, DropZones};
+use crate::ui::fade_label::FadeLabel;
 
 /// Which recipient field a suggestion is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,23 +21,26 @@ pub enum Field {
     Bcc,
 }
 
-/// A signature block as HTML (`-- ` delimiter). The stored signature is HTML
-/// (legacy plain-text signatures are converted).
-fn sig_html(sig: &str) -> String {
+/// A signature block as HTML, under a `-- ` line when `dashes` is set. The
+/// stored signature is HTML (legacy plain-text signatures are converted).
+fn sig_html(sig: &str, dashes: bool) -> String {
     let body = rich_editor::signature_to_html(sig);
-    format!("<div class=\"vireo-sig\"><br>-- <br>{body}</div>")
+    let dashes = if dashes { "-- <br>" } else { "" };
+    format!("<div class=\"vireo-sig\"><br>{dashes}{body}</div>")
 }
 
-/// The signature as it reads in a source-mode body: Markdown under
-/// its `-- ` line, or the same HTML block the rich editor holds.
-fn sig_source(kind: SourceKind, sig: &str) -> String {
+/// The signature as it reads in a source-mode body: Markdown (under its
+/// `-- ` line when `dashes` is set), or the same HTML block the rich
+/// editor holds.
+fn sig_source(kind: SourceKind, sig: &str, dashes: bool) -> String {
     if sig.is_empty() {
         return String::new();
     }
     match kind {
-        SourceKind::Html => format!("\n{}\n", sig_html(sig)),
+        SourceKind::Html => format!("\n{}\n", sig_html(sig, dashes)),
         SourceKind::Markdown => format!(
-            "\n\n-- \n{}\n",
+            "\n\n{}{}\n",
+            if dashes { "-- \n" } else { "" },
             crate::markdown::from_html(&rich_editor::signature_to_html(sig))
         ),
     }
@@ -246,11 +250,18 @@ pub struct Compose {
     editor: RichEditor,
     /// Signature currently appended to the body (so it can be swapped out).
     current_sig: String,
+    /// Whether signatures go in under a `-- ` line (Settings, read when the
+    /// composer opens).
+    sig_dashes: bool,
     /// Where that signature sits against a quoted original (#237), so a
     /// signature added on an account switch lands in the same place.
     signature_position: SignaturePosition,
     /// Files to attach.
     attachments: Vec<std::path::PathBuf>,
+    /// Thumbnails of the attached pictures and PDFs by path (#299), kept
+    /// so a chip rebuild does not read and decode the file again. `None`
+    /// is a file that would not decode.
+    attach_thumbs: AttachThumbs,
     /// The surfaces shown while files are dragged over the composer, set up
     /// once the view exists.
     drop_zones: Option<std::rc::Rc<DropZones>>,
@@ -258,6 +269,14 @@ pub struct Compose {
     outbox_origin: Option<u32>,
     /// Recipient suggestions, filtered as the user types.
     suggestions: Vec<Suggestion>,
+    /// Whether an LDAP directory is switched on (#307), found once the
+    /// composer opens; without one, typing asks nothing.
+    directories: bool,
+    /// What the directories answered for the recipient being typed.
+    directory_matches: Vec<Suggestion>,
+    /// Bumped on every keystroke, so a slow directory's answer to an
+    /// earlier fragment is dropped.
+    directory_generation: u64,
     /// Shared autocomplete popover and which field it's currently attached to.
     completion: gtk::Popover,
     completion_field: Option<Field>,
@@ -455,6 +474,11 @@ pub enum ComposeInput {
     OpenContacts,
     /// The given recipient field changed — refresh autocomplete.
     Suggest(Field),
+    /// Whether any LDAP directory is switched on (#307).
+    DirectoriesKnown(bool),
+    /// The typing paused: ask the directories, unless it went on since.
+    DirectoryLookup { field: Field, token: String, generation: u64 },
+    DirectoryResults { field: Field, token: String, generation: u64, matches: Vec<Suggestion> },
     /// Addresses just sent to from another composer: into this one's
     /// suggestions at once, without waiting for a reopen.
     AddSuggestions(Vec<Suggestion>),
@@ -819,12 +843,16 @@ impl Component for Compose {
                             },
                         },
 
+                        // Attachments in up to three equal columns (#299),
+                        // filling left to right and wrapping.
                         #[name = "attach_box"]
                         gtk::FlowBox {
                             set_selection_mode: gtk::SelectionMode::None,
                             set_column_spacing: 6,
                             set_row_spacing: 6,
-                            set_max_children_per_line: 4,
+                            set_homogeneous: true,
+                            set_max_children_per_line: 3,
+                            add_css_class: "attach-flow",
                             set_visible: false,
                         },
 
@@ -880,13 +908,14 @@ impl Component for Compose {
         // the setting says (#237). A draft already contains its signature;
         // don't add another. With Return set to start paragraphs the line
         // is a paragraph too, so the first Return splits it into two.
-        let mut content = String::from(if crate::config::load_return_paragraph() {
+        let mut content = String::from(if crate::config::load_privacy().return_paragraph {
             "<p><br></p>"
         } else {
             "<div><br></div>"
         });
+        let sig_dashes = crate::config::load_privacy().signature_dashes;
         let sig = if draft_origin.is_none() && !current_sig.is_empty() {
-            sig_html(&current_sig)
+            sig_html(&current_sig, sig_dashes)
         } else {
             String::new()
         };
@@ -986,9 +1015,14 @@ impl Component for Compose {
             accounts,
             editor,
             current_sig,
+            sig_dashes,
             signature_position,
             attachments: prefill_attachments,
+            attach_thumbs: Default::default(),
             suggestions,
+            directories: false,
+            directory_matches: Vec::new(),
+            directory_generation: 0,
             completion,
             completion_field: None,
             completion_list: None,
@@ -1006,7 +1040,7 @@ impl Component for Compose {
             // addressed: replies arrive with To filled, forwards do not.
             compact: compact && !prefill.to.trim().is_empty(),
             decorations,
-            fields_shown: crate::config::load_reply_fields(),
+            fields_shown: crate::config::load_privacy().reply_fields,
             narrow: false,
             fields_dirty: false,
             asking_discard: false,
@@ -1211,6 +1245,40 @@ impl Component for Compose {
             });
         }
 
+        // HYLKI_SHOWCASE_ATTACH=<file>[:<file>…] attaches those files a
+        // second after the composer opens (demo only), for a capture of the
+        // chips (#299); HYLKI_SHOWCASE_ATTACH_SHOT=<png>[:<seconds>]
+        // captures the composer that long after it opens.
+        if let (Some(v), Some(_)) = (std::env::var_os("HYLKI_SHOWCASE_ATTACH"), std::env::var_os("HYLKI_DEMO")) {
+            let paths: Vec<_> = std::env::split_paths(&v).collect();
+            // A composer made ahead of time and dropped unused is gone by then.
+            let s = sender.input_sender().clone();
+            gtk::glib::timeout_add_seconds_local_once(1, move || {
+                let _ = s.send(ComposeInput::AddAttachments(paths));
+            });
+            if let Ok(v) = std::env::var("HYLKI_SHOWCASE_ATTACH_SHOT") {
+                // <png>[:<seconds>], three seconds unless given.
+                let (shot, at) = match v.rsplit_once(':') {
+                    Some((p, n)) if n.parse::<u32>().is_ok() => (p.to_string(), n.parse().unwrap()),
+                    _ => (v, 3),
+                };
+                let host = root.clone().upcast::<gtk::Widget>();
+                gtk::glib::timeout_add_seconds_local_once(at, move || {
+                    if host.is_mapped() {
+                        crate::app::showcase_capture(&host, &shot);
+                    }
+                });
+            }
+        }
+
+        {
+            let s = sender.input_sender().clone();
+            std::thread::spawn(move || {
+                let any = crate::directory::list().is_ok_and(|d| d.iter().any(|d| d.enabled));
+                let _ = s.send(ComposeInput::DirectoriesKnown(any));
+            });
+        }
+
         // Wire autocomplete *after* prefilling, so the initial text doesn't pop it.
         for (row, field) in [
             (&widgets.to_row, Field::To),
@@ -1314,7 +1382,7 @@ impl Component for Compose {
                 && keyval == gtk::gdk::Key::v
                 && editor.has_focus()
             {
-                editor.paste(!crate::config::load_paste_plain());
+                editor.paste(!crate::config::load_privacy().paste_plain);
                 return Propagation::Stop;
             }
             // Ctrl+Enter sends (#238), as it does in Gmail, Apple Mail and
@@ -1533,7 +1601,7 @@ impl Component for Compose {
                 match result {
                     Ok(share) => {
                         let id = format!("vireo-cloud-{}", crate::rng::token(8).unwrap_or_else(|_| share.size.to_string()));
-                        let mut caption = crate::cloud::human_size(share.size);
+                        let mut caption = crate::models::human_size(share.size);
                         if let Some(d) = &share.expires {
                             caption.push_str(&format!(", {}", i18n_f("link expires {date}", &[("date", d)])));
                         }
@@ -1713,13 +1781,8 @@ impl Component for Compose {
                 };
                 let to_row = widgets.to_row.clone();
                 crate::ui::contacts_browser::present(&win, move |contact| {
-                    let display = if contact.name.trim().is_empty()
-                        || contact.name == contact.email
-                    {
-                        contact.email.clone()
-                    } else {
-                        format!("{} <{}>", contact.name, contact.email)
-                    };
+                    let display =
+                        crate::worker::format_recipient(&contact.name, &contact.email);
                     let cur = to_row.text().to_string();
                     let trimmed = cur.trim_end();
                     let sep = if trimmed.is_empty() {
@@ -1821,8 +1884,12 @@ impl Component for Compose {
                 // Source mode holds the signature as text, so the swap is a
                 // text replacement in the field rather than a DOM one.
                 if let Some(kind) = self.editor.source_kind() {
-                    let old = sig_source(kind, &self.current_sig);
-                    let new = sig_source(kind, &new_sig);
+                    // The old block is looked for with and without its
+                    // `-- ` line: a draft keeps the form it was written in,
+                    // whatever the setting says now.
+                    let old = sig_source(kind, &self.current_sig, self.sig_dashes);
+                    let old_other = sig_source(kind, &self.current_sig, !self.sig_dashes);
+                    let new = sig_source(kind, &new_sig, self.sig_dashes);
                     // With no old block to replace (the previous account had
                     // none), the new one goes where the setting puts it: at
                     // the end, or above the quoted original (#237), which
@@ -1845,11 +1912,13 @@ impl Component for Compose {
                     };
                     self.editor.run_js(&format!(
                         "(function(){{var t=document.getElementById('src');if(!t)return;\
-                         var o='{}',n='{}';var v=t.value;\
+                         var o='{}',p='{}',n='{}';var v=t.value;\
                          var i=o?v.lastIndexOf(o):-1;\
+                         if(i<0&&p){{i=v.lastIndexOf(p);if(i>=0)o=p;}}\
                          if(i>=0){{v=v.slice(0,i)+n+v.slice(i+o.length);}}else{{{place}}}\
                          t.value=v;window.__hylkiDirty=true;}})()",
                         js_escape(&old),
+                        js_escape(&old_other),
                         js_escape(&new)
                     ));
                     self.current_sig = new_sig;
@@ -1859,7 +1928,7 @@ impl Component for Compose {
                     let replacement = if new_sig.is_empty() {
                         String::new()
                     } else {
-                        sig_html(&new_sig)
+                        sig_html(&new_sig, self.sig_dashes)
                     };
                     // No signature block to replace (the previous account
                     // had none): a new one goes where the setting puts it,
@@ -1895,7 +1964,44 @@ impl Component for Compose {
                     Field::Cc => &widgets.cc_row,
                     Field::Bcc => &widgets.bcc_row,
                 };
+                self.directory_generation = self.directory_generation.wrapping_add(1);
+                self.directory_matches.clear();
+                let token = recipient_token(row);
+                if self.directories && token.chars().count() >= crate::directory::MIN_QUERY {
+                    // A directory is asked once the typing pauses, not per key.
+                    let generation = self.directory_generation;
+                    let s = sender.input_sender().clone();
+                    gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || {
+                        let _ = s.send(ComposeInput::DirectoryLookup { field, token, generation });
+                    });
+                }
                 self.show_completion(field, row);
+            }
+
+            ComposeInput::DirectoriesKnown(any) => self.directories = any,
+
+            ComposeInput::DirectoryLookup { field, token, generation } => {
+                if generation == self.directory_generation {
+                    let s = sender.input_sender().clone();
+                    std::thread::spawn(move || {
+                        let matches = crate::directory::search(&token);
+                        let _ = s.send(ComposeInput::DirectoryResults { field, token, generation, matches });
+                    });
+                }
+            }
+
+            ComposeInput::DirectoryResults { field, token, generation, matches } => {
+                let row = match field {
+                    Field::To => &widgets.to_row,
+                    Field::Cc => &widgets.cc_row,
+                    Field::Bcc => &widgets.bcc_row,
+                };
+                if generation == self.directory_generation && recipient_token(row) == token && !matches.is_empty() {
+                    self.directory_matches = matches;
+                    if recipient_focused(row) {
+                        self.show_completion(field, row);
+                    }
+                }
             }
 
             ComposeInput::AddSuggestions(new) => {
@@ -2305,6 +2411,17 @@ impl Compose {
         let q = token.to_lowercase();
         let mut matches: Vec<Suggestion> =
             self.suggestions.iter().filter(|s| s.matches(token)).cloned().collect();
+        // A directory matched on attributes the entry may not show (a
+        // surname under a display name), so its answers are not filtered
+        // again; one already known from Contacts or mail is not repeated.
+        let known: std::collections::HashSet<String> = matches.iter().map(|s| s.email.to_lowercase()).collect();
+        let mut seen = std::collections::HashSet::new();
+        matches.extend(
+            self.directory_matches
+                .iter()
+                .filter(|s| !known.contains(&s.email.to_lowercase()) && seen.insert(s.email.to_lowercase()))
+                .cloned(),
+        );
         matches.sort_by(|a, b| {
             let pa = a.email.to_lowercase().starts_with(&q) || a.name.to_lowercase().starts_with(&q);
             let pb = b.email.to_lowercase().starts_with(&q) || b.name.to_lowercase().starts_with(&q);
@@ -2654,39 +2771,12 @@ impl Compose {
             flow.remove(&child);
         }
         for (i, path) in self.attachments.iter().enumerate() {
-            let name = path
-                .file_name()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_else(|| "file".to_string());
-
-            let chip = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-            chip.add_css_class("attach-chip");
-            // FlowBoxChild defaults to halign: Fill, which would otherwise
-            // stretch this box the full width of its cell — leaving the pill's
-            // background trailing well past the remove button. Hug the content.
-            chip.set_halign(gtk::Align::Start);
-            chip.append(&gtk::Image::from_icon_name("mail-attachment-symbolic"));
-            let lbl = gtk::Label::new(Some(&name));
-            lbl.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
-            lbl.set_max_width_chars(22);
-            chip.append(&lbl);
-            let rm = gtk::Button::from_icon_name("window-close-symbolic");
-            rm.add_css_class("flat");
-            rm.set_valign(gtk::Align::Center);
-            let s = sender.input_sender().clone();
-            rm.connect_clicked(move |_| {
-                let _ = s.send(ComposeInput::RemoveAttachment(i));
-            });
-            chip.append(&rm);
-
+            let chip = attachment_chip(path, &self.attach_thumbs, sender, i);
             flow.append(&chip);
-            // GtkFlowBox auto-wraps `chip` in a FlowBoxChild that, unlike
-            // `chip` itself, has no halign we can set beforehand — it still
-            // fills (and hover-highlights) the full cell. Shrink it to the
-            // pill's own size and drop its own row interactivity, since the
-            // remove button inside is the only real click target.
+            // GtkFlowBox wraps `chip` in a FlowBoxChild; it fills its column,
+            // but its own row interactivity goes, since the chip's click
+            // handlers are the only real targets.
             if let Some(cell) = chip.parent().and_downcast::<gtk::FlowBoxChild>() {
-                cell.set_halign(gtk::Align::Start);
                 cell.set_can_focus(false);
                 cell.set_focusable(false);
             }
@@ -2695,16 +2785,15 @@ impl Compose {
         // cloud icon, the name, and a remove that also takes the paragraph
         // out of the body. Uploads in flight show a spinner chip.
         for (i, link) in self.cloud_links.iter().enumerate() {
-            let chip = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+            let chip = gtk::Box::new(gtk::Orientation::Horizontal, 6);
             chip.add_css_class("attach-chip");
             chip.add_css_class("cloud-chip");
-            chip.set_halign(gtk::Align::Start);
             chip.set_tooltip_text(Some(&link.url));
             chip.append(&gtk::Image::from_icon_name("cloud-symbolic"));
-            let lbl = gtk::Label::new(Some(&i18n_f("{name} (link)", &[("name", &link.name)])));
-            lbl.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
-            lbl.set_max_width_chars(26);
+            let lbl = FadeLabel::new(&i18n_f("{name} (link)", &[("name", &link.name)]), CHIP_NAME_NATURAL);
+            lbl.set_hexpand(true);
             chip.append(&lbl);
+            slide_on_hover(&chip, &lbl);
             let rm = gtk::Button::from_icon_name("window-close-symbolic");
             rm.add_css_class("flat");
             rm.set_valign(gtk::Align::Center);
@@ -2715,7 +2804,6 @@ impl Compose {
             chip.append(&rm);
             flow.append(&chip);
             if let Some(cell) = chip.parent().and_downcast::<gtk::FlowBoxChild>() {
-                cell.set_halign(gtk::Align::Start);
                 cell.set_can_focus(false);
                 cell.set_focusable(false);
             }
@@ -2723,14 +2811,12 @@ impl Compose {
         for _ in 0..self.cloud_busy {
             let chip = gtk::Box::new(gtk::Orientation::Horizontal, 6);
             chip.add_css_class("attach-chip");
-            chip.set_halign(gtk::Align::Start);
             let spin = gtk::Spinner::new();
             spin.start();
             chip.append(&spin);
             chip.append(&gtk::Label::new(Some(&i18n("Uploading…"))));
             flow.append(&chip);
             if let Some(cell) = chip.parent().and_downcast::<gtk::FlowBoxChild>() {
-                cell.set_halign(gtk::Align::Start);
                 cell.set_can_focus(false);
             }
         }
@@ -2765,7 +2851,7 @@ fn confirm_discard_dialog(parent: Option<&gtk::Window>, sender: relm4::Sender<Co
 }
 
 fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    gtk::glib::markup_escape_text(s).into()
 }
 
 /// Which account to upload to, and how the links are made this time:
@@ -2866,6 +2952,20 @@ fn cloud_upload_dialog(
 
 /// The GtkText embedded somewhere inside a composite row — where Pango
 /// attributes (the spell-check underlines) actually live.
+/// The recipient being typed: the part of the field after the last comma.
+fn recipient_token(row: &adw::EntryRow) -> String {
+    row.text().rsplit(',').next().unwrap_or("").trim().to_string()
+}
+
+/// Whether the field has the keyboard. An EntryRow holds its focus in the
+/// GtkText inside it, so the row's own has_focus() is never true.
+fn recipient_focused(row: &adw::EntryRow) -> bool {
+    row.root()
+        .and_downcast::<gtk::Window>()
+        .and_then(|w| gtk::prelude::GtkWindowExt::focus(&w))
+        .is_some_and(|focus| focus == *row.upcast_ref::<gtk::Widget>() || focus.is_ancestor(row))
+}
+
 fn inner_text(widget: &gtk::Widget) -> Option<gtk::Text> {
     if let Some(t) = widget.downcast_ref::<gtk::Text>() {
         return Some(t.clone());
@@ -2897,9 +2997,8 @@ fn pgp_send_check(from: &str, chosen_key: Option<&str>, fields: &[&str], encrypt
     }
     if encrypt {
         for field in fields {
-            for part in field.split(',') {
-                let (_, addr) = crate::config::split_identity(part.trim());
-                let addr = addr.trim();
+            for (_, addr) in crate::worker::parse_recipients(field) {
+                let addr = addr.as_str();
                 if addr.is_empty() {
                     continue;
                 }
@@ -3027,6 +3126,266 @@ fn body_entry() -> ComposeUndoEntry {
     ComposeUndoEntry { step: ComposeStep::Body, what: i18n("Typing") }
 }
 
+/// Thumbnails of the composer's attachments by path (#299).
+type AttachThumbs = std::rc::Rc<std::cell::RefCell<std::collections::HashMap<std::path::PathBuf, Option<AttachThumb>>>>;
+
+/// An attachment's two pictures: the hover card's, and the chip's square crop
+/// at twice its size for a HiDPI screen.
+#[derive(Clone)]
+struct AttachThumb {
+    card: gtk::gdk::Texture,
+    chip: gtk::gdk::Texture,
+}
+
+/// Edge a chip's thumbnail is drawn at, and the one its hover card uses.
+const CHIP_THUMB: i32 = 32;
+const CARD_THUMB: i32 = 220;
+/// The most width a chip's name asks for. The columns are as wide as the
+/// widest chip asks, so this is what lets three fit across a composer of
+/// ordinary width; a wider composer gives the names more.
+const CHIP_NAME_NATURAL: i32 = 110;
+/// Files past this are not read for a thumbnail: the chip keeps its type icon.
+const THUMB_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
+/// One attached file as a chip (#299): a thumbnail for a picture or a PDF,
+/// the type icon for anything else, the name and the size. Hovering shows a
+/// larger picture with the type; a double click opens the file, and a right
+/// click offers Open and Remove.
+fn attachment_chip(
+    path: &std::path::Path,
+    thumbs: &AttachThumbs,
+    sender: &ComponentSender<Compose>,
+    index: usize,
+) -> gtk::Box {
+    use crate::ui::attachments_gallery::is_pdf_name;
+    let name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".to_string());
+    let size = std::fs::metadata(path).map(|m| m.len()).ok();
+    let (content_type, _) = gtk::gio::content_type_guess(Some(path), &[]);
+    let kind = gtk::gio::content_type_get_description(&content_type).to_string();
+
+    let chip = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    chip.add_css_class("attach-chip");
+
+    // The leading slot holds the type icon until a thumbnail is ready.
+    let slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    slot.set_valign(gtk::Align::Center);
+    slot.set_size_request(CHIP_THUMB, CHIP_THUMB);
+    slot.set_hexpand(false);
+    slot.set_homogeneous(true);
+    let thumbable = is_image_name(&name) || is_pdf_name(&name);
+    let cached = thumbs.borrow().get(path).cloned();
+    match cached {
+        Some(thumb) => fill_thumb_slot(&slot, &name, thumb.as_ref().map(|t| &t.chip)),
+        None => {
+            fill_thumb_slot(&slot, &name, None);
+            if thumbable && size.is_some_and(|n| n <= THUMB_MAX_BYTES) {
+                let weak = slot.downgrade();
+                let thumbs = thumbs.clone();
+                let owned = path.to_path_buf();
+                let pdf = is_pdf_name(&name);
+                let fill_name = name.clone();
+                gtk::glib::spawn_future_local(async move {
+                    let read = owned.clone();
+                    let tex = gtk::gio::spawn_blocking(move || attachment_thumbnail(&read, pdf))
+                        .await
+                        .ok()
+                        .flatten();
+                    thumbs.borrow_mut().insert(owned, tex.clone());
+                    let (Some(slot), Some(thumb)) = (weak.upgrade(), tex) else { return };
+                    fill_thumb_slot(&slot, &fill_name, Some(&thumb.chip));
+                });
+            }
+        }
+    }
+    chip.append(&slot);
+
+    // The name over the size. The name takes what the chip has left and
+    // fades where it is cut off; hovering the chip slides the rest into view.
+    let text = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    text.set_hexpand(true);
+    text.set_valign(gtk::Align::Center);
+    let lbl = FadeLabel::new(&name, CHIP_NAME_NATURAL);
+    text.append(&lbl);
+    if let Some(n) = size {
+        let size_lbl = gtk::Label::new(Some(&crate::models::human_size(n)));
+        size_lbl.set_xalign(0.0);
+        size_lbl.add_css_class("dim-label");
+        size_lbl.add_css_class("caption");
+        text.append(&size_lbl);
+    }
+    chip.append(&text);
+    slide_on_hover(&chip, &lbl);
+    let rm = gtk::Button::from_icon_name("window-close-symbolic");
+    rm.add_css_class("flat");
+    rm.set_valign(gtk::Align::Center);
+    rm.set_tooltip_text(Some(&i18n("Remove")));
+    let s = sender.input_sender().clone();
+    rm.connect_clicked(move |_| {
+        let _ = s.send(ComposeInput::RemoveAttachment(index));
+    });
+    chip.append(&rm);
+
+    // The hover card: a larger picture when there is one, the name, and what
+    // kind of file it is with its size.
+    chip.set_has_tooltip(true);
+    {
+        let thumbs = thumbs.clone();
+        let owned = path.to_path_buf();
+        let name = name.clone();
+        let detail = match size {
+            Some(n) => format!("{kind} \u{b7} {}", crate::models::human_size(n)),
+            None => kind,
+        };
+        chip.connect_query_tooltip(move |_, _, _, _, tooltip| {
+            let card = gtk::Box::new(gtk::Orientation::Vertical, 6);
+            if let Some(Some(thumb)) = thumbs.borrow().get(&owned) {
+                let tex = &thumb.card;
+                let pic = gtk::Picture::for_paintable(tex);
+                pic.set_content_fit(gtk::ContentFit::Contain);
+                let (w, h) = (tex.width().max(1) as f64, tex.height().max(1) as f64);
+                let scale = (CARD_THUMB as f64 / w.max(h)).min(1.0);
+                pic.set_size_request((w * scale) as i32, (h * scale) as i32);
+                card.append(&pic);
+            }
+            let title = gtk::Label::new(Some(&name));
+            title.set_xalign(0.0);
+            title.set_wrap(true);
+            title.set_max_width_chars(40);
+            title.add_css_class("heading");
+            card.append(&title);
+            let info = gtk::Label::new(Some(&detail));
+            info.set_xalign(0.0);
+            card.append(&info);
+            tooltip.set_custom(Some(&card));
+            true
+        });
+    }
+
+    let open = {
+        let owned = path.to_path_buf();
+        let name = name.clone();
+        let chip = chip.downgrade();
+        move || {
+            let parent = chip.upgrade().and_then(|c| c.root()).and_downcast::<gtk::Window>();
+            let owned = owned.clone();
+            let name = name.clone();
+            gtk::glib::spawn_future_local(async move {
+                let read = owned.clone();
+                match gtk::gio::spawn_blocking(move || std::fs::read(read)).await {
+                    Ok(Ok(data)) => crate::ui::attachments_gallery::open_bytes(&name, &data, parent.as_ref()),
+                    Ok(Err(e)) => tracing::warn!("could not read the attachment to open it: {e}"),
+                    Err(_) => {}
+                }
+            });
+        }
+    };
+    let open = std::rc::Rc::new(open);
+    let double = gtk::GestureClick::new();
+    double.set_button(gtk::gdk::BUTTON_PRIMARY);
+    {
+        let open = open.clone();
+        double.connect_pressed(move |_, n, _, _| {
+            if n == 2 {
+                open();
+            }
+        });
+    }
+    chip.add_controller(double);
+    let right = gtk::GestureClick::new();
+    right.set_button(gtk::gdk::BUTTON_SECONDARY);
+    {
+        let s = sender.input_sender().clone();
+        let chip_weak = chip.downgrade();
+        right.connect_pressed(move |gesture, _, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            let Some(chip) = chip_weak.upgrade() else { return };
+            let open = open.clone();
+            let s = s.clone();
+            show_context_menu(
+                &chip,
+                x,
+                y,
+                vec![
+                    vec![MenuEntry::new(i18n("Open"), move || open()).icon("document-open-symbolic")],
+                    vec![MenuEntry::new(i18n("Remove"), move || {
+                        let _ = s.send(ComposeInput::RemoveAttachment(index));
+                    })
+                    .icon("window-close-symbolic")],
+                ],
+            );
+        });
+    }
+    chip.add_controller(right);
+    chip
+}
+
+/// Slide a chip's name to show the rest of it while the pointer is over
+/// the chip, and back when it leaves.
+fn slide_on_hover(chip: &gtk::Box, lbl: &FadeLabel) {
+    let hover = gtk::EventControllerMotion::new();
+    let l = lbl.clone();
+    hover.connect_enter(move |_, _, _| l.reveal(true));
+    let l = lbl.clone();
+    hover.connect_leave(move |_| l.reveal(false));
+    chip.add_controller(hover);
+}
+
+/// Put a chip's thumbnail in its leading slot, or the file type's icon when
+/// there is none.
+fn fill_thumb_slot(slot: &gtk::Box, name: &str, tex: Option<&gtk::gdk::Texture>) {
+    use crate::ui::attachments_gallery::{icon_color_class, icon_for};
+    while let Some(child) = slot.first_child() {
+        slot.remove(&child);
+    }
+    match tex {
+        Some(tex) => {
+            let img = gtk::Image::from_paintable(Some(tex));
+            img.set_pixel_size(CHIP_THUMB);
+            img.set_overflow(gtk::Overflow::Hidden);
+            img.add_css_class("attach-chip-thumb");
+            slot.append(&img);
+        }
+        None => {
+            let img = gtk::Image::from_icon_name(icon_for(name));
+            img.set_pixel_size(CHIP_THUMB * 5 / 8);
+            img.set_halign(gtk::Align::Center);
+            img.add_css_class(icon_color_class(name));
+            slot.append(&img);
+        }
+    }
+}
+
+/// A small picture of an attached file, made off the main thread: a picture
+/// scaled down as it loads, so a large photo is never held at full size, or a
+/// PDF's first page.
+fn attachment_thumbnail(path: &std::path::Path, pdf: bool) -> Option<AttachThumb> {
+    use gtk::gdk_pixbuf::{InterpType, Pixbuf};
+    let pixbuf = if pdf {
+        let data = std::fs::read(path).ok()?;
+        let page = crate::ui::attachments_gallery::pdf_page_texture(&data, CARD_THUMB as f64)?;
+        let png = page.save_to_png_bytes();
+        Pixbuf::from_stream(&gtk::gio::MemoryInputStream::from_bytes(&png), gtk::gio::Cancellable::NONE).ok()?
+    } else {
+        Pixbuf::from_file_at_scale(path, CARD_THUMB, CARD_THUMB, true).ok()?
+    };
+    let texture = |pb: &Pixbuf| {
+        let png = pb.save_to_bufferv("png", &[]).ok()?;
+        gtk::gdk::Texture::from_bytes(&gtk::glib::Bytes::from_owned(png)).ok()
+    };
+    // The chip's square: the middle of a picture, as a cover crop would, and
+    // the top of a page, where its heading is.
+    let (w, h) = (pixbuf.width(), pixbuf.height());
+    let side = w.min(h).max(1);
+    let top = if pdf { 0 } else { (h - side) / 2 };
+    let square = pixbuf.new_subpixbuf((w - side) / 2, top, side, side);
+    let edge = CHIP_THUMB * 2;
+    let chip = square.scale_simple(edge, edge, InterpType::Bilinear)?;
+    Some(AttachThumb { card: texture(&pixbuf)?, chip: texture(&chip)? })
+}
+
 /// What to call an attachment change in the Undo menu: the file's own name,
 /// or a count once there is more than one. `template` carries the `{name}`
 /// placeholder and is translated here.
@@ -3042,4 +3401,19 @@ fn attachment_label(template: &str, path: &std::path::Path, count: usize) -> Str
         path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()
     };
     i18n_f(template, &[("name", &name)])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{sig_html, sig_source};
+    use crate::ui::rich_editor::SourceKind;
+
+    #[test]
+    fn the_separator_line_follows_the_setting() {
+        assert_eq!(sig_html("Ann", false), "<div class=\"vireo-sig\"><br>Ann</div>");
+        assert_eq!(sig_html("Ann", true), "<div class=\"vireo-sig\"><br>-- <br>Ann</div>");
+        assert!(!sig_source(SourceKind::Markdown, "Ann", false).contains("-- "));
+        assert!(sig_source(SourceKind::Markdown, "Ann", true).starts_with("\n\n-- \n"));
+        assert_eq!(sig_source(SourceKind::Markdown, "", true), "");
+    }
 }

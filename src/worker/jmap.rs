@@ -27,6 +27,8 @@ const JMAP_INDEX_CAP: usize = 300;
 const CAP_CORE: &str = "urn:ietf:params:jmap:core";
 const CAP_MAIL: &str = "urn:ietf:params:jmap:mail";
 const CAP_SUBMISSION: &str = "urn:ietf:params:jmap:submission";
+/// RFC 9425: how much room the account has (#298).
+const CAP_QUOTA: &str = "urn:ietf:params:jmap:quota";
 
 /// The summary properties one listing asks `Email/get` for.
 const EMAIL_PROPS: &[&str] = &[
@@ -49,6 +51,8 @@ pub(super) struct JmapSession {
     account: String,
     /// The `Authorization` header value.
     auth: String,
+    /// Whether the server answers `Quota/get` (RFC 9425).
+    quota: bool,
 }
 
 /// One mailbox, flattened out of the tree.
@@ -274,7 +278,8 @@ pub(super) fn jmap_connect(account: &AccountConfig) -> Result<JmapSession, Strin
     if !v["capabilities"][CAP_MAIL].is_object() {
         return Err("the server does not offer JMAP for mail".into());
     }
-    Ok(JmapSession { api_url, download_url, upload_url, event_source_url, account: account_id, auth })
+    let quota = v["capabilities"][CAP_QUOTA].is_object();
+    Ok(JmapSession { api_url, download_url, upload_url, event_source_url, account: account_id, auth, quota })
 }
 
 /// One API request: the method calls, in order, with their responses back
@@ -319,6 +324,31 @@ fn jmap_call(
         }
     }
     Ok(responses)
+}
+
+/// The mailbox size out of a `Quota/get` list (RFC 9425): the account's own
+/// quota on octets that covers mail (the `Email` data type; Stalwart lists
+/// it beside calendars and files), preferred over a domain's or the
+/// server's; the hard limit, else the soft one.
+fn jmap_storage_quota(list: &serde_json::Value) -> Option<MailboxQuota> {
+    let quotas = list.as_array()?;
+    let covers_mail = |q: &serde_json::Value| {
+        q["types"].as_array().is_none_or(|t| t.is_empty() || t.iter().any(|x| x.as_str() == Some("Email")))
+    };
+    let rank = |q: &serde_json::Value| match q["scope"].as_str() {
+        Some("account") => 0,
+        Some("domain") => 1,
+        _ => 2,
+    };
+    quotas
+        .iter()
+        .filter(|q| q["resourceType"].as_str() == Some("octets") && covers_mail(q))
+        .filter_map(|q| {
+            let limit = q["hardLimit"].as_u64().filter(|n| *n > 0).or_else(|| q["softLimit"].as_u64().filter(|n| *n > 0))?;
+            Some((rank(q), MailboxQuota { used: q["used"].as_u64().unwrap_or(0), limit }))
+        })
+        .min_by_key(|(r, _)| *r)
+        .map(|(_, q)| q)
 }
 
 /// A method call tagged by its position, so an error can be traced back.
@@ -684,12 +714,6 @@ fn jmap_destroy_all(s: &JmapSession, ids: &[String]) -> Result<(), String> {
 // Async glue
 // ---------------------------------------------------------------------------
 
-async fn blocking<T: Send + 'static>(
-    f: impl FnOnce() -> Result<T, String> + Send + 'static,
-) -> Result<T, String> {
-    tokio::task::spawn_blocking(f).await.unwrap_or_else(|_| Err("task failed".into()))
-}
-
 /// The session, connecting on first use (and after a reconnect dropped it).
 /// A failure is reported through `emit` and leaves the state untouched, so
 /// the next request tries again.
@@ -708,10 +732,7 @@ async fn jmap_session(
             Some(s)
         }
         Err(e) => {
-            emit(WorkerEvent::Error {
-                text: i18n_f("Could not reach the JMAP server: {e}", &[("e", &e)]),
-                connectivity: true,
-            });
+            emit(WorkerEvent::net_error(i18n_f("Could not reach the JMAP server: {e}", &[("e", &e)])));
             None
         }
     }
@@ -737,10 +758,7 @@ async fn refresh_jmap_folders(
             }
             emit(WorkerEvent::Folders(folders));
         }
-        Err(e) => emit(WorkerEvent::Error {
-            text: i18n_f("Could not list folders: {e}", &[("e", &e)]),
-            connectivity: true,
-        }),
+        Err(e) => emit(WorkerEvent::net_error(i18n_f("Could not list folders: {e}", &[("e", &e)]))),
     }
 }
 
@@ -1297,13 +1315,10 @@ async fn jmap_flush_outbox(
             }
             Err(e) => {
                 cache.record_outbox_failure(item.id, &e);
-                emit(WorkerEvent::Error {
-                    text: i18n_f(
+                emit(WorkerEvent::error(i18n_f(
                         "Still could not send “{subject}”: {e}",
                         &[("subject", &item.subject), ("e", &e)],
-                    ),
-                    connectivity: false,
-                });
+                    )));
             }
         }
     }
@@ -1522,7 +1537,7 @@ fn serve_cached(
     let Some(body) = c.load_body(account_id, path, uid) else { return false };
     emit(WorkerEvent::Body { message_id, path: path.to_string(), body });
     if let Some(check) = c.load_sender_check(account_id, path, uid) {
-        emit(WorkerEvent::SenderChecked { message_id, check });
+        emit(WorkerEvent::SenderChecked { path: path.to_string(), message_id, check });
     }
     true
 }
@@ -1548,12 +1563,9 @@ async fn jmap_deliver_body(
                 c.save_sender_check(account_id, path, uid, &check);
             }
             emit(WorkerEvent::Body { message_id, path: path.to_string(), body });
-            emit(WorkerEvent::SenderChecked { message_id, check });
+            emit(WorkerEvent::SenderChecked { path: path.to_string(), message_id, check });
         }
-        Err(e) => emit(WorkerEvent::Error {
-            text: i18n_f("Could not load message: {e}", &[("e", &e)]),
-            connectivity: true,
-        }),
+        Err(e) => emit(WorkerEvent::net_error(i18n_f("Could not load message: {e}", &[("e", &e)]))),
     }
 }
 
@@ -1601,7 +1613,7 @@ pub(super) async fn run_jmap(
     };
 
     let (push_tx, mut push_rx) = mpsc::unbounded_channel::<()>();
-    let push_enabled = account.push.unwrap_or_else(crate::config::load_push);
+    let push_enabled = account.push.unwrap_or_else(|| crate::config::load_privacy().push);
     let mut push_started = false;
 
     if let Some(s) = jmap_session(&account, &mut state, &emit).await {
@@ -1614,7 +1626,7 @@ pub(super) async fn run_jmap(
 
     // The poll is the fallback for a server without push (or with it off):
     // the auto-fetch cadence when set, otherwise a quiet couple of minutes.
-    let poll_secs = match crate::config::load_fetch_interval() {
+    let poll_secs = match crate::config::load_privacy().fetch_interval_secs {
         0 => 120,
         s => s.max(60),
     };
@@ -1706,6 +1718,27 @@ pub(super) async fn run_jmap(
                 }
                 emit(WorkerEvent::Located { message_id, hit });
             }
+            MailRequest::Quota => {
+                let mut quota = None;
+                if let Some(s) = jmap_session(&account, &mut state, &emit).await {
+                    if s.quota {
+                        let sess = s.clone();
+                        let r = blocking(move || {
+                            jmap_call(
+                                &sess,
+                                &[CAP_CORE, CAP_QUOTA],
+                                vec![call(0, "Quota/get", serde_json::json!({ "accountId": sess.account, "ids": null }))],
+                            )
+                        })
+                        .await;
+                        match r {
+                            Ok(responses) => quota = jmap_storage_quota(&args(&responses, 0)["list"]),
+                            Err(e) => tracing::warn!("[account {account_id}] quota: {e}"),
+                        }
+                    }
+                }
+                emit(WorkerEvent::Quota(quota));
+            }
             MailRequest::FindKeywords => {
                 // JMAP has no keyword listing; the cached rows are the
                 // survey, as they are for the count on every path.
@@ -1749,7 +1782,7 @@ pub(super) async fn run_jmap(
             }
             MailRequest::LoadThreadSummaries { groups } => {
                 let summaries =
-                    cache.as_ref().map(|c| c.thread_summaries(account_id, &groups)).unwrap_or_default();
+                    cache.as_ref().map(|c| thread_summaries_with_members(c, account_id, &groups)).unwrap_or_default();
                 emit(WorkerEvent::ThreadSummaries { summaries });
             }
 
@@ -1775,10 +1808,7 @@ pub(super) async fn run_jmap(
                         emit(WorkerEvent::BackfillDone { folder_id });
                     }
                     Err(e) => {
-                        emit(WorkerEvent::Error {
-                            text: i18n_f("Could not fetch mail: {e}", &[("e", &e)]),
-                            connectivity: true,
-                        });
+                        emit(WorkerEvent::net_error(i18n_f("Could not fetch mail: {e}", &[("e", &e)])));
                         emit(WorkerEvent::BackfillDone { folder_id });
                     }
                 }
@@ -1807,10 +1837,7 @@ pub(super) async fn run_jmap(
                 let Some(s) = jmap_session(&account, &mut state, &emit).await else { continue };
                 match jmap_fetch_raw(&s, &mut state, &path, uid).await {
                     Ok(raw) => emit(WorkerEvent::Source { text: String::from_utf8_lossy(&raw).into_owned() }),
-                    Err(e) => emit(WorkerEvent::Error {
-                        text: i18n_f("Could not load source: {e}", &[("e", &e)]),
-                        connectivity: true,
-                    }),
+                    Err(e) => emit(WorkerEvent::net_error(i18n_f("Could not load source: {e}", &[("e", &e)]))),
                 }
             }
 
@@ -1818,12 +1845,12 @@ pub(super) async fn run_jmap(
                 if let Some(c) = cache.as_ref() {
                     let items = c.load_attachments(account_id, &path, uid);
                     if !items.is_empty() {
-                        emit(WorkerEvent::Attachments { message_id, items });
+                        emit(WorkerEvent::Attachments { path: path.to_string(), message_id, items });
                         continue;
                     }
                 }
                 if !download {
-                    emit(WorkerEvent::AttachmentsPending { message_id });
+                    emit(WorkerEvent::AttachmentsPending { path: path.to_string(), message_id });
                     continue;
                 }
                 let Some(s) = jmap_session(&account, &mut state, &emit).await else { continue };
@@ -1833,12 +1860,9 @@ pub(super) async fn run_jmap(
                         if let Some(c) = cache.as_ref() {
                             c.save_attachments(account_id, &path, uid, &items);
                         }
-                        emit(WorkerEvent::Attachments { message_id, items });
+                        emit(WorkerEvent::Attachments { path: path.to_string(), message_id, items });
                     }
-                    Err(e) => emit(WorkerEvent::Error {
-                        text: i18n_f("Could not load attachments: {e}", &[("e", &e)]),
-                        connectivity: true,
-                    }),
+                    Err(e) => emit(WorkerEvent::net_error(i18n_f("Could not load attachments: {e}", &[("e", &e)]))),
                 }
             }
 
@@ -1896,10 +1920,7 @@ pub(super) async fn run_jmap(
             MailRequest::MoveMessage { path, uid, dest } => {
                 let Some(s) = jmap_session(&account, &mut state, &emit).await else { continue };
                 if let Err(e) = jmap_move_uids(&s, account_id, &mut state, &path, &[uid], &dest, serde_json::json!({}), cache.as_ref()).await {
-                    emit(WorkerEvent::Error {
-                        text: i18n_f("Could not move message: {e}", &[("e", &e)]),
-                        connectivity: false,
-                    });
+                    emit(WorkerEvent::error(i18n_f("Could not move message: {e}", &[("e", &e)])));
                 }
             }
 
@@ -1907,10 +1928,7 @@ pub(super) async fn run_jmap(
                 let Some(s) = jmap_session(&account, &mut state, &emit).await else { continue };
                 let verdict = serde_json::json!({ "keywords/$junk": true, "keywords/$notjunk": null });
                 if let Err(e) = jmap_move_uids(&s, account_id, &mut state, &path, &[uid], &dest, verdict, cache.as_ref()).await {
-                    emit(WorkerEvent::Error {
-                        text: i18n_f("Could not mark as spam: {e}", &[("e", &e)]),
-                        connectivity: false,
-                    });
+                    emit(WorkerEvent::error(i18n_f("Could not mark as spam: {e}", &[("e", &e)])));
                 }
             }
 
@@ -1918,20 +1936,14 @@ pub(super) async fn run_jmap(
                 let Some(s) = jmap_session(&account, &mut state, &emit).await else { continue };
                 let verdict = serde_json::json!({ "keywords/$junk": null, "keywords/$notjunk": true });
                 if let Err(e) = jmap_move_uids(&s, account_id, &mut state, &path, &[uid], &dest, verdict, cache.as_ref()).await {
-                    emit(WorkerEvent::Error {
-                        text: i18n_f("Could not mark as not spam: {e}", &[("e", &e)]),
-                        connectivity: false,
-                    });
+                    emit(WorkerEvent::error(i18n_f("Could not mark as not spam: {e}", &[("e", &e)])));
                 }
             }
             MailRequest::MarkHamMany { path, uids, dest } => {
                 if let Some(s) = jmap_session(&account, &mut state, &emit).await {
                     let verdict = serde_json::json!({ "keywords/$junk": null, "keywords/$notjunk": true });
                     if let Err(e) = jmap_move_uids(&s, account_id, &mut state, &path, &uids, &dest, verdict, cache.as_ref()).await {
-                        emit(WorkerEvent::Error {
-                            text: i18n_f("Could not mark {len} messages as not spam: {e}", &[("len", &uids.len().to_string()), ("e", &e)]),
-                            connectivity: false,
-                        });
+                        emit(WorkerEvent::error(i18n_f("Could not mark {len} messages as not spam: {e}", &[("len", &uids.len().to_string()), ("e", &e)])));
                     }
                 }
                 emit(WorkerEvent::BulkComplete);
@@ -1940,10 +1952,7 @@ pub(super) async fn run_jmap(
             MailRequest::MoveMessages { path, uids, dest } => {
                 if let Some(s) = jmap_session(&account, &mut state, &emit).await {
                     if let Err(e) = jmap_move_uids(&s, account_id, &mut state, &path, &uids, &dest, serde_json::json!({}), cache.as_ref()).await {
-                        emit(WorkerEvent::Error {
-                            text: i18n_f("Could not move messages: {e}", &[("e", &e)]),
-                            connectivity: false,
-                        });
+                        emit(WorkerEvent::error(i18n_f("Could not move messages: {e}", &[("e", &e)])));
                     }
                 }
                 emit(WorkerEvent::BulkComplete);
@@ -1979,10 +1988,7 @@ pub(super) async fn run_jmap(
                         emit(WorkerEvent::Messages { folder_id, messages: Vec::new() });
                         emit(WorkerEvent::FolderUnread { folder_id, unread: 0 });
                     }
-                    Err(e) => emit(WorkerEvent::Error {
-                        text: i18n_f("Could not empty the folder: {e}", &[("e", &e)]),
-                        connectivity: false,
-                    }),
+                    Err(e) => emit(WorkerEvent::error(i18n_f("Could not empty the folder: {e}", &[("e", &e)]))),
                 }
             }
 
@@ -2000,10 +2006,7 @@ pub(super) async fn run_jmap(
                             emit(WorkerEvent::FolderUnread { folder_id: dest_folder_id, unread });
                         }
                     }
-                    Err(e) => emit(WorkerEvent::Error {
-                        text: i18n_f("Undo failed: {e}", &[("e", &e)]),
-                        connectivity: false,
-                    }),
+                    Err(e) => emit(WorkerEvent::error(i18n_f("Undo failed: {e}", &[("e", &e)]))),
                 }
                 // The app spins its busy indicator until an undo answers.
                 emit(WorkerEvent::BulkComplete);
@@ -2040,17 +2043,14 @@ pub(super) async fn run_jmap(
                 .await;
                 match r {
                     Ok(()) => refresh_jmap_folders(&s, account_id, cache.as_ref(), &mut state, &emit).await,
-                    Err(e) => emit(WorkerEvent::Error {
-                        text: i18n_f("Could not create folder: {e}", &[("e", &e)]),
-                        connectivity: false,
-                    }),
+                    Err(e) => emit(WorkerEvent::error(i18n_f("Could not create folder: {e}", &[("e", &e)]))),
                 }
             }
 
             MailRequest::RenameFolder { old_path, new_path } => {
                 let Some(s) = jmap_session(&account, &mut state, &emit).await else { continue };
                 let Some((_, id)) = state.folders.get(&old_path).cloned() else {
-                    emit(WorkerEvent::Error { text: i18n("Could not rename folder: unknown folder"), connectivity: false });
+                    emit(WorkerEvent::error(i18n("Could not rename folder: unknown folder")));
                     continue;
                 };
                 let leaf = new_path.rsplit('/').next().unwrap_or(&new_path).to_string();
@@ -2074,10 +2074,7 @@ pub(super) async fn run_jmap(
                 .await;
                 match r {
                     Ok(()) => refresh_jmap_folders(&s, account_id, cache.as_ref(), &mut state, &emit).await,
-                    Err(e) => emit(WorkerEvent::Error {
-                        text: i18n_f("Could not rename folder: {e}", &[("e", &e)]),
-                        connectivity: false,
-                    }),
+                    Err(e) => emit(WorkerEvent::error(i18n_f("Could not rename folder: {e}", &[("e", &e)]))),
                 }
             }
 
@@ -2090,7 +2087,7 @@ pub(super) async fn run_jmap(
             MailRequest::DeleteFolder { path, trash } => {
                 let Some(s) = jmap_session(&account, &mut state, &emit).await else { continue };
                 let Some((_, id)) = state.folders.get(&path).cloned() else {
-                    emit(WorkerEvent::Error { text: i18n("Could not delete folder: unknown folder"), connectivity: false });
+                    emit(WorkerEvent::error(i18n("Could not delete folder: unknown folder")));
                     continue;
                 };
                 // The contents go to Trash first when the app names one, as
@@ -2121,10 +2118,7 @@ pub(super) async fn run_jmap(
                 .await;
                 match r {
                     Ok(()) => refresh_jmap_folders(&s, account_id, cache.as_ref(), &mut state, &emit).await,
-                    Err(e) => emit(WorkerEvent::Error {
-                        text: i18n_f("Could not delete folder: {e}", &[("e", &e)]),
-                        connectivity: false,
-                    }),
+                    Err(e) => emit(WorkerEvent::error(i18n_f("Could not delete folder: {e}", &[("e", &e)]))),
                 }
             }
 
@@ -2151,23 +2145,14 @@ pub(super) async fn run_jmap(
                                             }
                                             saved = true;
                                         }
-                                        Err(e) => emit(WorkerEvent::Error {
-                                            text: i18n_f("Could not save draft: {e}", &[("e", &e)]),
-                                            connectivity: false,
-                                        }),
+                                        Err(e) => emit(WorkerEvent::error(i18n_f("Could not save draft: {e}", &[("e", &e)]))),
                                     }
                                 }
-                                None => emit(WorkerEvent::Error {
-                                    text: i18n("Could not save draft: unknown folder"),
-                                    connectivity: false,
-                                }),
+                                None => emit(WorkerEvent::error(i18n("Could not save draft: unknown folder"))),
                             }
                         }
                     }
-                    Err(e) => emit(WorkerEvent::Error {
-                        text: i18n_f("Could not save draft: {e}", &[("e", &e.to_string())]),
-                        connectivity: false,
-                    }),
+                    Err(e) => emit(WorkerEvent::error(i18n_f("Could not save draft: {e}", &[("e", &e.to_string())]))),
                 }
                 emit(WorkerEvent::Status(String::new()));
                 if saved {
@@ -2216,38 +2201,18 @@ pub(super) async fn run_jmap(
                                 }
                             }
                         }
-                        if let (Some(queued), Some(c)) = (message.outbox_origin, cache.as_ref()) {
-                            c.delete_outbox(queued);
-                            emit_outbox(cache.as_ref(), account_id, &emit);
-                        }
+                        drop_superseded_outbox(cache.as_ref(), account_id, &message, &emit);
                         emit(WorkerEvent::Sent);
                     }
                     Err(e) => {
-                        let queued = queue_failed_send(cache.as_ref(), account_id, &account, &message, sent_path.as_deref(), &e);
-                        if let (true, Some(old), Some(c)) = (queued, message.outbox_origin, cache.as_ref()) {
-                            c.delete_outbox(old);
-                        }
-                        emit(WorkerEvent::Error {
-                            text: if queued {
-                                i18n_f("Send failed: {e}. The message is in the Outbox and will be sent when the connection is back.", &[("e", &e)])
-                            } else {
-                                i18n_f("Send failed: {e}", &[("e", &e)])
-                            },
-                            connectivity: false,
-                        });
-                        emit_outbox(cache.as_ref(), account_id, &emit);
+                        send_failed(cache.as_ref(), account_id, &account, &message, sent_path.as_deref(), &e, &emit);
                     }
                 }
             }
 
             MailRequest::LoadOutbox => emit_outbox(cache.as_ref(), account_id, &emit),
 
-            MailRequest::DeleteOutbox { id } => {
-                if let Some(c) = cache.as_ref() {
-                    c.delete_outbox(id);
-                }
-                emit_outbox(cache.as_ref(), account_id, &emit);
-            }
+            MailRequest::DeleteOutbox { id } => delete_queued(cache.as_ref(), account_id, id, &emit),
 
             MailRequest::FlushOutbox { id } => {
                 if let Some(s) = jmap_session(&account, &mut state, &emit).await {
@@ -2346,6 +2311,22 @@ pub(super) async fn run_jmap(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_accounts_own_mail_quota_wins() {
+        let list = serde_json::json!([
+            { "resourceType": "count", "scope": "account", "used": 5, "hardLimit": 100, "types": ["Email"] },
+            { "resourceType": "octets", "scope": "domain", "used": 9, "hardLimit": 1000, "types": ["Email"] },
+            { "resourceType": "octets", "scope": "account", "used": 2048, "hardLimit": 4096, "types": ["Email", "CalendarEvent"] },
+            { "resourceType": "octets", "scope": "account", "used": 1, "hardLimit": 2, "types": ["ContactCard"] },
+        ]);
+        assert_eq!(jmap_storage_quota(&list), Some(MailboxQuota { used: 2048, limit: 4096 }));
+        // A soft limit stands in for a missing hard one; no limit, no quota.
+        let soft = serde_json::json!([{ "resourceType": "octets", "scope": "account", "used": 10, "softLimit": 50 }]);
+        assert_eq!(jmap_storage_quota(&soft), Some(MailboxQuota { used: 10, limit: 50 }));
+        let none = serde_json::json!([{ "resourceType": "octets", "scope": "account", "used": 10 }]);
+        assert_eq!(jmap_storage_quota(&none), None);
+    }
 
     fn account(host: &str, port: u16) -> AccountConfig {
         AccountConfig { imap_host: host.into(), imap_port: port, ..sample_account() }

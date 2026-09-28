@@ -17,6 +17,9 @@ pub struct MessageView {
     /// Render a lone message as an inset card, same as a conversation's
     /// messages (#57, preference; off keeps the full-bleed view).
     single_message_card: bool,
+    /// The OpenPGP chip says its verdict in words (#300); off keeps the
+    /// icons alone.
+    pgp_labels: bool,
     /// What each message on screen has attached (#213): names and sizes,
     /// handed over by the app as the files arrive. Listed beneath the card.
     card_atts: std::collections::HashMap<(u32, u32), Vec<CardAttachment>>,
@@ -218,11 +221,13 @@ impl MessageView {
         let pgp = match &check.pgp {
             Some(p) => format!(
                 "var p=document.querySelector('.vireo-pgp[data-key=\"{account_id}:{id}\"]');\
-                 if(p){{p.className='vireo-pgp on{enc}{sig} {cls}';p.title={title:?};}}",
+                 if(p){{p.className='vireo-pgp on{enc}{sig} {cls}';p.title={title:?};\
+                 var t=p.querySelector('.vireo-pgp-text');if(t)t.textContent={label:?};}}",
                 enc = if p.encrypted { " enc" } else { "" },
                 sig = if p.signed() { " sig" } else { "" },
                 cls = p.css_class(),
                 title = p.summary(),
+                label = p.short_label(),
             ),
             None => String::new(),
         };
@@ -695,6 +700,9 @@ pub enum MessageViewInput {
     SetAlwaysShowRecipients(bool),
     /// The "single messages as cards" preference changed (re-render follows).
     SetSingleMessageCard(bool),
+    /// The OpenPGP chip's words on or off (#300), applied to the open
+    /// document at once.
+    SetPgpLabels(bool),
     /// What each message on screen has attached (#213), patched into the
     /// cards live when the document is up.
     SetCardAttachments(std::collections::HashMap<(u32, u32), Vec<CardAttachment>>),
@@ -841,9 +849,10 @@ pub enum MessageViewInput {
     },
     /// The card's "Add sender to Contacts" button.
     CardContact { account_id: u32, id: u32 },
-    /// A right-click landed on one card (header or body) at webview point
-    /// (x, y): the app shows that message's menu.
-    CardMenuAt { account_id: u32, id: u32, x: f64, y: f64 },
+    /// A right-click at webview point (x, y), on the card `key` names (the
+    /// nearest one when it landed between cards; `None` when the page could
+    /// not say): the app shows that message's menu, led by what `hit` offers.
+    CardMenuAt { key: Option<(u32, u32)>, x: f64, y: f64, hit: MenuHit },
     /// A card's Move to… button, at page point (x, y) in CSS pixels of a
     /// page `page_width` wide: the app opens the folder picker there.
     CardMoveAt { account_id: u32, id: u32, x: f64, y: f64, page_width: f64 },
@@ -940,8 +949,8 @@ pub enum MessageViewOutput {
     /// message's attachments, or save it.
     AttachmentAction { account_id: u32, id: u32, index: usize, save: bool },
     /// A right-click on a card: the app shows the message's full menu (the
-    /// list row's) at window point (x, y).
-    CardMenu { message: Box<Message>, x: f64, y: f64 },
+    /// list row's) at window point (x, y), with `hit`'s entries first.
+    CardMenu { message: Box<Message>, x: f64, y: f64, hit: MenuHit },
     /// A card's Move to… button: the folder picker for that message, at
     /// window point (x, y).
     CardMoveTo { message: Box<Message>, x: f64, y: f64 },
@@ -1712,6 +1721,7 @@ impl Component for MessageView {
         let mut model = MessageView {
             always_show_recipients: false,
             single_message_card: false,
+            pgp_labels: false,
             card_atts: std::collections::HashMap::new(),
             card_atts_shown: true,
             drawer_on: true,
@@ -1730,12 +1740,12 @@ impl Component for MessageView {
             zoom_default: 100,
             reader_default: crate::config::ReaderDefault::Remember,
             read_mark: crate::config::ReadMark::default(),
-            show_banner: crate::config::load_show_remote_banner(),
-            show_spoof_banner: crate::config::load_show_spoof_banner(),
-            card_actions_hover: crate::config::load_card_actions_hover(),
-            card_actions_auto: crate::config::load_card_actions_auto(),
-            palette_collapse_secs: crate::config::load_card_palette_collapse(),
-            card_palette_menu: crate::config::load_card_palette_menu(),
+            show_banner: crate::config::load_privacy().show_remote_banner,
+            show_spoof_banner: crate::config::load_privacy().show_spoof_banner,
+            card_actions_hover: crate::config::load_privacy().card_actions_hover,
+            card_actions_auto: crate::config::load_privacy().card_actions_auto,
+            palette_collapse_secs: crate::config::load_privacy().card_palette_collapse_secs,
+            card_palette_menu: crate::config::load_privacy().card_palette_menu,
             remote_allowed: false,
             account_name: None,
             chip_provider,
@@ -1816,14 +1826,14 @@ impl Component for MessageView {
             }
         });
 
-        // A right-click anywhere on a card — its header, or its body frame,
-        // which never reports events to the page — shows the message's own
-        // menu, the same one the list row has. WebKit says what the click
-        // hit but not where the pointer is, so a capture-phase gesture
-        // records the point first; the page is then asked which card holds
-        // it (in CSS pixels: the page may be zoomed under a text scaling
-        // factor, so the widget width recovers the ratio). Links, selected
-        // text, images and editable fields keep WebKit's own menus.
+        // A right-click anywhere in the reader (a card's header, its body
+        // frame, which never reports events to the page, or the space
+        // between cards) shows the message's own menu, the same one the list
+        // row has. WebKit says what the click hit but not where the pointer
+        // is, so a capture-phase gesture records the point first; the page
+        // is then asked which card holds it, or is nearest to it. Links,
+        // pictures and selected text used to get WebKit's own short menu
+        // instead; their entries now lead the message's.
         {
             let point = std::rc::Rc::new(std::cell::Cell::new((0.0f64, 0.0f64)));
             let click = gtk::GestureClick::new();
@@ -1836,31 +1846,41 @@ impl Component for MessageView {
             model.webview.add_controller(click);
             let menu_sender = sender.clone();
             model.webview.connect_context_menu(move |view, _menu, hit| {
-                if hit.context_is_link()
-                    || hit.context_is_image()
-                    || hit.context_is_media()
-                    || hit.context_is_editable()
-                    || hit.context_is_selection()
-                {
-                    return false;
-                }
+                // Always the message's menu, wherever the click lands (a
+                // link, a picture or selected text only adds its own entries
+                // at the top), so the menu never depends on what the mail's
+                // HTML happens to have under the pointer.
+                let mut target = MenuHit {
+                    link: hit
+                        .context_is_link()
+                        .then(|| hit.link_uri())
+                        .flatten()
+                        .map(|u| u.to_string())
+                        .filter(|u| is_launchable_uri(u)),
+                    image: hit.context_is_image().then(|| hit.image_uri()).flatten().map(|u| u.to_string()),
+                    selection: None,
+                };
+                let selected = hit.context_is_selection();
                 let (x, y) = point.get();
                 let width = view.width().max(1);
-                let js = format!(
-                    "(function(){{var r=window.innerWidth/{width};\
-                     var el=document.elementFromPoint({x}*r,{y}*r);\
-                     var m=el&&el.closest?el.closest('.vireo-msg'):null;\
-                     return (m&&m.dataset&&m.dataset.key)||'';}})()"
-                );
                 let s = menu_sender.clone();
-                view.evaluate_javascript(&js, None, None, None::<&gtk::gio::Cancellable>, move |r| {
-                    let key = r.ok().map(|v| v.to_str().to_string()).unwrap_or_default();
-                    if let Some((a, i)) = key.split_once(':') {
-                        if let (Ok(account_id), Ok(id)) = (a.parse::<u32>(), i.parse::<u32>()) {
-                            s.input(MessageViewInput::CardMenuAt { account_id, id, x, y });
+                view.evaluate_javascript(
+                    &format!("window.__hylkiMenuAt({x},{y},{width})"),
+                    None,
+                    None,
+                    None::<&gtk::gio::Cancellable>,
+                    move |r| {
+                        let json = r.map(|v| v.to_str().to_string()).unwrap_or_default();
+                        let (key, text) = menu_lookup(&json);
+                        if key.is_none() {
+                            tracing::debug!("reader menu: no card at {x:.0},{y:.0} ({json:?})");
                         }
-                    }
-                });
+                        if selected {
+                            target.selection = text;
+                        }
+                        s.input(MessageViewInput::CardMenuAt { key, x, y, hit: target });
+                    },
+                );
                 true
             });
         }
@@ -2281,6 +2301,14 @@ impl Component for MessageView {
             }
             MessageViewInput::SetSingleMessageCard(on) => {
                 self.single_message_card = on;
+            }
+            MessageViewInput::SetPgpLabels(on) => {
+                self.pgp_labels = on;
+                let js = format!(
+                    "document.body&&document.body.toggleAttribute('data-vireo-pgpicons',{})",
+                    !on
+                );
+                self.webview.evaluate_javascript(&js, None, None, None::<&gtk::gio::Cancellable>, |_| {});
             }
             MessageViewInput::SetCardAttachments(map) => {
                 self.card_atts = map;
@@ -2741,32 +2769,36 @@ impl Component for MessageView {
                     });
                 }
             }
-            MessageViewInput::CardMenuAt { account_id, id, x, y } => {
-                let Some(m) = self
-                    .thread
-                    .iter()
-                    .find(|m| m.account_id == account_id && m.id == id)
-                    .cloned()
-                else {
-                    return;
-                };
+            MessageViewInput::CardMenuAt { key, x, y, hit } => {
+                // Unnamed (the page did not answer): the message on screen
+                // when there is one, else the conversation's first, so a
+                // right-click never ends without a menu.
+                let m = key
+                    .and_then(|(a, i)| self.thread.iter().find(|m| m.account_id == a && m.id == i))
+                    .or_else(|| self.thread.first());
+                let Some(m) = m.cloned() else { return };
                 let point = self.webview.root().and_then(|root| {
                     let root: gtk::Widget = root.upcast();
                     self.webview
                         .compute_point(&root, &gtk::graphene::Point::new(x as f32, y as f32))
                 });
                 let (wx, wy) = point.map_or((x, y), |p| (p.x() as f64, p.y() as f64));
-                let _ = sender.output(MessageViewOutput::CardMenu { message: Box::new(m), x: wx, y: wy });
+                let _ = sender.output(MessageViewOutput::CardMenu {
+                    message: Box::new(m),
+                    x: wx,
+                    y: wy,
+                    hit,
+                });
             }
             MessageViewInput::CardMenuFrom { account_id, id, x, y, page_width } => {
                 // CSS pixels → widget pixels (the page may be zoomed); from
                 // there it is the same menu the right-click path opens.
                 let ratio = self.webview.width() as f64 / page_width.max(1.0);
                 sender.input(MessageViewInput::CardMenuAt {
-                    account_id,
-                    id,
+                    key: Some((account_id, id)),
                     x: x * ratio,
                     y: y * ratio,
+                    hit: MenuHit::default(),
                 });
             }
             MessageViewInput::CardMoveAt { account_id, id, x, y, page_width } => {
@@ -3181,6 +3213,8 @@ impl MessageView {
         } else {
             ""
         };
+        // The OpenPGP chip as its icons alone, without the words (#300).
+        let pgp_icons = if self.pgp_labels { "" } else { " data-vireo-pgpicons" };
         // The newest member, for the open-scroll fallback (#101): with no
         // unread mail the reader lands on the newest message rather than
         // wherever the document happens to start.
@@ -3201,7 +3235,7 @@ impl MessageView {
         let copied = format!(" data-vireo-copied=\"{}\"", i18n("Copied").replace('"', "&quot;"));
         let html = html.replacen(
             "<body",
-            &format!("<body{noscroll}{hover}{delay}{acts_menu}{newest}{readmark}{copied}"),
+            &format!("<body{noscroll}{hover}{delay}{acts_menu}{pgp_icons}{newest}{readmark}{copied}"),
             1,
         );
         self.did_autoscroll = true;
@@ -3629,13 +3663,14 @@ impl MessageView {
                         "<button type=\"button\" class=\"vireo-verify\" data-key=\"{aid}:{id}\" \
                          title=\"\">{svg}</button>\
                          <button type=\"button\" class=\"vireo-pgp\" data-key=\"{aid}:{id}\" \
-                         title=\"\">{lock}{sig}</button>",
+                         title=\"\">{lock}{sig}<span class=\"vireo-pgp-text\"></span></button>",
                         aid = m.account_id,
                         id = m.id,
                         svg = inline_icon_svg("verified-checkmark-symbolic"),
                         // The OpenPGP chip (#133): a lock for an encrypted
-                        // message, a shield for a signed one, both when both;
-                        // hidden until the verdict is patched in.
+                        // message, a shield for a signed one, then the
+                        // verdict in words (#300); hidden until the verdict
+                        // is patched in.
                         lock = inline_icon_svg("channel-secure-symbolic"),
                         sig = inline_icon_svg("security-high-symbolic"),
                     ),
@@ -4016,17 +4051,31 @@ impl MessageView {
                .vireo-verify.trust-unverified{{color:currentColor;opacity:0.4;}}\
                .vireo-verify.trust-suspicious{{color:#cd9309;}}\
                .vireo-verify.trust-fail{{color:#c01c28;}}\
-               .vireo-pgp{{display:none;background:none;border:none;gap:1px;\
-                 padding:0 2px;margin-left:2px;cursor:pointer;line-height:0;\
-                 align-self:baseline;transform:translateY(0.18em);flex:none;}}\
+               /* The OpenPGP chip (#133), a labelled pill since #300: the\
+                  verdict reads in words on a wash of its color. Text of its\
+                  own, so it sits on the name's baseline without the seal's\
+                  nudge. */\
+               .vireo-pgp{{display:none;font:inherit;font-size:0.78em;font-weight:600;\
+                 border:none;border-radius:999px;padding:0.1em 0.6em 0.1em 0.45em;\
+                 margin-left:4px;cursor:pointer;align-items:center;gap:0.3em;\
+                 align-self:baseline;white-space:nowrap;flex:none;color:inherit;\
+                 background:rgba(128,128,128,0.16);}}\
                .vireo-pgp.on{{display:inline-flex;}}\
-               .vireo-pgp svg{{width:0.95em;height:0.95em;display:none;}}\
+               .vireo-pgp svg{{width:1.1em;height:1.1em;display:none;flex:none;}}\
                .vireo-pgp svg,.vireo-pgp svg *{{fill:currentColor;}}\
                .vireo-pgp.enc svg:first-child{{display:block;}}\
-               .vireo-pgp.sig svg:last-child{{display:block;}}\
-               .vireo-pgp.pgp-good{{color:#26a269;}}\
-               .vireo-pgp.pgp-warn{{color:#cd9309;}}\
-               .vireo-pgp.pgp-bad{{color:#c01c28;}}\
+               .vireo-pgp.sig svg:nth-child(2){{display:block;}}\
+               .vireo-pgp.pgp-good{{color:#26a269;background:rgba(38,162,105,0.16);}}\
+               .vireo-pgp.pgp-warn{{color:#cd9309;background:rgba(205,147,9,0.16);}}\
+               .vireo-pgp.pgp-bad{{color:#c01c28;background:rgba(192,28,40,0.14);}}\
+               .vireo-pgp:hover{{filter:brightness(1.1);}}\
+               /* The icons alone (Settings, #300): the chip as it was before\
+                  it had words, sitting on the name's line like the seal. */\
+               body[data-vireo-pgpicons] .vireo-pgp{{background:none;padding:0 2px;\
+                 margin-left:2px;gap:1px;font-size:inherit;line-height:0;\
+                 transform:translateY(0.18em);}}\
+               body[data-vireo-pgpicons] .vireo-pgp svg{{width:0.95em;height:0.95em;}}\
+               body[data-vireo-pgpicons] .vireo-pgp-text{{display:none;}}\
                .vireo-mail{{cursor:pointer;}}\
                .vireo-mail:hover{{text-decoration:underline;}}\
                /* Styled after the app's own context menus (context_menu.rs +\
@@ -4329,6 +4378,7 @@ fn build_webview(role: &'static str) -> webkit6::WebView {
     // URI whose bytes are already in the document, so swap in our own item that
     // decodes them and opens a real save dialog.
     webview.connect_context_menu(|view, menu, hit| {
+        strip_navigation_items(menu);
         if !hit.context_is_image() {
             return false; // not an image — leave the default menu alone
         }
@@ -4383,6 +4433,13 @@ fn build_webview(role: &'static str) -> webkit6::WebView {
         if is_nav || is_new_window {
             if let Some(nav) = decision.downcast_ref::<webkit6::NavigationPolicyDecision>() {
                 if let Some(mut action) = nav.navigation_action() {
+                    // The documents are loaded from strings under a made-up
+                    // `hylki.localhost` base, so a reload has nothing to fetch
+                    // and shows "Connection refused" (#301).
+                    if action.navigation_type() == webkit6::NavigationType::Reload {
+                        decision.ignore();
+                        return true;
+                    }
                     let clicked = is_new_window
                         || action.navigation_type() == webkit6::NavigationType::LinkClicked;
                     if clicked {
@@ -4905,6 +4962,125 @@ fn push_css(b: &[u8], start: usize, end: usize, spans: &mut Vec<(usize, usize)>)
             }
         }
         at = p + 7;
+    }
+}
+
+/// What a right-click in the reader landed on besides the message: a link,
+/// a picture, selected text. Each adds its own entries at the top of the
+/// message's menu.
+#[derive(Debug, Clone, Default)]
+pub struct MenuHit {
+    /// A link the reader would open on a click (web and mail links only).
+    pub link: Option<String>,
+    /// The picture's URI: a `data:` one for mail's own pictures.
+    pub image: Option<String>,
+    /// The selected text, when the click was on it.
+    pub selection: Option<String>,
+}
+
+/// The entries a right-click's `hit` puts at the top of the message's menu:
+/// Copy for selected text, then the link's and the picture's own.
+pub(crate) fn hit_menu_entries(
+    hit: &MenuHit,
+    window: Option<gtk::Window>,
+) -> Vec<crate::ui::context_menu::MenuEntry> {
+    use crate::ui::context_menu::MenuEntry;
+    fn copy(text: String) -> impl Fn() + 'static {
+        move || {
+            if let Some(display) = gtk::gdk::Display::default() {
+                display.clipboard().set_text(&text);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if let Some(text) = &hit.selection {
+        out.push(MenuEntry::new(i18n("Copy"), copy(text.clone())).icon("edit-copy-symbolic"));
+    }
+    if let Some(uri) = &hit.link {
+        let (open, w) = (uri.clone(), window.clone());
+        out.push(
+            MenuEntry::new(i18n("Open Link"), move || {
+                crate::ui::launch::open_link(&open, w.as_ref());
+            })
+            .icon("web-browser-symbolic"),
+        );
+        // A mail link copies as the address it writes to, not as a URI.
+        let address = uri
+            .split_once(':')
+            .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("mailto"))
+            .map(|(_, rest)| crate::percent::decode(rest.split('?').next().unwrap_or(""), false));
+        out.push(match address {
+            Some(a) => MenuEntry::new(i18n("Copy Email Address"), copy(a)),
+            None => MenuEntry::new(i18n("Copy Link Address"), copy(uri.clone())),
+        }
+        .icon("edit-copy-symbolic"));
+    }
+    if let Some(uri) = &hit.image {
+        // The mail's own pictures are `data:` URIs with their bytes in hand;
+        // a remote one is only an address here.
+        match decode_data_uri(uri) {
+            Some((mime, data)) => {
+                let texture =
+                    gtk::gdk::Texture::from_bytes(&gtk::glib::Bytes::from(&data)).ok();
+                let bytes = data.clone();
+                out.push(
+                    MenuEntry::new(i18n("Save Image As…"), move || {
+                        let dialog = gtk::FileDialog::builder()
+                            .initial_name(default_image_name(&mime))
+                            .title(&i18n("Save Image"))
+                            .build();
+                        let bytes = bytes.clone();
+                        dialog.save(window.as_ref(), gtk::gio::Cancellable::NONE, move |res| {
+                            if let Some(path) = res.ok().and_then(|f| f.path()) {
+                                let _ = std::fs::write(path, &bytes);
+                            }
+                        });
+                    })
+                    .icon("document-save-as-symbolic"),
+                );
+                if let Some(texture) = texture {
+                    out.push(
+                        MenuEntry::new(i18n("Copy Image"), move || {
+                            if let Some(display) = gtk::gdk::Display::default() {
+                                display.clipboard().set_texture(&texture);
+                            }
+                        })
+                        .icon("edit-copy-symbolic"),
+                    );
+                }
+            }
+            None if uri.starts_with("http") => {
+                out.push(
+                    MenuEntry::new(i18n("Copy Image Address"), copy(uri.clone()))
+                        .icon("edit-copy-symbolic"),
+                );
+            }
+            None => {}
+        }
+    }
+    out
+}
+
+/// The card key and selected text from `__hylkiMenuAt`'s JSON answer.
+fn menu_lookup(json: &str) -> (Option<(u32, u32)>, Option<String>) {
+    let v: serde_json::Value = serde_json::from_str(json).unwrap_or_default();
+    let key = v["key"].as_str().and_then(|k| {
+        let (a, i) = k.split_once(':')?;
+        Some((a.parse().ok()?, i.parse().ok()?))
+    });
+    let sel = v["sel"].as_str().filter(|s| !s.trim().is_empty()).map(str::to_string);
+    (key, sel)
+}
+
+/// Take WebKit's Back, Forward, Stop and Reload out of a context menu. Every
+/// view here shows a document loaded from a string, so there is no page to go
+/// back to or fetch again, and Reload ended on "Connection refused" (#301).
+pub(crate) fn strip_navigation_items(menu: &webkit6::ContextMenu) {
+    use webkit6::ContextMenuAction as A;
+    for item in menu.items() {
+        if matches!(item.stock_action(), A::GoBack | A::GoForward | A::Stop | A::Reload) {
+            menu.remove(&item);
+        }
     }
 }
 
@@ -5781,14 +5957,7 @@ pub fn theme_grounds_for(widget: &impl IsA<gtk::Widget>, dark: bool) -> (String,
     let style = widget.style_context();
     if dark == adw::StyleManager::default().is_dark() {
         if let Some(c) = style.lookup_color("view_bg_color") {
-            let hex = |r: f32, g: f32, b: f32| {
-                format!(
-                    "#{:02x}{:02x}{:02x}",
-                    (r * 255.0).round() as u8,
-                    (g * 255.0).round() as u8,
-                    (b * 255.0).round() as u8,
-                )
-            };
+            let hex = |r: f32, g: f32, b: f32| crate::color::to_hex(&gtk::gdk::RGBA::new(r, g, b, 1.0));
             // The stock pairs' own ratios: #1e1e1e→#141414 and #fff→#f1f1f1.
             let f = if dark { 0.667 } else { 0.945 };
             let ground = hex(c.red(), c.green(), c.blue());
@@ -6103,7 +6272,7 @@ function mailMsg(mail){try{window.webkit.messageHandlers.hylki.postMessage('comp
 function showMailMenu(x,y,mail){hideMailMenu();\
 var sc=document.createElement('div');sc.className='vireo-mailmenu-scrim';\
 ['mousedown','contextmenu'].forEach(function(ev){sc.addEventListener(ev,function(e){\
-e.preventDefault();e.stopPropagation();hideMailMenu();});});\
+if(ev==='mousedown')e.preventDefault();e.stopPropagation();hideMailMenu();});});\
 document.body.appendChild(sc);window.__hylkiMailScrim=sc;\
 var mn=document.createElement('div');mn.className='vireo-mailmenu';\
 function item(label,fn){var b=document.createElement('button');b.type='button';\
@@ -6115,6 +6284,21 @@ item('Add to Contacts',function(){try{window.webkit.messageHandlers.hylki.postMe
 mn.style.left=Math.max(0,Math.min(x,window.innerWidth-200))+'px';\
 mn.style.top=Math.max(0,Math.min(y,window.innerHeight-124))+'px';\
 document.body.appendChild(mn);window.__hylkiMailMenu=mn;}\
+/* The card a right-click at widget point (x, y) belongs to, in a view w\
+   widget pixels wide: the one under it, or the nearest when the click fell\
+   between cards. And the selected text, for Copy. A right-click anywhere\
+   else dismisses the address menu, as a click does. */\
+window.__hylkiMenuAt=function(x,y,w){hideMailMenu();var r=window.innerWidth/w;x*=r;y*=r;\
+var el=document.elementFromPoint(x,y);var m=el&&el.closest?el.closest('.vireo-msg'):null;\
+if(!m){var ms=document.querySelectorAll('.vireo-msg'),d=1e9;\
+for(var i=0;i<ms.length;i++){var b=ms[i].getBoundingClientRect();\
+var e=y<b.top?b.top-y:(y>b.bottom?y-b.bottom:0);if(e<d){d=e;m=ms[i];}}}\
+var sel='';try{sel=String(window.getSelection()||'');\
+if(!sel){var fs=all();for(var j=0;j<fs.length&&!sel;j++){\
+try{sel=String(fs[j].contentDocument.getSelection()||'');}catch(_){}}}}catch(_){}\
+return JSON.stringify({key:(m&&m.dataset&&m.dataset.key)||'',sel:sel});};\
+window.addEventListener('keydown',function(e){if(e.key!=='Escape'||!window.__hylkiMailMenu)return;\
+e.preventDefault();e.stopPropagation();hideMailMenu();},true);\
 document.addEventListener('click',function(e){var m=window.__hylkiMailMenu;\
 if(m&&e.target&&m.contains(e.target))return;hideMailMenu();},true);\
 window.addEventListener('scroll',hideMailMenu,{passive:true});\
@@ -6521,9 +6705,7 @@ fn print_header_html(message: Option<&Message>) -> String {
 /// Escape text for HTML content: a subject or an address that contains `<` must
 /// not become a tag.
 fn escape_text(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
+    gtk::glib::markup_escape_text(s).into()
 }
 
 /// Escape a string for use inside a double-quoted HTML **attribute** value
@@ -6548,7 +6730,7 @@ fn body_html(body: &str) -> String {
              body{{margin:0;padding:20px;font:14px/1.5 system-ui,sans-serif;\
              white-space:pre-wrap;word-wrap:break-word}}\
              </style></head><body class=\"vireo-plain\">{}</body></html>",
-            body.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+            escape_text(body)
         )
     }
 }
@@ -6572,6 +6754,19 @@ fn sanitize_filename(subject: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The page's answer to a right-click: the card it landed on (or the
+    /// nearest) and any selected text. An empty or broken answer names no
+    /// card, which the reader then fills in rather than dropping the menu.
+    #[test]
+    fn a_right_click_names_its_card() {
+        assert_eq!(
+            menu_lookup(r#"{"key":"2:41","sel":"  some text "}"#),
+            (Some((2, 41)), Some("  some text ".to_string()))
+        );
+        assert_eq!(menu_lookup(r#"{"key":"","sel":"   "}"#), (None, None));
+        assert_eq!(menu_lookup(""), (None, None));
+    }
 
     // ===== Meeting invitations (#223) =====
 
@@ -6691,7 +6886,7 @@ mod tests {
         assert!(row.contains("class=\"vireo-attc ftype-pdf\" data-key=\"1:7\" data-idx=\"0\""), "{row}");
         assert!(row.contains("class=\"vireo-attc ftype-image\" data-key=\"1:7\" data-idx=\"1\""), "{row}");
         assert!(row.contains("class=\"vireo-attsave\" data-key=\"1:7\" data-idx=\"1\""), "{row}");
-        assert!(row.contains("2.0 KB"), "{row}");
+        assert!(row.contains(&crate::models::human_size(2048)), "{row}");
         assert!(!row.contains("<b>x</b>"), "filename is escaped: {row}");
         assert!(row.contains("&lt;b&gt;x&lt;/b&gt;.png"), "{row}");
         // Nothing attached: the row is there, and empty.

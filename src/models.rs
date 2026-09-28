@@ -3,7 +3,6 @@ use crate::i18n::{i18n, i18n_f};
 
 /// A configured mail account (one IMAP/SMTP identity).
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // `id` and `accent` are used once multi-account lands.
 pub struct Account {
     pub id: u32,
     pub name: String,
@@ -58,6 +57,40 @@ pub struct KeywordFinding {
     pub count: usize,
     /// The folders it was seen in (display names).
     pub folders: Vec<String>,
+}
+
+/// How much of an account's mail storage the server says is in use (#298),
+/// in bytes. Only servers that report a limit give one: IMAP's QUOTA
+/// extension and JMAP's quotas; Microsoft 365 and POP3 do not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MailboxQuota {
+    pub used: u64,
+    pub limit: u64,
+}
+
+impl MailboxQuota {
+    /// The share in use, 0 to 1.
+    pub fn fraction(&self) -> f64 {
+        if self.limit == 0 {
+            return 0.0;
+        }
+        (self.used as f64 / self.limit as f64).clamp(0.0, 1.0)
+    }
+
+    /// "2.1 GB of 15 GB used".
+    pub fn used_line(&self) -> String {
+        i18n_f(
+            "{used} of {limit} used",
+            &[("used", &human_size(self.used)), ("limit", &human_size(self.limit))],
+        )
+    }
+
+    /// "12.9 GB free (86%)".
+    pub fn free_line(&self) -> String {
+        let free = self.limit.saturating_sub(self.used);
+        let pct = ((1.0 - self.fraction()) * 100.0).round() as u32;
+        i18n_f("{free} free ({pct}%)", &[("free", &human_size(free)), ("pct", &pct.to_string())])
+    }
 }
 
 /// A mail folder within an account.
@@ -317,12 +350,6 @@ impl SenderTrust {
             SenderTrust::Fail => "trust-fail",
         }
     }
-
-    /// Whether this verdict deserves a banner across the top of the message
-    /// rather than just a badge beside the sender.
-    pub fn is_alarming(self) -> bool {
-        matches!(self, SenderTrust::Suspicious | SenderTrust::Fail)
-    }
 }
 
 /// The list preview stored for an OpenPGP-encrypted message (#133): a
@@ -443,6 +470,28 @@ impl PgpStatus {
             S::ExpiredKey { signer } => i18n_f("Signed by {signer} with an expired key", &[("signer", signer)]),
             S::RevokedKey { signer } => i18n_f("Signed by {signer} with a revoked key", &[("signer", signer)]),
             S::ExpiredSignature { signer } => i18n_f("Signed by {signer}; the signature has expired", &[("signer", signer)]),
+        }
+    }
+
+    /// The chip's own words (#300): what the message is, or what is wrong
+    /// with it, short enough to sit beside the sender's name. The tooltip
+    /// and the details popover carry the full sentence.
+    pub fn short_label(&self) -> String {
+        use PgpSignature as S;
+        if self.encrypted && !self.decrypted {
+            return i18n("Not decrypted");
+        }
+        match &self.signature {
+            S::None if self.encrypted => i18n("Encrypted"),
+            S::None => i18n("Signature not checked"),
+            S::Good { trust: PgpTrust::Full, .. } if self.encrypted => i18n("Encrypted and signed"),
+            S::Good { trust: PgpTrust::Full, .. } => i18n("Signed"),
+            S::Good { .. } => i18n("Signed, key not trusted"),
+            S::Bad { .. } => i18n("Bad signature"),
+            S::NoKey { .. } => i18n("Signed, unknown key"),
+            S::ExpiredKey { .. } => i18n("Signed, key expired"),
+            S::RevokedKey { .. } => i18n("Signed, key revoked"),
+            S::ExpiredSignature { .. } => i18n("Signature expired"),
         }
     }
 
@@ -842,14 +891,7 @@ impl Attachment {
 
 /// Human-readable byte size, e.g. "12.3 KB".
 pub fn human_size(bytes: u64) -> String {
-    let b = bytes as f64;
-    if b >= 1_048_576.0 {
-        format!("{:.1} MB", b / 1_048_576.0)
-    } else if b >= 1024.0 {
-        format!("{:.1} KB", b / 1024.0)
-    } else {
-        format!("{bytes} B")
-    }
+    gtk::glib::format_size(bytes).into()
 }
 
 /// Whether a filename looks like a raster image we can thumbnail/preview inline.
@@ -1152,6 +1194,10 @@ pub struct ThreadLatest {
 pub struct ThreadSummary {
     pub count: usize,
     pub latest: Option<ThreadLatest>,
+    /// The conversation's messages across the account, drafts, Trash and
+    /// Junk left out, for a row that opens out into the parts filed in other
+    /// folders (#309). Empty for a conversation of one.
+    pub members: Vec<Message>,
 }
 
 /// Every Message-ID that identifies a conversation: the messages' own ids plus
@@ -1177,6 +1223,29 @@ pub fn thread_ids(msgs: &[Message]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_quota_says_what_is_used_and_free() {
+        let q = MailboxQuota { used: 250, limit: 1000 };
+        assert_eq!(q.fraction(), 0.25);
+        assert!(q.free_line().ends_with("(75%)"));
+        let over = MailboxQuota { used: 1200, limit: 1000 };
+        assert_eq!(over.fraction(), 1.0);
+        assert!(over.free_line().ends_with("(0%)"));
+    }
+
+    #[test]
+    fn the_pgp_chip_names_its_verdict() {
+        let good = |trust| PgpSignature::Good { signer: "A".into(), key_id: "1".into(), trust };
+        let status = |encrypted, signature| PgpStatus { encrypted, decrypted: encrypted, signature, ..Default::default() };
+        assert_eq!(status(false, good(PgpTrust::Full)).short_label(), "Signed");
+        assert_eq!(status(true, good(PgpTrust::Full)).short_label(), "Encrypted and signed");
+        assert_eq!(status(false, good(PgpTrust::Unknown)).short_label(), "Signed, key not trusted");
+        assert_eq!(status(false, PgpSignature::Bad { signer: "A".into() }).short_label(), "Bad signature");
+        assert_eq!(status(true, PgpSignature::None).short_label(), "Encrypted");
+        let locked = PgpStatus { encrypted: true, decrypted: false, ..Default::default() };
+        assert_eq!(locked.short_label(), "Not decrypted");
+    }
 
     #[test]
     fn english_folder_names_stay_as_the_server_has_them() {

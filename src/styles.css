@@ -289,11 +289,36 @@ button.star-active {
   color: #e5a50a;
 }
 
+/* The account page's storage bar (#298): the accent until the mailbox is
+   nearly full, then the warning and error colors. */
+levelbar block.quota-ok {
+  background-color: @accent_bg_color;
+}
+levelbar block.quota-warn {
+  background-color: @warning_bg_color;
+}
+levelbar block.quota-full {
+  background-color: @error_bg_color;
+}
+
 /* Compose attachment chips. */
 .attach-chip {
-  padding: 3px 4px 3px 10px;
+  padding: 3px 4px 3px 6px;
   border-radius: 14px;
   background: alpha(currentColor, 0.08);
+}
+.attach-chip:hover {
+  background: alpha(currentColor, 0.12);
+}
+/* The chips' grid cells stay out of sight: the chip is the target, and a
+   cell's own hover square would show around its rounded ends. */
+flowbox.attach-flow > flowboxchild {
+  padding: 0;
+  background: none;
+}
+/* A picture's or a PDF's thumbnail at the head of its chip (#299). */
+.attach-chip-thumb {
+  border-radius: 6px;
 }
 
 /* The composer's drop surfaces (ui/drop_zones.rs): a veil over the composer

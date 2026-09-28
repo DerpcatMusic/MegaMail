@@ -36,11 +36,7 @@ pub struct Suggestion {
 impl Suggestion {
     /// "Name <email>" for inserting into a recipient field (email alone if no name).
     pub fn display(&self) -> String {
-        if self.name.trim().is_empty() || self.name == self.email {
-            self.email.clone()
-        } else {
-            format!("{} <{}>", self.name, self.email)
-        }
+        crate::worker::format_recipient(&self.name, &self.email)
     }
 
     /// Whether the suggestion matches a typed fragment (name or email).
@@ -492,7 +488,7 @@ fn find_dbs(root: &std::path::Path, file: &str) -> Vec<PathBuf> {
 /// Extract the display name (`FN`) from a vCard, preserving its capitalisation.
 /// Handles line folding (a CRLF/LF followed by a space or tab continues the
 /// previous line) and the standard text escapes.
-fn unfold_vcard(vcard: &str) -> String {
+pub(crate) fn unfold_vcard(vcard: &str) -> String {
     vcard
         .replace("\r\n ", "")
         .replace("\r\n\t", "")
@@ -505,7 +501,7 @@ fn unfold_vcard(vcard: &str) -> String {
 /// breaks on quoted parameter values — iCloud's photo lines carry
 /// `X-EVOLUTION-WEBDAV-IMG-URL="https://…"` before the real value, and the
 /// `https:` inside the quotes swallowed everything after it.
-fn split_vcard_line(line: &str) -> Option<(&str, &str)> {
+pub(crate) fn split_vcard_line(line: &str) -> Option<(&str, &str)> {
     let mut in_quotes = false;
     for (i, ch) in line.char_indices() {
         match ch {
@@ -635,7 +631,7 @@ fn confine_to_roots(path: &std::path::Path, roots: &[PathBuf]) -> Option<PathBuf
 
 /// Unescape a vCard TEXT value: `\n`/`\N` → newline, `\,` → `,`, `\;` → `;`,
 /// `\\` → `\`.
-fn unescape_vcard_text(s: &str) -> String {
+pub(crate) fn unescape_vcard_text(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars();
     while let Some(c) = chars.next() {
@@ -746,11 +742,7 @@ pub fn writable_books() -> Vec<Book> {
 /// Best-effort display name from the EDS source file for a book UID.
 fn source_display_name(uid: &str) -> Option<String> {
     let path = config_dir()?.join(format!("sources/{uid}.source"));
-    let text = std::fs::read_to_string(path).ok()?;
-    text.lines()
-        .find_map(|l| l.strip_prefix("DisplayName="))
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    crate::platform::keyfile_value(&std::fs::read_to_string(path).ok()?, "Data Source", "DisplayName")
 }
 
 // ---------------------------------------------------------------------------
@@ -758,16 +750,15 @@ fn source_display_name(uid: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 /// Discover the versioned AddressBook factory bus name (e.g. `…AddressBook10`).
-fn factory_dest() -> Option<String> {
+pub(crate) fn factory_dest() -> Option<String> {
     let dir = std::path::Path::new("/usr/share/dbus-1/services");
     for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
         if name.contains("AddressBook") && name.ends_with(".service") {
             if let Ok(text) = std::fs::read_to_string(entry.path()) {
-                if let Some(n) = text.lines().find_map(|l| l.strip_prefix("Name=")) {
-                    let n = n.trim();
+                if let Some(n) = crate::platform::keyfile_value(&text, "D-BUS Service", "Name") {
                     if n.contains("AddressBook") {
-                        return Some(n.to_string());
+                        return Some(n);
                     }
                 }
             }
@@ -778,10 +769,10 @@ fn factory_dest() -> Option<String> {
 
 const FACTORY_PATH: &str = "/org/gnome/evolution/dataserver/AddressBookFactory";
 const FACTORY_IFACE: &str = "org.gnome.evolution.dataserver.AddressBookFactory";
-const BOOK_IFACE: &str = "org.gnome.evolution.dataserver.AddressBook";
+pub(crate) const BOOK_IFACE: &str = "org.gnome.evolution.dataserver.AddressBook";
 
 /// Open a book by source UID; returns (bus_name, object_path) for the book.
-fn open_book(
+pub(crate) fn open_book(
     conn: &zbus::blocking::Connection,
     dest: &str,
     uid: &str,
@@ -973,6 +964,24 @@ impl ContactDetails {
 /// never written to disk. `None` when the registry can't be reached (then
 /// keep everything rather than hide it all).
 fn registry_books() -> Option<HashMap<String, String>> {
+    let sources: HashMap<String, String> =
+        registry_sources()?.into_iter().map(|(_, uid, data)| (uid, data)).collect();
+    let mut books = HashMap::new();
+    for (uid, data) in &sources {
+        // An address book, and not switched off (GOA sets the book source's
+        // [Data Source] Enabled=false when Contacts is toggled off for the
+        // account). Only that section's Enabled counts — other sections
+        // (Refresh etc.) have Enabled keys of their own.
+        if data.contains("[Address Book]") && !data_source_disabled(data) {
+            books.insert(uid.clone(), book_display_name(data, &sources));
+        }
+    }
+    Some(books)
+}
+
+/// Every source the EDS registry holds: (object path, UID, key file).
+/// `None` when the registry can't be reached.
+pub(crate) fn registry_sources() -> Option<Vec<(String, String, String)>> {
     let dest = sources_dest()?;
     let conn = zbus::blocking::Connection::session().ok()?;
     let reply = conn
@@ -987,8 +996,8 @@ fn registry_books() -> Option<HashMap<String, String>> {
     type Props = HashMap<String, zbus::zvariant::OwnedValue>;
     type Objects = HashMap<zbus::zvariant::OwnedObjectPath, HashMap<String, Props>>;
     let (objects,): (Objects,) = reply.body().deserialize().ok()?;
-    let mut sources: HashMap<String, String> = HashMap::new();
-    for ifaces in objects.values() {
+    let mut sources = Vec::new();
+    for (path, ifaces) in &objects {
         let Some(props) = ifaces.get("org.gnome.evolution.dataserver.Source") else {
             continue;
         };
@@ -997,59 +1006,30 @@ fn registry_books() -> Option<HashMap<String, String>> {
         let data =
             props.get("Data").and_then(|v| v.downcast_ref::<&str>().ok()).map(str::to_string);
         if let (Some(uid), Some(data)) = (uid, data) {
-            sources.insert(uid, data);
+            sources.push((path.to_string(), uid, data));
         }
     }
-    let mut books = HashMap::new();
-    for (uid, data) in &sources {
-        // An address book, and not switched off (GOA sets the book source's
-        // [Data Source] Enabled=false when Contacts is toggled off for the
-        // account). Only that section's Enabled counts — other sections
-        // (Refresh etc.) have Enabled keys of their own.
-        if data.contains("[Address Book]") && !data_source_disabled(data) {
-            books.insert(uid.clone(), book_display_name(data, &sources));
-        }
-    }
-    Some(books)
-}
-
-/// A `Key=value` lookup inside one `[Section]` of a source keyfile.
-fn keyfile_get(data: &str, section: &str, key: &str) -> Option<String> {
-    let mut in_section = false;
-    for line in data.lines() {
-        let line = line.trim();
-        if line.starts_with('[') {
-            in_section = line.eq_ignore_ascii_case(section);
-            continue;
-        }
-        if in_section {
-            if let Some(v) = line.strip_prefix(key).and_then(|r| r.strip_prefix('=')) {
-                let v = v.trim();
-                return (!v.is_empty()).then(|| v.to_string());
-            }
-        }
-    }
-    None
+    Some(sources)
 }
 
 /// A book's friendly name: which account it belongs to and over what — walked
 /// up the source's parent chain to the account collection, whose backend
 /// (google / microsoft365 / webdav) and identity say it best.
 fn book_display_name(book_data: &str, sources: &HashMap<String, String>) -> String {
-    let mut backend = keyfile_get(book_data, "[Address Book]", "BackendName");
+    let mut backend = crate::platform::keyfile_value(book_data, "Address Book", "BackendName");
     let mut identity: Option<String> = None;
-    let mut top_display = keyfile_get(book_data, "[Data Source]", "DisplayName");
+    let mut top_display = crate::platform::keyfile_value(book_data, "Data Source", "DisplayName");
     let mut current = book_data.to_string();
     for _ in 0..4 {
-        let Some(parent) = keyfile_get(&current, "[Data Source]", "Parent") else { break };
+        let Some(parent) = crate::platform::keyfile_value(&current, "Data Source", "Parent") else { break };
         let Some(parent_data) = sources.get(&parent) else { break };
-        if let Some(b) = keyfile_get(parent_data, "[Collection]", "BackendName") {
+        if let Some(b) = crate::platform::keyfile_value(parent_data, "Collection", "BackendName") {
             backend = Some(b);
         }
         if identity.is_none() {
-            identity = keyfile_get(parent_data, "[Collection]", "Identity");
+            identity = crate::platform::keyfile_value(parent_data, "Collection", "Identity");
         }
-        if let Some(d) = keyfile_get(parent_data, "[Data Source]", "DisplayName") {
+        if let Some(d) = crate::platform::keyfile_value(parent_data, "Data Source", "DisplayName") {
             top_display = Some(d);
         }
         current = parent_data.clone();
@@ -1061,38 +1041,27 @@ fn book_display_name(book_data: &str, sources: &HashMap<String, String>) -> Stri
         (Some("google"), None) => "Google".to_string(),
         (Some("microsoft365"), Some(a)) => format!("Microsoft 365 — {a}"),
         (Some("microsoft365"), None) => "Microsoft 365".to_string(),
+        (Some("ldap"), Some(a)) => format!("LDAP — {a}"),
+        (Some("ldap"), None) => "LDAP".to_string(),
         (_, Some(a)) => format!("CardDAV — {a}"),
         (_, None) => i18n("CardDAV Address Book"),
     }
 }
 
-/// Whether a source keyfile's `[Data Source]` section says `Enabled=false`.
+/// Whether a source keyfile's `[Data Source]` group says `Enabled=false`.
 fn data_source_disabled(data: &str) -> bool {
-    let mut in_data_source = false;
-    for line in data.lines() {
-        let line = line.trim();
-        if line.starts_with('[') {
-            in_data_source = line.eq_ignore_ascii_case("[Data Source]");
-            continue;
-        }
-        if in_data_source {
-            if let Some(v) = line.strip_prefix("Enabled=") {
-                return v.trim().eq_ignore_ascii_case("false");
-            }
-        }
-    }
-    false
+    crate::platform::keyfile(data).and_then(|kf| kf.boolean("Data Source", "Enabled").ok()) == Some(false)
 }
 
 /// Discover the versioned Sources registry bus name (e.g. `…Sources5`).
-fn sources_dest() -> Option<String> {
+pub(crate) fn sources_dest() -> Option<String> {
     let dir = std::path::Path::new("/usr/share/dbus-1/services");
     for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
         if name.contains("evolution.dataserver.Sources") && name.ends_with(".service") {
             if let Ok(text) = std::fs::read_to_string(entry.path()) {
-                if let Some(n) = text.lines().find_map(|l| l.strip_prefix("Name=")) {
-                    return Some(n.trim().to_string());
+                if let Some(n) = crate::platform::keyfile_value(&text, "D-BUS Service", "Name") {
+                    return Some(n);
                 }
             }
         }
@@ -1225,13 +1194,10 @@ fn vcard_type_label(params: &[&str]) -> String {
     String::new()
 }
 
-/// "1985-04-12" / "19850412" → "April 12, 1985"; "--04-12" → "April 12";
+/// "1985-04-12" / "19850412" → "Apr 12, 1985"; "--04-12" → "Apr 12", in the
+/// locale's words and the user's date order, as mail dates are written;
 /// anything else passes through unchanged.
 fn pretty_birthday(raw: &str) -> String {
-    const MONTHS: [&str; 12] = [
-        "January", "February", "March", "April", "May", "June", "July", "August", "September",
-        "October", "November", "December",
-    ];
     let head = raw.split('T').next().unwrap_or(raw);
     let digits: String = head.chars().filter(|c| c.is_ascii_digit()).collect();
     let (year, month, day) = if head.starts_with("--") && digits.len() == 4 {
@@ -1241,15 +1207,18 @@ fn pretty_birthday(raw: &str) -> String {
     } else {
         return raw.to_string();
     };
-    let (Ok(m), Ok(d)) = (month.parse::<usize>(), day.parse::<u32>()) else {
+    let (Ok(m), Ok(d)) = (month.parse::<i32>(), day.parse::<i32>()) else {
         return raw.to_string();
     };
-    let Some(month_name) = (1..=12).contains(&m).then(|| MONTHS[m - 1]) else {
+    // A birthday with no year is placed in a leap year, so 29 February is a
+    // date too. Noon keeps the day the same in every time zone.
+    let y = year.and_then(|y| y.parse::<i32>().ok()).unwrap_or(2000);
+    let Ok(date) = gtk::glib::DateTime::from_local(y, m, d, 12, 0, 0.0) else {
         return raw.to_string();
     };
     match year {
-        Some(y) => format!("{month_name} {d}, {y}"),
-        None => format!("{month_name} {d}"),
+        Some(_) => crate::datefmt::day_month_year(date.to_unix()),
+        None => crate::datefmt::day_month(date.to_unix()),
     }
 }
 
@@ -1706,5 +1675,34 @@ mod tests {
             super::read_eds_photo_file("file://evil-host/etc/passwd", 1024),
             None
         );
+    }
+
+    /// A birthday is written as mail dates are, so the words and the order
+    /// are the locale's; a vCard value that is no date passes through.
+    #[test]
+    fn birthdays_are_written_as_dates() {
+        let full = super::pretty_birthday("1985-04-12");
+        assert!(full.contains("1985") && full.contains("12"), "{full}");
+        assert_eq!(super::pretty_birthday("19850412"), full);
+        let leap = super::pretty_birthday("--02-29");
+        assert!(leap.contains("29") && !leap.contains("2000"), "{leap}");
+        assert_eq!(super::pretty_birthday("1985-02-30"), "1985-02-30");
+        assert_eq!(super::pretty_birthday("sometime"), "sometime");
+    }
+
+    /// EDS `.source` files are key files: a book's name comes from its
+    /// account collection, and only `[Data Source]`'s Enabled switches it off.
+    #[test]
+    fn eds_sources_are_read_as_key_files() {
+        let book = "[Data Source]\nDisplayName=Contacts\nEnabled=true\nParent=acct\n\n\
+                    [Address Book]\nBackendName=carddav\n\n[Refresh]\nEnabled=false\n";
+        let acct = "[Data Source]\nDisplayName=Google\n\n[Collection]\nBackendName=google\n\
+                    Identity=someone@gmail.com\n";
+        let sources: std::collections::HashMap<String, String> =
+            [("acct".to_string(), acct.to_string())].into();
+        assert_eq!(super::book_display_name(book, &sources), "Google — someone@gmail.com");
+        assert!(!super::data_source_disabled(book), "[Refresh] Enabled=false is not the switch");
+        assert!(super::data_source_disabled(&book.replace("Enabled=true", "Enabled=false")));
+        assert_eq!(crate::platform::keyfile_value(book, "Address Book", "Missing"), None);
     }
 }

@@ -45,6 +45,8 @@ pub struct MessageWindowInit {
     pub reader_default: crate::config::ReaderDefault,
     /// The tags (#71), for the cards' chips.
     pub tags: Vec<crate::config::Tag>,
+    /// The OpenPGP chip says its verdict in words (#300).
+    pub pgp_labels: bool,
 }
 
 pub struct MessageWindow {
@@ -75,6 +77,8 @@ pub enum MessageWindowInput {
     SetBody { account_id: u32, id: u32, body: String },
     /// The sender-authentication verdict for this message.
     SetSenderCheck(Box<crate::models::SenderCheck>),
+    /// The OpenPGP chip's words on or off (#300).
+    SetPgpLabels(bool),
     /// The Settings switch for the "Check this sender" banner changed.
     SetSpoofBannerShown(bool),
     /// Reflect a star toggle that happened elsewhere (or came back from the app).
@@ -132,6 +136,8 @@ pub enum MessageWindowInput {
     ComposeTo(String),
     /// "Add to Contacts" from an address's right-click menu.
     AddContactAddr(String),
+    /// A right-click in the message: its menu, at this window's point (x, y).
+    CardMenu { message: Box<Message>, x: f64, y: f64, hit: crate::ui::message_view::MenuHit },
     /// A card's Unsubscribe button — handed to the app, which owns the
     /// request.
     Unsubscribe { message: Box<Message>, info: Box<crate::models::Unsubscribe> },
@@ -189,6 +195,8 @@ pub enum MessageWindowOutput {
     AllowSender(String),
     /// An email address in a card header was clicked — compose to it.
     ComposeTo(String),
+    /// A right-click in the message: the app shows its menu over this window.
+    CardMenu { message: Box<Message>, x: f64, y: f64, hit: crate::ui::message_view::MenuHit },
     /// The window was closed.
     Closed,
 }
@@ -342,10 +350,11 @@ impl Component for MessageWindow {
                 }
                 MessageViewOutput::ContactSender(m) => MessageWindowInput::ContactFor(m),
                 MessageViewOutput::MarkSeen { .. } => MessageWindowInput::Ignore,
-                // The standalone window has no list menu, nor a folder picker.
-                MessageViewOutput::CardMenu { .. } | MessageViewOutput::CardMoveTo { .. } => {
-                    MessageWindowInput::Ignore
+                MessageViewOutput::CardMenu { message, x, y, hit } => {
+                    MessageWindowInput::CardMenu { message, x, y, hit }
                 }
+                // The standalone window has no folder picker.
+                MessageViewOutput::CardMoveTo { .. } => MessageWindowInput::Ignore,
                 MessageViewOutput::SelectCards(_) => MessageWindowInput::Ignore,
                 // A window's cards are never given attachment rows (#213).
                 MessageViewOutput::AttachmentAction { .. } => MessageWindowInput::Ignore,
@@ -374,6 +383,7 @@ impl Component for MessageWindow {
         view.emit(MessageViewInput::SetZoomDefault(init.zoom_default));
         view.emit(MessageViewInput::SetZoom(init.zoom));
         view.emit(MessageViewInput::SetReaderSwitchShown(init.reader_switch));
+        view.emit(MessageViewInput::SetPgpLabels(init.pgp_labels));
         view.emit(MessageViewInput::SetReaderDefault(init.reader_default));
         view.emit(MessageViewInput::SetTags(init.tags.clone()));
 
@@ -481,6 +491,7 @@ impl Component for MessageWindow {
             MessageWindowInput::SetSpoofBannerShown(show) => {
                 self.view.emit(MessageViewInput::SetSpoofBannerShown(show));
             }
+            MessageWindowInput::SetPgpLabels(on) => self.view.emit(MessageViewInput::SetPgpLabels(on)),
             MessageWindowInput::SetSenderCheck(check) => {
                 // Light the popout's header seal too (#88).
                 self.view.emit(MessageViewInput::SenderCheckFor {
@@ -604,6 +615,9 @@ impl Component for MessageWindow {
             }
             MessageWindowInput::ComposeTo(addr) => {
                 let _ = sender.output(MessageWindowOutput::ComposeTo(addr));
+            }
+            MessageWindowInput::CardMenu { message, x, y, hit } => {
+                let _ = sender.output(MessageWindowOutput::CardMenu { message, x, y, hit });
             }
         }
     }
