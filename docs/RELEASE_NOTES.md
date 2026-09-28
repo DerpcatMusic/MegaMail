@@ -2,6 +2,28 @@
 
 Hylki (formerly Vireo) is a clean, fast, GNOME-native email client built with Rust and libadwaita for Wayland desktops. Privacy-first: no telemetry, remote content blocked by default, and credentials kept in the system keyring.
 
+## What's new in 1.42.0-beta.4
+
+The fourth beta previewing 1.42.0.
+
+- **Recipients from LDAP directories** (#307): Settings > LDAP Directories
+  adds a company directory, and the composer suggests the people in it as
+  you type. Directories are kept by Evolution Data Server, so one set up in
+  Evolution works too.
+- **How much storage an account uses** (#298), in the account's page in
+  Settings > Mail Accounts, for IMAP and JMAP servers that report it.
+- **Attachment chips show more** (#299): size, a thumbnail for pictures and
+  PDFs, three to a row. The OpenPGP chip can name its result in words
+  (#300, Settings > Reading).
+- **Conversations open out across folders** (#309), so a thread in the
+  Inbox shows your replies from Sent.
+- **Fixed:** plain-text messages arriving empty (#297), Reload in the print
+  preview (#301), the exported settings file name (#304), sender names with
+  backslashes and quotes (#312), and a message sometimes opening with
+  another folder's text or attachments.
+- **Translations:** Polish is new (PR #306), and German and French are
+  updated (PRs #302, #303).
+
 ## What's new in 1.42.0-beta.3
 
 The third beta previewing 1.42.0.

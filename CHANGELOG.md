@@ -1,5 +1,142 @@
 # Changelog
 
+## 1.42.0-beta.4 — 2026-09-28
+
+The fourth beta previewing 1.42.0, with what main has gained since
+1.42.0-beta.3.
+
+- **Added: recipients from LDAP directories** (#307, requested by Isak
+  Samsten, whose branch the composer's lookup is based on). Settings → LDAP
+  Directories adds a company directory: server, encryption, search base and,
+  when the directory needs one, who to sign in as and a password. Typing
+  three characters of a name or address in To, Cc or Bcc asks every
+  directory that is switched on, and the people it finds join the
+  suggestions. Directories are Evolution Data Server address books, the
+  same kind Evolution makes, so Hylki carries no LDAP client of its own and
+  a directory set up in Evolution is listed and searched too. Saving checks
+  the connection and reports a refused password or an unreachable server.
+- **Fixed: some senders' names showed with backslashes and quotes** (#312,
+  reported by mfschumann), as `\"Sender Name\"` in the message list and the
+  reader. Some IMAP servers pass the quotes around a name in the From header
+  on to the app, escaped with backslashes, and the backslashes were kept.
+  Names and subjects are now read without them, and names already stored
+  are cleaned when the new version first opens the mail cache.
+- **Fixed: a message sometimes opened showing another message's text.** The
+  bodies kept in memory were filed by message number, and the number is only
+  unique within a folder, so a message in Sent could replace the text of the
+  Inbox message with the same number. The Inbox message then opened with the
+  Sent message's text, often just a signature, under its own header. Bodies
+  are now kept per folder.
+- **Fixed: paperclips, attachments and sender checks on the wrong message.**
+  The same mix-up affected what arrives with a message's text: whether it has
+  attachments, the files themselves, and the sender check with its OpenPGP
+  result and Unsubscribe and invitation banners. A message in one folder could
+  gain or lose a paperclip, or show a verdict, that belonged to the message
+  with the same number in another folder. Each now reaches only its own
+  message.
+- **Added: how much storage a mail account uses** (#298, requested by
+  rsx-xp). An account's page in Settings → Mail Accounts shows the space in
+  use, the limit and what is free, with a bar that turns amber past 90% and
+  red when the mailbox is full. The figures come from the server: IMAP
+  servers that offer the QUOTA extension and JMAP servers that report quotas
+  (Stalwart, Fastmail). Microsoft 365 and POP3 give no figure, so the row is
+  not shown for them.
+- **Added: the OpenPGP chip can say what it found in words** (#300,
+  requested by rsx-xp). With **Settings → Reading → Name the OpenPGP result**
+  switched on, the small colored shield beside the sender's name becomes a
+  label on a wash of the same color: Signed, Encrypted, Encrypted and signed,
+  or what is wrong, such as Bad signature, Signed, unknown key or Signed, key
+  not trusted. Clicking it still opens the details. The setting is off by
+  default, which keeps the icons alone.
+- **Changed: attachment chips in the composer show more** (#299, requested
+  by rsx-xp). Each attached file shows its size under its name, and pictures
+  and PDFs show a thumbnail in place of the paper clip; other files show
+  their type's icon. The chips are all one width, up to three to a row. A
+  name too long for its chip fades out at the edge, and pointing at the chip
+  slides the rest of the name into view. Hovering also shows a larger
+  picture, the file's type and its size. A double click opens the file, and
+  a right-click offers Open and Remove.
+- **Fixed: turning off Expandable conversations left the carets on the
+  count chips** until the next sync rebuilt the list. The rows are now
+  built again at once, and switching the message list's action palette on
+  or off applies at once too.
+- **Fixed: right-clicking a message sometimes opened no menu.** A
+  right-click between two messages of a conversation or at the reader's
+  edge found no message and did nothing, and in a message opened in its own
+  window a right-click on the text never opened a menu at all. Over a link
+  or a picture it opened a short menu of the link's or picture's own
+  instead of the message's. The reader now opens the message's menu wherever
+  it is clicked (the nearest message's, between two), in the main window and
+  in a message's own window. A link adds Open Link and Copy Link Address
+  (Copy Email Address for a mail link) at the top, a picture adds Save
+  Image As… and Copy Image, and selected text adds Copy. Escape now closes
+  the small menu an address opens.
+- **Fixed: a right-click menu that fits neither below nor above the pointer
+  is shown.** Such a menu was not shown at all, which is why the message
+  menu, taller than half a window, opened near the top and bottom of a
+  message but not halfway down, depending on where the window sat on the
+  screen. A menu now moves up as far as it needs to fit in the window, and
+  one taller than the window scrolls.
+- **Fixed: a blank conversation count on a grey selected row.** When the
+  message list does not have the keyboard focus, the selected row turns grey,
+  and its conversation chip showed a white pill with no number in it. The
+  chip now keeps its grey pill and count there, and a tag on that row keeps
+  its own text color.
+- **Changed: conversations open out across folders** (#309, reported by
+  Amadeus Paulussen). An expanded conversation in a folder or in Inboxes now
+  lists its messages from other folders too, such as your replies in Sent
+  and the parts in Archive or All Mail, in time order. A conversation with
+  one message in the folder and the rest elsewhere used to show a count but
+  could not be expanded, which in an inbox was most of them. The row itself
+  is still the folder's own message, so archiving, moving or deleting it acts
+  on that folder's mail only; drafts, Trash and Junk are not listed.
+- **Fixed: plain-text messages arrived empty** (#297, reported by
+  Amadeus Paulussen). With **Write messages in** set to Plain text, the message was
+  sent, and saved to Sent, without its body; a plain-text draft lost its
+  body the same way. Rich-text mail was sent with an empty plain-text part,
+  which mail clients that show plain text displayed as a blank message.
+- **Fixed: Reload in the print preview** (#301, reported by rsx-xp).
+  Right-clicking the preview offered Reload, which replaced the preview with
+  "Could not connect to hylki.localhost". The message view, the print
+  preview and the composer no longer offer Back, Forward, Stop or Reload.
+- **Fixed: exported settings were named `vireo-settings.toml`** (#304,
+  reported by Amadeus Paulussen). The file is now `hylki-settings.toml`.
+- **Fixed: empty message previews.** A message whose HTML has a `<header>`
+  element showed an empty or cut-short preview in the message list,
+  because everything after that element was dropped. Previews also no
+  longer run the lines of a signature together, and show characters
+  written as entities (`&bull;`, `&zwnj;`) as the characters themselves.
+- **Changed: attachment sizes use decimal units**, as Files does (2.0 kB
+  rather than 2.0 KB), in your language.
+- **Fixed: a recipient whose name has a comma in it** ("Martin, Jason").
+  The name was split at the comma, so the send was refused as having an
+  invalid address, and with encryption on Hylki asked for a key for
+  "Martin". A contact chosen from the suggestions or the contacts list is now
+  inserted with its name in quotes, and a name typed or pasted without them
+  is read whole.
+- **Fixed: unsubscribing by email from a plus-addressed handle.** A list
+  whose unsubscribe address has a `+` in it (`list+token@example.com`) was
+  sent the request at an address with a space in place of the `+`.
+- **Fixed: the type of an attached Word or Excel file.** A `.docx` or
+  `.xlsx` was sent labelled as the old `.doc` or `.xls` format. Attachments
+  are now typed from the same table the desktop opens files by.
+- **Fixed: birthdays in Contacts are written in your language and date
+  format**, as mail dates are, rather than always in English as "April 12,
+  1985".
+- **Changed: no `-- ` line above the signature.** New messages, replies and
+  forwards put the signature after a blank line only. **Settings → Composing
+  → Separator line above the signature** brings the line back for anyone who
+  writes to mailing lists or to people on Thunderbird, Evolution or Mutt,
+  which use it to dim the signature and leave it out of their quotes. A draft
+  keeps the form it was saved in, and changing the From account replaces
+  either form. See
+  [Where the signature goes](docs/DOCUMENTATION.md#where-the-signature-goes).
+- **Polish translation** (PR #306 by Tomasz Bojanowski), complete.
+- **Translations:** French (PRs #281 and #303 by frenchy82), German (PR #302
+  by Christian Lauinger), Spanish (PR #287 by Daniel Miguel), Portuguese and
+  Brazilian Portuguese (PR #280 by Paulo Fino) and Greek (PR #291 by Yiannis
+  Ioannides) brought up to date.
+
 ## 1.42.0-beta.3 — 2026-09-26
 
 The third beta previewing 1.42.0, with what main has gained since
