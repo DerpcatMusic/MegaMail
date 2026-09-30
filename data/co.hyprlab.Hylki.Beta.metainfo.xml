@@ -63,6 +63,11 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="1.42.0-beta.5" date="2026-09-30" type="development">
+      <description>
+        <p>Fifth preview of 1.42.0: shortcuts that act on every selected message, contacts and LDAP directories working in the Flatpak, an address book picker that names each book, and fixes.</p>
+      </description>
+    </release>
     <release version="1.42.0-beta.4" date="2026-09-28" type="development">
       <description>
         <p>Fourth preview of 1.42.0: recipients from LDAP directories, how much storage an account uses, richer attachment chips, conversations that open out across folders, and fixes.</p>

@@ -1,26 +1,10 @@
 # Changelog
 
-## 1.42.0-beta.4 — 2026-09-28
+## 1.42.0-beta.5 — 2026-09-30
 
-The fourth beta previewing 1.42.0, with what main has gained since
-1.42.0-beta.3.
+The fifth beta previewing 1.42.0, with what main has gained since
+1.42.0-beta.4.
 
-- **Added: recipients from LDAP directories** (#307, requested by Isak
-  Samsten, whose branch the composer's lookup is based on). Settings → LDAP
-  Directories adds a company directory: server, encryption, search base and,
-  when the directory needs one, who to sign in as and a password. Typing
-  three characters of a name or address in To, Cc or Bcc asks every
-  directory that is switched on, and the people it finds join the
-  suggestions. Directories are Evolution Data Server address books, the
-  same kind Evolution makes, so Hylki carries no LDAP client of its own and
-  a directory set up in Evolution is listed and searched too. Saving checks
-  the connection and reports a refused password or an unreachable server.
-- **Fixed: some senders' names showed with backslashes and quotes** (#312,
-  reported by mfschumann), as `\"Sender Name\"` in the message list and the
-  reader. Some IMAP servers pass the quotes around a name in the From header
-  on to the app, escaped with backslashes, and the backslashes were kept.
-  Names and subjects are now read without them, and names already stored
-  are cleaned when the new version first opens the mail cache.
 - **Fixed: shortcuts acted on one message of a selection** (#313, reported
   by Amadeus Paulussen). With several messages selected, the star, archive,
   spam, read and tag keys changed only one of them. They now act on every
@@ -65,6 +49,32 @@ The fourth beta previewing 1.42.0, with what main has gained since
   longer clears the selection and closes the bar, so another action can
   follow. Its buttons no longer take the keyboard focus from the list either,
   which turned the selection grey and stopped the single-key shortcuts.
+- **Translations:** Spanish (PR #287 by Daniel Miguel), German (PR #302 by
+  Christian Lauinger) and French (PR #281 by frenchy82) are complete but for
+  the two strings renamed from Flag to Star this week, and Greek (PR #291 by
+  Yiannis Ioannides) is updated.
+
+## 1.42.0-beta.4 — 2026-09-28
+
+The fourth beta previewing 1.42.0, with what main has gained since
+1.42.0-beta.3.
+
+- **Added: recipients from LDAP directories** (#307, requested by Isak
+  Samsten, whose branch the composer's lookup is based on). Settings → LDAP
+  Directories adds a company directory: server, encryption, search base and,
+  when the directory needs one, who to sign in as and a password. Typing
+  three characters of a name or address in To, Cc or Bcc asks every
+  directory that is switched on, and the people it finds join the
+  suggestions. Directories are Evolution Data Server address books, the
+  same kind Evolution makes, so Hylki carries no LDAP client of its own and
+  a directory set up in Evolution is listed and searched too. Saving checks
+  the connection and reports a refused password or an unreachable server.
+- **Fixed: some senders' names showed with backslashes and quotes** (#312,
+  reported by mfschumann), as `\"Sender Name\"` in the message list and the
+  reader. Some IMAP servers pass the quotes around a name in the From header
+  on to the app, escaped with backslashes, and the backslashes were kept.
+  Names and subjects are now read without them, and names already stored
+  are cleaned when the new version first opens the mail cache.
 - **Fixed: a message sometimes opened showing another message's text.** The
   bodies kept in memory were filed by message number, and the number is only
   unique within a folder, so a message in Sent could replace the text of the

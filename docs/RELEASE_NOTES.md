@@ -2,6 +2,25 @@
 
 Hylki (formerly Vireo) is a clean, fast, GNOME-native email client built with Rust and libadwaita for Wayland desktops. Privacy-first: no telemetry, remote content blocked by default, and credentials kept in the system keyring.
 
+## What's new in 1.42.0-beta.5
+
+The fifth beta previewing 1.42.0.
+
+- **Shortcuts act on the whole selection** (#313): with several messages
+  selected, the star, archive, spam, read and tag keys and the reader's
+  toolbar buttons change every one of them.
+- **"Flag" is called "Star" everywhere**, and the selection bar stays open
+  after marking or starring.
+- **Contacts in the Flatpak** (#314, by [@fegue](https://github.com/fegue)):
+  saving a contact works, and so do the LDAP directories from 1.42.0-beta.4,
+  which could not reach Evolution Data Server.
+- **Add to Contacts** (#315, by [@fegue](https://github.com/fegue)) names
+  each address book and leaves out the read-only ones.
+- **Fixed:** a conversation found by searching all folders could show mail
+  from other conversations (#317).
+- **Translations:** Spanish, German, French and Greek are updated (PRs
+  #287, #302, #281, #291).
+
 ## What's new in 1.42.0-beta.4
 
 The fourth beta previewing 1.42.0.
