@@ -21,6 +21,50 @@ The fourth beta previewing 1.42.0, with what main has gained since
   on to the app, escaped with backslashes, and the backslashes were kept.
   Names and subjects are now read without them, and names already stored
   are cleaned when the new version first opens the mail cache.
+- **Fixed: shortcuts acted on one message of a selection** (#313, reported
+  by Amadeus Paulussen). With several messages selected, the star, archive,
+  spam, read and tag keys changed only one of them. They now act on every
+  selected message, as Delete already did, and so do the matching buttons
+  on the reader's toolbar. Star, read and a tag are set on the whole
+  selection, or cleared from it when every message already has them, and
+  one Ctrl+Z undoes the lot. The star in the bar over a selection in the
+  list, and in its right-click menu, could only add stars; it now takes them
+  off when every selected message has one, and shows which it will do. Its
+  Mark as Read and Mark as Unread buttons are one button that works the same
+  way: it marks the selection read when any of it is unread, and unread
+  otherwise. A Tags button there, and a Tags submenu in the selection's
+  right-click menu, put a tag on every selected message, or take it off
+  them all when each already has it.
+- **Fixed: a conversation found by searching all folders showed mail from
+  other conversations** (#317, reported by Nonchalantcz). The search
+  grouped its results into conversations by message number, and a number
+  is only unique within one folder, so a message in another folder with the
+  same number as one in the conversation was shown in it as well. Results
+  are now grouped by folder and number. A conversation opened earlier is
+  also remembered by its folder, so returning to one no longer shows
+  another folder's conversation with the same number.
+- **Fixed: saving a contact failed in the Flatpak** (#314, by Felix
+  Günther), with "Evolution Data Server is not available". Hylki looked for
+  Evolution Data Server's service files, which the Flatpak runtime does not
+  have. It now asks the session bus for the service instead. The LDAP
+  directories added in #307 were affected the same way and work in the
+  Flatpak too.
+- **Fixed: Add to Contacts offered books it could not write to** (#315, by
+  Felix Günther). An account with several address books, such as Nextcloud
+  with Contacts, Recently contacted and System address book, listed each
+  under the account's name alone, and picking a read-only one failed with
+  "Permission denied". Each book is now named after its account and itself,
+  and read-only books are left out, both there and when a new contact is
+  created. The books are looked up without holding up the window.
+- **Changed: "Flag" is called "Star" everywhere.** The reader's toolbar and
+  its overflow menu, the message window, the selection bar and Settings →
+  Appearance → Toolbar said Flag for the same star the list, the sidebar's
+  Starred folders and the `s` key call a star. The reader's and the message
+  window's star button now also say whether a click adds or removes it.
+  Marking a selection read or unread, or starring it, from that bar no
+  longer clears the selection and closes the bar, so another action can
+  follow. Its buttons no longer take the keyboard focus from the list either,
+  which turned the selection grey and stopped the single-key shortcuts.
 - **Fixed: a message sometimes opened showing another message's text.** The
   bodies kept in memory were filed by message number, and the number is only
   unique within a folder, so a message in Sent could replace the text of the

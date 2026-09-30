@@ -795,17 +795,18 @@ pub struct AppModel {
     /// Returning to a thread paints from here rather than re-running the
     /// cross-folder lookup and re-gathering bodies: the wait belongs to the
     /// first open, not to every one. Bounded — a conversation holds its
-    /// messages' bodies, which are not small.
-    thread_cache: HashMap<(u32, u32), Vec<Message>>,
+    /// messages' bodies, which are not small. Keyed by the head's folder and
+    /// UID: a UID alone names a different message in every folder (#317).
+    thread_cache: HashMap<BodyKey, Vec<Message>>,
     /// Attachments being deleted from the server (#289), shown as such in
     /// the drawer and the gallery until the worker answers.
     deleting_attachments: Vec<AttachmentTarget>,
     /// Showcase only: answer the next delete question with Delete.
     showcase_confirm_delete: bool,
     /// Insertion order for `thread_cache`, oldest first.
-    thread_cache_order: Vec<(u32, u32)>,
+    thread_cache_order: Vec<BodyKey>,
     /// Which conversation `current_thread` is, for storing it back.
-    thread_key: Option<(u32, u32)>,
+    thread_key: Option<BodyKey>,
     /// Whether conversation threads start expanded in the message list.
     threads_expanded: bool,
     /// Reading pane shows conversations newest-message-first.
@@ -1553,6 +1554,9 @@ pub enum AppMsg {
     /// the composer it announced.
     PresentComposers,
     ContactAdded(Result<crate::contacts::AddOutcome, String>),
+    /// The address books an "Add to Contacts" can go to, gathered off the
+    /// UI thread: the dialog for `name` and `email` opens with them.
+    AddContactBooks { name: String, email: String, books: Vec<crate::contacts::Book> },
     ViewSource,
     /// User clicked "Load attachments" for a message whose attachments weren't
     /// pre-downloaded — fetch them from the server now.
@@ -1626,6 +1630,8 @@ pub enum AppMsg {
     TagSelected { keyword: Option<String>, account: Option<u32> },
     /// Put a tag on one message, or take it off (row menu, palette, card).
     SetTag { message: Box<Message>, keyword: String, add: bool },
+    /// Put a tag on several messages, or take it off (the list's bulk bar).
+    SetTagMany { messages: Vec<Message>, keyword: String, add: bool },
     /// The reader toolbar's tag menu: toggle a tag on the reader's target.
     ToggleTagCurrent(String),
     /// Put the reader's target back in its Inbox (from Trash or Junk, #138).
@@ -2221,9 +2227,10 @@ impl SimpleComponent for AppModel {
                                     set_transition_duration: FOCUS_ANIM_MS,
                                     add_css_class: "focus-fade",
                                     gtk::Button {
-                                        set_tooltip_text: Some(i18n("Flag").as_str()),
+                                        #[watch]
+                                        set_tooltip_text: Some(if model.toolbar_star_lit() { i18n("Remove Star") } else { i18n("Star") }.as_str()),
                                         // One glyph in both states, like every other
-                                        // icon; the flagged state carries color only.
+                                        // icon; the starred state carries color only.
                                         set_icon_name: "hylki-non-starred-symbolic",
                                         #[watch]
                                         set_css_classes: if model.toolbar_star_lit() {
@@ -2234,7 +2241,7 @@ impl SimpleComponent for AppModel {
                                         #[watch]
                                         set_visible: model.toolbar_visible(config::ToolbarItem::Star),
                                         #[watch]
-                                        set_sensitive: model.reply_target().is_some(),
+                                        set_sensitive: model.acts_on_selection(),
                                         connect_clicked[sender] => move |_| sender.input(AppMsg::ToggleStar),
                                     },
                                 },
@@ -2250,7 +2257,7 @@ impl SimpleComponent for AppModel {
                                         #[watch]
                                         set_visible: model.toolbar_visible(config::ToolbarItem::Archive),
                                         #[watch]
-                                        set_sensitive: model.reply_target().is_some(),
+                                        set_sensitive: model.acts_on_selection(),
                                         connect_clicked[sender] => move |_| sender.input(AppMsg::Archive),
                                     },
                                 },
@@ -2356,7 +2363,7 @@ impl SimpleComponent for AppModel {
                                         #[watch]
                                         set_visible: model.toolbar_visible(config::ToolbarItem::Spam),
                                         #[watch]
-                                        set_sensitive: model.reply_target().is_some(),
+                                        set_sensitive: model.acts_on_selection(),
                                         connect_clicked[sender] => move |_| sender.input(AppMsg::MarkSpam),
                                     },
                                 },
@@ -2381,7 +2388,7 @@ impl SimpleComponent for AppModel {
                                         #[watch]
                                         set_tooltip_text: Some(if model.reply_target().is_some_and(|m| m.unread) { i18n("Mark as Read") } else { i18n("Mark as Unread") }.as_str()),
                                         #[watch]
-                                        set_sensitive: model.reply_target().is_some(),
+                                        set_sensitive: model.acts_on_selection(),
                                         connect_clicked[sender] => move |_| sender.input(AppMsg::ToggleReadCurrent),
                                     },
                                 },
@@ -2398,7 +2405,7 @@ impl SimpleComponent for AppModel {
                                             #[watch]
                                             set_visible: model.toolbar_visible(config::ToolbarItem::Tags) && !model.tags.is_empty(),
                                             #[watch]
-                                            set_sensitive: model.reply_target().is_some(),
+                                            set_sensitive: model.acts_on_selection(),
                                         },
                                     },
                                 },
@@ -2751,6 +2758,9 @@ impl SimpleComponent for AppModel {
                     }
                     MessageListOutput::SetTag { message, keyword, add } => {
                         AppMsg::SetTag { message, keyword, add }
+                    }
+                    MessageListOutput::SetTagMany { messages, keyword, add } => {
+                        AppMsg::SetTagMany { messages, keyword, add }
                     }
                     MessageListOutput::Bulk { action, messages } => {
                         AppMsg::Bulk { action, messages }
@@ -4953,6 +4963,28 @@ impl SimpleComponent for AppModel {
                         s.input(AppMsg::ShowSettingsPage(page.clone()));
                     });
                 }
+                // HYLKI_SHOWCASE_ADD_CONTACT=<address> opens Add to Contacts
+                // for it at 6s and captures the dialog at 10s, beside the
+                // HYLKI_SHOWCASE file, so the books it offers can be checked.
+                if let Ok(addr) = std::env::var("HYLKI_SHOWCASE_ADD_CONTACT") {
+                    let s = sender.clone();
+                    gtk::glib::timeout_add_seconds_local_once(6, move || {
+                        s.input(AppMsg::AddContactAddr(addr));
+                    });
+                    gtk::glib::timeout_add_seconds_local_once(10, move || {
+                        let tops = gtk::Window::toplevels();
+                        let dialog = (0..tops.n_items())
+                            .filter_map(|i| tops.item(i))
+                            .filter_map(|o| o.downcast::<adw::MessageDialog>().ok())
+                            .find(|d| d.is_visible());
+                        match (dialog, std::env::var("HYLKI_SHOWCASE")) {
+                            (Some(d), Ok(path)) => {
+                                showcase_capture(d.upcast_ref(), &format!("{path}.contact.png"))
+                            }
+                            _ => tracing::warn!("showcase: no Add to Contacts dialog"),
+                        }
+                    });
+                }
                 // HYLKI_SHOWCASE_DIALOG=save|discard|cancel answers whatever
                 // message dialog is on screen at 10s.
                 if let Ok(answer) = std::env::var("HYLKI_SHOWCASE_DIALOG") {
@@ -6149,7 +6181,7 @@ impl SimpleComponent for AppModel {
                 }
 
                 if thread.len() > 1 {
-                    self.thread_key = Some((account_id, m.id));
+                    self.thread_key = Some(body_key(&m));
                     // Already assembled: paint it now. No lookup, no body
                     // gathering, no spinner — returning to a thread shouldn't
                     // cost what opening it did.
@@ -6158,9 +6190,9 @@ impl SimpleComponent for AppModel {
                         "select {}: thread of {}, remembered={}, needs_body={needs_body}",
                         m.id,
                         thread.len(),
-                        self.thread_cache.contains_key(&(account_id, m.id)),
+                        self.thread_cache.contains_key(&body_key(&m)),
                     );
-                    if let Some(cached) = self.thread_cache.get(&(account_id, m.id)).cloned() {
+                    if let Some(cached) = self.thread_cache.get(&body_key(&m)).cloned() {
                         self.current_thread = cached;
                         // The message just opened is read, whatever the stored
                         // copy said when it was put away.
@@ -6327,7 +6359,7 @@ impl SimpleComponent for AppModel {
                     conv.len()
                 );
                 self.current_thread = conv;
-                self.thread_key = Some(key);
+                self.thread_key = Some(body_key(&m));
                 // The conversation is already painted: the new card joins it
                 // in place. Its body, when not prefetched, is asked for and
                 // the render follows its arrival (the Body handler repaints a
@@ -6417,6 +6449,14 @@ impl SimpleComponent for AppModel {
             }
 
             AppMsg::ToggleStar => {
+                // Several selected: star them all, or clear them all once
+                // every one is starred (#313).
+                let many = self.multi_selection();
+                if !many.is_empty() {
+                    let star = !many.iter().all(|m| m.starred);
+                    self.user_set_flags(star_label(star), &many, FlagKind::Star, star);
+                    return;
+                }
                 if let Some(m) = self.reply_target() {
                     if self.thread_star_target(&m) {
                         // The conversation is the target: any member starred
@@ -6438,6 +6478,10 @@ impl SimpleComponent for AppModel {
             }
 
             AppMsg::Archive => {
+                if self.list_selection.len() > 1 {
+                    self.message_list.emit(MessageListInput::Bulk(BulkAction::Archive));
+                    return;
+                }
                 if let Some(m) = self.reply_target() {
                     self.move_to(m, FolderKind::Archive);
                 }
@@ -6559,7 +6603,13 @@ impl SimpleComponent for AppModel {
             }
 
             AppMsg::ToggleReadCurrent => {
-                if let Some(m) = self.reply_target() {
+                // Several selected: any unread one makes them all read,
+                // otherwise they all go back to unread (#313).
+                let many = self.multi_selection();
+                if !many.is_empty() {
+                    let read = many.iter().any(|m| m.unread);
+                    self.user_set_flags(read_label(read), &many, FlagKind::Read, read);
+                } else if let Some(m) = self.reply_target() {
                     let read = m.unread;
                     self.user_set_flags(read_label(read), &[m], FlagKind::Read, read);
                 }
@@ -6792,6 +6842,9 @@ impl SimpleComponent for AppModel {
                 self.show_add_contact_dialog("", &addr, &sender);
             }
 
+            AppMsg::AddContactBooks { name, email, books } => {
+                self.add_contact_dialog(&name, &email, books, &sender);
+            }
             AppMsg::ContactAdded(result) => {
                 use crate::contacts::AddOutcome;
                 let (text, error) = match result {
@@ -6899,7 +6952,11 @@ impl SimpleComponent for AppModel {
 
             AppMsg::MarkSpam => {
                 // In Junk the same button, shortcut and menu entry mean the
-                // reverse (#168).
+                // reverse (#168); for a selection the list makes that swap.
+                if self.list_selection.len() > 1 {
+                    self.message_list.emit(MessageListInput::Bulk(BulkAction::Spam));
+                    return;
+                }
                 if let Some(m) = self.reply_target() {
                     if self.in_junk(&m) {
                         self.mark_ham_msg(m);
@@ -8811,13 +8868,31 @@ impl SimpleComponent for AppModel {
                 self.user_set_flags(what, &[*message], FlagKind::Tag(keyword), add);
             }
 
+            AppMsg::SetTagMany { messages, keyword, add } => {
+                let what = self.tag_label(&keyword, add);
+                self.user_set_flags(what, &messages, FlagKind::Tag(keyword), add);
+            }
+
             AppMsg::MoveToInbox => {
+                if self.list_selection.len() > 1 {
+                    self.message_list.emit(MessageListInput::Bulk(BulkAction::MoveToInbox));
+                    return;
+                }
                 if let Some(m) = self.reply_target() {
                     self.move_to(m, FolderKind::Inbox);
                 }
             }
 
             AppMsg::ToggleTagCurrent(keyword) => {
+                // Several selected: the tag goes on all of them, or comes off
+                // all of them once every one carries it (#313).
+                let many = self.multi_selection();
+                if !many.is_empty() {
+                    let add = !many.iter().all(|m| m.has_keyword(&keyword));
+                    let what = self.tag_label(&keyword, add);
+                    self.user_set_flags(what, &many, FlagKind::Tag(keyword), add);
+                    return;
+                }
                 if let Some(m) = self.reply_target() {
                     let add = !m.has_keyword(&keyword);
                     let what = self.tag_label(&keyword, add);
@@ -9795,7 +9870,7 @@ impl SimpleComponent for AppModel {
                             "re-filed conversation under id {}",
                             m.id,
                         );
-                        self.remember_thread_for((account_id, m.id), thread);
+                        self.remember_thread_for(body_key(m), thread);
                     }
                 }
                 if self.unified {
@@ -10841,7 +10916,9 @@ impl AppModel {
             Shortcut::Spam => sender.input(AppMsg::MarkSpam),
             Shortcut::Star => sender.input(AppMsg::ToggleStar),
             Shortcut::ToggleRead => {
-                if let Some(m) = self.current.clone() {
+                if self.list_selection.len() > 1 {
+                    sender.input(AppMsg::ToggleReadCurrent);
+                } else if let Some(m) = self.current.clone() {
                     let read = m.unread;
                     self.user_set_flags(read_label(read), &[m], FlagKind::Read, read);
                 }
@@ -10858,24 +10935,25 @@ impl AppModel {
             Shortcut::ClearTags => {
                 // Only configured tags come off: a message's other keywords
                 // ($Forwarded, a client's own flags) are not ours to drop.
-                // Re-read the message between removals, since set_tag
-                // patches the copy the next call will read.
-                let keywords: Vec<String> = self
-                    .reply_target()
-                    .map(|m| {
-                        self.tags
-                            .iter()
-                            .filter(|t| m.has_keyword(&t.keyword))
-                            .map(|t| t.keyword.clone())
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let mut changes = Vec::new();
-                let mut account_id = 0;
-                for keyword in keywords {
-                    if let Some(m) = self.reply_target() {
-                        account_id = m.account_id;
-                        changes.push(FlagChange {
+                // Every selected message loses them when several are
+                // selected (#313). Re-read the message between removals,
+                // since set_tag patches the copy the next call will read.
+                let targets = if self.list_selection.len() > 1 {
+                    self.multi_selection()
+                } else {
+                    self.reply_target().into_iter().collect()
+                };
+                let mut changes: HashMap<u32, Vec<FlagChange>> = HashMap::new();
+                for target in targets {
+                    let keywords: Vec<String> = self
+                        .tags
+                        .iter()
+                        .filter(|t| target.has_keyword(&t.keyword))
+                        .map(|t| t.keyword.clone())
+                        .collect();
+                    for keyword in keywords {
+                        let m = self.shown_copy(target.account_id, target.id).unwrap_or_else(|| target.clone());
+                        changes.entry(m.account_id).or_default().push(FlagChange {
                             kind: FlagKind::Tag(keyword.clone()),
                             // The step is the reversal: undo puts them back.
                             value: true,
@@ -10884,9 +10962,9 @@ impl AppModel {
                         self.set_tag(&m, &keyword, false);
                     }
                 }
-                // One entry, so a single Ctrl+Z restores the whole set rather
-                // than giving back one tag per press.
-                if !changes.is_empty() {
+                // One entry per account, so a single Ctrl+Z restores the
+                // whole set rather than giving back one tag per press.
+                for (account_id, changes) in changes {
                     self.push_undo(account_id, i18n("Remove Tags"), UndoStep::Flags(changes));
                 }
             }
@@ -11545,7 +11623,7 @@ impl AppModel {
             .iter()
             .filter_map(|m| {
                 self.thread_cache
-                    .get(&(account_id, m.id))
+                    .get(&body_key(m))
                     .map(|t| (m.message_id.clone(), t.clone()))
             })
             .collect();
@@ -12025,6 +12103,41 @@ impl AppModel {
                 .cloned(),
             _ => None,
         }
+    }
+
+    /// Whether the toolbar's per-message actions have something to act on:
+    /// the reply target, or a selection of several (#313).
+    fn acts_on_selection(&self) -> bool {
+        self.reply_target().is_some() || self.list_selection.len() > 1
+    }
+
+    /// Every message of a selection of more than one, list rows or cards of
+    /// the open conversation, for the flag actions to cover them all (#313).
+    /// Empty when one message or none is selected: the reply target is then
+    /// what an action means. A row the cache no longer holds is left out, as
+    /// a move of the selection leaves it out.
+    fn multi_selection(&self) -> Vec<Message> {
+        if self.list_selection.len() < 2 {
+            return Vec::new();
+        }
+        self.list_selection
+            .iter()
+            .filter_map(|&(account_id, id)| self.shown_copy(account_id, id))
+            // A queued message has no server flags to set.
+            .filter(|m| self.outbox_item(m.account_id, m.id).is_none())
+            .collect()
+    }
+
+    /// The freshest copy of a message the window is showing: the open one,
+    /// a card of the open conversation, or the cache's.
+    fn shown_copy(&self, account_id: u32, id: u32) -> Option<Message> {
+        let same = |m: &&Message| m.account_id == account_id && m.id == id;
+        self.current
+            .iter()
+            .chain(self.current_thread.iter())
+            .find(same)
+            .cloned()
+            .or_else(|| self.find_cached_message(account_id, id))
     }
 
     /// The message a reply, reply-all or forward addresses: the reply
@@ -12891,10 +13004,20 @@ impl AppModel {
         &self,
         sender: &ComponentSender<Self>,
     ) -> Option<Vec<crate::ui::context_menu::MenuEntry>> {
-        let target = self.reply_target()?;
         if self.tags.is_empty() {
             return None;
         }
+        // Several selected (#313): a tag is ticked when every one carries
+        // it, since only then does choosing it take it off.
+        let many = self.multi_selection();
+        let target = match many.first() {
+            Some(first) => {
+                let mut all = first.clone();
+                all.keywords.retain(|k| many.iter().all(|m| m.has_keyword(k)));
+                all
+            }
+            None => self.reply_target()?,
+        };
         let s = sender.input_sender().clone();
         Some(crate::ui::message_list::tag_menu_entries(&self.tags, &target, move |keyword, _add| {
             let _ = s.send(AppMsg::ToggleTagCurrent(keyword));
@@ -12970,21 +13093,21 @@ impl AppModel {
                     T::ReplyAll => section.push(entry!(i18n("Reply All"), "mail-reply-all", AppMsg::ReplyAll, acts)),
                     T::Forward => section.push(entry!(i18n("Forward"), "mail-forward", AppMsg::Forward, acts)),
                     T::Star => section.push(if starred {
-                        entry!(i18n("Remove Flag"), "hylki-non-starred", AppMsg::ToggleStar, acts)
+                        entry!(i18n("Remove Star"), "hylki-non-starred", AppMsg::ToggleStar, many)
                     } else {
-                        entry!(i18n("Flag"), "starred", AppMsg::ToggleStar, acts)
+                        entry!(i18n("Star"), "starred", AppMsg::ToggleStar, many)
                     }),
-                    T::Archive => section.push(entry!(i18n("Archive"), "mail-archive", AppMsg::Archive, acts)),
+                    T::Archive => section.push(entry!(i18n("Archive"), "mail-archive", AppMsg::Archive, many)),
                     T::Delete => section.push(entry!(i18n("Delete"), "user-trash", AppMsg::Delete, many)),
                     T::Spam => section.push(if self.target_in_junk() {
-                        entry!(i18n("Not Spam"), "mail-mark-notjunk", AppMsg::MarkSpam, acts)
+                        entry!(i18n("Not Spam"), "mail-mark-notjunk", AppMsg::MarkSpam, many)
                     } else {
-                        entry!(i18n("Mark as Spam"), "mail-mark-junk", AppMsg::MarkSpam, acts)
+                        entry!(i18n("Mark as Spam"), "mail-mark-junk", AppMsg::MarkSpam, many)
                     }),
                     T::ReadUnread => section.push(if target_unread {
-                        entry!(i18n("Mark as Read"), "hylki-mail-read", AppMsg::ToggleReadCurrent, acts)
+                        entry!(i18n("Mark as Read"), "hylki-mail-read", AppMsg::ToggleReadCurrent, many)
                     } else {
-                        entry!(i18n("Mark as Unread"), "mail-unread", AppMsg::ToggleReadCurrent, acts)
+                        entry!(i18n("Mark as Unread"), "mail-unread", AppMsg::ToggleReadCurrent, many)
                     }),
                     // Tags (#71), where there are any and something to tag —
                     // behind a submenu, as in the message list's menu.
@@ -14075,7 +14198,7 @@ impl AppModel {
         // included), else what the list handed over. Members still missing
         // bodies get them fetched; the replies land via SetBody below.
         let mut thread = if thread.len() > 1 {
-            self.thread_cache.get(&key).cloned().unwrap_or(thread)
+            self.thread_cache.get(&body_key(&m)).cloned().unwrap_or(thread)
         } else {
             thread
         };
@@ -16891,7 +17014,7 @@ impl AppModel {
 
     /// The same, for a conversation that isn't the one on screen — carrying
     /// one over a move that changed its key (#200).
-    fn remember_thread_for(&mut self, key: (u32, u32), thread: Vec<Message>) {
+    fn remember_thread_for(&mut self, key: BodyKey, thread: Vec<Message>) {
         if thread.len() <= 1 {
             return;
         }
@@ -16907,8 +17030,8 @@ impl AppModel {
     /// Forget assembled conversations for an account — its mail has changed
     /// underneath them, so what they hold may no longer be the conversation.
     fn forget_threads(&mut self, account_id: u32) {
-        self.thread_cache.retain(|(aid, _), _| *aid != account_id);
-        self.thread_cache_order.retain(|(aid, _)| *aid != account_id);
+        self.thread_cache.retain(|(aid, _, _), _| *aid != account_id);
+        self.thread_cache_order.retain(|(aid, _, _)| *aid != account_id);
     }
 
     /// Reply headers for every cached message, so the list can see that two
@@ -17223,8 +17346,24 @@ impl AppModel {
     }
 
     /// Dialog to add an email to GNOME Contacts (choosing the address book).
+    /// Which books can take it is asked of EDS first, off the UI thread:
+    /// that opens every book, and a remote one can go to its server (#315).
     fn show_add_contact_dialog(&self, name: &str, email: &str, sender: &ComponentSender<Self>) {
-        let books = crate::contacts::writable_books();
+        let (name, email) = (name.to_string(), email.to_string());
+        let input = sender.input_sender().clone();
+        std::thread::spawn(move || {
+            let books = crate::contacts::writable_books();
+            let _ = input.send(AppMsg::AddContactBooks { name, email, books });
+        });
+    }
+
+    fn add_contact_dialog(
+        &self,
+        name: &str,
+        email: &str,
+        books: Vec<crate::contacts::Book>,
+        sender: &ComponentSender<Self>,
+    ) {
         if books.is_empty() || email.trim().is_empty() {
             self.notifications.emit(NotifyInput::Push {
                 text: i18n("No address book available to add contacts"),

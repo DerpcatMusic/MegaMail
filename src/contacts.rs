@@ -736,7 +736,29 @@ pub fn writable_books() -> Vec<Book> {
             books.push(Book { uid, name });
         }
     }
+    if let (Some(dest), Ok(conn)) = (factory_dest(), zbus::blocking::Connection::session()) {
+        books.retain(|b| !book_read_only(&conn, &dest, &b.uid));
+    }
     books
+}
+
+/// Whether EDS says the book is read-only (Nextcloud's "Recently contacted"
+/// and system address books are). `Open` fills in `Writable` — from the
+/// server's privileges on first connect, cached after that. Any error counts
+/// as writable, so a save still reports EDS's real failure.
+fn book_read_only(conn: &zbus::blocking::Connection, dest: &str, uid: &str) -> bool {
+    let Ok((bus, path)) = open_book(conn, dest, uid) else { return false };
+    conn.call_method(
+        Some(bus.as_str()),
+        path.as_str(),
+        Some("org.freedesktop.DBus.Properties"),
+        "Get",
+        &(BOOK_IFACE, "Writable"),
+    )
+    .ok()
+    .and_then(|r| r.body().deserialize::<(zbus::zvariant::OwnedValue,)>().ok())
+    .and_then(|(v,)| v.downcast_ref::<bool>().ok())
+        == Some(false)
 }
 
 /// Best-effort display name from the EDS source file for a book UID.
@@ -749,8 +771,59 @@ fn source_display_name(uid: &str) -> Option<String> {
 // Writing (EDS D-Bus)
 // ---------------------------------------------------------------------------
 
+/// Find a versioned EDS bus name (`<prefix><digits>`, e.g. `…AddressBook10`)
+/// by asking the session bus itself.
+///
+/// Inside Flatpak, `/usr/share/dbus-1/services` is the *runtime's* directory
+/// and holds none of the host's EDS service files, so the file scan below
+/// finds nothing there. The bus, however, lists the host's EDS names (the
+/// `--talk-name=org.gnome.evolution.dataserver.*` grant makes them visible),
+/// so query it first and keep the file scan as a fallback.
+fn bus_dest(prefix: &str) -> Option<String> {
+    let conn = zbus::blocking::Connection::session().ok()?;
+    let proxy = zbus::blocking::fdo::DBusProxy::new(&conn).ok()?;
+    let mut names: Vec<String> =
+        proxy.list_names().unwrap_or_default().iter().map(|n| n.as_str().to_string()).collect();
+    names.extend(
+        proxy.list_activatable_names().unwrap_or_default().iter().map(|n| n.as_str().to_string()),
+    );
+    // Highest interface version wins if several are present.
+    names
+        .into_iter()
+        .filter_map(|n| {
+            let ver: u32 = n.strip_prefix(prefix)?.parse().ok()?;
+            Some((ver, n))
+        })
+        .max_by_key(|(ver, _)| *ver)
+        .map(|(_, n)| n)
+}
+
+/// The EDS name for `prefix`, from the bus or else the service files, looked
+/// up once per run: callers ask on every contact write and directory search,
+/// some of them on the UI thread, and the name does not change under a
+/// running session. Only a name found is kept, so EDS starting late is
+/// still picked up.
+fn remembered(prefix: &'static str, from_files: fn() -> Option<String>) -> Option<String> {
+    static FOUND: std::sync::Mutex<Vec<(&'static str, String)>> = std::sync::Mutex::new(Vec::new());
+    if let Some((_, name)) = FOUND.lock().ok()?.iter().find(|(p, _)| *p == prefix) {
+        return Some(name.clone());
+    }
+    let name = bus_dest(prefix).or_else(from_files)?;
+    tracing::debug!("EDS: {prefix} is {name}");
+    if let Ok(mut found) = FOUND.lock() {
+        found.push((prefix, name.clone()));
+    }
+    Some(name)
+}
+
 /// Discover the versioned AddressBook factory bus name (e.g. `…AddressBook10`).
 pub(crate) fn factory_dest() -> Option<String> {
+    remembered("org.gnome.evolution.dataserver.AddressBook", factory_dest_from_files)
+}
+
+/// Fallback: read the name from the host's D-Bus service files (works outside
+/// Flatpak only).
+fn factory_dest_from_files() -> Option<String> {
     let dir = std::path::Path::new("/usr/share/dbus-1/services");
     for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
@@ -1018,7 +1091,8 @@ pub(crate) fn registry_sources() -> Option<Vec<(String, String, String)>> {
 fn book_display_name(book_data: &str, sources: &HashMap<String, String>) -> String {
     let mut backend = crate::platform::keyfile_value(book_data, "Address Book", "BackendName");
     let mut identity: Option<String> = None;
-    let mut top_display = crate::platform::keyfile_value(book_data, "Data Source", "DisplayName");
+    let own = crate::platform::keyfile_value(book_data, "Data Source", "DisplayName");
+    let mut top_display = own.clone();
     let mut current = book_data.to_string();
     for _ in 0..4 {
         let Some(parent) = crate::platform::keyfile_value(&current, "Data Source", "Parent") else { break };
@@ -1035,7 +1109,7 @@ fn book_display_name(book_data: &str, sources: &HashMap<String, String>) -> Stri
         current = parent_data.clone();
     }
     let account = identity.or(top_display);
-    match (backend.as_deref(), account) {
+    let label = match (backend.as_deref(), account.as_deref()) {
         (Some("local"), _) | (None, None) => i18n("On This Computer"),
         (Some("google"), Some(a)) => format!("Google — {a}"),
         (Some("google"), None) => "Google".to_string(),
@@ -1045,6 +1119,13 @@ fn book_display_name(book_data: &str, sources: &HashMap<String, String>) -> Stri
         (Some("ldap"), None) => "LDAP".to_string(),
         (_, Some(a)) => format!("CardDAV — {a}"),
         (_, None) => i18n("CardDAV Address Book"),
+    };
+    // One account can hold several books (Nextcloud: Contacts, Recently
+    // contacted, System address book), so name the book too — unless it is
+    // the account itself.
+    match own {
+        Some(own) if !own.is_empty() && Some(&own) != account.as_ref() => format!("{label} · {own}"),
+        _ => label,
     }
 }
 
@@ -1055,6 +1136,12 @@ fn data_source_disabled(data: &str) -> bool {
 
 /// Discover the versioned Sources registry bus name (e.g. `…Sources5`).
 pub(crate) fn sources_dest() -> Option<String> {
+    remembered("org.gnome.evolution.dataserver.Sources", sources_dest_from_files)
+}
+
+/// Fallback: read the name from the host's D-Bus service files (works outside
+/// Flatpak only).
+fn sources_dest_from_files() -> Option<String> {
     let dir = std::path::Path::new("/usr/share/dbus-1/services");
     for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
@@ -1700,8 +1787,18 @@ mod tests {
                     Identity=someone@gmail.com\n";
         let sources: std::collections::HashMap<String, String> =
             [("acct".to_string(), acct.to_string())].into();
-        assert_eq!(super::book_display_name(book, &sources), "Google — someone@gmail.com");
+        assert_eq!(super::book_display_name(book, &sources), "Google — someone@gmail.com · Contacts");
         assert!(!super::data_source_disabled(book), "[Refresh] Enabled=false is not the switch");
+        // Nextcloud: several books under one account get distinct names…
+        let nc = "[Data Source]\nDisplayName=alice@cloud.example\n\n[Collection]\nBackendName=webdav\n\
+                  Identity=alice\n";
+        let sources: std::collections::HashMap<String, String> = [("acct".to_string(), nc.to_string())].into();
+        let recent = book.replace("DisplayName=Contacts", "DisplayName=Recently contacted");
+        assert_eq!(super::book_display_name(book, &sources), "CardDAV — alice · Contacts");
+        assert_eq!(super::book_display_name(&recent, &sources), "CardDAV — alice · Recently contacted");
+        // …while a standalone book (no parent) isn't named twice.
+        let lone = "[Data Source]\nDisplayName=Work\n\n[Address Book]\nBackendName=carddav\n";
+        assert_eq!(super::book_display_name(lone, &sources), "CardDAV — Work");
         assert!(super::data_source_disabled(&book.replace("Enabled=true", "Enabled=false")));
         assert_eq!(crate::platform::keyfile_value(book, "Address Book", "Missing"), None);
     }
