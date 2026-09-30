@@ -6,7 +6,7 @@ msgstr ""
 "Project-Id-Version: hylki\n"
 "Report-Msgid-Bugs-To: https://github.com/hyprlab/hylki/issues\n"
 "POT-Creation-Date: \n"
-"PO-Revision-Date: 2026-09-28 18:38+0200\n"
+"PO-Revision-Date: 2026-09-30 16:54+0200\n"
 "Last-Translator: cartes <cartes341@free.fr>\n"
 "Language-Team: French\n"
 "Language: fr\n"
@@ -3370,9 +3370,8 @@ msgstr "Transférer ce message"
 msgid "Mark as read or unread"
 msgstr "Marquer comme lu ou non lu"
 
-#, fuzzy
 msgid "Star this message"
-msgstr "Modifier ce message"
+msgstr "Ajouter aux favoris"
 
 msgid "Move this message to a folder"
 msgstr "Déplacer ce message vers un dossier"
@@ -5739,9 +5738,8 @@ msgstr "Impossible de charger la conversation : {e}"
 msgid "Could not update message: {e}"
 msgstr "Impossible de mettre à jour le message : {e}"
 
-#, fuzzy
 msgid "Could not change the star: {e}"
-msgstr "Impossible d'ajouter un tag au message : {e}"
+msgstr "Impossible de modifier le favori : {e}"
 
 msgid ""
 "This server does not store tags, so Hylki keeps them on this computer only"
