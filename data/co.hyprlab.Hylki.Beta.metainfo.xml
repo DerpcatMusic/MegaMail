@@ -63,6 +63,11 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="1.42.0-beta.6" date="2026-10-01" type="development">
+      <description>
+        <p>Sixth preview of 1.42.0: a message list that stays fast in folders of any size, and complete Spanish and French translations.</p>
+      </description>
+    </release>
     <release version="1.42.0-beta.5" date="2026-09-30" type="development">
       <description>
         <p>Fifth preview of 1.42.0: shortcuts that act on every selected message, contacts and LDAP directories working in the Flatpak, an address book picker that names each book, and fixes.</p>
