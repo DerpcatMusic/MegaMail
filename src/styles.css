@@ -649,12 +649,14 @@ flowbox.attach-flow > flowboxchild {
   font-weight: 700;
 }
 
-.message-listbox {
+.message-list {
   background: transparent;
 }
 
-.message-listbox > row {
+.message-list > row {
   padding: 0;
+  min-height: 0;
+  border: none;
   /* No separator hairlines between rows — the inset highlight pills carry the
      visual rhythm on their own. No side margin either: the pills carry their
      own 6px inset, so the row (and the swipe strip that fills it) runs the
@@ -670,10 +672,10 @@ flowbox.attach-flow > flowboxchild {
 /* Every state tint lives on the inner .message-row as an inset rounded pill
    — matching the thread member cards — never on the full-width row, so
    highlights stop touching the list edges and crossing the separators. */
-.message-listbox > row:hover:not(:selected),
-.message-listbox > row:selected,
-.message-listbox > row.activatable:selected:hover,
-.message-listbox > row.activatable:selected:active {
+.message-list > row:hover,
+.message-list > row:selected,
+.message-list > row:selected:hover,
+.message-list > row:selected:active {
   background: none;
 }
 
@@ -681,7 +683,7 @@ flowbox.attach-flow > flowboxchild {
    tint is suspended on a row mid-swipe (.swiping): the pill vanishes and the
    content slides bare over the strip, with no card outline to clash with the
    strip's edge. */
-.message-listbox > row:hover:not(:selected):not(.swiping) .message-row {
+.message-list > row:hover:not(:selected) > .message-item:not(.swiping) .message-row {
   background-color: alpha(currentColor, 0.05);
 }
 
@@ -693,13 +695,13 @@ flowbox.attach-flow > flowboxchild {
    default 25% while the list holds focus, dimming — never vanishing — when
    focus moves to the reader. The hover/active variants are overridden too so
    the highlight stays uniform when the cursor passes over the selected row. */
-.message-listbox > row:selected:not(.swiping) .message-row {
+.message-list > row:selected > .message-item:not(.swiping) .message-row {
   background-color: alpha(@accent_bg_color, 0.3);
 }
 
-.message-listbox:focus-within > row:selected:not(.swiping) .message-row,
-.message-listbox > row.activatable:selected:hover:not(.swiping) .message-row,
-.message-listbox > row.activatable:selected:active:not(.swiping) .message-row {
+.message-list:focus-within > row:selected > .message-item:not(.swiping) .message-row,
+.message-list > row:selected:hover > .message-item:not(.swiping) .message-row,
+.message-list > row:selected:active > .message-item:not(.swiping) .message-row {
   background-color: alpha(@accent_bg_color, 0.5);
 }
 
@@ -715,26 +717,26 @@ flowbox.attach-flow > flowboxchild {
 /* Selected rows: every text element fully white at full strength, in both
    schemes — the accent ground (see install_scheme_css) carries the
    contrast, so nothing on it is dimmed. */
-.message-listbox > row:selected .message-row label {
+.message-list > row:selected .message-row label {
   color: white;
   opacity: 1;
 }
 
 /* The unread dot inverts on the accent ground too — accent-on-accent would
    vanish, and a selected thread head must still show its unread mark. */
-.message-listbox > row:selected .message-row .unread-dot {
+.message-list > row:selected .message-row .unread-dot {
   background: white;
 }
 
 /* The thread chip inverts on the accent ground: white pill, accent text
    and caret — a grey chip would sink into the highlight. */
-.message-listbox > row:selected .message-row .thread-chip {
+.message-list > row:selected .message-row .thread-chip {
   background: white;
   opacity: 1;
 }
 
-.message-listbox > row:selected .message-row .thread-chip label,
-.message-listbox > row:selected .message-row .thread-chip image {
+.message-list > row:selected .message-row .thread-chip label,
+.message-list > row:selected .message-row .thread-chip image {
   color: @accent_bg_color;
 }
 
@@ -789,7 +791,7 @@ flowbox.attach-flow > flowboxchild {
   font-weight: 700;
 }
 
-.message-listbox > row:selected .message-row .tag-chip {
+.message-list > row:selected .message-row .tag-chip {
   /* Keep the tag's own color on a selected row; the selection paints
      everything else white. */
   opacity: 0.95;
@@ -828,7 +830,7 @@ flowbox.attach-flow > flowboxchild {
    state colors — hover, unread, selected — move off the row and onto the
    inner .message-row box, so the highlight is a padded pill that never
    touches the list edges. */
-.message-listbox > row.thread-child {
+.message-item.thread-child {
   margin-left: 10px;
   /* @window_fg_color, not currentColor: a selected row's currentColor is the
      white selection foreground, which made the rail vanish under selection. */
@@ -839,7 +841,7 @@ flowbox.attach-flow > flowboxchild {
    running on below it. The row's own border goes transparent (keeping its
    2px of geometry) and a half-height in-row widget draws the same dotted
    border for the top half only (see the rail-stub overlay in the row view). */
-.message-listbox > row.thread-child.thread-last {
+.message-item.thread-child.thread-last {
   border-left-color: transparent;
 }
 
@@ -850,17 +852,10 @@ flowbox.attach-flow > flowboxchild {
   margin-left: -2px;
 }
 
-/* Every row-level tint off — the card below carries the state instead. */
-.message-listbox > row.thread-child:hover:not(:selected),
-.message-listbox > row.thread-child:selected,
-.message-listbox > row.thread-child.activatable:selected:hover,
-.message-listbox > row.thread-child.activatable:selected:active {
-  background: none;
-}
 
 /* The same 6px right inset as every pill in the list, so an expanded thread
    never opens a gap along the pane's right side. */
-.message-listbox > row.thread-child .message-row {
+.message-item.thread-child .message-row {
   /* Identical geometry to the top-level pills — same padding, same vertical
      rhythm — the only difference is the 10px indent onto the thread rail. */
   margin: 2px 6px 2px 10px;
@@ -883,15 +878,15 @@ flowbox.attach-flow > flowboxchild {
   box-shadow: 0 0 0 2px @window_bg_color;
 }
 
-.message-listbox > row.thread-child:hover:not(:selected):not(.swiping) .message-row {
+.message-list > row:hover:not(:selected) > .message-item.thread-child:not(.swiping) .message-row {
   background-color: alpha(currentColor, 0.05);
 }
 
-.message-listbox > row.thread-child:selected:not(.swiping) .message-row {
+.message-list > row:selected > .message-item.thread-child:not(.swiping) .message-row {
   background-color: alpha(@accent_bg_color, 0.3);
 }
 
-.message-listbox:focus-within > row.thread-child:selected:not(.swiping) .message-row {
+.message-list:focus-within > row:selected > .message-item.thread-child:not(.swiping) .message-row {
   background-color: alpha(@accent_bg_color, 0.5);
 }
 
@@ -968,7 +963,7 @@ flowbox.attach-flow > flowboxchild {
    rounding dropped here — so the bare content slides over the strip, which
    fills the row edge to edge. Nothing about the geometry changes, so the
    list never shifts as a drag starts or settles; the tint just fades out. */
-.message-listbox > row.swiping .message-row {
+.message-item.swiping .message-row {
   border-radius: 0;
   transition: background-color 150ms ease-out;
 }
@@ -1875,7 +1870,7 @@ textview.console-view text selection {
 
 /* A row being dragged to a folder (`.dragging`, set for the drag's
    duration) fades to half strength while the envelope travels. */
-.message-listbox > row.dragging .message-row {
+.message-item.dragging .message-row {
   opacity: 0.5;
 }
 

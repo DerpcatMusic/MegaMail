@@ -17,6 +17,7 @@ pub mod icon_picker;
 pub mod initials;
 pub mod launch;
 pub mod message_list;
+pub mod message_row;
 pub mod message_view;
 pub mod message_window;
 pub mod notifications;
@@ -32,3 +33,33 @@ pub mod welcome;
 /// milliseconds: the reader toolbar, the list header, the sidebar's
 /// accounts and the list's avatars all move on this one clock.
 pub const FOCUS_ANIM_MS: u32 = 320;
+
+/// A style provider for the whole display that is loaded only when what it
+/// holds changes. Loading one restyles every widget in every window, the
+/// message list's rows included, and with hundreds of rows that takes longer
+/// than the work the reload was for (#323).
+pub struct DisplayCss {
+    provider: gtk::CssProvider,
+    css: std::cell::RefCell<String>,
+}
+
+impl DisplayCss {
+    pub fn new() -> Self {
+        let provider = gtk::CssProvider::new();
+        if let Some(display) = gtk::gdk::Display::default() {
+            gtk::style_context_add_provider_for_display(
+                &display,
+                &provider,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+        }
+        DisplayCss { provider, css: Default::default() }
+    }
+
+    pub fn load(&self, css: String) {
+        if *self.css.borrow() != css {
+            self.provider.load_from_string(&css);
+            *self.css.borrow_mut() = css;
+        }
+    }
+}

@@ -1204,7 +1204,7 @@ pub struct ThreadSummary {
 /// the ones they reference. This is what the cache is searched by to find the
 /// parts of the thread filed in other folders — both to assemble a conversation
 /// the reader has opened and to count one the list is only showing a slice of.
-pub fn thread_ids(msgs: &[Message]) -> Vec<String> {
+pub fn thread_ids<'a>(msgs: impl IntoIterator<Item = &'a Message>) -> Vec<String> {
     let mut ids: Vec<String> = Vec::new();
     let mut push = |id: &str| {
         if !id.is_empty() && !ids.iter().any(|x| x == id) {

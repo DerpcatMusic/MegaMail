@@ -2737,27 +2737,6 @@ msgid ""
 "directly"
 msgstr ""
 
-msgid "Mark as read"
-msgstr ""
-
-msgid "Move to…"
-msgstr ""
-
-msgid "Not spam"
-msgstr ""
-
-msgid "Add sender to Contacts"
-msgstr ""
-
-msgid "Mark as unread"
-msgstr ""
-
-msgid "Remove star"
-msgstr ""
-
-msgid "Show conversation"
-msgstr ""
-
 msgid "Choose which folders to search"
 msgstr ""
 
@@ -2786,6 +2765,27 @@ msgid "Mark All as Read"
 msgstr ""
 
 msgid "Mark All as Unread"
+msgstr ""
+
+msgid "Mark as read"
+msgstr ""
+
+msgid "Move to…"
+msgstr ""
+
+msgid "Not spam"
+msgstr ""
+
+msgid "Add sender to Contacts"
+msgstr ""
+
+msgid "Mark as unread"
+msgstr ""
+
+msgid "Remove star"
+msgstr ""
+
+msgid "Show conversation"
 msgstr ""
 
 msgid "Unsubscribing…"

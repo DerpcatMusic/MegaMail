@@ -1,272 +1,17 @@
 //! Middle pane: the scrollable list of messages in the selected folder,
 //! with a search field and live filtering.
 
+use std::rc::Rc;
+
 use adw::prelude::*;
 use gtk::glib;
-use relm4::factory::FactoryVecDeque;
 use relm4::prelude::*;
 
 use crate::models::{Message, ThreadSummary};
 use crate::ui::context_menu::{show_context_menu, show_context_menu_with_header, MenuEntry};
-use crate::i18n::{i18n, i18n_f};
-
-/// Max rows rendered at once. GtkListBox isn't virtualized, so the full folder
-/// index is kept in memory for search but only this many rows are built.
-/// Raised from 200 (#236): the unified Inboxes merge every account newest
-/// first, and a conversation's older messages fell past the window within
-/// days; a wider window keeps more of a conversation on the same page, and
-/// the rows past the first paint are built in idle-time chunks anyway.
-const RENDER_CAP: usize = 500;
-
-/// Rows built synchronously when the list is (re)built — enough to fill the
-/// pane — before the rest of the page arrives in idle-time chunks. Building
-/// a row is the expensive part of showing a folder (a ListBox isn't
-/// virtualised and each row is a sizeable widget tree), so the first paint
-/// waits for these alone.
-const FIRST_ROWS: usize = 20;
-const FILL_CHUNK: usize = 30;
-
-/// An action chosen from a message's right-click context menu.
-/// The action palette's state-carrying buttons, once built.
-struct PaletteButtons {
-    /// Absent for a draft: a draft is neither read nor unread.
-    read: Option<gtk::Button>,
-    star: gtk::Button,
-    tag: gtk::Button,
-}
-
-impl MessageRow {
-    /// Build the action palette's buttons into `inner`, on the palette's
-    /// first open. Mirrors the reader toolbar's order (Reply, Reply All,
-    /// Forward, Read, Flag; Archive, Delete, Spam), with Add to Contacts and
-    /// View Source closing the line.
-    fn build_palette(&self, inner: &gtk::Box, sender: &FactorySender<Self>) {
-        let button = |icon: &str, tip: String| {
-            let b = gtk::Button::from_icon_name(icon);
-            b.set_tooltip_text(Some(tip.as_str()));
-            b.add_css_class("flat");
-            b
-        };
-        let action = |b: &gtk::Button, a: RowAction| {
-            let s = sender.clone();
-            b.connect_clicked(move |_| s.input(MessageRowInput::Action(a)));
-        };
-        let reply = button("mail-reply-sender-symbolic", i18n("Reply"));
-        action(&reply, RowAction::Reply);
-        let reply_all = button("mail-reply-all-symbolic", i18n("Reply All"));
-        action(&reply_all, RowAction::ReplyAll);
-        let forward = button("mail-forward-symbolic", i18n("Forward"));
-        action(&forward, RowAction::Forward);
-        // A draft is neither read nor unread, so it gets no toggle.
-        let read = (!self.in_drafts).then(|| {
-            let b = button("hylki-mail-read-symbolic", i18n("Mark as read"));
-            action(&b, RowAction::ToggleRead);
-            b
-        });
-        let star = button("hylki-non-starred-symbolic", i18n("Star"));
-        action(&star, RowAction::ToggleStar);
-        let tag = button("tag-outline-symbolic", i18n("Tags"));
-        {
-            let s = sender.clone();
-            tag.connect_clicked(move |b| s.input(MessageRowInput::OpenTagMenu(b.clone())));
-        }
-        let moveto = button("folder-symbolic", i18n("Move to…"));
-        {
-            let s = sender.clone();
-            moveto.connect_clicked(move |b| s.input(MessageRowInput::OpenMoveMenu(b.clone())));
-        }
-        let archive = button("mail-archive-symbolic", i18n("Archive"));
-        action(&archive, RowAction::Archive);
-        let delete = button("user-trash-symbolic", i18n("Delete"));
-        action(&delete, RowAction::Delete);
-        let spam = if self.in_junk {
-            let b = button("mail-mark-notjunk-symbolic", i18n("Not spam"));
-            action(&b, RowAction::NotSpam);
-            b
-        } else {
-            let b = button("mail-mark-junk-symbolic", i18n("Mark as spam"));
-            action(&b, RowAction::Spam);
-            b
-        };
-        let contact = button("contact-new-symbolic", i18n("Add sender to Contacts"));
-        action(&contact, RowAction::AddContact);
-        let source = button("code-symbolic", i18n("View Source"));
-        action(&source, RowAction::ViewSource);
-        for b in [Some(&reply), Some(&reply_all), Some(&forward), read.as_ref(), Some(&star), Some(&tag), Some(&moveto), Some(&archive), Some(&delete), Some(&spam), Some(&contact), Some(&source)].into_iter().flatten() {
-            inner.append(b);
-        }
-        self.palette_buttons.replace(Some(PaletteButtons { read, star, tag }));
-        self.palette_built.set(true);
-    }
-
-    /// Keep the built palette's state-carrying buttons in step with the
-    /// message (what the view macro's `#[watch]` did while they were part
-    /// of the declared view).
-    fn sync_palette(&self) {
-        let buttons = self.palette_buttons.borrow();
-        let Some(b) = buttons.as_ref() else { return };
-        // Action-showing icon (read envelope = "mark as read"), like the
-        // menus and toolbar.
-        if let Some(read) = &b.read {
-            if self.msg.unread {
-                read.set_icon_name("hylki-mail-read-symbolic");
-                read.set_tooltip_text(Some(i18n("Mark as read").as_str()));
-            } else {
-                read.set_icon_name("mail-unread-symbolic");
-                read.set_tooltip_text(Some(i18n("Mark as unread").as_str()));
-            }
-        }
-        let starred = self.msg.starred || self.thread_starred;
-        b.star.set_css_classes(if starred { &["flat", "star-active"] } else { &["flat"] });
-        b.star.set_tooltip_text(Some(if starred { i18n("Remove star") } else { i18n("Star") }.as_str()));
-        // Only once there is a tag to give.
-        b.tag.set_visible(!self.tags.borrow().is_empty());
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum RowAction {
-    Reply,
-    ReplyAll,
-    Forward,
-    /// Open a copy of the message in the composer as a message of its own
-    /// (#232) — same recipients, subject, body and files, nothing tying it
-    /// to the original.
-    EditAsNew,
-    ToggleStar,
-    ToggleRead,
-    Spam,
-    /// The reverse, for a message in Junk (#168): tell the server it is
-    /// wanted and put it back in the Inbox.
-    NotSpam,
-    Archive,
-    Delete,
-    /// Put a message from Trash or Junk back in its account's Inbox (#138).
-    MoveToInbox,
-    ViewSource,
-    AddContact,
-}
-
-/// Init for a row: the message, Gravatar flag, and optional account-ring class
-/// (the account color drawn as a ring around the avatar in the unified view).
-pub struct RowInit {
-    pub msg: Message,
-    pub gravatar: bool,
-    /// Whether the avatar is drawn at all (#29).
-    pub avatars: bool,
-    /// Build the avatar folded away and slide it in a moment later (Focus
-    /// Mode has just given the avatars back).
-    pub avatar_late: bool,
-    /// Whether a sender's site icon may fill it (#30).
-    pub sender_logos: bool,
-    /// How many lines of the message's text the row shows (1–3).
-    pub preview_lines: u32,
-    /// Whether the subject line is drawn at all (Focus Mode can take it
-    /// away, leaving the sender, the date and the row's marks).
-    pub show_subject: bool,
-    pub ring_class: Option<String>,
-    /// Shared actions palette collapse delay in seconds — how long it stays open
-    /// after the cursor leaves it (read live when scheduling).
-    pub palette_collapse_secs: std::rc::Rc<std::cell::Cell<u64>>,
-    /// Shared "open the palette on row hover" flag (read live on each hover).
-    pub palette_hover: std::rc::Rc<std::cell::Cell<bool>>,
-    /// The tags (#71), shared with every row: the chips a row shows are the
-    /// message's keywords that name one of these.
-    pub tags: std::rc::Rc<std::cell::RefCell<Vec<crate::config::Tag>>>,
-    /// Whether the row carries the actions palette line at all (preference);
-    /// off returns its reserved space to the row.
-    pub show_palette: bool,
-    /// The list shows Junk: the palette's spam button reads "Not Spam".
-    pub in_junk: bool,
-    /// The list shows Drafts: no read/unread toggle, a draft is neither.
-    pub in_drafts: bool,
-    /// Number of messages in this conversation (only set on a thread head; 1 for
-    /// a standalone message).
-    pub thread_count: usize,
-    /// This row is a (newer/older) reply nested under a thread head — indent it.
-    pub is_thread_child: bool,
-    /// The LAST reply of its thread: the dotted rail stops at its node dot.
-    pub is_last_child: bool,
-    /// Whether this thread head is currently expanded.
-    pub thread_expanded: bool,
-    /// Whether conversations can expand in the list at all (preference) —
-    /// off hides the chip's caret, since clicking can't open anything.
-    pub thread_expandable: bool,
-    /// The conversation key, set on a thread head so its chevron can toggle it.
-    pub thread_key: Option<(u32, String)>,
-    /// The newest member's display time (thread heads only): shown in place of
-    /// the head's own — the row says when the conversation last moved.
-    pub thread_date: Option<String>,
-    /// The newest member's sender name/address and preview (thread heads
-    /// only): the row surfaces the latest message, not the thread's opener —
-    /// display only, the row's identity stays the head.
-    pub thread_from: Option<(String, String)>,
-    pub thread_preview: Option<String>,
-    /// Any message in this conversation is unread (thread heads only) — keeps
-    /// the head marked unread while unread replies are hidden beneath it.
-    pub thread_unread: bool,
-    /// Any message in this conversation is starred (thread heads only).
-    pub thread_starred: bool,
-    /// Every currently shown row as (account, folder, uid, id), in list order.
-    /// Shared with the list so a drag can turn the ListBox's selected row
-    /// *indices* into message ids and carry the whole selection (#23).
-    pub drag_keys: DragKeys,
-    pub thread_drag: ThreadDragKeys,
-    /// Show who the message went to instead of who sent it — a Sent folder's
-    /// rows all say "me" otherwise (#27).
-    pub show_recipient: bool,
-    /// Starting state for the row's own Revealer. A newly-inserted thread
-    /// reply starts `false` and is flipped to `true` right after mounting, so
-    /// it slides open instead of simply appearing; everything else starts
-    /// (and stays) `true`.
-    pub revealed: bool,
-    /// Swap which side a swipe gesture archives/deletes on (preference,
-    /// shared and read live so a change in Settings applies without a
-    /// rebuild — false: left deletes, right archives; true: reversed).
-    pub swipe_reversed: std::rc::Rc<std::cell::Cell<bool>>,
-    /// Whether the swipe gesture is on at all (preference, shared and read
-    /// live: the tracker is enabled or not on each render).
-    pub swipe_enabled: std::rc::Rc<std::cell::Cell<bool>>,
-    /// How sensitive a trackpad's two-finger swipe is (preference, shared and
-    /// pushed into the row's swipe surface on each render).
-    pub swipe_sensitivity: std::rc::Rc<std::cell::Cell<f64>>,
-}
-
-/// A full swipe (#swipe): also `AdwSwipeable`'s reported `distance`, the px
-/// one full drag (progress ±1.0) spans.
-const SWIPE_MAX: f64 = 120.0;
-
-/// How far a thread member's node dot reaches left of the row's content box
-/// (`.thread-node`: 8px wide, pulled 5px out by its negative margin, plus a
-/// 2px masking ring), where it sits centred on the group's rail. The last
-/// reply's rail stub reaches 2px the same way. The swipe surface's clip
-/// leaves this much room on the left, or both come out cut in half.
-const THREAD_NODE_REACH: f32 = 8.0;
-/// Distance past which the indicator reads as "armed" (full color) — purely
-/// a visual cue; `AdwSwipeTracker` makes the real commit decision on
-/// release, factoring in velocity too.
-const SWIPE_ARM: f64 = 72.0;
-
-/// The commit exit (#swipe): a released swipe that cleared `SWIPE_ARM` flies
-/// the row off the side it was dragged to over this long, while the row's
-/// Revealer closes its height over the same span — so the strip fills, the
-/// message leaves, and the list shuts over the gap in one movement instead of
-/// the row blinking out. Matches the Revealer's own transition duration.
-const SWIPE_EXIT_MS: u32 = 200;
-/// An action that leaves the row where it is (no Archive folder configured,
-/// say) would strand it collapsed and off-screen, so the exit is put back
-/// this long after the action if the row is still here.
-const SWIPE_RESTORE_MS: u64 = 600;
-
-/// The shown rows' (account, folder, uid, id) keys, in list order — rebuilt with
-/// the list and read live when a drag starts.
-pub type DragKeys = std::rc::Rc<std::cell::RefCell<Vec<(u32, u32, u32, u32)>>>;
-
-/// Every member of each conversation, keyed by its head's (account, id) —
-/// so a drag that starts on a conversation row carries the whole thread,
-/// as its Delete does (#171). Published with `DragKeys`.
-pub type ThreadDragKeys =
-    std::rc::Rc<std::cell::RefCell<std::collections::HashMap<(u32, u32), Vec<(u32, u32, u32, u32)>>>>;
+use crate::i18n::i18n;
+use crate::ui::message_row::{RowData, RowMeta, RowShared};
+pub use crate::ui::message_row::{tag_menu_entries, RowAction};
 
 /// The message-list pane's floor: exactly what a conversation-member card
 /// needs to show a row's full actions palette — the tightest real constraint
@@ -281,1600 +26,6 @@ const LIST_MIN_WIDTH: i32 = 348;
 /// cards' (and the head pill's) right inset is never clipped off the pane.
 const THREAD_EXPANDED_EXTRA: i32 = 12;
 
-/// A background face lookup's answer, correlated by sender address (a recycled
-/// row compares before using it). The tiers are personal-first: the contact's
-/// own photo, their Gravatar, then the icon their domain publishes (#30), with
-/// the UI's colored initials as the implicit last resort.
-#[derive(Debug)]
-pub enum FaceCmd {
-    /// The avatar tiers (contact photo, Gravatar) answered. `logo` carries the
-    /// logo tier's answer when it was consulted in the same trip: found bytes,
-    /// or a definitive miss to remember.
-    Avatar {
-        email: String,
-        generation: u64,
-        mode: crate::avatar::FetchMode,
-        outcome: crate::avatar::FetchOutcome,
-        logo: Option<Option<Vec<u8>>>,
-    },
-    /// A logo-only lookup — the avatar tiers had already answered from cache.
-    Logo { email: String, bytes: Option<Vec<u8>> },
-}
-
-/// Run the avatar tiers off the main thread, falling through to the domain icon
-/// when they come up empty and `want_logo` says the switch is on. `generation`
-/// and `mode` come from [`crate::avatar::lookup`] and ride along so the result
-/// can be cached against the EDS state that was actually queried.
-pub async fn find_face(
-    email: String,
-    generation: u64,
-    mode: crate::avatar::FetchMode,
-    want_logo: bool,
-) -> FaceCmd {
-    let lookup_email = email.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let outcome = crate::avatar::fetch(&lookup_email, mode);
-        let logo = (want_logo && !matches!(outcome, crate::avatar::FetchOutcome::Found(_)))
-            .then(|| crate::logo::fetch(&lookup_email));
-        (outcome, logo)
-    })
-    .await;
-    let (outcome, logo) = result.unwrap_or((crate::avatar::FetchOutcome::Retry, None));
-    FaceCmd::Avatar { email, generation, mode, outcome, logo }
-}
-
-/// Fetch just the domain icon, off the main thread.
-pub async fn find_logo(email: String) -> FaceCmd {
-    let lookup_email = email.clone();
-    let bytes = tokio::task::spawn_blocking(move || crate::logo::fetch(&lookup_email))
-        .await
-        .ok()
-        .flatten();
-    FaceCmd::Logo { email, bytes }
-}
-
-/// One message summary row.
-pub struct MessageRow {
-    msg: Message,
-    /// Whether the action palette's buttons exist yet (built on first open).
-    palette_built: std::cell::Cell<bool>,
-    /// The palette buttons whose look follows the message: read/unread,
-    /// star, and the tag button's presence.
-    palette_buttons: std::cell::RefCell<Option<PaletteButtons>>,
-    /// This row's live position, for telling the list which palette opened.
-    index: DynamicIndex,
-    /// The palette clip's current animation target width (interior-mutable:
-    /// update_view only has &self). -0 sentinel not needed — starts closed.
-    palette_target: std::cell::Cell<i32>,
-    palette_anim: std::cell::RefCell<Option<adw::TimedAnimation>>,
-    gravatar: bool,
-    avatars: bool,
-    /// The avatar's revealer state: down while Focus Mode slides it away
-    /// (the row is rebuilt without it once it has gone), or up from folded
-    /// when the avatars come back.
-    avatar_shown: bool,
-    sender_logos: bool,
-    preview_lines: u32,
-    show_subject: bool,
-    avatar_texture: Option<gtk::gdk::Texture>,
-    /// The initials circle drawn when no picture is known, kept per name
-    /// so the view hands the avatar the same object on every refresh.
-    initials_image: std::cell::RefCell<Option<(String, crate::ui::initials::InitialsPaintable)>>,
-    ring_class: Option<String>,
-    /// Whether the pointer is over this row (drives the chevron fade).
-    row_hovered: bool,
-    /// Whether the actions palette is slid open on this row.
-    palette_open: bool,
-    /// Pending auto-collapse timer (armed when the cursor isn't over the palette;
-    /// cancelled while it is, so the palette stays open).
-    collapse_timer: Option<gtk::glib::SourceId>,
-    /// Shared collapse delay (seconds) after the cursor leaves the palette.
-    palette_collapse_secs: std::rc::Rc<std::cell::Cell<u64>>,
-    /// Shared "open the palette on row hover" flag (read live per hover).
-    palette_hover: std::rc::Rc<std::cell::Cell<bool>>,
-    /// The tags, shared with the list (#71).
-    tags: std::rc::Rc<std::cell::RefCell<Vec<crate::config::Tag>>>,
-    /// The keywords the chips were last built for, so post_view (which runs
-    /// on every update) rebuilds them only when they changed.
-    tags_rendered: std::cell::RefCell<Vec<String>>,
-    /// Whether this row shows the actions palette line at all (preference).
-    show_palette: bool,
-    in_junk: bool,
-    in_drafts: bool,
-    /// Conversation size (only meaningful on a thread head).
-    thread_count: usize,
-    /// Nested reply under a thread head.
-    is_thread_child: bool,
-    is_last_child: bool,
-    /// Whether this head's conversation is expanded.
-    thread_expanded: bool,
-    thread_expandable: bool,
-    /// Sent-folder rows name the recipient, not the sender (#27).
-    show_recipient: bool,
-    /// Conversation key for the head's expand/collapse toggle.
-    thread_key: Option<(u32, String)>,
-    /// Newest member's display time (thread heads only), shown as the row date.
-    thread_date: Option<String>,
-    thread_from: Option<(String, String)>,
-    thread_preview: Option<String>,
-    /// Any message in this conversation is unread (heads only).
-    thread_unread: bool,
-    thread_starred: bool,
-    /// Shared row keys, so a drag from this row can carry the whole selection.
-    drag_keys: DragKeys,
-    /// Shared conversation members, so a drag from a head row carries its thread.
-    thread_drag: ThreadDragKeys,
-    /// Drives the row's own Revealer — false only for the brief window a
-    /// newly-expanded reply is sliding open, or a collapsing one is sliding
-    /// shut before it's removed from the list.
-    revealed: bool,
-    /// Shared "swap swipe sides" preference, read live on each drag (#swipe).
-    swipe_reversed: std::rc::Rc<std::cell::Cell<bool>>,
-    /// Shared "swipe at all" preference (#92).
-    swipe_enabled: std::rc::Rc<std::cell::Cell<bool>>,
-    /// Shared trackpad swipe sensitivity, read live on each render.
-    swipe_sensitivity: std::rc::Rc<std::cell::Cell<f64>>,
-    /// Current swipe distance in px (negative = dragged left) — the source
-    /// of truth while a gesture is live; reset to 0 the instant a release is
-    /// resolved (post_view animates the strip back out of view).
-    swipe_progress: f64,
-    /// Which side last had a nonzero `swipe_progress` (-1 left, 1 right, 0
-    /// never dragged) — kept once `swipe_progress` returns to 0 so the
-    /// revealed side and action don't flip mid-shrink after a release.
-    swipe_side: i8,
-    /// A mouse-button or trackpad gesture is actively dragging this row.
-    swipe_dragging: bool,
-    /// The row is committing (#swipe): the release cleared the commit
-    /// distance, so it is flying out to `swipe_side` while its Revealer
-    /// closes. Cleared only if the action leaves the row in place.
-    swipe_committing: bool,
-    /// The exit animation has been started — `post_view` can run again
-    /// before the row is removed, and it must not restart mid-flight.
-    swipe_exit_started: std::cell::Cell<bool>,
-    /// The row is mid-swipe: from the first drag until the snap-back
-    /// animation lands — the `.swiping` class squares the pill off and
-    /// drops its margins for that whole span, so the content and the strip
-    /// under it read as one full-width surface rather than a rounded card
-    /// sliding over a colored band.
-    swipe_active: bool,
-    /// The row's `AdwSwipeTracker`, built once against its `SwipeSurface` in
-    /// post_view — also doubles as the wiring guard, since the tracker has
-    /// to stay alive for as long as the row does or it stops firing.
-    swipe_tracker: std::cell::RefCell<Option<adw::SwipeTracker>>,
-    /// In-flight snap-back-to-rest animation, if any.
-    swipe_anim: std::cell::RefCell<Option<adw::TimedAnimation>>,
-}
-
-#[derive(Debug)]
-pub enum MessageRowInput {
-    /// Slide the avatar away or back (Focus Mode).
-    SetAvatarShown(bool),
-    /// Show this many lines of preview in place (Focus Mode; the rebuild
-    /// that follows makes it permanent).
-    SetPreviewLines(u32),
-    SetRead(bool),
-    SetStarred(bool),
-    SetKeywords(Vec<String>),
-    /// The palette's tag button: pop the tag menu on it.
-    OpenTagMenu(gtk::Button),
-    /// The palette's Move to… button: the list opens the folder picker under it.
-    OpenMoveMenu(gtk::Button),
-    SetHasAttachment(bool),
-    /// The pointer entered/left the row — fade the chevron in/out.
-    SetRowHover(bool),
-    /// Another row's palette opened — fold this one if it is out.
-    ClosePalette,
-    /// Slide the actions palette open or shut.
-    TogglePalette,
-    /// The cursor moved onto the palette — keep it open (cancel auto-collapse).
-    PaletteEnter,
-    /// The cursor left the palette — arm the auto-collapse countdown.
-    PaletteLeave,
-    /// The auto-collapse countdown elapsed — slide the palette shut.
-    CollapsePalette,
-    Action(RowAction),
-    /// The conversation chevron was clicked — expand/collapse the thread.
-    ToggleThreadClicked,
-    /// The thread's aggregate unread state changed (a hidden reply was read).
-    SetThreadUnread(bool),
-    SetThreadStarred(bool),
-    /// Drive the row's own Revealer directly — used to slide a reply open
-    /// right after it's inserted, or shut just before it's removed.
-    SetRevealed(bool),
-    /// The head's conversation was expanded/collapsed — updates in place
-    /// (the head row survives a toggle) so the chevron actually rotates
-    /// instead of mounting pre-set to its final angle.
-    SetThreadExpanded(bool),
-    /// A mouse-drag or trackpad swipe moved (#swipe): the distance dragged so
-    /// far in px, negative = left.
-    SwipeUpdate(f64),
-    /// The swipe gesture was released. Whether it fires an action is decided
-    /// on `swipe_progress` alone (see the handler) rather than trusting
-    /// `AdwSwipeTracker`'s own velocity-aware snap-point choice — a quick
-    /// flick short of the commit distance reads as a false positive when
-    /// the intent was clearly to back out, not to commit fast.
-    SwipeEnd,
-    /// The post-release snap-back animation landed (or there was nothing
-    /// to animate): the row can drop its `.swiping` geometry again.
-    SwipeSettled,
-    /// A swipe preference changed: post_view enables or disables the row's
-    /// tracker accordingly, and re-reads the trackpad sensitivity.
-    SwipePrefsChanged,
-    /// The commit exit has landed: fire the action it committed to.
-    SwipeCommitted(RowAction),
-    /// The action left the row in place — put the exit back.
-    SwipeRestore,
-}
-
-#[derive(Debug)]
-pub enum MessageRowOutput {
-    Action { action: RowAction, message: Box<Message> },
-    /// Move to… pressed on the palette: open the picker at window point (x, y).
-    MoveTo { message: Box<Message>, x: f64, y: f64 },
-    /// A tag toggled from the palette's tag menu (#71).
-    SetTag { message: Box<Message>, keyword: String, add: bool },
-    ToggleThread((u32, String)),
-    /// This row's palette just opened — the list closes every other one.
-    PaletteOpened(usize),
-}
-
-/// The keys of every selected row in the ListBox this drag started from, in list
-/// order. Empty when the row has no list parent yet or nothing is selected — the
-/// caller then falls back to the dragged row alone.
-/// Display names from a raw To header: "Ann <a@x>, b@y" -> "Ann, b@y".
-fn recipient_names(to: &str) -> String {
-    let mut names: Vec<String> = Vec::new();
-    for part in to.split(',') {
-        let part = part.trim();
-        if part.is_empty() {
-            continue;
-        }
-        let name = match part.split_once('<') {
-            Some((n, _)) if !n.trim().trim_matches('"').is_empty() => {
-                n.trim().trim_matches('"').to_string()
-            }
-            Some((_, rest)) => rest.trim_end_matches('>').trim().to_string(),
-            None => part.to_string(),
-        };
-        if !name.is_empty() {
-            names.push(name);
-        }
-    }
-    names.join(", ")
-}
-
-/// The first recipient's bare address from a raw To header, if any.
-fn first_recipient_addr(to: &str) -> Option<String> {
-    let first = to.split(',').map(str::trim).find(|p| !p.is_empty())?;
-    let addr = match first.split_once('<') {
-        Some((_, rest)) => rest.trim_end_matches('>').trim(),
-        None => first,
-    };
-    (!addr.is_empty()).then(|| addr.to_string())
-}
-
-fn drag_selection(src: &gtk::DragSource, keys: &DragKeys) -> Vec<(u32, u32, u32, u32)> {
-    let Some(list) = src.widget().and_then(|w| w.parent()).and_downcast::<gtk::ListBox>() else {
-        return Vec::new();
-    };
-    let keys = keys.borrow();
-    list.selected_rows()
-        .iter()
-        .filter_map(|r| keys.get(r.index() as usize).copied())
-        .collect()
-}
-
-impl MessageRow {
-    /// Rebuild the row's tag chips (#71): one pill per keyword that names a
-    /// tag, in tag order, wearing the tag's color class.
-    fn render_tags(&self, tags_box: &gtk::Box) {
-        while let Some(child) = tags_box.first_child() {
-            tags_box.remove(&child);
-        }
-        for t in self.tags.borrow().iter().filter(|t| self.msg.has_keyword(&t.keyword)) {
-            let chip = gtk::Label::new(Some(&t.name));
-            chip.add_css_class("tag-chip");
-            chip.add_css_class(&t.css_class());
-            chip.set_valign(gtk::Align::Center);
-            chip.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            chip.set_max_width_chars(14);
-            tags_box.append(&chip);
-        }
-        *self.tags_rendered.borrow_mut() = self.msg.keywords.clone();
-    }
-}
-
-/// The tag section of a message menu (#71): one entry per tag, its swatch
-/// filled where the message carries it; choosing an entry toggles that tag
-/// through `toggle(keyword, add)`.
-pub fn tag_menu_entries(
-    tags: &[crate::config::Tag],
-    msg: &Message,
-    toggle: impl Fn(String, bool) + Clone + 'static,
-) -> Vec<MenuEntry> {
-    tags.iter()
-        .map(|t| {
-            let on = msg.has_keyword(&t.keyword);
-            let keyword = t.keyword.clone();
-            let toggle = toggle.clone();
-            MenuEntry::new(t.name.clone(), move || toggle(keyword.clone(), !on))
-                .swatch(t.color.clone(), on)
-        })
-        .collect()
-}
-
-// A two-layer container implementing `AdwSwipeable`, so a real
-// `AdwSwipeTracker` — the gesture engine behind `AdwFlap` and `AdwCarousel` —
-// can drive the row's swipe-to-act gesture (#swipe): `background` is the
-// fixed action strip, always allocated full-size and never moving;
-// `foreground` is the row's real content, translated across it via a
-// `GskTransform` on its allocation as the swipe drags it, Gmail-style.
-glib::wrapper! {
-    pub struct SwipeSurface(ObjectSubclass<swipe_surface_imp::SwipeSurface>)
-        @extends gtk::Widget,
-        @implements adw::Swipeable;
-}
-
-impl Default for SwipeSurface {
-    fn default() -> Self {
-        glib::Object::new()
-    }
-}
-
-impl SwipeSurface {
-    /// The fixed action strip underneath — set first, so it ends up behind
-    /// `foreground` in paint order.
-    fn set_background(&self, child: &impl IsA<gtk::Widget>) {
-        child.set_parent(self);
-    }
-
-    /// The row's real content, on top — translated by [`Self::set_progress_px`]
-    /// to reveal `background` underneath it.
-    fn set_foreground(&self, child: &impl IsA<gtk::Widget>) {
-        child.set_parent(self);
-    }
-
-    /// The live swipe distance, in `AdwSwipeTracker`'s own px convention
-    /// (`AdwSwipeable::progress` reports it back verbatim). Queues a fresh
-    /// allocation so the translation actually moves — setting this alone
-    /// touches no property GTK would otherwise notice.
-    fn set_progress_px(&self, px: f64) {
-        use gtk::subclass::prelude::ObjectSubclassIsExt;
-        self.imp().progress_px.set(px);
-        self.queue_allocate();
-    }
-
-    /// Read back by `post_view` as the "from" value when animating a
-    /// released drag smoothly back to rest.
-    fn progress_px(&self) -> f64 {
-        use gtk::subclass::prelude::ObjectSubclassIsExt;
-        self.imp().progress_px.get()
-    }
-
-    /// The trackpad sensitivity preference, pushed in by `post_view` so both
-    /// `AdwSwipeable::distance` and the tracker's own callback see the same
-    /// figure.
-    fn set_sensitivity(&self, factor: f64) {
-        use gtk::subclass::prelude::ObjectSubclassIsExt;
-        self.imp().sensitivity.set(factor.clamp(
-            crate::config::SWIPE_SENSITIVITY_MIN,
-            crate::config::SWIPE_SENSITIVITY_MAX,
-        ));
-    }
-
-    fn sensitivity(&self) -> f64 {
-        use gtk::subclass::prelude::ObjectSubclassIsExt;
-        self.imp().sensitivity.get()
-    }
-}
-
-mod swipe_surface_imp {
-    use std::cell::Cell;
-
-    use adw::subclass::prelude::*;
-    use gtk::glib;
-    use gtk::prelude::*;
-
-    pub struct SwipeSurface {
-        pub progress_px: Cell<f64>,
-        /// Trackpad sensitivity (see `super::SWIPE_MAX`). Never 0 — that
-        /// would divide by zero in `distance`/`progress` — so this can't
-        /// simply be `#[derive(Default)]`.
-        pub sensitivity: Cell<f64>,
-    }
-
-    impl Default for SwipeSurface {
-        fn default() -> Self {
-            Self {
-                progress_px: Cell::new(0.0),
-                sensitivity: Cell::new(1.0),
-            }
-        }
-    }
-
-    #[glib::object_subclass]
-    impl ObjectSubclass for SwipeSurface {
-        const NAME: &'static str = "HylkiSwipeSurface";
-        type Type = super::SwipeSurface;
-        type ParentType = gtk::Widget;
-        type Interfaces = (adw::Swipeable,);
-    }
-
-    impl ObjectImpl for SwipeSurface {
-        fn dispose(&self) {
-            while let Some(child) = self.obj().first_child() {
-                child.unparent();
-            }
-        }
-    }
-
-    impl SwipeSurface {
-        /// The action strip: always the first (bottom-most) child.
-        fn background(&self) -> Option<gtk::Widget> {
-            self.obj().first_child()
-        }
-
-        /// The row's real content: always the second (top-most) child.
-        fn foreground(&self) -> Option<gtk::Widget> {
-            self.background().and_then(|bg| bg.next_sibling())
-        }
-
-        /// `progress_px` flipped into the row model's "dragged left is
-        /// negative" convention — shared by `size_allocate` and `snapshot`
-        /// so they can't disagree about which side is revealed.
-        fn visual_offset(&self) -> f32 {
-            -self.progress_px.get() as f32
-        }
-    }
-
-    impl WidgetImpl for SwipeSurface {
-        // Height-for-width, like the content it wraps: the default for a
-        // custom widget is constant-size, under which GTK measured the row's
-        // height with no width at all — so a wrapping multi-line preview
-        // came out clipped to under two lines (regression since 1.23.0).
-        fn request_mode(&self) -> gtk::SizeRequestMode {
-            self.foreground()
-                .map(|c| c.request_mode())
-                .unwrap_or(gtk::SizeRequestMode::ConstantSize)
-        }
-
-        // The background strip never dictates the row's size — only the
-        // real content does; the strip is simply stretched to match it.
-        fn measure(&self, orientation: gtk::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
-            self.foreground()
-                .map(|c| c.measure(orientation, for_size))
-                .unwrap_or((0, 0, -1, -1))
-        }
-
-        fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
-            if let Some(bg) = self.background() {
-                bg.allocate(width, height, baseline, None);
-            }
-            if let Some(fg) = self.foreground() {
-                let offset = self.visual_offset();
-                let transform = (offset != 0.0).then(|| {
-                    gtk::gsk::Transform::new()
-                        .translate(&gtk::graphene::Point::new(offset, 0.0))
-                });
-                fg.allocate(width, height, baseline, transform);
-            }
-        }
-
-        // Only ever paints the exact gap the content has slid away from,
-        // clipped from `offset` directly — a row has no background of its
-        // own until hovered or selected, so an opaque foreground can't be
-        // relied on to hide the strip the rest of the time. Also supplies
-        // the clip the default snapshot lacks for `foreground`, so a drag
-        // can't paint over the row above or below. The clip starts
-        // THREAD_NODE_REACH left of the box: a thread member's node dot and
-        // rail stub deliberately hang out there, onto the rail.
-        fn snapshot(&self, snapshot: &gtk::Snapshot) {
-            let obj = self.obj();
-            let (w, h) = (obj.width() as f32, obj.height() as f32);
-            let reach = super::THREAD_NODE_REACH;
-            snapshot.push_clip(&gtk::graphene::Rect::new(-reach, 0.0, w + reach, h));
-
-            let offset = self.visual_offset();
-            if let (Some(bg), true) = (self.background(), offset != 0.0) {
-                // offset < 0: content slid left, uncovering a gap on the
-                // RIGHT. offset > 0: slid right, gap on the LEFT.
-                let gap = if offset < 0.0 {
-                    gtk::graphene::Rect::new(w + offset, 0.0, -offset, h)
-                } else {
-                    gtk::graphene::Rect::new(0.0, 0.0, offset, h)
-                };
-                snapshot.push_clip(&gap);
-                obj.snapshot_child(&bg, snapshot);
-                snapshot.pop();
-            }
-            if let Some(fg) = self.foreground() {
-                obj.snapshot_child(&fg, snapshot);
-            }
-            snapshot.pop();
-        }
-    }
-
-    impl SwipeableImpl for SwipeSurface {
-        // What one full swipe (progress ±1.0) costs the pointer: `SWIPE_MAX`
-        // px at sensitivity 1.0, and deliberately *more* the higher the
-        // trackpad sensitivity goes. `AdwSwipeTracker` divides a mouse or
-        // touchscreen drag by this, and `wire_swipe_tracker` multiplies the
-        // progress back by the same factor, so a drag still moves the row
-        // exactly as far as the pointer went, whatever the preference says.
-        // A trackpad's two-finger scroll never reaches here — libadwaita
-        // scales that against a fixed 400px of its own — so the
-        // multiplication is all that path feels, which is exactly the knob
-        // this preference wants.
-        fn distance(&self) -> f64 {
-            super::SWIPE_MAX * self.sensitivity.get()
-        }
-
-        fn progress(&self) -> f64 {
-            self.progress_px.get() / (super::SWIPE_MAX * self.sensitivity.get())
-        }
-
-        fn cancel_progress(&self) -> f64 {
-            0.0
-        }
-
-        // Three stops: fully committed left, at rest, fully committed
-        // right. `AdwSwipeTracker` picks whichever is nearest on release,
-        // factoring in velocity — a fast flick short of the full distance
-        // still commits, exactly like a real swipe-to-dismiss should.
-        fn snap_points(&self) -> Vec<f64> {
-            vec![-1.0, 0.0, 1.0]
-        }
-
-        fn swipe_area(
-            &self,
-            _navigation_direction: adw::NavigationDirection,
-            _is_drag: bool,
-        ) -> gtk::gdk::Rectangle {
-            let w = self.obj();
-            gtk::gdk::Rectangle::new(0, 0, w.width(), w.height())
-        }
-    }
-}
-
-/// The px a tracker `progress` reading moves the row: it undoes the
-/// sensitivity `SwipeSurface::distance` folded in (leaving a mouse or
-/// touchscreen drag exactly 1:1 with the pointer, whatever the preference
-/// says), and caps the result at one full swipe so a long trackpad scroll
-/// can't push the row on past the action strip.
-fn swipe_progress_px(progress: f64, sensitivity: f64) -> f64 {
-    (progress * SWIPE_MAX * sensitivity).clamp(-SWIPE_MAX, SWIPE_MAX)
-}
-
-/// Build the `AdwSwipeTracker` driving `surface`'s swipe-to-act gesture
-/// (#swipe): mouse-drag and trackpad both arrive as the same signals.
-/// Called once per row from `post_view`; the tracker must be kept alive by
-/// the caller for as long as the row lives.
-fn wire_swipe_tracker(surface: &SwipeSurface, sender: &FactorySender<MessageRow>) -> adw::SwipeTracker {
-    use gtk::prelude::OrientableExt;
-
-    let tracker = adw::SwipeTracker::new(surface);
-    tracker.set_orientation(gtk::Orientation::Horizontal);
-    tracker.set_allow_mouse_drag(true);
-
-    // `AdwSwipeTracker`'s progress/snap-point convention runs opposite to
-    // the row model's "dragged left is negative" one for a horizontal
-    // tracker, hence the negation below — kept only where each value is
-    // actually consumed, since `AdwSwipeable::progress` still has to answer
-    // the tracker back in its own native convention (`swipe_surface_imp`).
-    {
-        let surface = surface.clone();
-        let sender = sender.clone();
-        tracker.connect_update_swipe(move |_, progress| {
-            let raw_px = swipe_progress_px(progress, surface.sensitivity());
-            surface.set_progress_px(raw_px);
-            sender.input(MessageRowInput::SwipeUpdate(-raw_px));
-        });
-    }
-    {
-        let sender = sender.clone();
-        // The release's own resolved snap point (`to`) isn't used — see
-        // `MessageRowInput::SwipeEnd`.
-        tracker.connect_end_swipe(move |_, _velocity, _to| {
-            sender.input(MessageRowInput::SwipeEnd);
-        });
-    }
-    tracker
-}
-
-#[relm4::factory(pub)]
-impl FactoryComponent for MessageRow {
-    type Init = RowInit;
-    type Input = MessageRowInput;
-    type Output = MessageRowOutput;
-    type CommandOutput = FaceCmd;
-    type ParentWidget = gtk::ListBox;
-
-    view! {
-        gtk::ListBoxRow {
-            // Unread rows get a pale accent background (cleared once read);
-            // thread replies are indented.
-            #[watch]
-            set_css_classes: &self.row_css(),
-
-            // Track hover so the actions palette chevron can fade in/out.
-            add_controller = gtk::EventControllerMotion {
-                connect_enter[sender] => move |_, _, _| sender.input(MessageRowInput::SetRowHover(true)),
-                connect_leave[sender] => move |_| sender.input(MessageRowInput::SetRowHover(false)),
-            },
-
-            // Drag a message onto a sidebar folder to move it there. The payload
-            // carries one (account, source folder, UID, id) group per message —
-            // the *whole* selection when this row is part of it, so dragging a
-            // multi-selection moves every message, not just the row under the
-            // pointer (#23).
-            add_controller = gtk::DragSource {
-                set_actions: gtk::gdk::DragAction::MOVE,
-                // The row itself travels under the pointer, held where it was
-                // grabbed — without an icon GTK draws the payload string.
-                connect_drag_begin => move |src, drag| {
-                    let scale = src.widget().map(|w| w.scale_factor()).unwrap_or(1);
-                    if let Some(row) = src.widget() {
-                        // `.dragging` fades the row while it is away.
-                        row.add_css_class("dragging");
-                    }
-                    // A white envelope, cursor-sized, centred under the
-                    // pointer — without an icon GTK draws the payload text.
-                    // Set on the drag's own icon window as a widget, so it
-                    // is drawn at logical size from a display-scale texture.
-                    if let Some(envelope) = crate::app_icon::drag_envelope(scale) {
-                        let icon = gtk::DragIcon::for_drag(drag);
-                        icon.set_child(Some(&envelope));
-                        let half = crate::app_icon::DRAG_ICON_SIZE / 2;
-                        drag.set_hotspot(half, half);
-                    }
-                },
-                connect_drag_end => move |src, _, _| {
-                    if let Some(row) = src.widget() {
-                        row.remove_css_class("dragging");
-                    }
-                },
-                connect_drag_cancel => move |src, _, _| {
-                    if let Some(row) = src.widget() {
-                        row.remove_css_class("dragging");
-                    }
-                    false
-                },
-                connect_prepare[aid = self.msg.account_id, fid = self.msg.folder_id, uid = self.msg.uid, id = self.msg.id, keys = self.drag_keys.clone(), threads = self.thread_drag.clone()] => move |src, _, _| {
-                    let mut items = drag_selection(src, &keys);
-                    // Dragging a row outside the selection (or before the list has
-                    // published its keys) moves just that row.
-                    if !items.iter().any(|k| k.0 == aid && k.3 == id) {
-                        items = vec![(aid, fid, uid, id)];
-                    }
-                    // A conversation row stands for its whole thread (#171):
-                    // every member goes along, as with its Delete.
-                    let threads = threads.borrow();
-                    items = items
-                        .into_iter()
-                        .flat_map(|k| threads.get(&(k.0, k.3)).cloned().unwrap_or_else(|| vec![k]))
-                        .collect();
-                    let mut payload = String::from("vireo-move");
-                    for (a, f, u, i) in items {
-                        payload.push_str(&format!("\t{a}\t{f}\t{u}\t{i}"));
-                    }
-                    Some(gtk::gdk::ContentProvider::for_value(&payload.to_value()))
-                },
-            },
-
-            // Thread replies animate open/shut by sliding, instead of the
-            // list jumping to a new row count the instant a thread toggles
-            // (see `revealed` / `MessageRowInput::SetRevealed`). (PR #79)
-            #[wrap(Some)]
-            set_child = &gtk::Revealer {
-            set_transition_type: gtk::RevealerTransitionType::SlideDown,
-            set_transition_duration: 200,
-            #[watch]
-            set_reveal_child: self.revealed,
-
-            // Wrapped in a `SwipeSurface` (#swipe): `background` is the fixed
-            // action strip, only ever revealed as `foreground` — the row's
-            // real content Overlay, unchanged otherwise — physically slides
-            // away from it under a mouse-drag or trackpad swipe.
-            #[wrap(Some)]
-            #[name = "swipe_surface"]
-            set_child = &SwipeSurface {
-
-            #[name = "swipe_background"]
-            set_background = &gtk::Box {
-                set_overflow: gtk::Overflow::Hidden,
-                #[watch]
-                set_css_classes: &self.swipe_indicator_classes(),
-
-                gtk::Box {
-                    set_halign: gtk::Align::Fill,
-                    set_valign: gtk::Align::Center,
-                    set_hexpand: true,
-                    set_spacing: 6,
-                    set_margin_start: 16,
-                    set_margin_end: 16,
-                    #[watch]
-                    set_halign: self.swipe_halign(),
-
-                    gtk::Image {
-                        #[watch]
-                        set_icon_name: Some(self.swipe_icon()),
-                    },
-                    gtk::Label {
-                        #[watch]
-                        set_label: &self.swipe_label(),
-                    },
-                },
-            },
-
-            #[name = "row_overlay"]
-            set_foreground = &gtk::Overlay {
-            // The node dot where this member meets the group's dotted rail
-            // (thread children only): overlaid at the row's left edge and
-            // pulled onto the rail itself by .thread-node's negative margin.
-            // The last reply's rail: a real dotted border on a widget spanning
-            // exactly the row's top half (homogeneous halves), so it ends at
-            // the node dot and renders identically to the sibling rows' full
-            // border rails — a gradient imitation drew square dots. Added
-            // before the node dot so the dot draws over where they meet.
-            add_overlay = &gtk::Box {
-                set_orientation: gtk::Orientation::Vertical,
-                set_halign: gtk::Align::Start,
-                set_homogeneous: true,
-                set_visible: self.is_last_child,
-
-                gtk::Box {
-                    add_css_class: "thread-rail-stub",
-                },
-                gtk::Box {},
-            },
-
-            add_overlay = &gtk::Box {
-                add_css_class: "thread-node",
-                set_halign: gtk::Align::Start,
-                set_valign: gtk::Align::Center,
-                set_visible: self.is_thread_child,
-            },
-
-            // The actions palette floats over the pill's bottom-left corner,
-            // opening rightward from the ⋯ button. As an overlay it takes no
-            // room in the row: the text sits centred in the pill whether the
-            // palette preference is on or off (the reserved line used to read
-            // as a lopsided empty band under the text — yioannides, #81).
-            //
-            // The outer holder has a FIXED width: overlay children are only
-            // re-allocated lazily, so a container that grows with the slide
-            // animation snaps in whenever the next relayout happens instead
-            // of animating. Constant allocation outside, free growth inside.
-            add_overlay = &gtk::Box {
-                set_width_request: 320,
-                set_halign: gtk::Align::Start,
-                set_valign: gtk::Align::End,
-
-                #[name = "actions_line"]
-                gtk::Box {
-                    set_spacing: 0,
-                    set_halign: gtk::Align::Start,
-                    set_valign: gtk::Align::End,
-                    // With avatars on, the ⋯ centres under the avatar:
-                    // circle centre (pill inset 6 + padding + 19) minus half
-                    // the button. Thread children share the exact pill
-                    // geometry and only add their card's 10px indent. Without
-                    // circles it hugs the pill's edge. All measured from the
-                    // row's edge, which now sits 6px outside the pill's.
-                    set_margin_start: if self.avatars {
-                        if self.is_thread_child { 32 } else { 22 }
-                    } else if self.is_thread_child {
-                        20
-                    } else {
-                        10
-                    },
-                    // With circles on, ride lower for a sliver of air between
-                    // the circle's bottom edge and the ⋯ — but keep 1px clear
-                    // of the pill's own bottom edge (the pill's 2px outer
-                    // margin sits inside this overlay's bounds).
-                    set_margin_bottom: if self.avatars { 3 } else { 4 },
-                    // Open, the whole line — ⋯ and icons — sits on one card
-                    // surface; the ⋯ is the card's left cap.
-                    #[watch]
-                    set_css_classes: if self.palette_open {
-                        &["actions-line", "open"]
-                    } else {
-                        &["actions-line"]
-                    },
-                    // Preference: no palette at all — the line (and the space
-                    // it reserves under the preview) goes away entirely.
-                    set_visible: self.show_palette,
-
-                    // Actions toggle (⋯). Clicking it opens/closes the palette but
-                    // does NOT select or open the message (it's a button, so the
-                    // click is consumed before the row's selection gesture).
-                    gtk::Button {
-                        set_icon_name: "view-more-horizontal-symbolic",
-                        // Hidden until the row is hovered (or the palette is open);
-                        // the .revealed class fades it in via a CSS transition.
-                        #[watch]
-                        set_css_classes: &self.chevron_classes(),
-                        set_tooltip_text: Some(i18n("Actions").as_str()),
-                        set_valign: gtk::Align::Center,
-                        connect_clicked => MessageRowInput::TogglePalette,
-                    },
-
-                    // Not a GtkRevealer: inside an Overlay's overlay child
-                    // its slide never repainted frame-by-frame (the palette
-                    // just popped in at the end). Instead the palette hangs
-                    // as a clipped overlay over a spacer whose width is the
-                    // one thing animated (post_view): the spacer is a hard
-                    // cap — a Box's width_request is only a floor, and the
-                    // palette at natural width would simply ignore it.
-                    #[name = "palette_clip"]
-                    gtk::Overlay {
-                        #[wrap(Some)]
-                        set_child = &gtk::Box {
-                            #[name = "palette_spacer"]
-                            gtk::Box {
-                                set_width_request: 0,
-                            },
-                        },
-
-                        #[name = "palette_inner"]
-                        add_overlay = &gtk::Box {
-                            add_css_class: "actions-palette",
-                            set_halign: gtk::Align::Start,
-                            set_valign: gtk::Align::Center,
-                            set_spacing: 0,
-                            // Hidden until the first open: rows that never
-                            // process an update never run post_view, so the
-                            // clip isn't armed yet — an unclipped palette
-                            // would paint over every row (which it did).
-                            set_visible: false,
-
-                            // Keep the palette open while the cursor is over it.
-                            add_controller = gtk::EventControllerMotion {
-                                connect_enter[sender] => move |_, _, _| sender.input(MessageRowInput::PaletteEnter),
-                                connect_leave[sender] => move |_| sender.input(MessageRowInput::PaletteLeave),
-                            },
-
-                            // The eleven action buttons are built on the
-                            // palette's first open (`MessageRow::build_palette`):
-                            // most rows never open theirs, and building them
-                            // for every row was the larger part of a row's
-                            // cost.
-                        },
-                    },
-
-                },
-            },
-
-            #[wrap(Some)]
-            set_child = &gtk::Box {
-            set_orientation: gtk::Orientation::Horizontal,
-            // Tighter than the row's left padding: the avatar sits well inside
-            // the list's edge, and the unread dot's gutter is narrow enough that
-            // the sender's name still reads as the start of the row.
-            set_spacing: 8,
-            set_css_classes: &self.content_css(),
-            // A palette wider than the row it sits in is clipped here rather than
-            // painted across the divider into the reader.
-            set_overflow: gtk::Overflow::Hidden,
-
-            // The circle sits in a revealer so Focus Mode can slide it away
-            // (and back) before the rows are rebuilt without (or with) it.
-            gtk::Revealer {
-                // SlideRight: folding, the circle moves off past the row's
-                // left edge (GTK names the transition for the reveal).
-                set_transition_type: gtk::RevealerTransitionType::SlideRight,
-                set_transition_duration: crate::ui::FOCUS_ANIM_MS,
-                add_css_class: "focus-fade",
-                // Hidden, not faded: the point of turning these off is to get the
-                // width back, so the row must give up the slot entirely (#29).
-                set_visible: self.avatars,
-                #[watch]
-                set_reveal_child: self.avatar_shown,
-                #[watch]
-                set_css_classes: if self.avatar_shown { &["focus-fade"] } else { &["focus-fade", "away"] },
-
-                adw::Avatar {
-                    set_size: 38,
-                    set_valign: gtk::Align::Center,
-                    set_show_initials: true,
-                    // Account color ring (unified view only).
-                    set_css_classes: &self.ring_classes(),
-                    #[watch]
-                    set_text: Some(&self.face_name()),
-                    #[watch]
-                    set_custom_image: self.avatar_image().as_ref(),
-                },
-            },
-
-            // Faded rather than hidden: a hidden widget gives up its slot in
-            // the box, so read rows' text would sit left of unread rows' and
-            // the column would jitter as mail is read — the slot is always
-            // reserved and only the dot's ink changes (re-affirmed in #99:
-            // collapsing it was tried and the shifting read worse). With
-            // avatars on the dot centres beside the circle; without them it
-            // leads the row on the sender name's line (the .no-avatar margin
-            // in styles.css).
-            gtk::Box {
-                add_css_class: "unread-dot",
-                set_valign: if self.avatars { gtk::Align::Center } else { gtk::Align::Start },
-                #[watch]
-                set_opacity: if self.msg.unread || self.thread_unread { 1.0 } else { 0.0 },
-            },
-
-            gtk::Box {
-                set_orientation: gtk::Orientation::Vertical,
-                set_spacing: 2,
-                set_hexpand: true,
-                // Beside an avatar the text block centres on the circle; with
-                // avatars off it anchors to the pill's top, under the corner
-                // radius (#99) — the pill's own padding provides the inset.
-                set_valign: if self.avatars { gtk::Align::Center } else { gtk::Align::Start },
-
-                gtk::Box {
-                    set_spacing: 6,
-                    gtk::Label {
-                        set_label: &self.name_line(),
-                        set_halign: gtk::Align::Start,
-                        set_hexpand: true,
-                        set_ellipsize: gtk::pango::EllipsizeMode::End,
-                        #[watch]
-                        set_css_classes: &self.sender_classes(),
-                    },
-                    gtk::Image {
-                        set_icon_name: Some("mail-attachment-symbolic"),
-                        #[watch]
-                        set_visible: self.msg.has_attachment,
-                        add_css_class: "dim-icon",
-                    },
-                    gtk::Image {
-                        set_icon_name: Some("starred-symbolic"),
-                        #[watch]
-                        set_visible: self.msg.starred || self.thread_starred,
-                        add_css_class: "star-icon",
-                    },
-                    gtk::Label {
-                        set_label: self.thread_date.as_deref().unwrap_or(&self.msg.datetime_list()),
-                        set_halign: gtk::Align::End,
-                        // Ellipsized so it stops being the row's floor: it is the
-                        // one item on this line with no give, and it held the list
-                        // ~40px wider than the palette needs (#29).
-                        set_ellipsize: gtk::pango::EllipsizeMode::End,
-                        add_css_class: "message-date",
-                    },
-                    // Conversation chip (thread heads only): the message count
-                    // and the expand/collapse caret merged into one grey pill.
-                    gtk::Button {
-                        set_visible: self.thread_count > 1,
-                        set_tooltip_text: Some(i18n("Show conversation").as_str()),
-                        add_css_class: "flat",
-                        add_css_class: "thread-chip",
-                        set_valign: gtk::Align::Center,
-                        connect_clicked[sender] => move |_| sender.input(MessageRowInput::ToggleThreadClicked),
-                        gtk::Box {
-                            set_spacing: 2,
-                            // Centred in the pill: with the caret hidden
-                            // (expansion off) the bare count must not sit
-                            // against the chip's left edge. Alignment only —
-                            // hexpand here propagates up and stretches the
-                            // whole chip across the header line.
-                            set_halign: gtk::Align::Center,
-                            gtk::Label {
-                                set_label: &self.thread_count.to_string(),
-                            },
-                            // One right-pointing caret; the "open" class
-                            // rotates it 90° via a CSS transition (mirrors the
-                            // sidebar's folder-tree expander) instead of
-                            // swapping glyphs. (PR #79)
-                            gtk::Image {
-                                // No caret when expansion is off — the chip is
-                                // just a count then, not a toggle.
-                                set_visible: self.thread_expandable,
-                                set_icon_name: Some("pan-end-symbolic"),
-                                #[watch]
-                                set_css_classes: if self.thread_expanded {
-                                    &["thread-toggle-icon", "open"]
-                                } else {
-                                    &["thread-toggle-icon"]
-                                },
-                            },
-                        },
-                    },
-                },
-
-                gtk::Box {
-                    set_spacing: 6,
-                    // Hidden outright by Focus Mode's subject part: the tag
-                    // chips ride on this line, and a row of chips under a
-                    // lone sender reads as a stray, so the line goes whole.
-                    set_visible: self.show_subject,
-                    gtk::Label {
-                        set_label: &self.msg.subject,
-                        set_halign: gtk::Align::Start,
-                        set_hexpand: true,
-                        set_ellipsize: gtk::pango::EllipsizeMode::End,
-                        #[watch]
-                        set_css_classes: &self.subject_classes(),
-                    },
-                    // Tag chips (#71) at the subject's end, where a long
-                    // subject gives way before the sender's name would.
-                    // Built from the message's keywords in init_widgets and
-                    // rebuilt by post_view when they change.
-                    #[local_ref]
-                    tags_box -> gtk::Box {
-                        set_spacing: 4,
-                        set_valign: gtk::Align::Center,
-                    },
-                },
-
-                // The message's own text, at full width: nothing shares this line,
-                // so it never reflows or gets covered.
-                gtk::Box {
-                    set_orientation: gtk::Orientation::Horizontal,
-                    set_spacing: 4,
-                    // 0 lines: previews are off, so the row gives them no space.
-                    set_visible: self.preview_lines > 0,
-
-                    // An encrypted message (#133) shows a lock where its text
-                    // would be, in the preview's own dimmed color: a symbolic
-                    // icon takes the label's foreground, so it follows the
-                    // light and dark themes with it.
-                    gtk::Image {
-                        set_icon_name: Some("channel-secure-symbolic"),
-                        set_pixel_size: 12,
-                        set_valign: gtk::Align::Center,
-                        set_visible: crate::models::preview_is_encrypted(
-                            self.thread_preview.as_deref().unwrap_or(&self.msg.preview),
-                        ),
-                        add_css_class: "message-preview",
-                    },
-
-                gtk::Label {
-                    set_label: &crate::models::preview_display(
-                        self.thread_preview.as_deref().unwrap_or(&self.msg.preview),
-                    ),
-                    // Fill (not Start): the layout width then matches the
-                    // allocation exactly, so the ellipsis lands right where the
-                    // text is cut instead of stranded at a stale layout edge.
-                    set_halign: gtk::Align::Fill,
-                    set_hexpand: true,
-                    set_xalign: 0.0,
-                    // A single preview line never wraps: wrap + `lines` +
-                    // ellipsize is the combination that detaches the "…" from
-                    // the text; a plain ellipsized line keeps it attached and
-                    // tracks the pane width continuously.
-                    #[watch]
-                    set_wrap: self.preview_lines > 1,
-                    set_wrap_mode: gtk::pango::WrapMode::WordChar,
-                    set_ellipsize: gtk::pango::EllipsizeMode::End,
-                    // A ceiling, not a reservation: a short message keeps a short
-                    // row, so the list stays scannable and only long messages use
-                    // the extra lines.
-                    #[watch]
-                    set_lines: self.preview_lines.max(1) as i32,
-                    add_css_class: "message-preview",
-                },
-                },
-
-            },
-            },
-            },
-            },
-        }
-        }
-    }
-
-    fn post_view() {
-        if *self.tags_rendered.borrow() != self.msg.keywords {
-            self.render_tags(&widgets.tags_box);
-        }
-        // Slide the palette open/shut by animating the spacer that gives the
-        // clip Overlay its width — driven here (not a GtkRevealer) because
-        // revealer transitions don't repaint inside an Overlay's overlay
-        // child. Runs on every view update; only a change in target width
-        // starts a new animation.
-        widgets.palette_clip.set_clip_overlay(&widgets.palette_inner, true);
-        if self.palette_open && !self.palette_built.get() {
-            self.build_palette(&widgets.palette_inner, &sender);
-        }
-        self.sync_palette();
-        if self.palette_open {
-            widgets.palette_inner.set_visible(true);
-        }
-        let (inner_w, inner_h) = (
-            widgets.palette_inner.measure(gtk::Orientation::Horizontal, -1).1,
-            widgets.palette_inner.measure(gtk::Orientation::Vertical, -1).1,
-        );
-        widgets.palette_spacer.set_height_request(inner_h);
-        let target = if self.palette_open { inner_w } else { 0 };
-        if self.palette_target.get() != target {
-            self.palette_target.set(target);
-            let spacer = widgets.palette_spacer.clone();
-            let from = spacer.width() as f64;
-            let setter = {
-                let spacer = spacer.clone();
-                adw::CallbackAnimationTarget::new(move |v| spacer.set_width_request(v as i32))
-            };
-            // Bound to the line (mapped: it holds the visible toggle), NOT
-            // the spacer — adw skips animations on unmapped widgets, and the
-            // zero-width spacer counts as one, which made the slide jump
-            // straight to its end value.
-            let anim =
-                adw::TimedAnimation::new(&widgets.actions_line, from, target as f64, 180, setter);
-            anim.set_easing(adw::Easing::EaseOutCubic);
-            if target == 0 {
-                // Sliding shut: hide only once fully back in the button, so
-                // the close still reads as a slide.
-                let inner = widgets.palette_inner.downgrade();
-                anim.connect_done(move |_| {
-                    if let Some(inner) = inner.upgrade() {
-                        inner.set_visible(false);
-                    }
-                });
-            }
-            if let Some(old) = self.palette_anim.borrow_mut().replace(anim) {
-                old.pause();
-            }
-            if let Some(a) = self.palette_anim.borrow().as_ref() {
-                a.play();
-            }
-        }
-
-        // One-time gesture wiring (#swipe): no hook to attach an imperative
-        // controller once from the declarative view, so it happens here on
-        // the row's first render. The tracker doubles as the wiring guard —
-        // kept alive in the model, since it stops firing once dropped.
-        if self.swipe_tracker.borrow().is_none() {
-            let tracker = wire_swipe_tracker(&widgets.swipe_surface, &sender);
-            self.swipe_tracker.replace(Some(tracker));
-        }
-        widgets
-            .swipe_surface
-            .set_sensitivity(self.swipe_sensitivity.get());
-        if let Some(t) = self.swipe_tracker.borrow().as_ref() {
-            // A committing row takes no new gestures — it is on its way out.
-            t.set_enabled(self.swipe_enabled.get() && !self.swipe_committing);
-        }
-
-        // A live drag already tracks 1:1 — `wire_swipe_tracker`'s
-        // `update-swipe` handler sets the surface's progress directly, every
-        // event. Once released, this animates the rest of the way smoothly
-        // instead of letting `swipe_progress` resetting snap it.
-        if self.swipe_dragging {
-            if let Some(a) = self.swipe_anim.borrow_mut().take() {
-                a.pause();
-            }
-        } else if self.swipe_committing && !self.swipe_exit_started.get() {
-            // The exit: carry the content clear off the row's own side while
-            // the Revealer (already told to close) shuts the height. Started
-            // exactly once — post_view runs again on any later change, and a
-            // restart mid-flight would stutter.
-            self.swipe_exit_started.set(true);
-            let span = (widgets.swipe_surface.width() as f64).max(SWIPE_MAX * 2.0);
-            // Negated into `AdwSwipeTracker`'s convention, like the snap-back.
-            let target = if self.swipe_side < 0 { span } else { -span };
-            let surface = widgets.swipe_surface.clone();
-            let setter = {
-                let surface = surface.clone();
-                adw::CallbackAnimationTarget::new(move |v| surface.set_progress_px(v))
-            };
-            let anim = adw::TimedAnimation::new(
-                &widgets.row_overlay,
-                surface.progress_px(),
-                target,
-                SWIPE_EXIT_MS,
-                setter,
-            );
-            // Carries the drag's own momentum on rather than starting over.
-            anim.set_easing(adw::Easing::EaseOutCubic);
-            // The action fires as the exit lands, so the removal that follows
-            // has nothing left to hide. Tied to the animation rather than a
-            // timer: a row removed mid-flight takes the animation with it.
-            // Sent fallibly all the same — libadwaita holds its own reference
-            // to a playing animation, so `done` can still arrive after the
-            // row is gone, and `input` would panic on a dead runtime.
-            {
-                let tx = sender.input_sender().clone();
-                let action = self.swipe_action();
-                anim.connect_done(move |_| {
-                    let _ = tx.send(MessageRowInput::SwipeCommitted(action));
-                });
-            }
-            if let Some(old) = self.swipe_anim.replace(Some(anim)) {
-                old.pause();
-            }
-            if let Some(a) = self.swipe_anim.borrow().as_ref() {
-                a.play();
-            }
-        } else if !self.swipe_committing {
-            // Negated back to `AdwSwipeTracker`'s own convention, matching
-            // `size_allocate`'s translation.
-            let target = -self.swipe_progress;
-            let current = widgets.swipe_surface.progress_px();
-            if (current - target).abs() <= 0.5 {
-                // Already at rest (a release right at 0): nothing to animate,
-                // so settle the `.swiping` geometry straight away.
-                if self.swipe_active && self.swipe_progress == 0.0 {
-                    sender.input(MessageRowInput::SwipeSettled);
-                }
-            } else {
-                let surface = widgets.swipe_surface.clone();
-                let setter = {
-                    let surface = surface.clone();
-                    adw::CallbackAnimationTarget::new(move |v| surface.set_progress_px(v))
-                };
-                // Bound to the row overlay (always mapped), not the
-                // surface — adw skips animations on unmapped widgets.
-                let anim = adw::TimedAnimation::new(
-                    &widgets.row_overlay,
-                    current,
-                    target,
-                    180,
-                    setter,
-                );
-                anim.set_easing(adw::Easing::EaseOutCubic);
-                // The pill only rounds off and re-insets once the content
-                // has fully slid back over the strip.
-                if self.swipe_progress == 0.0 {
-                    let tx = sender.input_sender().clone();
-                    anim.connect_done(move |_| {
-                        let _ = tx.send(MessageRowInput::SwipeSettled);
-                    });
-                }
-                if let Some(old) = self.swipe_anim.replace(Some(anim)) {
-                    old.pause();
-                }
-                if let Some(a) = self.swipe_anim.borrow().as_ref() {
-                    a.play();
-                }
-            }
-        }
-    }
-
-    fn init_model(init: Self::Init, index: &DynamicIndex, sender: FactorySender<Self>) -> Self {
-        let RowInit {
-            msg,
-            gravatar,
-            avatars,
-            avatar_late,
-            sender_logos,
-            preview_lines,
-            show_subject,
-            ring_class,
-            palette_collapse_secs,
-            palette_hover,
-            tags,
-            show_palette,
-            in_junk,
-            in_drafts,
-            thread_count,
-            is_thread_child,
-            is_last_child,
-            thread_expanded,
-            thread_expandable,
-            thread_key,
-            thread_date,
-            thread_from,
-            thread_preview,
-            thread_unread,
-            thread_starred,
-            drag_keys,
-            thread_drag,
-            show_recipient,
-            revealed,
-            swipe_reversed,
-            swipe_enabled,
-            swipe_sensitivity,
-        } = init;
-        let mut model = Self {
-            msg,
-            palette_built: std::cell::Cell::new(false),
-            palette_buttons: std::cell::RefCell::new(None),
-            show_recipient,
-            gravatar,
-            avatars,
-            avatar_shown: !avatar_late,
-            sender_logos,
-            preview_lines,
-            show_subject,
-            avatar_texture: None,
-            initials_image: std::cell::RefCell::new(None),
-            ring_class,
-            row_hovered: false,
-            palette_open: false,
-            collapse_timer: None,
-            palette_collapse_secs,
-            palette_hover,
-            tags,
-            tags_rendered: std::cell::RefCell::new(Vec::new()),
-            show_palette,
-            in_junk,
-            in_drafts,
-            thread_count,
-            is_thread_child,
-            is_last_child,
-            thread_expanded,
-            thread_expandable,
-            thread_key,
-            thread_date,
-            thread_from,
-            thread_preview,
-            thread_unread,
-            thread_starred,
-            drag_keys,
-            thread_drag,
-            revealed,
-            index: index.clone(),
-            palette_target: std::cell::Cell::new(0),
-            palette_anim: std::cell::RefCell::new(None),
-            swipe_reversed,
-            swipe_enabled,
-            swipe_sensitivity,
-            swipe_progress: 0.0,
-            swipe_side: 0,
-            swipe_committing: false,
-            swipe_exit_started: std::cell::Cell::new(false),
-            swipe_dragging: false,
-            swipe_active: false,
-            swipe_tracker: std::cell::RefCell::new(None),
-            swipe_anim: std::cell::RefCell::new(None),
-        };
-
-        // No point fetching anything for a circle that isn't drawn — and a
-        // Gravatar lookup would send a hash of the sender's address for nothing.
-        if model.avatars {
-            model.load_face(&sender);
-        }
-
-        // A row that mounts already collapsed (a freshly-expanded reply)
-        // flips to revealed on the next main-loop iteration, once it has been
-        // measured at its natural size — animating it open instead of
-        // starting from an already-final state.
-        if !model.revealed {
-            sender.input(MessageRowInput::SetRevealed(true));
-        }
-        // An avatar built folded away (Focus Mode just ended) slides in once
-        // the row is on screen: a moment after mounting, not the next
-        // iteration, so the revealer is mapped and animates.
-        if avatar_late {
-            let s = sender.clone();
-            gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(60), move || {
-                s.input(MessageRowInput::SetAvatarShown(true));
-            });
-        }
-
-        model
-    }
-
-    fn init_widgets(
-        &mut self,
-        _index: &DynamicIndex,
-        root: Self::Root,
-        _returned_widget: &gtk::ListBoxRow,
-        sender: FactorySender<Self>,
-    ) -> Self::Widgets {
-        // The chips are children added by hand (their number varies), so the
-        // box is built here and handed to the view; post_view keeps it fresh.
-        let tags_box = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-        self.render_tags(&tags_box);
-        let widgets = view_output!();
-        widgets
-    }
-
-    fn update(&mut self, msg: Self::Input, sender: FactorySender<Self>) {
-        match msg {
-            MessageRowInput::SetRead(read) => self.msg.unread = !read,
-            MessageRowInput::SetKeywords(keywords) => self.msg.keywords = keywords,
-            MessageRowInput::OpenTagMenu(btn) => {
-                let tags = self.tags.borrow().clone();
-                let msg = self.msg.clone();
-                let target = msg.clone();
-                let entries = tag_menu_entries(&tags, &msg, move |keyword, add| {
-                    let _ = sender.output(MessageRowOutput::SetTag {
-                        message: Box::new(target.clone()),
-                        keyword,
-                        add,
-                    });
-                });
-                show_context_menu(&btn, (btn.width() / 2) as f64, btn.height() as f64, vec![entries]);
-            }
-            MessageRowInput::OpenMoveMenu(btn) => {
-                // Under the button's middle, in window coordinates: the
-                // picker is anchored on the window by the app.
-                let point = btn.root().and_then(|root| {
-                    let root: gtk::Widget = root.upcast();
-                    btn.compute_point(
-                        &root,
-                        &gtk::graphene::Point::new(btn.width() as f32 / 2.0, btn.height() as f32),
-                    )
-                });
-                let (x, y) = point.map_or((0.0, 0.0), |p| (p.x() as f64, p.y() as f64));
-                let _ = sender.output(MessageRowOutput::MoveTo {
-                    message: Box::new(self.msg.clone()),
-                    x,
-                    y,
-                });
-            }
-            MessageRowInput::SetStarred(starred) => self.msg.starred = starred,
-            MessageRowInput::SetHasAttachment(has) => self.msg.has_attachment = has,
-            MessageRowInput::SetRowHover(over) => {
-                self.row_hovered = over;
-                // Hover mode: the palette slides open by itself on the row,
-                // and arms the usual collapse timeout on leave.
-                if self.palette_hover.get() {
-                    if over {
-                        if !self.palette_open {
-                            self.palette_open = true;
-                            let _ = sender.output(MessageRowOutput::PaletteOpened(
-                                self.index.current_index(),
-                            ));
-                        }
-                        self.cancel_collapse();
-                    } else if self.palette_open {
-                        self.arm_collapse(&sender);
-                    }
-                }
-            }
-            MessageRowInput::TogglePalette => {
-                if self.palette_open {
-                    self.palette_open = false;
-                    self.cancel_collapse();
-                } else {
-                    self.palette_open = true;
-                    // Persist briefly; moving onto the palette cancels this.
-                    self.arm_collapse(&sender);
-                    // One palette at a time: the list folds the others.
-                    let _ = sender
-                        .output(MessageRowOutput::PaletteOpened(self.index.current_index()));
-                }
-            }
-            MessageRowInput::SetAvatarShown(on) => self.avatar_shown = on,
-            MessageRowInput::SetPreviewLines(lines) => self.preview_lines = lines.clamp(1, 3),
-            MessageRowInput::ClosePalette => {
-                if self.palette_open {
-                    self.palette_open = false;
-                    self.cancel_collapse();
-                }
-            }
-            MessageRowInput::PaletteEnter => self.cancel_collapse(),
-            MessageRowInput::PaletteLeave => {
-                if self.palette_open {
-                    self.arm_collapse(&sender);
-                }
-            }
-            MessageRowInput::CollapsePalette => {
-                self.collapse_timer = None;
-                self.palette_open = false;
-            }
-            MessageRowInput::Action(action) => {
-                let _ = sender.output(MessageRowOutput::Action {
-                    action,
-                    message: Box::new(self.msg.clone()),
-                });
-            }
-            MessageRowInput::ToggleThreadClicked => {
-                if let Some(key) = self.thread_key.clone() {
-                    let _ = sender.output(MessageRowOutput::ToggleThread(key));
-                }
-            }
-            MessageRowInput::SetThreadUnread(unread) => self.thread_unread = unread,
-            MessageRowInput::SetThreadStarred(starred) => self.thread_starred = starred,
-            MessageRowInput::SetRevealed(revealed) => self.revealed = revealed,
-            MessageRowInput::SetThreadExpanded(expanded) => self.thread_expanded = expanded,
-            MessageRowInput::SwipeUpdate(offset) => {
-                // A row already flying out ignores further gesture events —
-                // its exit owns the surface until the action lands.
-                if self.swipe_committing {
-                    return;
-                }
-                self.swipe_dragging = true;
-                self.swipe_active = true;
-                self.swipe_progress = offset.clamp(-SWIPE_MAX, SWIPE_MAX);
-                if self.swipe_progress != 0.0 {
-                    self.swipe_side = if self.swipe_progress < 0.0 { -1 } else { 1 };
-                }
-            }
-            MessageRowInput::SwipePrefsChanged => {}
-            MessageRowInput::SwipeSettled => {
-                // Ignored if a new drag started before the old snap-back
-                // finished — that drag owns the state now.
-                if !self.swipe_dragging && self.swipe_progress == 0.0 {
-                    self.swipe_active = false;
-                }
-            }
-            MessageRowInput::SwipeEnd => {
-                self.swipe_dragging = false;
-                if self.swipe_progress.abs() >= SWIPE_ARM {
-                    self.commit_swipe();
-                } else {
-                    self.swipe_progress = 0.0;
-                }
-            }
-            MessageRowInput::SwipeCommitted(action) => {
-                if self.swipe_committing {
-                    sender.input(MessageRowInput::Action(action));
-                    // Most actions take the row with them, so this timer
-                    // usually fires into a component that is already gone —
-                    // hence the fallible sender (`input` would panic).
-                    let tx = sender.input_sender().clone();
-                    gtk::glib::timeout_add_local_once(
-                        std::time::Duration::from_millis(SWIPE_RESTORE_MS),
-                        move || {
-                            let _ = tx.send(MessageRowInput::SwipeRestore);
-                        },
-                    );
-                }
-            }
-            MessageRowInput::SwipeRestore => {
-                if self.swipe_committing {
-                    // Still here: the action did not remove the row, so it
-                    // slides back in and the Revealer reopens.
-                    self.swipe_committing = false;
-                    self.swipe_exit_started.set(false);
-                    self.swipe_progress = 0.0;
-                    self.revealed = true;
-                }
-            }
-        }
-    }
-
-    fn update_cmd(&mut self, cmd: Self::CommandOutput, sender: FactorySender<Self>) {
-        match cmd {
-            FaceCmd::Avatar { email, generation, mode, outcome, logo } => {
-                // Record what came back before deciding what to draw — the
-                // caches are shared, so the sender's other rows benefit even
-                // when this row has been recycled to a different message.
-                let retry_stale = crate::avatar::cache_result(&email, generation, mode, outcome);
-                match logo {
-                    Some(Some(bytes)) => {
-                        crate::logo::decode_and_cache(&email, &bytes);
-                    }
-                    Some(None) => crate::logo::remember_missing(&email),
-                    None => {}
-                }
-                if !self.face_email().eq_ignore_ascii_case(&email) {
-                    return;
-                }
-                match crate::avatar::lookup(&email, self.gravatar) {
-                    crate::avatar::CacheLookup::Texture(texture) => {
-                        self.avatar_texture = Some(texture);
-                    }
-                    crate::avatar::CacheLookup::Missing => self.load_logo(&email, &sender),
-                    crate::avatar::CacheLookup::Fetch { generation, mode } => {
-                        self.avatar_texture = None;
-                        // Only chase a result the EDS generation invalidated;
-                        // a transient Gravatar failure waits for a later render.
-                        if retry_stale {
-                            let want_logo =
-                                self.sender_logos && !crate::logo::known_missing(&email);
-                            sender.oneshot_command(find_face(email, generation, mode, want_logo));
-                        }
-                    }
-                }
-            }
-            FaceCmd::Logo { email, bytes } => {
-                let texture = match bytes {
-                    Some(bytes) => crate::logo::decode_and_cache(&email, &bytes),
-                    None => {
-                        // Remember the miss, so the sender's other rows and the
-                        // next sync don't ask the same domain again.
-                        crate::logo::remember_missing(&email);
-                        None
-                    }
-                };
-                if self.face_email().eq_ignore_ascii_case(&email) && self.sender_logos {
-                    self.avatar_texture = texture;
-                }
-            }
-        }
-    }
-
-    fn shutdown(&mut self, _widgets: &mut Self::Widgets, _output: relm4::Sender<Self::Output>) {
-        // Cancel a pending collapse timer so it can't fire into this (now dropped)
-        // component's shut-down runtime when the row is removed during a rebuild.
-        self.cancel_collapse();
-    }
-}
-
 /// Fire `DayChanged` shortly after the next local midnight (re-armed each time).
 fn schedule_midnight_refresh(sender: &ComponentSender<MessageList>) {
     use chrono::Timelike;
@@ -1886,340 +37,6 @@ fn schedule_midnight_refresh(sender: &ComponentSender<MessageList>) {
         let _ = input.send(MessageListInput::DayChanged);
         gtk::glib::ControlFlow::Break
     });
-}
-
-impl MessageRow {
-    /// Cancel any pending auto-collapse (e.g. the cursor is now over the palette).
-    fn cancel_collapse(&mut self) {
-        if let Some(id) = self.collapse_timer.take() {
-            id.remove();
-        }
-    }
-
-    /// (Re)start the auto-collapse countdown from the shared preference (min 1s).
-    fn arm_collapse(&mut self, sender: &FactorySender<Self>) {
-        self.cancel_collapse();
-        let secs = self.palette_collapse_secs.get().max(1);
-        // Fallible send: nothing removes this timer when the row is dropped
-        // (a list rebuild while a palette is open), and `input` aborts the
-        // process on a shut-down runtime rather than returning an error.
-        let tx = sender.input_sender().clone();
-        self.collapse_timer = Some(gtk::glib::timeout_add_seconds_local_once(
-            secs as u32,
-            move || {
-                let _ = tx.send(MessageRowInput::CollapsePalette);
-            },
-        ));
-    }
-
-    /// Chevron classes: shown (`revealed`) while the row is hovered or the palette
-    /// is open; a CSS opacity transition fades it in/out.
-    fn chevron_classes(&self) -> Vec<&'static str> {
-        let mut v = vec!["flat", "palette-toggle"];
-        if self.row_hovered || self.palette_open {
-            v.push("revealed");
-        }
-        v
-    }
-
-    fn ring_classes(&self) -> Vec<&str> {
-        match &self.ring_class {
-            Some(c) => vec![c.as_str()],
-            None => Vec::new(),
-        }
-    }
-
-    /// What a swipe to the left currently does (preference: Delete unless
-    /// the sides are swapped).
-    fn swipe_left_action(&self) -> RowAction {
-        if self.swipe_reversed.get() {
-            RowAction::Archive
-        } else {
-            RowAction::Delete
-        }
-    }
-
-    /// What a swipe to the right currently does.
-    fn swipe_right_action(&self) -> RowAction {
-        if self.swipe_reversed.get() {
-            RowAction::Delete
-        } else {
-            RowAction::Archive
-        }
-    }
-
-    /// The action the indicator panel is currently showing — the last side
-    /// it grew from, so it stays put while a release's snap-back shrinks it.
-    fn swipe_action(&self) -> RowAction {
-        if self.swipe_side < 0 {
-            self.swipe_left_action()
-        } else {
-            self.swipe_right_action()
-        }
-    }
-
-    /// The panel hugs the edge the swipe is dragging toward: right (End) for
-    /// a left drag, left (Start) for a right drag — Gmail's own reveal side.
-    fn swipe_halign(&self) -> gtk::Align {
-        if self.swipe_side < 0 {
-            gtk::Align::End
-        } else {
-            gtk::Align::Start
-        }
-    }
-
-    fn swipe_icon(&self) -> &'static str {
-        match self.swipe_action() {
-            RowAction::Delete => "user-trash-symbolic",
-            _ => "mail-archive-symbolic",
-        }
-    }
-
-    fn swipe_label(&self) -> String {
-        match self.swipe_action() {
-            RowAction::Delete => i18n("Delete"),
-            _ => i18n("Archive"),
-        }
-    }
-
-    /// A released swipe that cleared the commit distance (#swipe): the row
-    /// flies out the side it was dragged to while its Revealer closes over
-    /// the same 200ms, and the action fires as the two land. The strip stays
-    /// pinned at full commit for the whole exit, so the color and icon it
-    /// leaves under are the ones the release chose.
-    fn commit_swipe(&mut self) {
-        self.swipe_committing = true;
-        self.swipe_active = true;
-        self.swipe_progress = if self.swipe_side < 0 { -SWIPE_MAX } else { SWIPE_MAX };
-        // post_view starts the exit and hangs the action off its landing.
-        self.revealed = false;
-    }
-
-    /// The indicator panel's classes: colored for whichever action is
-    /// active, and "armed" once the drag has cleared the commit distance —
-    /// full color says a release now fires it, matching Gmail's own cue.
-    fn swipe_indicator_classes(&self) -> Vec<&'static str> {
-        let mut v = vec!["swipe-indicator"];
-        v.push(match self.swipe_action() {
-            RowAction::Delete => "swipe-delete",
-            _ => "swipe-archive",
-        });
-        if self.swipe_progress.abs() >= SWIPE_ARM {
-            v.push("armed");
-        }
-        v
-    }
-
-    /// The row's name line: the sender — or, in a Sent folder, who the message
-    /// went to, since every sender there is you (#27).
-    fn name_line(&self) -> String {
-        if !self.show_recipient {
-            // A thread head surfaces its NEWEST member's sender.
-            if let Some((name, _)) = &self.thread_from {
-                return name.clone();
-            }
-            return self.msg.from_name.clone();
-        }
-        let names = recipient_names(&self.msg.to);
-        if names.is_empty() {
-            self.msg.from_name.clone()
-        } else {
-            format!("To: {names}")
-        }
-    }
-
-    /// What the avatar's initials (and face lookups) key on: the first
-    /// recipient in a Sent folder, the sender everywhere else.
-    fn face_name(&self) -> String {
-        if self.show_recipient {
-            let names = recipient_names(&self.msg.to);
-            if let Some(first) = names.split(',').next().map(str::trim) {
-                if !first.is_empty() {
-                    return first.to_string();
-                }
-            }
-        }
-        if let Some((name, _)) = &self.thread_from {
-            return name.clone();
-        }
-        self.msg.from_name.clone()
-    }
-
-    /// The address face lookups run against — the first recipient's in a Sent
-    /// folder, so the circle shows who the mail went to.
-    fn face_email(&self) -> String {
-        if self.show_recipient {
-            if let Some(addr) = first_recipient_addr(&self.msg.to) {
-                return addr;
-            }
-        }
-        if let Some((_, addr)) = &self.thread_from {
-            return addr.clone();
-        }
-        self.msg.from_addr.clone()
-    }
-
-    /// What the avatar circle shows: the sender's picture when one is known,
-    /// else their initials drawn ink-centred (see `ui::initials`), which
-    /// replaces the avatar's own label. The same paintable is returned for
-    /// the same name, so the avatar sees no change between refreshes.
-    fn avatar_image(&self) -> Option<gtk::gdk::Paintable> {
-        if let Some(tex) = &self.avatar_texture {
-            return Some(tex.clone().upcast());
-        }
-        let mut slot = self.initials_image.borrow_mut();
-        // A message from one of your own mailboxes wears that mailbox's emoji
-        // on its color (#189), the same face the sidebar circle shows. It
-        // shares the slot with the initials, keyed by what it draws rather
-        // than by a name, so either way the avatar is handed the same object
-        // on every refresh.
-        if let Some((emoji, color)) = crate::avatar::own_face(&self.face_email())
-            .and_then(|face| face.emoji.map(|emoji| (emoji, face.color)))
-        {
-            let key = format!("{emoji}\u{1}{color}");
-            if slot.as_ref().is_none_or(|(n, _)| *n != key) {
-                let bg = gtk::gdk::RGBA::parse(&color).unwrap_or(gtk::gdk::RGBA::BLACK);
-                let fg = gtk::gdk::RGBA::parse(crate::color::readable_text(&color))
-                    .unwrap_or(gtk::gdk::RGBA::WHITE);
-                let face = crate::ui::initials::InitialsPaintable::solid(&emoji, bg, fg, 0.55);
-                *slot = Some((key, face));
-            }
-            return slot.as_ref().map(|(_, p)| p.clone().upcast());
-        }
-        let name = self.face_name();
-        if slot.as_ref().is_none_or(|(n, _)| *n != name) {
-            *slot = crate::ui::initials::InitialsPaintable::for_name(&name).map(|p| (name.clone(), p));
-        }
-        slot.as_ref().map(|(_, p)| p.clone().upcast())
-    }
-
-    /// Fill the circle: a cached face if one is known, otherwise go and look.
-    /// The chain is your own mailbox's picture (#189) → contact photo →
-    /// Gravatar → domain icon → initials, each tier consulted only while its
-    /// switch is on.
-    fn load_face(&mut self, sender: &FactorySender<Self>) {
-        let email = self.face_email();
-        if email.is_empty() {
-            return;
-        }
-        // A mailbox of your own with a face of its own (#189): that is what
-        // the circle shows, ahead of any contact photo or domain icon. Its
-        // own Gravatar leads when the account asked for one (the app looks it
-        // up once a session); otherwise the picture, then the emoji, which
-        // `avatar_image` draws.
-        if let Some(face) = crate::avatar::own_face(&email) {
-            self.avatar_texture = face
-                .gravatar
-                .then(|| crate::avatar::own_gravatar(&email))
-                .flatten()
-                .or_else(|| {
-                    face.picture.as_deref().and_then(crate::ui::initials::avatar_texture)
-                });
-            return;
-        }
-        match crate::avatar::lookup(&email, self.gravatar) {
-            crate::avatar::CacheLookup::Texture(texture) => {
-                self.avatar_texture = Some(texture);
-            }
-            // Contact and Gravatar are definitively absent — the logo tier is
-            // all that's left before initials.
-            crate::avatar::CacheLookup::Missing => self.load_logo(&email, sender),
-            crate::avatar::CacheLookup::Fetch { generation, mode } => {
-                let want_logo = self.sender_logos && !crate::logo::known_missing(&email);
-                sender.oneshot_command(find_face(email, generation, mode, want_logo));
-            }
-        }
-    }
-
-    /// The logo tier: only consulted when enabled, so switching "sender logos"
-    /// off hides already-cached logos immediately. A domain already asked about
-    /// is not asked again — one request a session, not one a row.
-    fn load_logo(&mut self, email: &str, sender: &FactorySender<Self>) {
-        if !self.sender_logos {
-            self.avatar_texture = None;
-            return;
-        }
-        if let Some(tex) = crate::logo::cached(email) {
-            self.avatar_texture = Some(tex);
-            // A week-old stored icon still shows, but this new message from
-            // the sender is the cue to look for a fresh one in the background.
-            if crate::logo::wants_refresh(email) {
-                sender.oneshot_command(find_logo(email.to_string()));
-            }
-            return;
-        }
-        self.avatar_texture = None;
-        if crate::logo::known_missing(email) {
-            return;
-        }
-        sender.oneshot_command(find_logo(email.to_string()));
-    }
-
-    /// Classes for the row's content box. Without the avatar the unread
-    /// dot becomes the row's first element, and the wide inset that kept the
-    /// circle clear of the list's edge would leave the dot lopsided — sitting
-    /// twice as far from the edge as from the text beside it.
-    fn content_css(&self) -> Vec<&'static str> {
-        let mut v = if self.avatars {
-            vec!["message-row"]
-        } else {
-            vec!["message-row", "no-avatar"]
-        };
-        // Without the palette line the pill gets extra breathing room instead
-        // (see `.message-row.no-palette` in the stylesheet).
-        if !self.show_palette {
-            v.push("no-palette");
-        }
-        // Previews off leaves a two-line row: too short for the ⋯ to clear
-        // the avatar's bottom edge — reserve just enough height that
-        // they never collide (see `.message-row.palette-room`).
-        if self.show_palette && self.avatars && self.preview_lines == 0 {
-            v.push("palette-room");
-        }
-        v
-    }
-
-    /// Row classes: unread highlight plus a `thread-child` indent for replies.
-    /// A thread head with unread messages anywhere in its conversation gets the
-    /// heavier `thread-unread` highlight until every one of them is read.
-    fn row_css(&self) -> Vec<&'static str> {
-        let mut v = row_classes(&self.msg);
-        if self.thread_unread {
-            v.push("thread-unread");
-        }
-        if self.is_thread_child {
-            v.push("thread-child");
-        }
-        if self.is_last_child {
-            v.push("thread-last");
-        }
-        if self.swipe_active {
-            v.push("swiping");
-        }
-        v
-    }
-
-    /// Unread for display purposes: the message itself, or (on a thread head)
-    /// any message hidden in its conversation.
-    fn display_unread(&self) -> bool {
-        self.msg.unread || self.thread_unread
-    }
-
-    fn sender_classes(&self) -> Vec<&'static str> {
-        if self.display_unread() {
-            vec!["message-sender", "unread"]
-        } else {
-            vec!["message-sender"]
-        }
-    }
-
-    fn subject_classes(&self) -> Vec<&'static str> {
-        if self.display_unread() {
-            vec!["message-subject", "unread"]
-        } else {
-            vec!["message-subject"]
-        }
-    }
 }
 
 /// Order two messages by the chosen sort (ties fall back to date).
@@ -2285,18 +102,19 @@ fn normalize_subject(subject: &str) -> String {
 /// and are not in `msg_thread` either. `viewed` is the row the open
 /// conversation was opened from, and `emitted` is that conversation as it was
 /// handed to the reader: a card from it keeps that row lit.
-fn row_for_reader_key(
+fn row_for_reader_key<M: std::borrow::Borrow<Message>>(
     key: &(u32, u32),
-    shown: &[Message],
+    shown: &[M],
     msg_thread: &std::collections::HashMap<(u32, u32), (u32, String)>,
     emitted: &[(u32, u32)],
     viewed: Option<(u32, u32)>,
 ) -> Option<usize> {
-    let own_row = shown.iter().position(|m| (m.account_id, m.id) == *key);
+    let own_row = shown.iter().map(|m| m.borrow()).position(|m| (m.account_id, m.id) == *key);
     let thread_row = || {
         let tkey = msg_thread.get(key)?;
         shown
             .iter()
+            .map(|m| m.borrow())
             .position(|m| msg_thread.get(&(m.account_id, m.id)) == Some(tkey))
     };
     let viewed_row = || {
@@ -2304,7 +122,7 @@ fn row_for_reader_key(
             return None;
         }
         let viewed = viewed?;
-        shown.iter().position(|m| (m.account_id, m.id) == viewed)
+        shown.iter().map(|m| m.borrow()).position(|m| (m.account_id, m.id) == viewed)
     };
     own_row.or_else(thread_row).or_else(viewed_row)
 }
@@ -2361,9 +179,9 @@ fn heads_its_row(
 /// (Gmail files one message under every label it has), and only those the
 /// list's filters let through. A message with no Message-ID cannot be told
 /// apart from its copies, so it is left out.
-fn nested_members(
+fn nested_members<M: std::borrow::Borrow<Message>>(
     found: &[Message],
-    own: &[Message],
+    own: &[M],
     listed_folders: &std::collections::HashSet<(u32, u32)>,
     passes: &impl Fn(&Message) -> bool,
 ) -> Vec<Message> {
@@ -2372,7 +190,7 @@ fn nested_members(
         if m.message_id.is_empty()
             || listed_folders.contains(&(m.account_id, m.folder_id))
             || !passes(m)
-            || own.iter().chain(&out).any(|o| o.message_id == m.message_id)
+            || own.iter().map(|o| o.borrow()).chain(&out).any(|o| o.message_id == m.message_id)
         {
             continue;
         }
@@ -2419,49 +237,71 @@ fn unasked_threads(
 /// window, so covering the whole mailbox costs no more than covering a day of
 /// it; what a conversation costs to *open* is bounded separately, by
 /// `THREAD_MEMBER_LIMIT`.
-fn compute_thread_keys(
-    msgs: &[Message],
+fn compute_thread_keys<M: std::borrow::Borrow<Message>>(
+    msgs: &[M],
     links: &[(u32, String, String)],
 ) -> std::collections::HashMap<(u32, u32, u32), (u32, String)> {
     use std::collections::HashMap;
 
-    // Union-find over message-id nodes (namespaced by account).
-    let mut parent: HashMap<String, String> = HashMap::new();
-    fn find(parent: &mut HashMap<String, String>, x: &str) -> String {
-        let mut cur = x.to_string();
-        while let Some(p) = parent.get(&cur) {
-            if p == &cur {
-                break;
-            }
-            cur = p.clone();
-        }
-        cur
+    // Union-find over message-id nodes (namespaced by account). The nodes
+    // borrow their ids from the messages: a large folder is grouped whenever
+    // it changes, and a String per id made most of the cost (#323).
+    #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+    enum Node<'a> {
+        Id(u32, &'a str),
+        Uid(u32, u32, u32),
     }
-    fn union(parent: &mut HashMap<String, String>, a: &str, b: &str) {
-        let ra = find(parent, a);
-        let rb = find(parent, b);
-        if ra != rb {
-            parent.insert(ra, rb);
+    #[derive(Default)]
+    struct Forest<'a> {
+        index: HashMap<Node<'a>, usize>,
+        nodes: Vec<Node<'a>>,
+        parent: Vec<usize>,
+    }
+    impl<'a> Forest<'a> {
+        fn node(&mut self, n: Node<'a>) -> usize {
+            if let Some(&i) = self.index.get(&n) {
+                return i;
+            }
+            let i = self.nodes.len();
+            self.nodes.push(n);
+            self.parent.push(i);
+            self.index.insert(n, i);
+            i
+        }
+        fn find(&mut self, mut x: usize) -> usize {
+            while self.parent[x] != x {
+                self.parent[x] = self.parent[self.parent[x]];
+                x = self.parent[x];
+            }
+            x
+        }
+        fn union(&mut self, a: usize, b: usize) {
+            let (ra, rb) = (self.find(a), self.find(b));
+            if ra != rb {
+                self.parent[ra] = rb;
+            }
         }
     }
     // A message with its own Message-ID is a real node; one without gets a unique
     // node keyed by folder and uid so it only links through its references (if
     // any). A UID names a message in one folder only (#317).
-    let self_node = |m: &Message| -> String {
+    fn self_node(m: &Message) -> Node<'_> {
         if m.message_id.is_empty() {
-            format!("{}\u{0}uid{}/{}", m.account_id, m.folder_id, m.uid)
+            Node::Uid(m.account_id, m.folder_id, m.uid)
         } else {
-            format!("{}\u{0}{}", m.account_id, m.message_id)
+            Node::Id(m.account_id, &m.message_id)
         }
-    };
+    }
 
+    let mut forest = Forest::default();
+    let mut own = Vec::with_capacity(msgs.len());
     for m in msgs {
-        let sn = self_node(m);
-        parent.entry(sn.clone()).or_insert_with(|| sn.clone());
+        let m = m.borrow();
+        let sn = forest.node(self_node(m));
+        own.push(sn);
         for r in m.references.split_whitespace() {
-            let rn = format!("{}\u{0}{}", m.account_id, r);
-            parent.entry(rn.clone()).or_insert_with(|| rn.clone());
-            union(&mut parent, &sn, &rn);
+            let rn = forest.node(Node::Id(m.account_id, r));
+            forest.union(sn, rn);
         }
     }
 
@@ -2469,21 +309,34 @@ fn compute_thread_keys(
     // appear: a reply in the Inbox and the one before it are two answers to the
     // same message in Sent, and without that message nothing says so.
     for (aid, id, refs) in links {
-        let sn = format!("{aid}\u{0}{id}");
-        parent.entry(sn.clone()).or_insert_with(|| sn.clone());
+        let sn = forest.node(Node::Id(*aid, id));
         for r in refs.split_whitespace() {
-            let rn = format!("{aid}\u{0}{r}");
-            parent.entry(rn.clone()).or_insert_with(|| rn.clone());
-            union(&mut parent, &sn, &rn);
+            let rn = forest.node(Node::Id(*aid, r));
+            forest.union(sn, rn);
         }
     }
 
-    let mut out = HashMap::new();
-    for m in msgs {
-        let root = find(&mut parent, &self_node(m));
-        out.insert(thread_slot(m), (m.account_id, root));
+    let mut names: HashMap<usize, String> = HashMap::new();
+    let mut out = HashMap::with_capacity(msgs.len());
+    for (m, sn) in msgs.iter().zip(own) {
+        let m = m.borrow();
+        let root = forest.find(sn);
+        let name = names.entry(root).or_insert_with(|| match forest.nodes[root] {
+            Node::Id(aid, id) => format!("{aid}\u{0}{id}"),
+            Node::Uid(aid, folder, uid) => format!("{aid}\u{0}uid{folder}/{uid}"),
+        });
+        out.insert(thread_slot(m), (m.account_id, name.clone()));
     }
     out
+}
+
+/// [`compute_thread_keys`] over everything a list holds, with each
+/// conversation's members as positions in that same slice.
+struct SourceThreads {
+    /// Worked out from the search pool rather than the folder.
+    pool: bool,
+    keys: std::collections::HashMap<(u32, u32, u32), (u32, String)>,
+    members: std::collections::HashMap<(u32, String), Vec<usize>>,
 }
 
 /// Where [`compute_thread_keys`] files a message: its account, folder and id.
@@ -2494,53 +347,32 @@ fn thread_slot(m: &Message) -> (u32, u32, u32) {
     (m.account_id, m.folder_id, m.id)
 }
 
-/// Style classes for a row: highlight unread messages with a pale accent.
-fn row_classes(m: &Message) -> Vec<&'static str> {
-    if m.unread {
-        vec!["message-unread"]
-    } else {
-        Vec::new()
-    }
-}
-
 pub struct MessageList {
-    rows: FactoryVecDeque<MessageRow>,
+    /// The rows: a `ListView` builds only the ones on screen, so a folder
+    /// of any size is one list (#323).
+    list_view: gtk::ListView,
+    /// The model behind it, its selection, and what every row shares.
+    shared: Rc<RowShared>,
     /// The list's own input sender, for work it schedules on the main loop
-    /// (idle-time row filling, coalesced rebuilds).
+    /// (coalesced rebuilds).
     input: relm4::Sender<MessageListInput>,
-    /// Rows of the current page not built yet (in `shown` order after the
-    /// built ones); an idle callback builds them a chunk at a time.
-    pending_rows: std::collections::VecDeque<RowInit>,
-    fill_scheduled: bool,
-    /// The list had keyboard focus when a rebuild took its rows away, and
-    /// the selected row it belongs on is not built yet: `fill_rows` hands
-    /// focus to it when it is.
-    refocus_selected: bool,
-    /// Row lists a folder switch left behind, torn down a chunk at a time
-    /// at idle: destroying a page of rows costs about as much as building
-    /// one, and it need not happen before the new page shows.
-    retired: Vec<FactoryVecDeque<MessageRow>>,
-    retire_scheduled: bool,
-    /// A per-row signature of the last page built (thread count, expandable,
-    /// child, last, expanded, unread, starred), so growing the page can tell
-    /// that its existing rows are unchanged and only append.
-    row_sigs: Vec<(usize, bool, bool, bool, bool, bool, bool)>,
     /// A rebuild asked for and not yet run: `Some(preserve_scroll)`. Several
     /// arrivals in one main-loop pass (a folder's cached copy, its synced
     /// copy, fresh thread links, a view switch's flag changes) collapse into
     /// one rebuild instead of one each.
     rebuild_queued: Option<bool>,
     /// A `SelectAndLoad` that arrived while a rebuild was queued: the rows it
-    /// must find are not built yet, so it waits for that rebuild and runs
+    /// must find are not there yet, so it waits for that rebuild and runs
     /// after it (a notification click follows the folder's list into the
     /// channel in the same pass, and the list is only built on the idle).
     pending_select: Option<(u32, u32)>,
-    /// All messages for the current folder (full searchable index).
-    all: Vec<Message>,
+    /// All messages for the current folder (full searchable index). Shared
+    /// with the rows rather than copied: a large folder is listed whole.
+    all: Vec<Rc<Message>>,
     /// Every folder's messages (all accounts), supplied by the app while a search
     /// is active, so `AllFolders` scope can filter across the whole mailbox. Empty
     /// when not searching.
-    search_pool: Vec<Message>,
+    search_pool: Vec<Rc<Message>>,
     /// Which messages the search field filters over.
     scope: SearchScope,
     /// The search field widget, kept so a folder switch can clear its text.
@@ -2550,9 +382,9 @@ pub struct MessageList {
     /// When the search closed itself (empty entry losing focus): the button
     /// click that caused that blur arrives right after and must not reopen.
     search_closed_at: Option<std::time::Instant>,
-    /// Currently displayed (post-filter, capped) messages, aligned with rows.
-    shown: Vec<Message>,
-    /// Total messages matching the current filter (may exceed what's rendered).
+    /// The rows, in order: what the model shows, one message each.
+    shown: Vec<Rc<Message>>,
+    /// Total messages matching the current filter.
     total_matches: usize,
     query: String,
     gravatar: bool,
@@ -2562,31 +394,20 @@ pub struct MessageList {
     show_subject: bool,
     /// Whether the colored avatars are drawn (#29).
     avatars: bool,
-    /// The next rebuild draws the avatars folded away and slides them in
-    /// (Focus Mode has just given them back).
-    reveal_avatars_late: bool,
     /// Whether a sender's site icon may fill one (#30).
     sender_logos: bool,
-    /// Tint each row by its account (used in the unified inbox view).
+    /// Ring each avatar in its account's color (the unified inbox view).
     colorize: bool,
-    /// account_id → avatar color, for tinting rows.
+    /// account_id → avatar color, for the rings.
     account_colors: std::collections::HashMap<u32, String>,
-    /// Display-wide provider with each account's pale row-tint rule.
-    color_provider: gtk::CssProvider,
-    /// Actions palette collapse delay (seconds), shared with every row.
-    palette_collapse_secs: std::rc::Rc<std::cell::Cell<u64>>,
-    /// Shared with every row: open the palette on row hover.
-    palette_hover: std::rc::Rc<std::cell::Cell<bool>>,
-    /// The tags (#71), shared with every row for its chips and tag menu.
-    tags: std::rc::Rc<std::cell::RefCell<Vec<crate::config::Tag>>>,
+    /// Display-wide provider with each account's ring rule.
+    color_provider: crate::ui::DisplayCss,
+    /// Bumped when the circles must be looked up again, and when the tag
+    /// definitions change (see `RowLook`).
+    face_gen: u64,
+    tags_gen: u64,
     /// The bulk bar's tag button, which its menu hangs from (#313).
     bulk_tag_btn: gtk::Button,
-    /// Shared with every row: swap the swipe-gesture sides (#swipe).
-    swipe_reversed: std::rc::Rc<std::cell::Cell<bool>>,
-    /// Shared with every row: whether swiping is on at all (#92).
-    swipe_enabled: std::rc::Rc<std::cell::Cell<bool>>,
-    /// Shared with every row: how sensitive a trackpad two-finger swipe is.
-    swipe_sensitivity: std::rc::Rc<std::cell::Cell<f64>>,
     /// The message currently being viewed, kept selected across list rebuilds.
     /// Keyed by (account_id, id) since UIDs collide across accounts in the
     /// unified "All Inboxes" view.
@@ -2596,6 +417,11 @@ pub struct MessageList {
     /// screen — every reply in an Inbox answers something in Sent — so those
     /// links are needed to see that the replies belong together.
     thread_links: Vec<(u32, String, String)>,
+    /// The conversations of everything the list holds, worked out once and
+    /// kept until the messages or the links change. Opening a message asks
+    /// which conversation it belongs to, and grouping a large folder from
+    /// scratch on every click held each one up by a visible beat (#323).
+    source_threads: std::cell::RefCell<Option<Rc<SourceThreads>>>,
     /// What each conversation really is, read across the account's other
     /// folders and handed down by the app: its size (#222) and its newest
     /// message (#236). The list can only see its own folder, so a thread whose
@@ -2607,20 +433,19 @@ pub struct MessageList {
     /// Off by default: the row describes the newest message this folder holds,
     /// as it always has. The sizes on the badges are not affected either way.
     thread_row_newest: bool,
-    /// The conversations the last rebuild put on screen, as
-    /// `(account, thread root, the Message-IDs it is threaded by)` — what the
-    /// app needs to look their real sizes up.
-    listed_threads: Vec<(u32, String, Vec<String>)>,
+    /// Each conversation the last rebuild listed, with the folder's own
+    /// members: what the app needs to look its real size up when a row
+    /// showing it comes on screen.
+    groups: std::collections::HashMap<(u32, String), Vec<Rc<Message>>>,
+    /// The folders the last rebuild listed: a conversation's members in them
+    /// are rows of their own, so only the rest are nested (#309).
+    listed_folders: std::collections::HashSet<(u32, u32)>,
     /// Which conversations have already been asked about. A rebuild runs on
     /// every keystroke of a search and on every sync, and each ask is a scan of
     /// the account's index — so a thread is asked about once and remembered,
     /// not re-asked whenever its row is redrawn. Cleared per account by
     /// [`MessageListInput::ForgetThreadSummaries`] when that account's mail moves.
     asked_threads: std::collections::HashSet<(u32, String)>,
-    /// The shown rows' (account, folder, uid, id) keys, handed to every row so a
-    /// drag can carry the whole selection (#23).
-    drag_keys: DragKeys,
-    thread_drag: ThreadDragKeys,
     /// Every selected message key, so the whole selection survives list rebuilds
     /// (background syncs) until the user clicks away.
     selected_ids: Vec<(u32, u32)>,
@@ -2629,9 +454,9 @@ pub struct MessageList {
     /// reported (`ThreadGrew`) so the reader shows the new reply at once.
     emitted_thread: Vec<(u32, u32)>,
     /// Selection changes still expected from a reader-driven selection, and what
-    /// that selection is. GTK reports each `select_row`/`unselect_all` separately
-    /// and a rebuild adds more, so a single flag would be consumed by the first
-    /// and let a later one re-open the message; only a change that matches what
+    /// that selection is. GTK reports each selection change separately and a
+    /// rebuild adds more, so a single flag would be consumed by the first and
+    /// let a later one re-open the message; only a change that matches what
     /// the reader asked for is suppressed, and anything else ends it at once.
     from_reader: u8,
     reader_keys: Vec<(u32, u32)>,
@@ -2663,34 +488,26 @@ pub struct MessageList {
     msg_thread: std::collections::HashMap<(u32, u32), (u32, String)>,
     /// Conversation key → member message keys (multi-message threads only).
     thread_members: std::collections::HashMap<(u32, String), Vec<(u32, u32)>>,
-    /// Members of the conversations on the page that live in other folders
+    /// Members of the conversations on the list that live in other folders
     /// (your replies in Sent, the archived parts), by message key: rows a
     /// conversation opens out into without being part of this folder (#309).
     /// Whole-conversation actions look members up in the folder's own index,
     /// so they never reach these.
-    nested: std::collections::HashMap<(u32, u32), Message>,
-    /// Messages actually rendered (after the render limit), independent of how
-    /// many rows are visible once threads are collapsed.
-    rendered_count: usize,
-    /// The rows on screen were built for a look that has changed (avatars,
-    /// logos, preview lines, date style…): the next rebuild must build
-    /// them again even though the messages are the same. Without this the
-    /// page-growing shortcut in `rebuild` keeps them as they are.
-    rows_stale: bool,
-    /// How many messages to render — grows by `RENDER_CAP` each time the user
-    /// scrolls to the bottom (infinite scroll). Reset on folder switch / search.
-    render_limit: usize,
+    nested: std::collections::HashMap<(u32, u32), Rc<Message>>,
     /// Whether the folder's background index is fully loaded. When false, more
-    /// rows may still stream in, so hitting the bottom shows a loading spinner.
+    /// rows may still stream in, so reaching the bottom shows a spinner.
     index_complete: bool,
     /// Whether a SetMessages has arrived since the last SetLoading — gates the
     /// empty-folder placeholder so it never flashes during a folder switch.
     loaded: bool,
-    /// Threads whose replies are sliding shut. The rows stay in `shown` until
+    /// The list is scrolled to its bottom: with the index still streaming
+    /// in, the spinner there says more is on its way.
+    at_bottom: bool,
+    /// Threads whose replies are sliding shut. The rows stay in the list until
     /// the paired timer fires and drops them — otherwise they'd simply vanish
     /// rather than animate away. (PR #79)
     collapsing_threads: std::collections::HashMap<(u32, String), gtk::glib::SourceId>,
-    /// The list's scroller, kept so expand/collapse can preserve scroll position.
+    /// The list's scroller.
     scroller: Option<gtk::ScrolledWindow>,
     /// Current sort order for the list.
     sort: SortOrder,
@@ -2875,8 +692,8 @@ pub enum MessageListInput {
     /// swipe and release, so the commit exit can be caught in stills — there
     /// is no way to inject a real gesture on this desktop.
     DebugSwipe { index: usize, left: bool },
-    /// A row's palette opened; fold every other row's.
-    PaletteOpened(usize),
+    /// Showcase only (HYLKI_SHOWCASE_ROW_MENU): the first row's menu.
+    DebugRowMenu,
     /// Expand/collapse a conversation thread.
     ToggleThread((u32, String)),
     /// A collapsing thread's replies have finished sliding shut — drop them
@@ -2903,8 +720,12 @@ pub enum MessageListInput {
     /// Remove many messages in a single batch (bulk archive/delete/spam), so the
     /// list updates in one render pass instead of one per message.
     RemoveMany(Vec<u32>),
-    /// Secondary-click at (x, y) in the list: open the context menu.
-    ContextMenu { x: f64, y: f64 },
+    /// Secondary-click on the row showing `key`, at (x, y) in the list's
+    /// coordinates: open the context menu.
+    ContextMenu { x: f64, y: f64, key: (u32, u32) },
+    /// Rows have just started showing conversations nobody has asked the
+    /// cache about yet (#222).
+    AskThreads,
     /// Set the actions palette auto-collapse delay (seconds).
     SetPaletteCollapse(u64),
     /// Open the actions palette on row hover, without the ⋯ click.
@@ -2922,19 +743,15 @@ pub enum MessageListInput {
     SetInJunk(bool),
     /// The list shows Drafts: read/unread toggles are withheld.
     SetInDrafts(bool),
-    /// Folder switch: reset infinite-scroll paging back to the first page and
-    /// scroll to the top (a plain `SetMessages` now preserves paging for refreshes).
+    /// Folder switch: drop any search and scroll back to the top (a plain
+    /// `SetMessages` keeps the place, for refreshes).
     ResetPaging,
-    /// The list was scrolled to the bottom — render the next page of messages.
-    LoadMore,
     /// Whether the current folder's background index is fully loaded.
     SetIndexComplete(bool),
-    /// Build the next chunk of the current page's rows (scheduled at idle).
-    FillRows,
     /// Run the rebuild queued by [`MessageList::queue_rebuild`].
     RunQueuedRebuild,
-    /// Tear down the next chunk of a retired row list (scheduled at idle).
-    RetireRows,
+    /// The list was scrolled to (or away from) its bottom.
+    AtBottom(bool),
     /// Mark which message is being viewed so it stays highlighted across
     /// rebuilds; `None` clears the selection (e.g. on folder switch).
     SetSelected(Option<u32>),
@@ -2959,7 +776,7 @@ pub enum MessageListOutput {
     /// Every selected message, whenever that changes — the reader outlines the
     /// matching cards.
     SelectionKeys(Vec<(u32, u32)>),
-    /// The header-bar count ("N" / "N of M") changed — app.rs shows it.
+    /// The header-bar count changed — app.rs shows it.
     CountChanged(String),
     /// A row was double-clicked: open it in its own window. `thread` is the
     /// whole conversation when the row heads one (same shape as `Selected`),
@@ -2986,9 +803,9 @@ pub enum MessageListOutput {
     /// The selected conversation gained a member since it was opened (a
     /// reply synced in): the head and the whole conversation as it now is.
     ThreadGrew { message: Message, thread: Vec<Message> },
-    /// The conversations now on screen and the Message-IDs each is threaded
-    /// by, so the app can ask the cache how big they really are (#222). Sent
-    /// only when the page's conversations actually change.
+    /// Conversations rows have started showing and the Message-IDs each is
+    /// threaded by, so the app can ask the cache how big they really are
+    /// (#222). Each is asked about once.
     ThreadsListed { groups: Vec<(u32, String, Vec<String>)> },
     /// Delete requested on a lone selected row that heads a whole conversation:
     /// every member of the thread, for the app to confirm and delete.
@@ -3151,7 +968,7 @@ impl SimpleComponent for MessageList {
                         add_css_class: "flat",
                         set_focus_on_click: false,
                         #[watch]
-                        set_visible: !model.tags.borrow().is_empty(),
+                        set_visible: !model.shared.tags.borrow().is_empty(),
                         connect_clicked => MessageListInput::BulkTagMenu,
                     },
                     gtk::Button {
@@ -3200,76 +1017,63 @@ impl SimpleComponent for MessageList {
                 #[wrap(Some)]
                 #[name = "scroller"]
                 set_child = &gtk::ScrolledWindow {
-                set_vexpand: true,
-                // External, not Never: with Never the widest row's minimum (the
-                // actions palette reservation plus the avatar column) propagates
-                // all the way up and becomes part of the window's minimum width,
-                // which pushed it past half of a 1920px screen — at which point
-                // GNOME refuses to tile the window to the left/right edge. Rows
-                // ellipsize, so a narrow pane clips gracefully instead.
-                set_hscrollbar_policy: gtk::PolicyType::External,
-                // The pane's own floor, now that rows no longer set one: room
-                // for a row's full actions palette (avatar + dot + the reserved
-                // actions line), so opening the palette never needs to clip —
-                // the narrow-window breakpoint rails the sidebar in time to
-                // afford this even in a half-screen tile. (Grows by the thread
-                // indent while a conversation is expanded — see the rebuild.)
-                set_size_request: (LIST_MIN_WIDTH, -1),
+                    set_vexpand: true,
+                    // External, not Never: with Never the widest row's minimum (the
+                    // actions palette reservation plus the avatar column) propagates
+                    // all the way up and becomes part of the window's minimum width,
+                    // which pushed it past half of a 1920px screen — at which point
+                    // GNOME refuses to tile the window to the left/right edge. Rows
+                    // ellipsize, so a narrow pane clips gracefully instead.
+                    set_hscrollbar_policy: gtk::PolicyType::External,
+                    // The pane's own floor, now that rows no longer set one: room
+                    // for a row's full actions palette (avatar + dot + the reserved
+                    // actions line), so opening the palette never needs to clip —
+                    // the narrow-window breakpoint rails the sidebar in time to
+                    // afford this even in a half-screen tile. (Grows by the thread
+                    // indent while a conversation is expanded — see the rebuild.)
+                    set_size_request: (LIST_MIN_WIDTH, -1),
 
-                // Reaching the bottom pulls in the next page (and, if the index is
-                // still loading, shows the spinner below until more arrive).
-                connect_edge_reached[sender] => move |_, pos| {
-                    if pos == gtk::PositionType::Bottom {
-                        sender.input(MessageListInput::LoadMore);
-                    }
-                },
-
-                gtk::Box {
-                    set_orientation: gtk::Orientation::Vertical,
-
-                    // Wired by `wire_list` (shared with the lists that
-                    // replace this one on a folder switch — see
-                    // `discard_rows`).
+                    // The view must be the scroller's own child to build only
+                    // the rows on screen.
                     #[local_ref]
-                    row_box -> gtk::ListBox {},
-
-                    // Bottom loading indicator while the rest of the folder streams in.
-                    #[name = "loading_box"]
-                    gtk::Box {
-                        add_css_class: "list-loading",
-                        set_halign: gtk::Align::Center,
-                        set_spacing: 8,
-                        set_margin_top: 10,
-                        set_margin_bottom: 14,
-                        #[watch]
-                        set_visible: model.is_loading_more(),
-
-                        // Spun only while on screen: see init.
-                        #[name = "loading_spinner"]
-                        gtk::Spinner {
-                            set_width_request: 18,
-                            set_height_request: 18,
-                        },
-                        gtk::Label {
-                            set_label: &i18n("Loading more…"),
-                            add_css_class: "dim-label",
-                        },
-                    },
-
-                    // Placeholder when the folder has loaded and holds nothing.
-                    // Same full-size AdwStatusPage styling as the reader's
-                    // "No message selected", so the two placeholders match.
-                    adw::StatusPage {
-                        set_icon_name: Some("mail-inbox-symbolic"),
-                        set_title: &i18n("No Messages"),
-                        set_description: Some(i18n("There's nothing here right now.").as_str()),
-                        set_vexpand: true,
-                        #[watch]
-                        set_visible: model.is_empty_state(),
-                    },
-                },
+                    list_view -> gtk::ListView {},
                 },
 
+                // At the bottom while the rest of the folder streams in.
+                add_overlay = &gtk::Box {
+                    add_css_class: "list-loading",
+                    set_halign: gtk::Align::Center,
+                    set_valign: gtk::Align::End,
+                    set_spacing: 8,
+                    set_margin_bottom: 14,
+                    set_can_target: false,
+                    #[watch]
+                    set_visible: model.is_loading_more(),
+
+                    // Spun only while shown: a spinning spinner redraws every
+                    // frame for as long as it is mapped (#275).
+                    gtk::Spinner {
+                        set_width_request: 18,
+                        set_height_request: 18,
+                        #[watch]
+                        set_spinning: model.is_loading_more(),
+                    },
+                    gtk::Label {
+                        set_label: &i18n("Loading more…"),
+                        add_css_class: "dim-label",
+                    },
+                },
+
+                // Placeholder when the folder has loaded and holds nothing.
+                // Same full-size AdwStatusPage styling as the reader's
+                // "No message selected", so the two placeholders match.
+                add_overlay = &adw::StatusPage {
+                    set_icon_name: Some("mail-inbox-symbolic"),
+                    set_title: &i18n("No Messages"),
+                    set_description: Some(i18n("There's nothing here right now.").as_str()),
+                    #[watch]
+                    set_visible: model.is_empty_state(),
+                },
             },
         }
     }
@@ -3279,26 +1083,20 @@ impl SimpleComponent for MessageList {
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
-        let rows = Self::new_rows(sender.input_sender());
+        let shared = RowShared::new(sender.input_sender().clone());
+        let list_view = gtk::ListView::new(
+            Some(shared.selection.clone()),
+            Some(crate::ui::message_row::factory(&shared)),
+        );
+        shared.view.set(Some(&list_view));
+        Self::wire_list(&list_view, &shared, sender.input_sender());
 
-        let color_provider = gtk::CssProvider::new();
-        if let Some(display) = gtk::gdk::Display::default() {
-            gtk::style_context_add_provider_for_display(
-                &display,
-                &color_provider,
-                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-            );
-        }
+        let color_provider = crate::ui::DisplayCss::new();
 
         let mut model = MessageList {
-            rows,
+            list_view: list_view.clone(),
+            shared,
             input: sender.input_sender().clone(),
-            pending_rows: std::collections::VecDeque::new(),
-            fill_scheduled: false,
-            refocus_selected: false,
-            retired: Vec::new(),
-            retire_scheduled: false,
-            row_sigs: Vec::new(),
             rebuild_queued: None,
             pending_select: None,
             all: Vec::new(),
@@ -3309,42 +1107,28 @@ impl SimpleComponent for MessageList {
             search_closed_at: None,
             shown: Vec::new(),
             total_matches: 0,
-            render_limit: RENDER_CAP,
             index_complete: true,
             loaded: false,
+            at_bottom: false,
             collapsing_threads: std::collections::HashMap::new(),
             query: String::new(),
             gravatar: false,
             avatars: true,
-            reveal_avatars_late: false,
-            rows_stale: false,
             sender_logos: false,
             preview_lines: 1,
             show_subject: true,
             colorize: false,
             account_colors: std::collections::HashMap::new(),
             color_provider,
-            tags: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
-            palette_collapse_secs: std::rc::Rc::new(std::cell::Cell::new(5)),
-            palette_hover: std::rc::Rc::new(std::cell::Cell::new(
-                crate::config::load_privacy().list_palette_hover,
-            )),
-            swipe_reversed: std::rc::Rc::new(std::cell::Cell::new(
-                crate::config::load_privacy().swipe_reversed,
-            )),
-            swipe_enabled: std::rc::Rc::new(std::cell::Cell::new(
-                crate::config::load_privacy().swipe_enabled,
-            )),
-            swipe_sensitivity: std::rc::Rc::new(std::cell::Cell::new(
-                crate::config::load_swipe_sensitivity(),
-            )),
+            face_gen: 0,
+            tags_gen: 0,
             thread_links: Vec::new(),
+            source_threads: std::cell::RefCell::new(None),
             thread_summaries: std::collections::HashMap::new(),
             thread_row_newest: false,
-            listed_threads: Vec::new(),
+            groups: std::collections::HashMap::new(),
+            listed_folders: std::collections::HashSet::new(),
             asked_threads: std::collections::HashSet::new(),
-            drag_keys: DragKeys::default(),
-            thread_drag: ThreadDragKeys::default(),
             selected_id: None,
             selected_ids: Vec::new(),
             emitted_thread: Vec::new(),
@@ -3361,7 +1145,6 @@ impl SimpleComponent for MessageList {
             msg_thread: std::collections::HashMap::new(),
             thread_members: std::collections::HashMap::new(),
             nested: std::collections::HashMap::new(),
-            rendered_count: 0,
             scroller: None,
             sort: SortOrder::DateNewest,
             unread_only: false,
@@ -3373,46 +1156,26 @@ impl SimpleComponent for MessageList {
             bulk_tag_btn: gtk::Button::new(),
         };
 
-        let row_box = model.rows.widget();
         let bulk_tag_btn = model.bulk_tag_btn.clone();
-        Self::wire_list(row_box, sender.input_sender());
-
         let widgets = view_output!();
         model.scroller = Some(widgets.scroller.clone());
-
-        // A spinning spinner redraws every frame for as long as it is mapped,
-        // and a scrolled window keeps the one under the rows mapped when it
-        // is scrolled out of sight. It shows until the folder's index is
-        // complete, which for a large Gmail folder waits on a backfill that
-        // can take hours, so an idle window was redrawn thirty times a
-        // second (#275). Spin only while it is in view.
         {
-            let spinner = widgets.loading_spinner.clone();
-            let loading = widgets.loading_box.clone();
-            let scroller = widgets.scroller.clone();
-            let update = std::rc::Rc::new(move || {
-                let in_view = loading.is_mapped()
-                    && loading
-                        .compute_point(&scroller, &gtk::graphene::Point::new(0.0, 0.0))
-                        .is_some_and(|p| {
-                            p.y() < scroller.height() as f32 && p.y() + loading.height() as f32 > 0.0
-                        });
-                if spinner.is_spinning() != in_view {
-                    spinner.set_spinning(in_view);
-                }
-            });
+            // Whether the list sits at its bottom, for the spinner that says
+            // more of the folder is on its way.
             let adj = widgets.scroller.vadjustment();
-            let u = update.clone();
-            adj.connect_value_changed(move |_| u());
-            let u = update.clone();
-            adj.connect_changed(move |_| u());
-            let u = update.clone();
-            widgets.loading_box.connect_map(move |_| u());
-            let u = update.clone();
-            widgets.loading_box.connect_unmap(move |_| u());
-            let u = update.clone();
-            widgets.loading_box.connect_visible_notify(move |_| u());
+            let input = sender.input_sender().clone();
+            let at_bottom = std::rc::Rc::new(std::cell::Cell::new(false));
+            let check = move |adj: &gtk::Adjustment| {
+                let bottom = adj.upper() > adj.page_size() && adj.value() + adj.page_size() >= adj.upper() - 1.0;
+                if at_bottom.replace(bottom) != bottom {
+                    let _ = input.send(MessageListInput::AtBottom(bottom));
+                }
+            };
+            let c = check.clone();
+            adj.connect_value_changed(move |a| c(a));
+            adj.connect_changed(move |a| check(a));
         }
+        model.sync_look();
         model.search_entry = Some(widgets.search_entry.clone());
 
         // The scope picker sizes itself to its widest entry ("All folders"), which
@@ -3453,7 +1216,8 @@ impl SimpleComponent for MessageList {
             MessageListInput::SetMessages { messages } => {
                 let t = std::time::Instant::now();
                 let n = messages.len();
-                self.all = messages;
+                self.all = messages.into_iter().map(Rc::new).collect();
+                self.source_threads.take();
                 self.loaded = true;
                 // Keep any active search query: this also fires for a background
                 // re-sync of the folder you're viewing, which shouldn't drop your
@@ -3469,66 +1233,67 @@ impl SimpleComponent for MessageList {
                 let before = self.all.len();
                 for m in messages {
                     if !existing.contains(&(m.account_id, m.uid)) {
-                        self.all.push(m);
+                        self.all.push(Rc::new(m));
                     }
                 }
-                // Re-render when it could change what's visible: an active search, a
-                // sort where older messages can surface at the top, or the user is
-                // waiting at the bottom for more rows to fill the raised limit.
-                let waiting_for_more = self.render_limit > self.rendered_count;
-                if self.all.len() != before
-                    && (!self.query.is_empty()
-                        || self.sort != SortOrder::DateNewest
-                        || waiting_for_more)
-                {
+                // The list holds the whole folder, so what arrives joins it.
+                if self.all.len() != before {
+                    self.source_threads.take();
                     self.queue_rebuild(true);
                 }
             }
             MessageListInput::SetLoading => {
                 self.all.clear();
+                self.source_threads.take();
                 self.loaded = false;
                 self.clear_search();
-                self.render_limit = RENDER_CAP;
                 // Queued: when the folder's list follows in the same pass
                 // (served from cache), the old rows are torn down once, for
                 // the new ones, not first for nothing.
                 self.queue_rebuild(false);
             }
             MessageListInput::ResetPaging => {
-                // Folder switch: drop any active search, back to the first page,
-                // scrolled to the top.
+                // Folder switch: drop any active search, scrolled to the top.
                 self.clear_search();
                 self.emitted_thread.clear();
-                self.render_limit = RENDER_CAP;
-                if let Some(s) = &self.scroller {
-                    s.vadjustment().set_value(0.0);
-                }
-            }
-            MessageListInput::LoadMore => {
-                // Show more if the index already has more, or if it's still loading
-                // (the spinner covers the wait, and appended rows fill in).
-                if self.rendered_count < self.total_matches || !self.index_complete {
-                    self.render_limit = self.render_limit.saturating_add(RENDER_CAP);
-                    self.rebuild_preserving_scroll();
-                }
+                self.scroll_top();
             }
             MessageListInput::SetIndexComplete(complete) => {
                 self.index_complete = complete;
             }
-            MessageListInput::FillRows => {
-                self.fill_scheduled = false;
-                self.fill_rows(FILL_CHUNK);
-            }
-            MessageListInput::RetireRows => {
-                self.retire_scheduled = false;
-                self.retire_rows();
+            MessageListInput::AtBottom(bottom) => self.at_bottom = bottom,
+            MessageListInput::AskThreads => {
+                // Only the conversations rows have come to show, and only once
+                // each: the answer arrives as a refresh of those rows, so
+                // asking again on the strength of it would never settle.
+                let wanted = self.shared.take_wanted();
+                if !self.threading {
+                    return;
+                }
+                let mut listed: Vec<(u32, String, Vec<String>)> = Vec::new();
+                for key in wanted {
+                    if listed.iter().any(|(a, r, _)| (*a, r) == (key.0, &key.1)) {
+                        continue;
+                    }
+                    let Some(members) = self.groups.get(&key) else { continue };
+                    let ids = crate::models::thread_ids(members.iter().map(|m| &**m));
+                    if !ids.is_empty() {
+                        listed.push((key.0, key.1, ids));
+                    }
+                }
+                let fresh = unasked_threads(&listed, &self.asked_threads);
+                if !fresh.is_empty() {
+                    for (aid, root, _) in &fresh {
+                        self.asked_threads.insert((*aid, root.clone()));
+                    }
+                    let _ = sender.output(MessageListOutput::ThreadsListed { groups: fresh });
+                }
             }
             MessageListInput::RunQueuedRebuild => {
                 if let Some(preserve) = self.rebuild_queued.take() {
-                    if preserve {
-                        self.rebuild_preserving_scroll();
-                    } else {
-                        self.rebuild();
+                    self.rebuild();
+                    if !preserve {
+                        self.scroll_top();
                     }
                 }
                 // The rows exist now: run the selection that waited for them.
@@ -3540,26 +1305,29 @@ impl SimpleComponent for MessageList {
             MessageListInput::SetThreadLinks(links) => {
                 if self.thread_links != links {
                     self.thread_links = links;
+                    self.source_threads.take();
                     if self.threading {
                         self.queue_rebuild(true);
                     }
                 }
             }
             MessageListInput::SetThreadSummaries(summaries) => {
-                // They arrive a beat after the page paints (the cache is the
-                // worker's, not ours), so this is a rebuild rather than part of
-                // one. Only what a row says moves; which conversations are
-                // listed does not — which is what keeps this from asking again
-                // and looping.
-                let mut changed = false;
+                // They arrive a beat after the rows that asked are shown (the
+                // cache is the worker's, not ours). Only what those rows say
+                // moves; which conversations are listed does not — which is
+                // what keeps this from asking again and looping.
+                let mut changed = Vec::new();
                 for (key, summary) in summaries {
                     if self.thread_summaries.get(&key) != Some(&summary) {
-                        self.thread_summaries.insert(key, summary);
-                        changed = true;
+                        self.thread_summaries.insert(key.clone(), summary);
+                        changed.push(key);
                     }
                 }
-                if changed && self.threading {
-                    self.queue_rebuild(true);
+                if !changed.is_empty() && self.threading {
+                    // A rebuild already on its way reads them anyway.
+                    if self.rebuild_queued.is_none() {
+                        self.apply_summaries(changed);
+                    }
                 }
             }
             MessageListInput::ForgetThreadSummaries(account_id) => {
@@ -3584,6 +1352,7 @@ impl SimpleComponent for MessageList {
                 if self.threading != on {
                     self.threading = on;
                     self.rebuild();
+                    self.scroll_top();
                 }
             }
             MessageListInput::SetThreadExpansion(on) => {
@@ -3591,17 +1360,15 @@ impl SimpleComponent for MessageList {
                     self.thread_expansion = on;
                     // Turning expansion off folds every open thread (the
                     // `expanded` computation ignores the stored toggles while
-                    // off); turning it on restores them. Every row is built
-                    // again: a folded row reads as unchanged to the rebuild,
-                    // and kept the caret it was built with.
-                    self.rebuild_rows_preserving_scroll();
+                    // off); turning it on restores them.
+                    self.sync_look();
+                    self.rebuild();
                 }
             }
             MessageListInput::SetListPalette(on) => {
                 if self.list_palette != on {
                     self.list_palette = on;
-                    // A row reads the setting when it is built, as above.
-                    self.rebuild_rows_preserving_scroll();
+                    self.sync_look();
                 }
             }
             MessageListInput::ResolveDelete => {
@@ -3610,13 +1377,7 @@ impl SimpleComponent for MessageList {
                 // (which confirms before deleting). Anything else — multiple
                 // rows, a reply row, a plain message — is an ordinary bulk
                 // delete of exactly what is selected.
-                let selected: Vec<Message> = self
-                    .rows
-                    .widget()
-                    .selected_rows()
-                    .iter()
-                    .filter_map(|r| self.shown.get(r.index() as usize).cloned())
-                    .collect();
+                let selected = self.selected_messages();
                 if let [m] = selected.as_slice() {
                     let key = (m.account_id, m.id);
                     if let Some(tkey) = self.msg_thread.get(&key) {
@@ -3628,7 +1389,7 @@ impl SimpleComponent for MessageList {
                                     self.active_source()
                                         .iter()
                                         .find(|x| (x.account_id, x.id) == *mk)
-                                        .cloned()
+                                        .map(|m| Message::clone(m))
                                 })
                                 .collect();
                             let _ = sender
@@ -3646,14 +1407,17 @@ impl SimpleComponent for MessageList {
                     // drop them so everything follows the new one.
                     self.expanded_threads.clear();
                     self.rebuild();
+                    self.scroll_top();
                 }
             }
-            MessageListInput::RefreshDates => self.rebuild_rows_preserving_scroll(),
+            // Every row's date, and a conversation's latest, is worked out
+            // by the rebuild.
+            MessageListInput::RefreshDates => self.rebuild(),
             MessageListInput::SetSenderLogos(on) => {
                 if self.sender_logos != on {
                     self.sender_logos = on;
-                    // The circle is filled when the row is built.
-                    self.rebuild_rows_preserving_scroll();
+                    self.face_gen += 1;
+                    self.sync_look();
                 }
             }
             MessageListInput::SetLook { avatars, preview_lines, subject, animate } => {
@@ -3664,20 +1428,16 @@ impl SimpleComponent for MessageList {
                 if !avatars_changed && !lines_changed && !subject_changed {
                     return;
                 }
-                // The subject line is built with the row, so it can only come
-                // or go in a rebuild; the slide below ends in one anyway.
                 self.show_subject = subject;
                 if animate && avatars_changed && !avatars {
-                    // Slide every circle away (and the preview to its new
-                    // height in place); the rebuild that takes the slot
-                    // back follows once they have gone, so the rows it
-                    // draws are the ones on screen.
-                    self.avatars = false;
+                    // Slide every circle on screen away (and the preview to
+                    // its new height in place); the rows give the slot back
+                    // once they have gone.
                     self.preview_lines = preview_lines;
-                    for i in 0..self.rows.len() {
-                        self.rows.send(i, MessageRowInput::SetAvatarShown(false));
+                    for row in self.shared.bound_rows() {
+                        row.slide_avatar_away();
                         if lines_changed {
-                            self.rows.send(i, MessageRowInput::SetPreviewLines(preview_lines));
+                            row.set_preview_lines(preview_lines);
                         }
                     }
                     let s = sender.clone();
@@ -3686,62 +1446,73 @@ impl SimpleComponent for MessageList {
                         move || s.input(MessageListInput::LookSettled),
                     );
                 } else {
-                    // Circles coming back are built folded and slide in.
-                    self.reveal_avatars_late = animate && avatars_changed && avatars;
                     self.avatars = avatars;
                     self.preview_lines = preview_lines;
-                    self.rebuild_rows_preserving_scroll();
-                    self.reveal_avatars_late = false;
+                    self.sync_look();
+                    // Circles coming back start folded and slide in.
+                    if animate && avatars_changed && avatars {
+                        for row in self.shared.bound_rows() {
+                            row.slide_avatar_in();
+                        }
+                    }
                 }
             }
-            MessageListInput::LookSettled => self.rebuild_rows_preserving_scroll(),
+            MessageListInput::LookSettled => {
+                self.avatars = false;
+                self.sync_look();
+            }
             MessageListInput::SetAvatars(on) => {
                 if self.avatars != on {
                     self.avatars = on;
-                    // The circle is built with the row, so the rows have to be
-                    // built again for the width to come back.
-                    self.rebuild_rows_preserving_scroll();
+                    self.sync_look();
                 }
             }
             MessageListInput::SetGravatar(on) => {
                 if self.gravatar != on {
                     self.gravatar = on;
-                    self.rebuild_rows();
+                    self.face_gen += 1;
+                    self.sync_look();
                 }
             }
             MessageListInput::SetShowRecipient(on) => {
                 if self.show_recipient != on {
                     self.show_recipient = on;
-                    self.rows_stale = true;
-                    self.queue_rebuild(true);
+                    self.sync_look();
                 }
             }
             MessageListInput::SetRestorable(on) => self.restorable = on,
-            MessageListInput::SetInJunk(on) => self.in_junk = on,
-            MessageListInput::SetInDrafts(on) => self.in_drafts = on,
-            MessageListInput::ContactPhotosChanged => {
-                // Pointless when the circles aren't drawn; rows check the
-                // fresh index as they are rebuilt.
-                if self.avatars {
-                    self.rebuild_rows_preserving_scroll();
+            MessageListInput::SetInJunk(on) => {
+                if self.in_junk != on {
+                    self.in_junk = on;
+                    self.sync_look();
                 }
+            }
+            MessageListInput::SetInDrafts(on) => {
+                if self.in_drafts != on {
+                    self.in_drafts = on;
+                    self.sync_look();
+                }
+            }
+            MessageListInput::ContactPhotosChanged => {
+                // The circles on screen look again; the rest do when shown.
+                self.face_gen += 1;
+                self.sync_look();
             }
             MessageListInput::SetColorize(on) => {
                 if self.colorize != on {
                     self.colorize = on;
-                    self.rows_stale = true;
-                    self.queue_rebuild(true);
+                    self.sync_look();
                 }
             }
             MessageListInput::DayChanged => {
                 // Re-render so relative labels like "Today" reflect the new date.
-                self.rebuild_rows();
+                self.rebuild();
                 schedule_midnight_refresh(&sender);
             }
             MessageListInput::SetAccountColors(colors) => {
                 self.account_colors = colors;
                 self.refresh_tint_css();
-                // Existing rows keep their classes; the rule update reaches them.
+                self.sync_look();
             }
             MessageListInput::Search(q) => {
                 let was_active = self.searching();
@@ -3752,24 +1523,24 @@ impl SimpleComponent for MessageList {
                 if was_active != now_active {
                     let _ = sender.output(MessageListOutput::SearchActive(now_active));
                 }
-                self.render_limit = RENDER_CAP;
                 self.rebuild();
+                self.scroll_top();
             }
             MessageListInput::SetScope(scope) => {
                 if self.scope != scope {
                     self.scope = scope;
                     // Scope only affects the view while a query is present.
                     if self.searching() {
-                        self.render_limit = RENDER_CAP;
                         self.rebuild();
+                        self.scroll_top();
                     }
                 }
             }
             MessageListInput::SetSearchPool(pool) => {
-                self.search_pool = pool;
+                self.search_pool = pool.into_iter().map(Rc::new).collect();
+                self.source_threads.take();
                 if self.searching() && self.scope == SearchScope::AllFolders {
-                    self.render_limit = RENDER_CAP;
-                    self.rebuild_preserving_scroll();
+                    self.rebuild();
                 }
             }
             MessageListInput::SelectFromReader { keys, conversation } => {
@@ -3800,46 +1571,28 @@ impl SimpleComponent for MessageList {
                             self.expanded_threads.insert(thread_key);
                         }
                     }
-                    self.rebuild_preserving_scroll();
+                    self.rebuild();
                 }
                 // The conversation as the reader shows it: what this list
                 // handed over plus what the app merged in from other folders
                 // since (#220). Either way it was opened from the viewed row.
                 let conversation = reader_conversation(&self.emitted_thread, &conversation);
-                let list = self.rows.widget();
-                list.unselect_all();
-                for key in &keys {
-                    if let Some(idx) = row_for_reader_key(
-                        key,
-                        &self.shown,
-                        &self.msg_thread,
-                        &conversation,
-                        self.selected_id,
-                    ) {
-                        if let Some(row) = list.row_at_index(idx as i32) {
-                            list.select_row(Some(&row));
-                        }
-                    }
-                }
-                // What the reader asked for, as this list can represent it, so
-                // the changes GTK is about to report are recognised as ours
-                // rather than the user's.
-                self.reader_keys = list
-                    .selected_rows()
+                let positions: Vec<usize> = keys
                     .iter()
-                    .filter_map(|r| self.shown.get(r.index() as usize).map(|m| (m.account_id, m.id)))
+                    .filter_map(|key| {
+                        row_for_reader_key(key, &self.shown, &self.msg_thread, &conversation, self.selected_id)
+                    })
                     .collect();
+                // What the reader asked for, as this list can represent it, so
+                // the change GTK is about to report is recognised as ours
+                // rather than the user's.
+                self.reader_keys = self.keys_at(&positions);
                 self.from_reader = 8;
+                self.select_positions(&positions);
                 sender.input(MessageListInput::SelectionChanged);
             }
             MessageListInput::SelectionChanged => {
-                let keys: Vec<(u32, u32)> = self
-                    .rows
-                    .widget()
-                    .selected_rows()
-                    .iter()
-                    .filter_map(|r| self.shown.get(r.index() as usize).map(|m| (m.account_id, m.id)))
-                    .collect();
+                let keys = self.keys_at(&self.selected_positions());
                 self.selection_count = keys.len();
                 // Set from the reader, which is already showing these messages:
                 // mirror the selection but leave the reader alone. Reporting it
@@ -3881,7 +1634,7 @@ impl SimpleComponent for MessageList {
                                 .shown
                                 .iter()
                                 .find(|m| (m.account_id, m.id) == *key)
-                                .cloned()
+                                .map(|m| Message::clone(m))
                             {
                                 let (thread, solo) = self.conversation_for(&m);
                                 self.emitted_thread =
@@ -3925,7 +1678,6 @@ impl SimpleComponent for MessageList {
                 // and to advance the selection (and reader) in its place.
             }
             MessageListInput::MoveSelection(delta) => {
-                let list = self.rows.widget();
                 if self.shown.is_empty() {
                     return;
                 }
@@ -3934,44 +1686,46 @@ impl SimpleComponent for MessageList {
                 }
                 // From the current row, or from the top/bottom when nothing is
                 // selected yet, so the first keypress always lands somewhere.
-                let current = list
-                    .selected_rows()
+                let current = self
+                    .selected_positions()
                     .first()
-                    .map(|r| r.index())
-                    .unwrap_or(if delta > 0 { -1 } else { self.shown.len() as i32 });
-                let next = (current + delta).clamp(0, self.shown.len() as i32 - 1);
-                if let Some(row) = list.row_at_index(next) {
-                    list.unselect_all();
-                    list.select_row(Some(&row));
-                    row.grab_focus();
-                }
+                    .map(|&p| p as i64)
+                    .unwrap_or(if delta > 0 { -1 } else { self.shown.len() as i64 });
+                let next = (current + delta as i64).clamp(0, self.shown.len() as i64 - 1) as usize;
+                self.shared.selection.select_item(next as u32, true);
+                self.focus_row(next);
             }
 
             MessageListInput::ToggleSelection => {
-                let list = self.rows.widget();
-                let Some(row) = list.focus_child().and_downcast::<gtk::ListBoxRow>().or_else(|| {
-                    list.selected_rows().first().cloned()
-                }) else {
+                // The row the keyboard is on, or the first selected one.
+                let focused = self
+                    .shared
+                    .bound_rows()
+                    .into_iter()
+                    .find(|r| r.has_focus_within())
+                    .and_then(|r| r.position());
+                let Some(pos) = focused.or_else(|| self.selected_positions().first().copied()) else {
                     return;
                 };
-                if row.is_selected() {
-                    list.unselect_row(&row);
+                let selection = &self.shared.selection;
+                if selection.is_selected(pos as u32) {
+                    selection.unselect_item(pos as u32);
                 } else {
-                    list.select_row(Some(&row));
+                    selection.select_item(pos as u32, false);
                 }
             }
 
             MessageListInput::SetUnreadOnly(on) => {
                 if self.unread_only != on {
                     self.unread_only = on;
-                    self.rebuild_preserving_scroll();
+                    self.rebuild();
                 }
             }
 
             MessageListInput::SetStarredOnly(on) => {
                 if self.starred_only != on {
                     self.starred_only = on;
-                    self.rebuild_preserving_scroll();
+                    self.rebuild();
                 }
             }
 
@@ -3979,14 +1733,9 @@ impl SimpleComponent for MessageList {
                 // The "back to list" shortcut: deliberately returns to the
                 // selected row (that's the point — resume j/k navigation
                 // from what you were reading), so it's allowed to scroll.
-                let list = self.rows.widget();
-                let row = list
-                    .selected_rows()
-                    .first()
-                    .cloned()
-                    .or_else(|| list.row_at_index(0));
-                if let Some(row) = row {
-                    row.grab_focus();
+                if !self.shown.is_empty() {
+                    let pos = self.selected_positions().first().copied().unwrap_or(0);
+                    self.focus_row(pos);
                 }
             }
             MessageListInput::ReclaimFocus => {
@@ -3996,15 +1745,7 @@ impl SimpleComponent for MessageList {
                 // reading" action, so it shouldn't scroll the viewport away
                 // from wherever the user was browsing.
                 self.preserving_scroll(|this| {
-                    let list = this.rows.widget();
-                    let row = list
-                        .selected_rows()
-                        .first()
-                        .cloned()
-                        .or_else(|| list.row_at_index(0));
-                    if let Some(row) = row {
-                        row.grab_focus();
-                    }
+                    this.list_view.grab_focus();
                 });
                 self.hide_focus_ring();
             }
@@ -4039,7 +1780,7 @@ impl SimpleComponent for MessageList {
                 self.search_open = false;
                 self.search_closed_at = Some(std::time::Instant::now());
                 self.clear_search();
-                self.rebuild_preserving_scroll();
+                self.rebuild();
             }
 
             MessageListInput::BulkToggleRead => {
@@ -4073,7 +1814,7 @@ impl SimpleComponent for MessageList {
                 }
             }
             MessageListInput::ClearSelection => {
-                self.rows.widget().unselect_all();
+                self.shared.selection.unselect_all();
                 self.selected_id = None;
                 self.selected_ids.clear();
                 self.selection_count = 0;
@@ -4082,6 +1823,7 @@ impl SimpleComponent for MessageList {
                 if self.sort != order {
                     self.sort = order;
                     self.rebuild();
+                    self.scroll_top();
                 }
             }
             MessageListInput::ToggleThread(key) => {
@@ -4117,76 +1859,45 @@ impl SimpleComponent for MessageList {
                 self.collapse_thread_rows(&key);
             }
             MessageListInput::RowActivated(index) => {
-                if let Some(m) = self.shown.get(index as usize) {
-                    let (thread, _solo) = self.conversation_for(m);
-                    let _ = sender.output(MessageListOutput::Activated {
-                        message: m.clone(),
-                        thread,
-                    });
+                if let Some(m) = self.shown.get(index as usize).map(|m| Message::clone(m)) {
+                    let (thread, _solo) = self.conversation_for(&m);
+                    let _ = sender.output(MessageListOutput::Activated { message: m, thread });
                 }
             }
             MessageListInput::MarkRead(id) => {
-                if let Some(m) = self.all.iter_mut().find(|m| m.id == id) {
-                    m.unread = false;
-                }
-                if let Some(idx) = self.shown.iter().position(|m| m.id == id) {
-                    self.shown[idx].unread = false;
-                    self.row_send(idx, MessageRowInput::SetRead(true));
-                }
+                self.update_message(|m| m.id == id, |m| m.unread = false);
                 self.refresh_thread_unread(id);
             }
             MessageListInput::SetRead { id, read } => {
-                if let Some(m) = self.all.iter_mut().find(|m| m.id == id) {
-                    m.unread = !read;
-                }
-                if let Some(idx) = self.shown.iter().position(|m| m.id == id) {
-                    self.shown[idx].unread = !read;
-                    self.row_send(idx, MessageRowInput::SetRead(read));
-                }
+                self.update_message(|m| m.id == id, |m| m.unread = !read);
                 self.refresh_thread_unread(id);
             }
             MessageListInput::SetStarred { id, starred } => {
-                if let Some(m) = self.all.iter_mut().find(|m| m.id == id) {
-                    m.starred = starred;
-                }
-                if let Some(idx) = self.shown.iter().position(|m| m.id == id) {
-                    self.shown[idx].starred = starred;
-                    self.row_send(idx, MessageRowInput::SetStarred(starred));
-                }
+                self.update_message(|m| m.id == id, |m| m.starred = starred);
                 self.refresh_thread_star(id);
             }
             MessageListInput::SetKeywords { id, keywords } => {
-                if let Some(m) = self.all.iter_mut().find(|m| m.id == id) {
-                    m.keywords = keywords.clone();
-                }
-                if let Some(idx) = self.shown.iter().position(|m| m.id == id) {
-                    self.shown[idx].keywords = keywords.clone();
-                    self.row_send(idx, MessageRowInput::SetKeywords(keywords));
-                }
+                self.update_message(|m| m.id == id, |m| m.keywords = keywords.clone());
             }
             MessageListInput::SetTags(tags) => {
-                if *self.tags.borrow() != tags {
-                    *self.tags.borrow_mut() = tags;
+                if *self.shared.tags.borrow() != tags {
+                    *self.shared.tags.borrow_mut() = tags;
                     // Chips and the palette's tag button follow the
-                    // definitions; the rows are rebuilt to pick them up.
-                    self.rebuild_preserving_scroll();
+                    // definitions.
+                    self.tags_gen += 1;
+                    self.sync_look();
                 }
             }
             MessageListInput::SetTagFor { message, keyword, add } => {
                 let _ = sender.output(MessageListOutput::SetTag { message, keyword, add });
             }
             MessageListInput::SetHasAttachment { account_id, folder_id, uid, has } => {
-                let is = |m: &Message| m.account_id == account_id && m.folder_id == folder_id && m.uid == uid;
-                if let Some(m) = self.all.iter_mut().find(|m| is(m)) {
-                    m.has_attachment = has;
-                }
-                if let Some(idx) = self.shown.iter().position(|m| is(m)) {
-                    self.shown[idx].has_attachment = has;
-                    self.row_send(idx, MessageRowInput::SetHasAttachment(has));
-                }
+                self.update_message(
+                    |m| m.account_id == account_id && m.folder_id == folder_id && m.uid == uid,
+                    |m| m.has_attachment = has,
+                );
             }
             MessageListInput::Remove(id) => {
-                self.flush_rows();
                 // Was the removed message the one shown in the reader? If so we'll
                 // advance to whatever row slides into its place.
                 let was_viewed = self.selected_id.map(|(_, i)| i) == Some(id);
@@ -4195,30 +1906,19 @@ impl SimpleComponent for MessageList {
                 }
                 self.selected_ids.retain(|(_, i)| *i != id);
                 self.all.retain(|m| m.id != id);
+                self.source_threads.take();
                 let removed_idx = self.shown.iter().position(|m| m.id == id);
-                // Was the row about to be destroyed the one holding keyboard
-                // focus? If so, and it isn't the viewed row handled below,
-                // we'll need to reclaim focus ourselves after it's gone —
-                // otherwise GTK picks a fallback of its own (often the
-                // selected row, wherever that is) and scrolls there.
+                // Was the row about to go the one holding keyboard focus? If
+                // so, and it isn't the viewed row handled below, focus is
+                // put on its neighbour rather than left to GTK's fallback.
                 let had_focus = removed_idx
-                    .and_then(|idx| self.rows.widget().row_at_index(idx as i32))
-                    .is_some_and(|row| row.has_focus());
+                    .and_then(|idx| self.shared.row_at(idx))
+                    .is_some_and(|row| row.has_focus_within());
                 if let Some(idx) = removed_idx {
-                    // Removing a row can make GTK scroll the *selected* row
-                    // back into view on its own, even though this row isn't
-                    // it — pin the viewport so an unrelated deletion further
-                    // down the list doesn't yank the user back to whatever
-                    // they're reading.
-                    self.preserving_scroll(|this| {
-                        this.shown.remove(idx);
-                        this.rows.guard().remove(idx);
-                    });
-                    self.publish_drag_keys();
-                    // The surgical removal skips the rebuild that normally
-                    // recomputes these — keep the header count honest.
+                    self.shown.remove(idx);
+                    self.shared.model.splice(idx, 1, Vec::new());
+                    // No rebuild follows — keep the header count honest.
                     self.total_matches = self.total_matches.saturating_sub(1);
-                    self.rendered_count = self.shown.len();
                 }
 
                 if was_viewed {
@@ -4246,7 +1946,6 @@ impl SimpleComponent for MessageList {
                 }
             }
             MessageListInput::RemoveMany(ids) => {
-                self.flush_rows();
                 if ids.is_empty() {
                     return;
                 }
@@ -4257,50 +1956,33 @@ impl SimpleComponent for MessageList {
                 }
                 self.selected_ids.retain(|(_, i)| !set.contains(i));
                 self.all.retain(|m| !set.contains(&m.id));
+                self.source_threads.take();
                 // Where the first removed row sat, so we can re-select in its place.
                 let first_removed = self.shown.iter().position(|m| set.contains(&m.id));
-                // Did any row about to be destroyed hold keyboard focus? If
-                // so, and it isn't the viewed row handled below, reclaim
-                // focus ourselves afterward — otherwise GTK's own fallback
-                // can land on the selected row and scroll the list there.
-                let list = self.rows.widget();
-                let had_focus = (0..self.shown.len()).any(|idx| {
-                    set.contains(&self.shown[idx].id)
-                        && list.row_at_index(idx as i32).is_some_and(|row| row.has_focus())
-                });
-                // Remove all matching rows in one guarded batch (a single widget
-                // update) instead of one render cycle per message. Walk back-to-front
-                // so indices stay valid. Pinned so GTK scrolling the selected row
-                // back into view (see `preserving_scroll`) doesn't yank the user
-                // away from browsing an unrelated part of the list.
+                let had_focus = self
+                    .shared
+                    .bound_rows()
+                    .into_iter()
+                    .any(|r| r.has_focus_within() && r.data().is_some_and(|d| set.contains(&d.msg.id)));
+                // Out in runs, back to front, so the view hears of each run
+                // once and the positions still to come stay valid.
                 let shown_before = self.shown.len();
-                self.preserving_scroll(|this| {
-                    let mut guard = this.rows.guard();
-                    let mut idx = this.shown.len();
-                    while idx > 0 {
-                        idx -= 1;
-                        if set.contains(&this.shown[idx].id) {
-                            this.shown.remove(idx);
-                            guard.remove(idx);
-                        }
+                let mut idx = self.shown.len();
+                while idx > 0 {
+                    idx -= 1;
+                    if !set.contains(&self.shown[idx].id) {
+                        continue;
                     }
-                });
-                self.publish_drag_keys();
-                self.selection_count = self.selected_ids.len();
-                // Keep the header count honest when no rebuild follows (the
-                // backfill below recomputes these itself when it runs).
-                self.total_matches =
-                    self.total_matches.saturating_sub(shown_before - self.shown.len());
-                self.rendered_count = self.shown.len();
-                // Backfill the rendered window: a bulk removal can empty it
-                // while `all` still holds messages beyond the render cap (a
-                // folder larger than one page). Re-derive `shown` so what
-                // remains appears immediately, instead of the list sitting
-                // empty until the server finishes the move and pushes fresh
-                // messages.
-                if self.shown.len() < self.render_limit && self.all.len() > self.shown.len() {
-                    self.rebuild_preserving_scroll();
+                    let end = idx + 1;
+                    while idx > 0 && set.contains(&self.shown[idx - 1].id) {
+                        idx -= 1;
+                    }
+                    self.shown.drain(idx..end);
+                    self.shared.model.splice(idx, end - idx, Vec::new());
                 }
+                self.selection_count = self.selected_ids.len();
+                // Keep the header count honest; no rebuild follows.
+                self.total_matches = self.total_matches.saturating_sub(shown_before - self.shown.len());
                 if was_viewed {
                     match first_removed {
                         Some(idx) if !self.shown.is_empty() => {
@@ -4344,23 +2026,18 @@ impl SimpleComponent for MessageList {
                 let conversation = self.row_conversation(&message);
                 let _ = sender.output(MessageListOutput::Action { action, message, conversation });
             }
-            MessageListInput::SetPaletteCollapse(secs) => self.palette_collapse_secs.set(secs),
-            MessageListInput::SetPaletteHover(on) => self.palette_hover.set(on),
-            MessageListInput::SetSwipeReversed(on) => self.swipe_reversed.set(on),
+            MessageListInput::SetPaletteCollapse(secs) => self.shared.palette_collapse_secs.set(secs),
+            MessageListInput::SetPaletteHover(on) => self.shared.palette_hover.set(on),
+            MessageListInput::SetSwipeReversed(on) => self.shared.swipe_reversed.set(on),
             MessageListInput::SetSwipeEnabled(on) => {
-                self.swipe_enabled.set(on);
-                // Every mounted row re-renders and flips its tracker.
-                for i in 0..self.rows.len() {
-                    self.row_send(i, MessageRowInput::SwipePrefsChanged);
-                }
+                self.shared.swipe_enabled.set(on);
+                // The rows on screen switch their trackers; the rest do so
+                // when shown.
+                self.shared.refresh_all();
             }
             MessageListInput::SetSwipeSensitivity(factor) => {
-                self.swipe_sensitivity.set(factor);
-                // Same nudge: post_view pushes the new figure into each
-                // mounted row's swipe surface.
-                for i in 0..self.rows.len() {
-                    self.row_send(i, MessageRowInput::SwipePrefsChanged);
-                }
+                self.shared.swipe_sensitivity.set(factor);
+                self.shared.refresh_all();
             }
             MessageListInput::SetSelected(id) => {
                 match id {
@@ -4378,23 +2055,23 @@ impl SimpleComponent for MessageList {
                         self.selected_id = None;
                         self.selected_ids.clear();
                         self.selection_count = 0;
-                        self.rows.widget().unselect_all();
+                        self.shared.selection.unselect_all();
                     }
                 }
             }
             MessageListInput::DebugOpenPalette(idx) => {
-                self.row_send(idx, MessageRowInput::TogglePalette);
+                if let Some(row) = self.shared.row_at(idx) {
+                    row.toggle_palette();
+                }
             }
             MessageListInput::DebugSwipe { index, left } => {
-                let px = if left { -SWIPE_MAX } else { SWIPE_MAX };
-                self.row_send(index, MessageRowInput::SwipeUpdate(px));
-                self.row_send(index, MessageRowInput::SwipeEnd);
+                if let Some(row) = self.shared.row_at(index) {
+                    row.debug_swipe(left);
+                }
             }
-            MessageListInput::PaletteOpened(idx) => {
-                for i in 0..self.shown.len() {
-                    if i != idx {
-                        self.row_send(i, MessageRowInput::ClosePalette);
-                    }
+            MessageListInput::DebugRowMenu => {
+                if let Some(m) = self.shown.first().map(|m| Message::clone(m)) {
+                    self.show_context_menu(&m, 120.0, 40.0, &sender);
                 }
             }
             MessageListInput::SelectAndLoad(key) => {
@@ -4414,28 +2091,26 @@ impl SimpleComponent for MessageList {
                         None => key,
                     },
                 };
-                if let Some(m) = self.shown.iter().find(|m| (m.account_id, m.id) == key).cloned() {
+                if let Some(m) = self.shown.iter().find(|m| (m.account_id, m.id) == key).map(|m| Message::clone(m)) {
                     self.selected_id = Some(key);
                     self.selected_ids = vec![key];
-                    // The list is in Multiple selection mode, so selecting the
-                    // target only ADDS it — anything already selected (e.g. the
-                    // row the last deletion advanced to) would stay lit and turn
-                    // this into a two-row selection the reader ignores.
-                    self.rows.widget().unselect_all();
+                    // Exactly this row: anything already selected (e.g. the
+                    // row the last deletion advanced to) would otherwise stay
+                    // lit and turn this into a two-row selection the reader
+                    // ignores.
                     self.select_current();
                     // These arrive from outside the list (a notification
                     // click, an undo) where the row can be far outside the
-                    // viewport — bring it into view. In an idle so a rebuild
-                    // queued just before this (and its own scroll restore)
-                    // has laid the rows out first; the focus grab is what
-                    // scrolls, and the selection pill is the indicator.
+                    // viewport — bring it into view, in an idle so a rebuild
+                    // queued just before this has run first.
                     if let Some(idx) =
                         self.shown.iter().position(|m| (m.account_id, m.id) == key)
                     {
-                        let list = self.rows.widget().clone();
+                        let list = self.list_view.clone();
                         gtk::glib::idle_add_local_once(move || {
-                            if let Some(row) = list.row_at_index(idx as i32) {
-                                row.grab_focus();
+                            if idx < list.model().map_or(0, |m| m.n_items() as usize) {
+                                list.scroll_to(idx as u32, gtk::ListScrollFlags::FOCUS, None);
+                                list.grab_focus();
                             }
                             if let Some(win) =
                                 list.root().and_then(|r| r.downcast::<gtk::Window>().ok())
@@ -4453,29 +2128,20 @@ impl SimpleComponent for MessageList {
                 let (messages, offer_whole) = self.move_to_messages(&message);
                 let _ = sender.output(MessageListOutput::MoveTo { messages, offer_whole, x, y });
             }
-            MessageListInput::ContextMenu { x, y } => {
-                let list = self.rows.widget();
-                // By the row's band first; failing that, by what is drawn
-                // under the pointer, walked up to its row.
-                let row = list.row_at_y(y as i32).or_else(|| {
-                    list.pick(x, y, gtk::PickFlags::DEFAULT)
-                        .and_then(|w| w.ancestor(gtk::ListBoxRow::static_type()))
-                        .and_downcast::<gtk::ListBoxRow>()
-                });
-                if let Some(row) = row {
-                    let selected = list.selected_rows();
-                    let in_selection = selected.iter().any(|r| r.index() == row.index());
-                    if selected.len() > 1 && in_selection {
-                        // Right-clicked inside a multi-selection → bulk menu.
-                        self.show_bulk_menu(x, y, &sender);
-                    } else {
-                        // Single-row menu acting on the clicked message. Crucially,
-                        // don't select it — selecting would load it in the reader,
-                        // and the user may just intend to move/archive/delete it.
-                        if let Some(msg) = self.shown.get(row.index() as usize).cloned() {
-                            self.show_context_menu(&msg, x, y, &sender);
-                        }
-                    }
+            MessageListInput::ContextMenu { x, y, key } => {
+                let Some(pos) = self.shown.iter().position(|m| (m.account_id, m.id) == key) else {
+                    return;
+                };
+                let selected = self.selected_positions();
+                if selected.len() > 1 && selected.contains(&pos) {
+                    // Right-clicked inside a multi-selection → bulk menu.
+                    self.show_bulk_menu(x, y, &sender);
+                } else {
+                    // Single-row menu acting on the clicked message. Crucially,
+                    // don't select it — selecting would load it in the reader,
+                    // and the user may just intend to move/archive/delete it.
+                    let msg = Message::clone(&self.shown[pos]);
+                    self.show_context_menu(&msg, x, y, &sender);
                 }
             }
         }
@@ -4486,30 +2152,21 @@ impl SimpleComponent for MessageList {
             self.last_count = count.clone();
             let _ = sender.output(MessageListOutput::CountChanged(count));
         }
-        // And the conversations nobody has counted yet, so their real sizes
-        // can be looked up (#222). Only the unasked ones: the answer arrives as
-        // a rebuild, so asking again on the strength of it would never settle,
-        // and a search re-filters the page on every keystroke.
-        if self.threading {
-            let fresh = unasked_threads(&self.listed_threads, &self.asked_threads);
-            if !fresh.is_empty() {
-                for (aid, root, _) in &fresh {
-                    self.asked_threads.insert((*aid, root.clone()));
-                }
-                let _ = sender.output(MessageListOutput::ThreadsListed { groups: fresh });
-            }
-        }
-
     }
 }
 
 impl MessageList {
     /// What the list holds in RAM, for the memory section of an export: the
-    /// folder's index, the rows built from it, and the whole-mailbox search
-    /// pool (empty unless a search is open), each as (messages, bytes).
+    /// folder's index, the rows listed from it, and the whole-mailbox search
+    /// pool (empty unless a search is open), each as (messages, bytes). The
+    /// rows share their messages with the index.
     pub fn memory_stats(&self) -> [(usize, usize); 3] {
         use crate::memory_report::messages_bytes;
-        [messages_bytes(&self.all), messages_bytes(&self.shown), messages_bytes(&self.search_pool)]
+        [
+            messages_bytes(self.all.iter().map(|m| &**m)),
+            (self.shown.len(), self.shown.len() * std::mem::size_of::<RowData>()),
+            messages_bytes(self.search_pool.iter().map(|m| &**m)),
+        ]
     }
 
     /// Build and pop up the right-click menu for `msg` at the click location.
@@ -4633,7 +2290,7 @@ impl MessageList {
         // carries it, behind a "Tags" submenu so a long list never makes
         // this menu too tall. Absent until a tag exists.
         let tag_section = {
-            let tags = self.tags.borrow().clone();
+            let tags = self.shared.tags.borrow().clone();
             let s = sender.clone();
             let m = msg.clone();
             let entries = tag_menu_entries(&tags, msg, move |keyword, add| {
@@ -4689,30 +2346,28 @@ impl MessageList {
             vec![item(RowAction::ViewSource, &i18n("View Source"), "code-symbolic")],
         ];
 
-        show_context_menu(self.rows.widget(), x, y, sections);
+        show_context_menu(&self.list_view, x, y, sections);
     }
 
     /// The messages of the selected rows.
     fn selected_messages(&self) -> Vec<Message> {
-        self.rows
-            .widget()
-            .selected_rows()
-            .iter()
-            .filter_map(|r| self.shown.get(r.index() as usize).cloned())
+        self.selected_positions()
+            .into_iter()
+            .filter_map(|p| self.shown.get(p).map(|m| Message::clone(m)))
             .collect()
     }
 
     /// Whether every selected message is starred, so the bulk star takes
     /// the stars off rather than adding them.
     fn selection_all_starred(&self) -> bool {
-        let messages = self.selected_messages();
-        !messages.is_empty() && messages.iter().all(|m| m.starred)
+        let positions = self.selected_positions();
+        !positions.is_empty() && positions.iter().all(|&p| self.shown.get(p).is_some_and(|m| m.starred))
     }
 
     /// Whether any selected message is unread, so the bulk read toggle
     /// marks the selection read rather than unread.
     fn selection_any_unread(&self) -> bool {
-        self.selected_messages().iter().any(|m| m.unread)
+        self.selected_positions().iter().any(|&p| self.shown.get(p).is_some_and(|m| m.unread))
     }
 
     /// One toggle per tag for the whole selection (#313). A tag is ticked
@@ -4723,7 +2378,7 @@ impl MessageList {
         let Some(first) = messages.first() else { return Vec::new() };
         let mut all = first.clone();
         all.keywords.retain(|k| messages.iter().all(|m| m.has_keyword(k)));
-        let tags = self.tags.borrow().clone();
+        let tags = self.shared.tags.borrow().clone();
         let s = sender.clone();
         tag_menu_entries(&tags, &all, move |keyword, add| {
             let _ = s.output(MessageListOutput::SetTagMany { messages: messages.clone(), keyword, add });
@@ -4774,13 +2429,7 @@ impl MessageList {
                 }
                 {
                     // Move To… for the whole selection.
-                    let messages: Vec<Message> = self
-                        .rows
-                        .widget()
-                        .selected_rows()
-                        .iter()
-                        .filter_map(|r| self.shown.get(r.index() as usize).cloned())
-                        .collect();
+                    let messages = self.selected_messages();
                     let (wx, wy) = self.window_point(x, y);
                     let s = sender.clone();
                     section.push(
@@ -4802,7 +2451,7 @@ impl MessageList {
         ];
 
         show_context_menu_with_header(
-            self.rows.widget(),
+            &self.list_view,
             x,
             y,
             Some(&format!("{} selected", self.selection_count)),
@@ -4820,7 +2469,7 @@ impl MessageList {
             return;
         }
         let Some(key) = self.selected_id else { return };
-        let Some(m) = self.shown.iter().find(|m| (m.account_id, m.id) == key).cloned() else {
+        let Some(m) = self.shown.iter().find(|m| (m.account_id, m.id) == key).map(|m| Message::clone(m)) else {
             return;
         };
         let (thread, solo) = self.conversation_for(&m);
@@ -4856,7 +2505,7 @@ impl MessageList {
     /// A point in the rows list, in the window's coordinates (the app
     /// anchors popovers on the window; falls back to the point as given).
     fn window_point(&self, x: f64, y: f64) -> (f64, f64) {
-        let list = self.rows.widget();
+        let list = &self.list_view;
         list.root()
             .and_then(|root| {
                 let root: gtk::Widget = root.upcast();
@@ -4865,26 +2514,15 @@ impl MessageList {
             .map_or((x, y), |p| (p.x() as f64, p.y() as f64))
     }
 
-    /// Toolbar count: total matches, noting when more exist than are shown.
+    /// Toolbar count: every message the filter lets through, all listed.
     fn count_label(&self) -> String {
-        if self.total_matches > self.rendered_count {
-            i18n_f(
-                "{shown} of {total}",
-                &[
-                    ("shown", &self.rendered_count.to_string()),
-                    ("total", &self.total_matches.to_string()),
-                ],
-            )
-        } else {
-            format!("{}", self.total_matches)
-        }
+        format!("{}", self.total_matches)
     }
 
-    /// Whether the bottom loading spinner should show: the user has scrolled past
-    /// what's loaded (`render_limit` exceeds the indexed count) and the folder's
-    /// index is still streaming in.
+    /// Whether the bottom loading spinner should show: the folder's index is
+    /// still streaming in and the user has reached the end of what is here.
     fn is_loading_more(&self) -> bool {
-        self.render_limit > self.total_matches && !self.index_complete
+        !self.index_complete && (self.at_bottom || self.shown.is_empty())
     }
 
     /// Whether to show the empty-folder placeholder: the folder has loaded,
@@ -4922,25 +2560,87 @@ impl MessageList {
         });
     }
 
-    /// A full rebuild that keeps the current scroll offset (a plain rebuild jumps
-    /// to the top). Used when growing the list beneath the user, and for any
-    /// background re-render (e.g. a folder re-sync) so it doesn't disturb
-    /// someone browsing further down.
-    fn rebuild_preserving_scroll(&mut self) {
-        self.preserving_scroll(Self::rebuild);
+    /// Back to the top of the list (a switch, a new search or sort).
+    fn scroll_top(&self) {
+        if let Some(s) = &self.scroller {
+            s.vadjustment().set_value(0.0);
+        }
     }
 
-    /// Build every row again, scroll kept: for a change to how rows look
-    /// rather than which messages they show (see `rows_stale`).
-    fn rebuild_rows_preserving_scroll(&mut self) {
-        self.rows_stale = true;
-        self.rebuild_preserving_scroll();
+    /// The list's settings as every row reads them, pushed to the rows on
+    /// screen. The rest pick them up when they are shown.
+    fn sync_look(&self) {
+        {
+            let mut look = self.shared.look.borrow_mut();
+            look.gravatar = self.gravatar;
+            look.avatars = self.avatars;
+            look.sender_logos = self.sender_logos;
+            look.preview_lines = self.preview_lines;
+            look.show_subject = self.show_subject;
+            look.show_palette = self.list_palette;
+            look.in_junk = self.in_junk;
+            look.in_drafts = self.in_drafts;
+            look.show_recipient = self.show_recipient;
+            look.thread_expansion = self.thread_expansion;
+            look.ringed = if self.colorize { self.account_colors.keys().copied().collect() } else { Default::default() };
+            look.face_gen = self.face_gen;
+            look.tags_gen = self.tags_gen;
+        }
+        self.shared.refresh_all();
     }
 
-    /// Build every row again from the top (see `rows_stale`).
-    fn rebuild_rows(&mut self) {
-        self.rows_stale = true;
-        self.rebuild();
+    /// The selected rows' positions, in list order.
+    fn selected_positions(&self) -> Vec<usize> {
+        let set = self.shared.selection.selection();
+        match gtk::BitsetIter::init_first(&set) {
+            Some((iter, first)) => std::iter::once(first).chain(iter).map(|p| p as usize).collect(),
+            None => Vec::new(),
+        }
+    }
+
+    fn keys_at(&self, positions: &[usize]) -> Vec<(u32, u32)> {
+        positions.iter().filter_map(|&p| self.shown.get(p).map(|m| (m.account_id, m.id))).collect()
+    }
+
+    /// Select exactly these rows, telling GTK only if that changes anything.
+    fn select_positions(&self, positions: &[usize]) {
+        let mut wanted: Vec<usize> = positions.iter().copied().filter(|&p| p < self.shown.len()).collect();
+        wanted.sort_unstable();
+        wanted.dedup();
+        if wanted == self.selected_positions() {
+            return;
+        }
+        let set = gtk::Bitset::new_empty();
+        for p in &wanted {
+            set.add(*p as u32);
+        }
+        let mask = gtk::Bitset::new_range(0, self.shown.len() as u32);
+        self.shared.selection.set_selection(&set, &mask);
+    }
+
+    /// Change a message wherever the list holds it — the index, the search
+    /// pool and its row — and refresh the row if it is on screen.
+    fn update_message(&mut self, is: impl Fn(&Message) -> bool, change: impl Fn(&mut Message)) {
+        let mut changed: Option<Rc<Message>> = None;
+        for list in [&mut self.all, &mut self.search_pool] {
+            if let Some(m) = list.iter_mut().find(|m| is(m)) {
+                change(Rc::make_mut(m));
+                changed.get_or_insert_with(|| m.clone());
+            }
+        }
+        if let Some(idx) = self.shown.iter().position(|m| is(m)) {
+            let m = match &changed {
+                // The same message, as the index now has it.
+                Some(m) if (m.account_id, m.folder_id, m.id) == (self.shown[idx].account_id, self.shown[idx].folder_id, self.shown[idx].id) => m.clone(),
+                _ => {
+                    let mut m = Message::clone(&self.shown[idx]);
+                    change(&mut m);
+                    Rc::new(m)
+                }
+            };
+            self.shown[idx] = m.clone();
+            self.shared.model.update_row(idx, |d| d.msg = m);
+        }
     }
 
     /// A message's read state changed: recompute its conversation's aggregate
@@ -4970,7 +2670,7 @@ impl MessageList {
             .iter()
             .position(|m| members.contains(&(m.account_id, m.id)))
         {
-            self.row_send(idx, MessageRowInput::SetThreadUnread(any_unread));
+            self.shared.model.update_row(idx, |d| d.meta.unread = any_unread);
         }
     }
 
@@ -4999,35 +2699,30 @@ impl MessageList {
             .iter()
             .position(|m| members.contains(&(m.account_id, m.id)))
         {
-            self.row_send(idx, MessageRowInput::SetThreadStarred(any));
+            self.shared.model.update_row(idx, |d| d.meta.starred = any);
         }
     }
 
 
-    /// Begin collapsing a thread: slide its currently-visible replies shut
-    /// (they stay exactly where they are in `self.rows`/`self.shown` — only
-    /// their own Revealer closes), then drop them once that animation has
-    /// actually finished. Dropping right away — before the replies have
-    /// shrunk — would just make them disappear outright. (PR #79)
+    /// Begin collapsing a thread: slide its replies shut (they stay where
+    /// they are in the list — only their own Revealer closes), then drop them
+    /// once that animation has finished. Dropping right away — before the
+    /// replies have shrunk — would just make them disappear outright. (PR #79)
     fn start_collapse_thread(&mut self, key: (u32, String), sender: &ComponentSender<Self>) {
-        self.flush_rows();
         if let Some(members) = self.thread_members.get(&key).cloned() {
             // The head survives the toggle (only its replies are removed),
             // so its own chevron can rotate shut in place, in step with the
             // replies sliding closed beneath it.
             if let Some(&head_key) = members.first() {
-                if let Some(idx) = self.shown.iter().position(|m| (m.account_id, m.id) == head_key)
-                {
-                    self.row_send(idx, MessageRowInput::SetThreadExpanded(false));
+                if let Some(idx) = self.shown.iter().position(|m| (m.account_id, m.id) == head_key) {
+                    self.shared.model.update_row(idx, |d| d.meta.expanded = false);
                 }
             }
             // `members` is head-first (see `rebuild`); only the replies
             // beneath it animate closed.
             for child_key in members.iter().skip(1) {
-                if let Some(idx) =
-                    self.shown.iter().position(|m| (m.account_id, m.id) == *child_key)
-                {
-                    self.row_send(idx, MessageRowInput::SetRevealed(false));
+                if let Some(idx) = self.shown.iter().position(|m| (m.account_id, m.id) == *child_key) {
+                    self.shared.model.update_row(idx, |d| d.meta.revealed = false);
                 }
             }
         }
@@ -5038,105 +2733,58 @@ impl MessageList {
         let timer_key = key.clone();
         // Matches the Revealer's own transition duration, so the rows are
         // fully closed by the time they're actually dropped from the list.
-        let timer =
-            gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(200), move || {
-                s.input(MessageListInput::FinishCollapseThread(timer_key));
-            });
+        let timer = gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(200), move || {
+            s.input(MessageListInput::FinishCollapseThread(timer_key));
+        });
         self.collapsing_threads.insert(key, timer);
     }
 
-    /// Insert a thread's replies right after its head, without touching any
+    /// Put a thread's replies in right after its head, without touching any
     /// other row — the counterpart to `collapse_thread_rows`. Each new row
-    /// mounts with `revealed: false` and animates open on its own (see
-    /// `RowInit::revealed`). (PR #79)
+    /// slides open the first time it is shown (see `RowMeta::appear`).
+    /// (PR #79)
     fn expand_thread(&mut self, key: &(u32, String)) {
-        self.flush_rows();
         let Some(members) = self.thread_members.get(key).cloned() else { return };
         let Some(&head_key) = members.first() else { return };
-        let Some(head_pos) = self.shown.iter().position(|m| (m.account_id, m.id) == head_key)
-        else {
+        let Some(head_pos) = self.shown.iter().position(|m| (m.account_id, m.id) == head_key) else {
             return;
         };
-        // `members` is already oldest-first (see `rebuild`); look the replies
-        // up from the full index before borrowing `self.rows`/`self.shown`
-        // mutably.
-        let children: Vec<Message> = {
+        // `members` is already oldest-first (see `rebuild`).
+        let children: Vec<Rc<Message>> = {
             let source = self.active_source();
             members
                 .iter()
                 .skip(1)
                 .filter_map(|k| {
-                    source
-                        .iter()
-                        .find(|m| (m.account_id, m.id) == *k)
-                        .or_else(|| self.nested.get(k))
-                        .cloned()
+                    source.iter().find(|m| (m.account_id, m.id) == *k).or_else(|| self.nested.get(k)).cloned()
                 })
                 .collect()
         };
         if children.is_empty() {
             return;
         }
-        // The head survives the toggle (only its replies are inserted), so
-        // its own chevron can rotate open in place.
-        self.row_send(head_pos, MessageRowInput::SetThreadExpanded(true));
-        {
-            let mut guard = self.rows.guard();
-            for (i, msg) in children.iter().enumerate() {
-                let ring_class =
-                    if self.colorize && self.account_colors.contains_key(&msg.account_id) {
-                        Some(format!("vireo-acct-ring-{}", msg.account_id))
-                    } else {
-                        None
-                    };
-                guard.insert(
-                    head_pos + 1 + i,
-                    RowInit {
-                        msg: msg.clone(),
-                        gravatar: self.gravatar,
-                        avatars: self.avatars,
-                        avatar_late: false,
-                        sender_logos: self.sender_logos,
-                        preview_lines: self.preview_lines,
-                        show_subject: self.show_subject,
-                        ring_class,
-                        palette_collapse_secs: self.palette_collapse_secs.clone(),
-                        palette_hover: self.palette_hover.clone(),
-                        tags: self.tags.clone(),
-                        show_palette: self.list_palette,
-                        in_junk: self.in_junk,
-                        in_drafts: self.in_drafts,
-                        thread_count: 0,
-                        is_thread_child: true,
-                        is_last_child: i == children.len() - 1,
-                        thread_expanded: false,
-                        thread_expandable: self.thread_expansion,
-                        thread_key: None,
-                        thread_date: None,
-                        thread_from: None,
-                        thread_preview: None,
-                        thread_unread: false,
-                        thread_starred: false,
-                        drag_keys: self.drag_keys.clone(),
-                        thread_drag: self.thread_drag.clone(),
-                        show_recipient: self.show_recipient,
-                        revealed: false,
-                        swipe_reversed: self.swipe_reversed.clone(),
-                        swipe_enabled: self.swipe_enabled.clone(),
-                        swipe_sensitivity: self.swipe_sensitivity.clone(),
-                    },
-                );
-            }
-        }
+        // The head survives the toggle (only its replies are put in), so its
+        // own chevron can rotate open in place.
+        self.shared.model.update_row(head_pos, |d| d.meta.expanded = true);
+        let n = children.len();
+        let rows: Vec<Rc<RowData>> = children
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                Rc::new(RowData {
+                    msg: m.clone(),
+                    meta: RowMeta { is_child: true, is_last: i + 1 == n, revealed: true, appear: true, ..Default::default() },
+                })
+            })
+            .collect();
+        self.shared.model.splice(head_pos + 1, 0, rows);
         self.shown.splice(head_pos + 1..head_pos + 1, children);
-        self.publish_drag_keys();
     }
 
     /// Drop a thread's reply rows (already slid shut by `start_collapse_thread`)
     /// without touching any other row — the counterpart to `expand_thread`.
     /// (PR #79)
     fn collapse_thread_rows(&mut self, key: &(u32, String)) {
-        self.flush_rows();
         let Some(members) = self.thread_members.get(key).cloned() else { return };
         let mut indices: Vec<usize> = members
             .iter()
@@ -5144,18 +2792,12 @@ impl MessageList {
             .filter_map(|k| self.shown.iter().position(|m| (m.account_id, m.id) == *k))
             .collect();
         indices.sort_unstable();
-        {
-            let mut guard = self.rows.guard();
-            // Remove back-to-front so earlier removals don't shift the
-            // indices still to come.
-            for &idx in indices.iter().rev() {
-                guard.remove(idx);
-            }
-        }
+        // Back to front, so earlier removals don't shift the indices still
+        // to come.
         for &idx in indices.iter().rev() {
             self.shown.remove(idx);
+            self.shared.model.splice(idx, 1, Vec::new());
         }
-        self.publish_drag_keys();
     }
 
     /// Whether a search is currently active (the query is non-empty).
@@ -5166,15 +2808,37 @@ impl MessageList {
     /// The message set the search filters over: the cross-folder pool while an
     /// `AllFolders` search is active (and the pool has arrived), otherwise the
     /// current folder's own index.
-    fn active_source(&self) -> &[Message] {
-        if self.searching()
-            && self.scope == SearchScope::AllFolders
-            && !self.search_pool.is_empty()
-        {
+    fn active_source(&self) -> &[Rc<Message>] {
+        if self.searching_pool() {
             &self.search_pool
         } else {
             &self.all
         }
+    }
+
+    fn searching_pool(&self) -> bool {
+        self.searching() && self.scope == SearchScope::AllFolders && !self.search_pool.is_empty()
+    }
+
+    /// The conversations of `active_source`, from the kept copy while the
+    /// source it was worked out from is still the one in use.
+    fn source_threads(&self) -> std::rc::Rc<SourceThreads> {
+        let pool = self.searching_pool();
+        if let Some(t) = self.source_threads.borrow().as_ref().filter(|t| t.pool == pool) {
+            return t.clone();
+        }
+        let source = self.active_source();
+        let keys = compute_thread_keys(source, &self.thread_links);
+        let mut members: std::collections::HashMap<(u32, String), Vec<usize>> =
+            std::collections::HashMap::new();
+        for (i, m) in source.iter().enumerate() {
+            if let Some(key) = keys.get(&thread_slot(m)) {
+                members.entry(key.clone()).or_default().push(i);
+            }
+        }
+        let t = std::rc::Rc::new(SourceThreads { pool, keys, members });
+        *self.source_threads.borrow_mut() = Some(t.clone());
+        t
     }
 
     fn search_placeholder(&self) -> String {
@@ -5196,15 +2860,11 @@ impl MessageList {
         }
     }
 
-    fn rebuild(&mut self) {
+    /// What the search field and the quick filters let through.
+    fn filter(&self) -> impl Fn(&Message) -> bool {
         let q = self.query.to_lowercase();
-        // Filter and sort by reference, and clone only the page that is actually
-        // rendered. A folder's index holds every message ever synced, while
-        // `render_limit` is a few hundred — cloning the whole match set first put
-        // a copy of the entire mailbox through the allocator on every keystroke
-        // and on the cache-backed load at startup.
         let (unread_only, starred_only) = (self.unread_only, self.starred_only);
-        let passes = |m: &Message| {
+        move |m: &Message| {
             (!unread_only || m.unread)
                 && (!starred_only || m.starred)
                 && (q.is_empty()
@@ -5212,30 +2872,165 @@ impl MessageList {
                     || m.from_name.to_lowercase().contains(&q)
                     || m.from_addr.to_lowercase().contains(&q)
                     || m.preview.to_lowercase().contains(&q))
+        }
+    }
+
+    /// One conversation's row: what its head says about it, and its members
+    /// head first, the parts filed in other folders included (#309). `own`
+    /// is the folder's own members, oldest first. Records the conversation's
+    /// membership for the whole-conversation actions as it goes.
+    fn describe_group(
+        &mut self,
+        key: &(u32, String),
+        own: &[Rc<Message>],
+        passes: &impl Fn(&Message) -> bool,
+    ) -> (RowMeta, Vec<Rc<Message>>) {
+        let mut msgs = own.to_vec();
+        let summary = self.threading.then(|| self.thread_summaries.get(key)).flatten();
+        // The parts of the conversation filed elsewhere, which the row opens
+        // out into along with this folder's own (#309).
+        let extras: Vec<Rc<Message>> = match summary {
+            Some(s) if self.thread_expansion => {
+                nested_members(&s.members, &msgs, &self.listed_folders, passes).into_iter().map(Rc::new).collect()
+            }
+            _ => Vec::new(),
         };
-        let mut matches: Vec<&Message> = self.active_source().iter().filter(|m| passes(m)).collect();
-        // The folders on the list: a conversation's members in them are rows
-        // of their own already, so only the rest are nested (#309).
-        let listed_folders: std::collections::HashSet<(u32, u32)> =
-            matches.iter().map(|m| (m.account_id, m.folder_id)).collect();
-        let sort = self.sort;
+        let count = msgs.len() + extras.len();
+        // What the badge says. `count` is what the row holds and goes on
+        // steering it (whether it nests and what expands) but the number on
+        // the chip is the size of the *conversation*, drafts included (#222).
+        // Never less than what is on screen: a stale or partial answer from
+        // the cache must not make the badge contradict the rows under it.
+        let total = if self.threading { summary.map(|s| s.count).unwrap_or(0).max(count) } else { count };
+        // The newest member this folder holds, and the newer one the cache
+        // found in another folder — the reply you sent, filed in Sent (#236).
+        let newest_here = msgs.last().expect("a group holds at least one message").clone();
+        let elsewhere = self.thread_row_newest.then(|| latest_elsewhere(summary, newest_here.timestamp)).flatten();
+        // `expanded_threads` stores toggles away from the default state. With
+        // expansion disabled no thread ever opens in the list; the stored
+        // toggles survive for when it is re-enabled.
+        let expanded =
+            count > 1 && self.thread_expansion && (self.expanded_threads.contains(key) != self.default_expanded);
+        // The head stays marked unread while ANY message in its conversation
+        // is unread, hidden replies included, but only this folder's own: an
+        // archived message still unread is not new mail here.
+        let any_unread = count > 1 && msgs.iter().any(|m| m.unread);
+        // The head is the thread's *oldest* message, but its row speaks for
+        // the conversation's NEWEST one: its sender, its preview and the time
+        // it landed, rather than the opener re-shown every time a reply
+        // arrives.
+        //
+        // Which message that is can depend on more than this folder. A mail
+        // you answered is one row in the Inbox and the answer is in Sent, so
+        // the row quotes the other side however recently you wrote back. With
+        // "Show your own replies in the message list" turned on, the cache's
+        // newest wins whenever it is later than anything on screen (#236);
+        // off, which is how Hylki has always behaved, the folder has the last
+        // word.
+        let (latest, from, preview) = if let Some(l) = &elsewhere {
+            (
+                Some(crate::models::datetime_list_at(l.timestamp, &l.date)),
+                Some((l.from_name.clone(), l.from_addr.clone())),
+                Some(l.preview.clone()),
+            )
+        } else if count > 1 {
+            (
+                Some(newest_here.datetime_list()),
+                Some((newest_here.from_name.clone(), newest_here.from_addr.clone())),
+                Some(newest_here.preview.clone()),
+            )
+        } else {
+            (None, None, None)
+        };
+        let any_starred = count > 1 && msgs.iter().any(|m| m.starred);
+        // The row stays this folder's oldest message, whatever the other
+        // folders hold that is older, so what is done to the row is done to
+        // mail in this folder. The rest follow in time order.
+        if !extras.is_empty() {
+            for m in &extras {
+                self.nested.insert((m.account_id, m.id), m.clone());
+            }
+            let head = msgs.remove(0);
+            msgs.extend(extras);
+            msgs.sort_by(|a, b| a.timestamp.cmp(&b.timestamp).then(a.uid.cmp(&b.uid)));
+            msgs.insert(0, head);
+        }
+        if count > 1 {
+            let members: Vec<(u32, u32)> = msgs.iter().map(|m| (m.account_id, m.id)).collect();
+            for k in &members {
+                self.msg_thread.insert(*k, key.clone());
+            }
+            self.thread_members.insert(key.clone(), members);
+        }
+        let meta = RowMeta {
+            count: total,
+            // The parts filed in other folders open out too (#309); a
+            // conversation with nothing to show beyond its row, all of it in
+            // Trash, say, wears a bare count and no caret.
+            expandable: count > 1,
+            expanded,
+            key: (count > 1).then(|| key.clone()),
+            from,
+            preview,
+            latest,
+            unread: any_unread,
+            starred: any_starred,
+            revealed: true,
+            group: self.threading.then(|| key.clone()),
+            ..Default::default()
+        };
+        (meta, msgs)
+    }
+
+    /// Fresh sizes for these conversations (#222): their head rows say so in
+    /// place. A conversation opened out in the list may gain or lose rows,
+    /// and that takes a rebuild.
+    fn apply_summaries(&mut self, keys: Vec<(u32, String)>) {
+        let passes = self.filter();
+        for key in keys {
+            let Some(own) = self.groups.get(&key).cloned() else { continue };
+            let head = (own[0].account_id, own[0].id);
+            let Some(pos) = self.shown.iter().position(|m| (m.account_id, m.id) == head) else { continue };
+            let Some(row) = self.shared.model.row(pos) else { continue };
+            if row.meta.expanded {
+                self.queue_rebuild(true);
+                return;
+            }
+            let (meta, _) = self.describe_group(&key, &own, &passes);
+            if meta.expanded {
+                self.queue_rebuild(true);
+                return;
+            }
+            self.shared.model.update_row(pos, |d| d.meta = meta);
+        }
+    }
+
+    fn rebuild(&mut self) {
         let t_rebuild = std::time::Instant::now();
+        let passes = self.filter();
+        let source_len = self.active_source().len();
+        let mut matches: Vec<Rc<Message>> = self.active_source().iter().filter(|m| passes(m)).cloned().collect();
+        let filtered = matches.len() != source_len;
+        self.listed_folders = matches.iter().map(|m| (m.account_id, m.folder_id)).collect();
+        let sort = self.sort;
         matches.sort_by(|a, b| message_cmp(a, b, sort));
-        let total_matches = matches.len();
-        // Render up to the current limit; the rest stay indexed (for search) until
-        // the user scrolls further and `LoadMore` raises the limit.
-        let capped: Vec<Message> = matches.into_iter().take(self.render_limit).cloned().collect();
-        self.total_matches = total_matches;
-        self.rendered_count = capped.len();
+        self.total_matches = matches.len();
 
         // Group into conversations by reply headers (Message-ID / In-Reply-To /
-        // References), preserving newest-first order. Each thread shows its newest
-        // message as the head; expanding reveals the older replies beneath it.
-        // With threading off, every message is its own group.
-        let keys = if self.threading {
-            compute_thread_keys(&capped, &self.thread_links)
+        // References) across the whole list, preserving the sort's order of
+        // threads. With threading off, every message is its own group.
+        // Unfiltered, the list is the folder, whose grouping is kept.
+        let kept_threads;
+        let own_keys;
+        let empty = std::collections::HashMap::new();
+        let keys = if !self.threading {
+            &empty
+        } else if !filtered {
+            kept_threads = self.source_threads();
+            &kept_threads.keys
         } else {
-            std::collections::HashMap::new()
+            own_keys = compute_thread_keys(&matches, &self.thread_links);
+            &own_keys
         };
         let key_for = |m: &Message| -> (u32, String) {
             keys.get(&thread_slot(m))
@@ -5243,9 +3038,9 @@ impl MessageList {
                 .unwrap_or_else(|| (m.account_id, format!("\u{0}uid{}/{}", m.folder_id, m.uid)))
         };
         let mut order: Vec<(u32, String)> = Vec::new();
-        let mut groups: std::collections::HashMap<(u32, String), Vec<Message>> =
+        let mut groups: std::collections::HashMap<(u32, String), Vec<Rc<Message>>> =
             std::collections::HashMap::new();
-        for m in capped {
+        for m in matches {
             let key = key_for(&m);
             if let Some(v) = groups.get_mut(&key) {
                 v.push(m);
@@ -5255,32 +3050,22 @@ impl MessageList {
             }
         }
 
+        // A reply that is sliding open, or shut, keeps doing so.
+        let appearing: std::collections::HashSet<(u32, u32, u32)> = (0..self.shared.model.len())
+            .filter_map(|i| self.shared.model.row(i))
+            .filter(|r| r.meta.appear)
+            .map(|r| r.slot())
+            .collect();
+
         // Flatten back into display order, recording per-row thread metadata.
-        struct RowMeta {
-            count: usize,
-            /// Whether this row's chip can actually open anything: true only
-            /// when the folder holds more than one of the conversation (#222).
-            expandable: bool,
-            is_child: bool,
-            is_last: bool,
-            /// Newest member's (from_name, from_addr) and preview, surfaced on
-            /// the head row (display only; identity stays the head's).
-            from: Option<(String, String)>,
-            preview: Option<String>,
-            expanded: bool,
-            key: Option<(u32, String)>,
-            unread: bool,
-            starred: bool,
-            /// The newest member's display time (thread heads only): the head
-            /// row says when the conversation last moved, not when it began.
-            latest: Option<String>,
-        }
-        let mut shown: Vec<Message> = Vec::new();
-        let mut metas: Vec<RowMeta> = Vec::new();
+        let mut shown: Vec<Rc<Message>> = Vec::new();
+        let mut rows: Vec<Rc<RowData>> = Vec::new();
+        let mut thread_drag = crate::ui::message_row::ThreadDragKeys::new();
         self.msg_thread.clear();
         self.thread_members.clear();
         self.nested.clear();
-        self.listed_threads.clear();
+        self.groups.clear();
+        let mut any_expanded = false;
         for key in &order {
             let mut msgs = groups.remove(key).unwrap();
             // A conversation reads like a transcript: the message that started it
@@ -5289,175 +3074,53 @@ impl MessageList {
             // list's sort order — recent activity keeps it near the top — but
             // inside the thread, time only runs one way.
             msgs.sort_by(|a, b| a.timestamp.cmp(&b.timestamp).then(a.uid.cmp(&b.uid)));
-            let summary = self.threading.then(|| self.thread_summaries.get(key)).flatten();
-            // The parts of the conversation filed elsewhere, which the row
-            // opens out into along with this folder's own (#309).
-            let extras = match summary {
-                Some(s) if self.thread_expansion => {
-                    nested_members(&s.members, &msgs, &listed_folders, &passes)
-                }
-                _ => Vec::new(),
-            };
-            let own = msgs.len();
-            let count = own + extras.len();
-            // What the badge says. `count` is what the row holds and goes on
-            // steering it (whether it nests and what expands) but the number
-            // on the chip is the size of the *conversation*, drafts included
-            // (#222). Never less than what is on screen: a stale or partial
-            // answer from the cache must not make the badge contradict the
-            // rows under it.
-            let total = if self.threading {
-                summary.map(|s| s.count).unwrap_or(0).max(count)
-            } else {
-                count
-            };
-            // The newest member this folder holds, and the newer one the cache
-            // found in another folder — the reply you sent, filed in Sent
-            // (#236). Cloned here so the row can be described without holding
-            // a borrow of the summaries across the inserts below.
-            let newest_here = msgs.last().expect("a group holds at least one message");
-            let elsewhere = self
-                .thread_row_newest
-                .then(|| latest_elsewhere(summary, newest_here.timestamp))
-                .flatten();
-            // Ask about anything that could be bigger than it looks. A thread of
-            // one is worth asking about too — a mail you answered twice is a
-            // conversation of three and shows no badge at all today.
+            // A drag that starts on the row carries the folder's own members
+            // (#171).
+            if msgs.len() > 1 {
+                let head = &msgs[0];
+                thread_drag.insert(
+                    (head.account_id, head.id),
+                    msgs.iter().map(|m| (m.account_id, m.folder_id, m.uid, m.id)).collect(),
+                );
+            }
+            let (meta, members) = self.describe_group(key, &msgs, &passes);
             if self.threading {
-                let ids = crate::models::thread_ids(&msgs);
-                if !ids.is_empty() {
-                    self.listed_threads.push((key.0, key.1.clone(), ids));
-                }
+                self.groups.insert(key.clone(), msgs);
             }
-            // `expanded_threads` stores toggles away from the default state.
-            // With expansion disabled no thread ever opens in the list; the
-            // stored toggles survive for when it is re-enabled.
-            let expanded = count > 1
-                && self.thread_expansion
-                && (self.expanded_threads.contains(key) != self.default_expanded);
-            // The head stays marked unread while ANY message in its
-            // conversation is unread, hidden replies included, but only this
-            // folder's own: an archived message still unread is not new mail
-            // here.
-            let any_unread = count > 1 && msgs.iter().any(|m| m.unread);
-            // The head is the thread's *oldest* message (see the sort above),
-            // but its row speaks for the conversation's NEWEST one: its sender,
-            // its preview and the time it landed, rather than the opener
-            // re-shown every time a reply arrives.
-            //
-            // Which message that is can depend on more than this folder. A
-            // mail you answered is one row in the Inbox and the answer is in
-            // Sent, so the row quotes the other side however recently you
-            // wrote back. With "Show your own replies in the message list"
-            // turned on, the cache's newest wins whenever it is later than
-            // anything on screen (#236); off, which is how Hylki has always
-            // behaved, the folder has the last word.
-            let (latest, latest_from, latest_preview) = if let Some(l) = &elsewhere {
-                (
-                    Some(crate::models::datetime_list_at(l.timestamp, &l.date)),
-                    Some((l.from_name.clone(), l.from_addr.clone())),
-                    Some(l.preview.clone()),
-                )
-            } else if count > 1 {
-                (
-                    Some(newest_here.datetime_list()),
-                    Some((newest_here.from_name.clone(), newest_here.from_addr.clone())),
-                    Some(newest_here.preview.clone()),
-                )
-            } else {
-                (None, None, None)
-            };
-            let any_starred = count > 1 && msgs.iter().any(|m| m.starred);
-            // The row stays this folder's oldest message, whatever the other
-            // folders hold that is older, so what is done to the row is done
-            // to mail in this folder. The rest follow in time order.
-            if !extras.is_empty() {
-                for m in &extras {
-                    self.nested.insert((m.account_id, m.id), m.clone());
-                }
-                let head = msgs.remove(0);
-                msgs.extend(extras);
-                msgs.sort_by(|a, b| a.timestamp.cmp(&b.timestamp).then(a.uid.cmp(&b.uid)));
-                msgs.insert(0, head);
-            }
-            if count > 1 {
-                let members: Vec<(u32, u32)> = msgs.iter().map(|m| (m.account_id, m.id)).collect();
-                for k in &members {
-                    self.msg_thread.insert(*k, key.clone());
-                }
-                self.thread_members.insert(key.clone(), members);
-            }
-            let mut it = msgs.into_iter();
+            let expanded = meta.expanded;
+            let mut it = members.into_iter();
             let head = it.next().unwrap();
-            shown.push(head);
-            metas.push(RowMeta {
-                count: total,
-                // The parts filed in other folders open out too (#309); a
-                // conversation with nothing to show beyond its row, all of it
-                // in Trash, say, wears a bare count and no caret.
-                expandable: count > 1,
-                is_child: false,
-                is_last: false,
-                from: latest_from,
-                preview: latest_preview,
-                expanded,
-                key: if count > 1 { Some(key.clone()) } else { None },
-                unread: any_unread,
-                starred: any_starred,
-                latest,
-            });
+            shown.push(head.clone());
+            rows.push(Rc::new(RowData { msg: head, meta }));
             if expanded {
-                let rest: Vec<Message> = it.collect();
+                any_expanded = true;
+                let closing = self.collapsing_threads.contains_key(key);
+                let rest: Vec<Rc<Message>> = it.collect();
                 let n = rest.len();
                 for (j, child) in rest.into_iter().enumerate() {
-                    shown.push(child);
-                    metas.push(RowMeta {
-                        count: 0,
-                        expandable: false,
-                        is_child: true,
-                        is_last: j + 1 == n,
-                        from: None,
-                        preview: None,
-                        expanded: false,
-                        key: None,
-                        unread: false,
-                        starred: false,
-                        latest: None,
-                    });
+                    let slot = thread_slot(&child);
+                    shown.push(child.clone());
+                    rows.push(Rc::new(RowData {
+                        msg: child,
+                        meta: RowMeta {
+                            is_child: true,
+                            is_last: j + 1 == n,
+                            revealed: !closing,
+                            appear: appearing.contains(&slot),
+                            ..Default::default()
+                        },
+                    }));
                 }
             }
         }
-        // Growing the page (LoadMore) leaves its existing rows as they are
-        // when nothing about them changed — same messages in the same
-        // order, same conversation shape — and only the new rows get built.
-        // Anything else (a switch, new mail at the top, a thread that took
-        // in a newly listed member) rebuilds from the top.
-        let sigs: Vec<(usize, bool, bool, bool, bool, bool, bool)> = metas
-            .iter()
-            .map(|m| {
-                (m.count, m.expandable, m.is_child, m.is_last, m.expanded, m.unread, m.starred)
-            })
-            .collect();
-        let old_len = self.shown.len();
-        let append_only = !std::mem::take(&mut self.rows_stale)
-            && old_len > 0
-            && self.pending_rows.is_empty()
-            && self.rows.len() == old_len
-            && shown.len() >= old_len
-            && shown[..old_len]
-                .iter()
-                .zip(&self.shown)
-                .all(|(a, b)| (a.account_id, a.id) == (b.account_id, b.id))
-            && sigs[..old_len] == self.row_sigs[..];
+        *self.shared.thread_drag.borrow_mut() = thread_drag;
+
         // A message that was moved away and brought back comes home under a
         // new UID, and a row's id is its UID. The selection would find no row
         // to light, so the highlight blinked off and came back a moment later
         // as the list caught up. Follow the selection by Message-ID over a
         // renumbering instead (#200).
-        let lost = self
-            .selected_ids
-            .iter()
-            .any(|k| !shown.iter().any(|m| (m.account_id, m.id) == *k));
+        let lost = self.selected_ids.iter().any(|k| !shown.iter().any(|m| (m.account_id, m.id) == *k));
         if lost {
             let renumbered: Vec<((u32, u32), (u32, u32))> = self
                 .selected_ids
@@ -5469,9 +3132,8 @@ impl MessageList {
                         .iter()
                         .find(|m| (m.account_id, m.id) == *k)
                         .filter(|m| !m.message_id.is_empty())?;
-                    let now = shown
-                        .iter()
-                        .find(|m| m.account_id == was.account_id && m.message_id == was.message_id)?;
+                    let now =
+                        shown.iter().find(|m| m.account_id == was.account_id && m.message_id == was.message_id)?;
                     Some((*k, (now.account_id, now.id)))
                 })
                 .collect();
@@ -5485,148 +3147,44 @@ impl MessageList {
             }
         }
         self.shown = shown;
-        self.row_sigs = sigs;
-        // Republish the row keys before the rows are built, so a drag starting on
-        // any of them can map selected row indices back to messages.
-        self.publish_drag_keys();
+        // Only what changed reaches the view: rows that show the same message
+        // stay where they are, with whatever they were doing (#323).
+        let t_rows = std::time::Instant::now();
+        self.shared.model.replace(rows);
+        self.select_current();
 
         // Expanded conversations indent their member cards; give the pane the
         // extra floor that needs while any thread is open, so nothing is
         // clipped at the right edge (see THREAD_EXPANDED_EXTRA).
         if let Some(s) = &self.scroller {
-            let any_expanded = metas.iter().any(|meta| meta.is_child);
-            let floor =
-                LIST_MIN_WIDTH + if any_expanded { THREAD_EXPANDED_EXTRA } else { 0 };
+            let floor = LIST_MIN_WIDTH + if any_expanded { THREAD_EXPANDED_EXTRA } else { 0 };
             s.set_size_request(floor, -1);
         }
-
-        let t_rows = std::time::Instant::now();
-        {
-            // Build the rows' inits now, the widgets for the first few now
-            // and the rest at idle: the pane fills at once and the page
-            // completes a chunk at a time without holding the main loop.
-            let mut inits: std::collections::VecDeque<RowInit> = std::collections::VecDeque::new();
-            let skip = if append_only { old_len } else { 0 };
-            for (m, meta) in self.shown.iter().zip(metas.into_iter()).skip(skip) {
-                let ring_class = if self.colorize && self.account_colors.contains_key(&m.account_id) {
-                    Some(format!("vireo-acct-ring-{}", m.account_id))
-                } else {
-                    None
-                };
-                inits.push_back(RowInit {
-                    msg: m.clone(),
-                    gravatar: self.gravatar,
-                    avatars: self.avatars,
-                    avatar_late: self.reveal_avatars_late,
-                    sender_logos: self.sender_logos,
-                    preview_lines: self.preview_lines,
-                    show_subject: self.show_subject,
-                    ring_class,
-                    palette_collapse_secs: self.palette_collapse_secs.clone(),
-                    palette_hover: self.palette_hover.clone(),
-                    tags: self.tags.clone(),
-                    show_palette: self.list_palette,
-                    in_junk: self.in_junk,
-                    in_drafts: self.in_drafts,
-                    thread_count: meta.count,
-                    is_thread_child: meta.is_child,
-                    is_last_child: meta.is_last,
-                    thread_expanded: meta.expanded,
-                    thread_expandable: self.thread_expansion && meta.expandable,
-                    thread_key: meta.key,
-                    thread_date: meta.latest,
-                    thread_from: meta.from,
-                    thread_preview: meta.preview,
-                    thread_unread: meta.unread,
-                    thread_starred: meta.starred,
-                    drag_keys: self.drag_keys.clone(),
-                        thread_drag: self.thread_drag.clone(),
-                    show_recipient: self.show_recipient,
-                    // A full rebuild never needs a row to mount closed —
-                    // that's only for `expand_thread`'s surgical insert.
-                    revealed: true,
-                    swipe_reversed: self.swipe_reversed.clone(),
-                    swipe_enabled: self.swipe_enabled.clone(),
-                    swipe_sensitivity: self.swipe_sensitivity.clone(),
-                });
-            }
-            // Discarding the rows destroys the focused one (or hides the
-            // whole list box), and focus falls to the window, where Delete,
-            // Enter and Shift+arrows do nothing and Tab or an arrow key can
-            // carry it into the reader. A background sync did it in the
-            // middle of deleting mail one by one (#255), and so did every
-            // other full rebuild: a contact photo or Gravatar arriving, the
-            // date turning over (#274). Put focus back where it was.
-            let had_focus = !append_only && self.focus_in_list();
-            if !append_only {
-                self.discard_rows();
-            }
-            self.pending_rows = inits;
-            self.fill_rows(FIRST_ROWS);
-            if had_focus {
-                self.restore_list_focus();
-            }
-        }
-
         tracing::debug!(
-            "list: rebuild {} of {} rows — sort+group {:?}, first {} rows {:?}",
-            self.rendered_count,
-            total_matches,
+            "list: rebuild {} rows of {} — sort+group {:?}, model {:?}",
+            self.shown.len(),
+            self.total_matches,
             t_rows.duration_since(t_rebuild),
-            self.rows.len(),
             t_rows.elapsed()
         );
     }
 
-    /// The factory behind the rows, bound to a fresh list box.
-    fn new_rows(input: &relm4::Sender<MessageListInput>) -> FactoryVecDeque<MessageRow> {
-        FactoryVecDeque::builder()
-            .launch(gtk::ListBox::new())
-            .forward(input, |out| match out {
-                MessageRowOutput::Action { action, message } => {
-                    MessageListInput::RowAction { action, message }
-                }
-                MessageRowOutput::SetTag { message, keyword, add } => {
-                    MessageListInput::SetTagFor { message, keyword, add }
-                }
-                MessageRowOutput::MoveTo { message, x, y } => {
-                    MessageListInput::RowMoveTo { message, x, y }
-                }
-                MessageRowOutput::ToggleThread(key) => MessageListInput::ToggleThread(key),
-                MessageRowOutput::PaletteOpened(idx) => MessageListInput::PaletteOpened(idx),
-            })
-    }
-
-    /// Everything a row list needs wired: the first one from the view, and
-    /// each one that replaces it on a folder switch.
-    fn wire_list(list: &gtk::ListBox, input: &relm4::Sender<MessageListInput>) {
-        // Multiple selection: plain click selects one (shown in the
-        // reader), Ctrl/Shift extend the selection for bulk actions;
-        // double click (or Enter) pops a message out into its own window.
-        list.set_selection_mode(gtk::SelectionMode::Multiple);
-        list.set_activate_on_single_click(false);
-        list.add_css_class("message-listbox");
+    /// Everything the view needs wired: selection, activation and keys.
+    fn wire_list(list: &gtk::ListView, shared: &RowShared, input: &relm4::Sender<MessageListInput>) {
+        // Multiple selection: plain click selects one (shown in the reader),
+        // Ctrl/Shift extend the selection for bulk actions; double click (or
+        // Enter) pops a message out into its own window.
+        list.add_css_class("message-list");
+        list.set_single_click_activate(false);
+        list.set_show_separators(false);
         let s = input.clone();
-        list.connect_selected_rows_changed(move |_| {
+        shared.selection.connect_selection_changed(move |_, _, _| {
             let _ = s.send(MessageListInput::SelectionChanged);
         });
         let s = input.clone();
-        list.connect_row_activated(move |_, row| {
-            let _ = s.send(MessageListInput::RowActivated(row.index()));
+        list.connect_activate(move |_, pos| {
+            let _ = s.send(MessageListInput::RowActivated(pos as i32));
         });
-        // Right-click a row to open its context menu. In the capture phase,
-        // so the press reaches the list before any widget inside the row
-        // (a conversation head's count chip, the hover palette's buttons)
-        // can take it; claimed, so none of them acts on it afterwards.
-        let click = gtk::GestureClick::new();
-        click.set_button(gtk::gdk::BUTTON_SECONDARY);
-        click.set_propagation_phase(gtk::PropagationPhase::Capture);
-        let s = input.clone();
-        click.connect_pressed(move |g, _, x, y| {
-            g.set_state(gtk::EventSequenceState::Claimed);
-            let _ = s.send(MessageListInput::ContextMenu { x, y });
-        });
-        list.add_controller(click);
         // Delete / Backspace on a focused row deletes the selection (single or
         // multi). Scoped to the list, so typing in the search box is unaffected.
         let key = gtk::EventControllerKey::new();
@@ -5642,123 +3200,6 @@ impl MessageList {
             }
         });
         list.add_controller(key);
-    }
-
-    /// Drop the current page's rows for a new page. A few rows go at once;
-    /// a full page is taken out of the pane whole — a fresh list box takes
-    /// its place — and torn down at idle, a chunk at a time, so the switch
-    /// never waits on the old rows' destruction.
-    fn discard_rows(&mut self) {
-        const RETIRE_MIN: usize = 40;
-        if self.rows.len() <= RETIRE_MIN {
-            self.rows.guard().clear();
-            return;
-        }
-        let old_list = self.rows.widget().clone();
-        let fresh = Self::new_rows(&self.input);
-        Self::wire_list(fresh.widget(), &self.input);
-        if let Some(parent) = old_list.parent().and_downcast::<gtk::Box>() {
-            parent.insert_child_after(fresh.widget(), None::<&gtk::Widget>);
-        }
-        // Hidden now, unparented once its rows are gone: unparenting a full
-        // list box is itself a slow step, and it can wait with the rest.
-        old_list.set_visible(false);
-        let old = std::mem::replace(&mut self.rows, fresh);
-        self.retired.push(old);
-        self.schedule_retire();
-    }
-
-    fn schedule_retire(&mut self) {
-        if self.retire_scheduled {
-            return;
-        }
-        self.retire_scheduled = true;
-        let input = self.input.clone();
-        glib::idle_add_local_once(move || {
-            let _ = input.send(MessageListInput::RetireRows);
-        });
-    }
-
-    /// Tear down a chunk of the oldest retired list, then come back for more.
-    fn retire_rows(&mut self) {
-        const RETIRE_CHUNK: usize = 25;
-        let Some(old) = self.retired.first_mut() else { return };
-        {
-            let mut guard = old.guard();
-            for _ in 0..RETIRE_CHUNK {
-                if guard.pop_front().is_none() {
-                    break;
-                }
-            }
-        }
-        if old.is_empty() {
-            let list = old.widget().clone();
-            if let Some(parent) = list.parent().and_downcast::<gtk::Box>() {
-                parent.remove(&list);
-            }
-            self.retired.remove(0);
-        }
-        if !self.retired.is_empty() {
-            self.schedule_retire();
-        }
-    }
-
-    /// Build up to `n` of the pending rows, then schedule the next chunk if
-    /// any remain. The highlight is restored after each chunk, since the
-    /// viewed message's row may only just have been built.
-    fn fill_rows(&mut self, n: usize) {
-        if self.pending_rows.is_empty() {
-            return;
-        }
-        {
-            let mut guard = self.rows.guard();
-            for _ in 0..n {
-                let Some(mut init) = self.pending_rows.pop_front() else { break };
-                // A change that landed while the row was pending (read,
-                // starred, a tag) is in `shown`; the init was made earlier.
-                if let Some(m) = self.shown.get(guard.len()) {
-                    init.msg = m.clone();
-                }
-                guard.push_back(init);
-            }
-        }
-        self.select_current();
-        // Only while focus is still on the list: anything focused since
-        // (the search box, the reader) keeps it.
-        if self.refocus_selected {
-            if !self.focus_in_list() {
-                self.refocus_selected = false;
-            } else {
-                let mut done = false;
-                self.preserving_scroll(|this| done = this.focus_selected_row());
-                self.refocus_selected = !done;
-            }
-        }
-        if !self.pending_rows.is_empty() && !self.fill_scheduled {
-            self.fill_scheduled = true;
-            let input = self.input.clone();
-            glib::idle_add_local_once(move || {
-                let _ = input.send(MessageListInput::FillRows);
-            });
-        }
-    }
-
-    /// Build every pending row now — before anything that addresses rows by
-    /// index structurally (removing, inserting a thread's replies).
-    fn flush_rows(&mut self) {
-        let n = self.pending_rows.len();
-        if n > 0 {
-            self.fill_rows(n);
-        }
-    }
-
-    /// Send to the row at `idx` if it is built; a row still pending takes
-    /// the change from `shown` when it is built instead (the handlers keep
-    /// `shown` current before sending).
-    fn row_send(&self, idx: usize, msg: MessageRowInput) {
-        if idx < self.rows.len() {
-            self.rows.send(idx, msg);
-        }
     }
 
     /// Ask for a rebuild at the end of the current main-loop pass, folding
@@ -5779,49 +3220,18 @@ impl MessageList {
         }
     }
 
-    /// Republish the shown rows' keys for drag-and-drop. Row indices shift
-    /// whenever rows are added or removed, so this must follow every change to
-    /// `shown` — a stale mapping would drag the wrong messages (#23).
-    fn publish_drag_keys(&self) {
-        *self.drag_keys.borrow_mut() = self
-            .shown
-            .iter()
-            .map(|m| (m.account_id, m.folder_id, m.uid, m.id))
-            .collect();
-        // Each conversation head's members, for a drag that starts on it.
-        let mut threads = std::collections::HashMap::new();
-        if self.threading {
-            let source = self.active_source();
-            for m in &self.shown {
-                let key = (m.account_id, m.id);
-                let Some(tkey) = self.msg_thread.get(&key) else { continue };
-                let Some(members) = self.thread_members.get(tkey) else { continue };
-                if members.len() > 1 && members.first() == Some(&key) {
-                    let items: Vec<(u32, u32, u32, u32)> = members
-                        .iter()
-                        .filter_map(|mk| source.iter().find(|x| (x.account_id, x.id) == *mk))
-                        .map(|x| (x.account_id, x.folder_id, x.uid, x.id))
-                        .collect();
-                    threads.insert(key, items);
-                }
-            }
-        }
-        *self.thread_drag.borrow_mut() = threads;
-    }
-
     /// The shown row (a thread head) whose conversation holds the message
     /// `key`, when `key` is in the index but has no row of its own.
     fn thread_head_for(&self, key: (u32, u32)) -> Option<(u32, u32)> {
         if !self.threading {
             return None;
         }
-        let source = self.active_source();
-        let m = source.iter().find(|m| (m.account_id, m.id) == key)?;
-        let keys = compute_thread_keys(source, &self.thread_links);
-        let thread = keys.get(&thread_slot(m))?;
+        let m = self.active_source().iter().find(|m| (m.account_id, m.id) == key)?;
+        let threads = self.source_threads();
+        let thread = threads.keys.get(&thread_slot(m))?;
         self.shown
             .iter()
-            .find(|m| keys.get(&thread_slot(m)) == Some(thread))
+            .find(|m| threads.keys.get(&thread_slot(m)) == Some(thread))
             .map(|m| (m.account_id, m.id))
     }
 
@@ -5857,21 +3267,25 @@ impl MessageList {
         if !self.threading {
             return Vec::new();
         }
-        let source = self.active_source();
-        let keys = compute_thread_keys(source, &self.thread_links);
-        let Some(key) = keys.get(&thread_slot(m)).cloned() else {
-            return Vec::new();
-        };
-        let mut members: Vec<Message> = source
-            .iter()
-            .filter(|x| keys.get(&thread_slot(x)) == Some(&key))
-            .cloned()
-            .collect();
+        let mut members = self.source_members(m);
         if members.len() <= 1 {
             return Vec::new();
         }
         members.sort_by(|a, b| a.timestamp.cmp(&b.timestamp).then(a.uid.cmp(&b.uid)));
         members
+    }
+
+    /// Everything in `active_source` that shares `m`'s conversation, `m`
+    /// included, in source order. Empty when `m` is not in the source.
+    fn source_members(&self, m: &Message) -> Vec<Message> {
+        let threads = self.source_threads();
+        let source = self.active_source();
+        threads
+            .keys
+            .get(&thread_slot(m))
+            .and_then(|key| threads.members.get(key))
+            .map(|idx| idx.iter().filter_map(|&i| source.get(i)).map(|m| Message::clone(m)).collect())
+            .unwrap_or_default()
     }
 
     /// The conversation to show for a selected message: when `m` is the oldest
@@ -5888,16 +3302,7 @@ impl MessageList {
         }
         // Thread within whatever set is on screen (the search pool while searching,
         // otherwise the current folder) so the conversation matches the rows shown.
-        let source = self.active_source();
-        let keys = compute_thread_keys(source, &self.thread_links);
-        let Some(key) = keys.get(&thread_slot(m)).cloned() else {
-            return (vec![m.clone()], false);
-        };
-        let mut members: Vec<Message> = source
-            .iter()
-            .filter(|x| keys.get(&thread_slot(x)) == Some(&key))
-            .cloned()
-            .collect();
+        let mut members = self.source_members(m);
         if members.len() <= 1 {
             // Nothing else here to thread with. It may still have siblings in
             // another folder, so this is *not* solo — the reader may look.
@@ -5920,16 +3325,25 @@ impl MessageList {
 
     /// Select row `idx` and put the keyboard focus on it.
     ///
-    /// Focus matters after a removal: destroying the focused row leaves GTK to
-    /// pick a fallback of its own, which can be the top of the list — and moving
-    /// focus scrolls the viewport with it, so the list appears to jump away from
-    /// where the user was working (#19). Taking focus deliberately also means the
+    /// Focus matters after a removal: GTK would otherwise pick a fallback of
+    /// its own, which can be the top of the list — and moving focus scrolls
+    /// the viewport with it, so the list appears to jump away from where the
+    /// user was working (#19). Taking focus deliberately also means the
     /// single-key shortcuts carry on from the row that is now selected.
     fn select_and_focus(&self, idx: usize) {
-        let list = self.rows.widget();
-        if let Some(row) = list.row_at_index(idx as i32) {
-            list.select_row(Some(&row));
-            row.grab_focus();
+        if idx < self.shown.len() {
+            self.shared.selection.select_item(idx as u32, false);
+            self.focus_row(idx);
+        }
+    }
+
+    /// Bring row `idx` into view and give it the keyboard. Scrolling with
+    /// FOCUS only moves the list's own focus item; the keyboard follows it
+    /// only when the list already has it.
+    fn focus_row(&self, idx: usize) {
+        if idx < self.shown.len() {
+            self.list_view.scroll_to(idx as u32, gtk::ListScrollFlags::FOCUS, None);
+            self.list_view.grab_focus();
         }
     }
 
@@ -5945,13 +3359,9 @@ impl MessageList {
     /// counterpart to `select_and_focus` for a row that wasn't the one being
     /// viewed. Used when a removed row held focus but wasn't the viewed
     /// message (e.g. deleted via its own row action while browsing further
-    /// down the list): without this, GTK's own fallback focus assignment
-    /// scrolls the list away to wherever it lands instead of staying put.
+    /// down the list).
     fn focus_only(&self, idx: usize) {
-        let list = self.rows.widget();
-        if let Some(row) = list.row_at_index(idx as i32) {
-            row.grab_focus();
-        }
+        self.focus_row(idx);
         self.hide_focus_ring();
     }
 
@@ -5960,82 +3370,36 @@ impl MessageList {
     /// no accent focus ring appears around a row the user never navigated to.
     /// The next real key press turns the ring back on, as normal.
     fn hide_focus_ring(&self) {
-        if let Some(win) = self
-            .rows
-            .widget()
-            .root()
-            .and_then(|r| r.downcast::<gtk::Window>().ok())
-        {
+        if let Some(win) = self.list_view.root().and_then(|r| r.downcast::<gtk::Window>().ok()) {
             win.set_focus_visible(false);
         }
     }
 
-    /// Whether keyboard focus is on the list or one of its rows.
-    fn focus_in_list(&self) -> bool {
-        let list = self.rows.widget().upcast_ref::<gtk::Widget>();
-        list.root()
-            .and_then(|r| r.focus())
-            .is_some_and(|f| f == *list || f.is_ancestor(list))
-    }
-
-    /// Give focus back to the selected row after a rebuild, scroll kept and
-    /// no focus ring drawn. Until that row is built the list box holds
-    /// focus, so the list's keys work in between.
-    fn restore_list_focus(&mut self) {
-        self.preserving_scroll(|this| {
-            if this.focus_selected_row() {
-                this.refocus_selected = false;
-            } else {
-                this.rows.widget().grab_focus();
-                this.refocus_selected = !this.selected_ids.is_empty();
-            }
-        });
-        self.hide_focus_ring();
-    }
-
-    /// Focus the built row of the first selected message, if there is one.
-    fn focus_selected_row(&self) -> bool {
-        let list = self.rows.widget();
-        let Some(row) = list.selected_rows().into_iter().next() else {
-            return false;
-        };
-        let focused = row.grab_focus();
-        if focused {
-            self.hide_focus_ring();
-        }
-        focused
-    }
-
     /// Re-apply the whole selection (the viewed message plus any multi-selected
     /// rows) so it persists across rebuilds — background syncs included — until
-    /// the user clicks away. Called after a rebuild, when rows are freshly built
-    /// and nothing is selected yet.
+    /// the user clicks away.
     fn select_current(&self) {
-        let list = self.rows.widget();
-        if self.selected_ids.is_empty() {
-            list.unselect_all();
-            return;
-        }
-        for key in &self.selected_ids {
-            if let Some(idx) = self.shown.iter().position(|m| (m.account_id, m.id) == *key) {
-                if let Some(row) = list.row_at_index(idx as i32) {
-                    list.select_row(Some(&row));
-                }
-            }
-        }
+        let positions: Vec<usize> = self
+            .selected_ids
+            .iter()
+            .filter_map(|key| self.shown.iter().position(|m| (m.account_id, m.id) == *key))
+            .collect();
+        self.select_positions(&positions);
     }
 
     /// Update the display-wide CSS that rings each account's avatar with its
     /// color (used in the unified "All Inboxes" view to identify the account).
     fn refresh_tint_css(&self) {
+        // In account order, so the same colors read as the same rules.
+        let colors: std::collections::BTreeMap<_, _> = self.account_colors.iter().collect();
         let mut css = String::new();
-        for (id, color) in &self.account_colors {
+        for (id, color) in colors {
             css.push_str(&format!(
                 ".vireo-acct-ring-{0} {{ border-radius: 9999px; box-shadow: 0 0 0 3px {1}; }}\n",
                 id, color
             ));
         }
-        self.color_provider.load_from_data(&css);
+        self.color_provider.load(css);
     }
 }
 
@@ -6043,9 +3407,67 @@ impl MessageList {
 mod tests {
     use super::{
         compute_thread_keys, heads_its_row, latest_elsewhere, nested_members, reader_conversation,
-        row_for_reader_key, swipe_progress_px, thread_slot, unasked_threads, SWIPE_ARM, SWIPE_MAX,
+        row_for_reader_key, thread_slot, unasked_threads,
     };
+    use crate::ui::message_row::{row_edits, swipe_progress_px, RowEdit, SWIPE_ARM, SWIPE_MAX};
     use crate::models::Message;
+
+    /// Apply `row_edits` to `old` the way the model applies them, then add
+    /// the rest of `new`, and return the result alongside the number of rows
+    /// put in or taken out.
+    fn apply_edits(old: &[u32], new: &[u32]) -> (Vec<u32>, usize) {
+        let (edits, tail) = row_edits(old, new);
+        let mut rows = old.to_vec();
+        let mut pos = 0;
+        let mut cost = 0;
+        for e in edits {
+            match e {
+                RowEdit::Keep => pos += 1,
+                RowEdit::Remove => {
+                    rows.remove(pos);
+                    cost += 1;
+                }
+                RowEdit::Insert(i) => {
+                    rows.insert(pos, new[i]);
+                    pos += 1;
+                    cost += 1;
+                }
+            }
+        }
+        cost += rows.len() - pos;
+        rows.truncate(pos);
+        rows.extend(&new[tail..]);
+        (rows, cost)
+    }
+
+    /// #323: a rebuild keeps the rows that still show the same message and
+    /// touches only what changed, so a long list is not built again for new
+    /// mail, a lifted conversation or more of the folder.
+    #[test]
+    fn rebuilds_touch_only_the_rows_that_changed() {
+        let old: Vec<u32> = (0..1000).collect();
+        // More of the folder: nothing to touch, the rest joins after.
+        let grown: Vec<u32> = (0..1500).collect();
+        assert_eq!(apply_edits(&old, &grown), (grown.clone(), 0));
+        // Two new messages at the top.
+        let mut fresh = vec![5000, 5001];
+        fresh.extend(0..1000);
+        assert_eq!(apply_edits(&old, &fresh), (fresh.clone(), 2));
+        // A reply lifts row 700's conversation to the top.
+        let mut lifted = vec![700];
+        lifted.extend((0..1000).filter(|&n| n != 700));
+        assert_eq!(apply_edits(&old, &lifted), (lifted.clone(), 2));
+        // Mail deleted elsewhere, from the middle.
+        let gone: Vec<u32> = (0..1000).filter(|n| ![10, 11, 500].contains(n)).collect();
+        assert_eq!(apply_edits(&old, &gone), (gone.clone(), 3));
+        // The same rows: nothing to put in or take out.
+        assert_eq!(apply_edits(&old, &old), (old.clone(), 0));
+        // A different folder shares nothing, so everything goes.
+        let other: Vec<u32> = (2000..2010).collect();
+        let (rows, cost) = apply_edits(&old, &other);
+        assert_eq!(rows, other);
+        assert!(cost >= 1000);
+    }
 
     /// #236: the row a conversation collapses to is judged over the rendered
     /// window's grouping, so a conversation whose oldest message lies past

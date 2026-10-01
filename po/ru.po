@@ -3045,27 +3045,6 @@ msgid ""
 "directly"
 msgstr ""
 
-msgid "Mark as read"
-msgstr "Отметить как прочитанное"
-
-msgid "Move to…"
-msgstr "Переместить в…"
-
-msgid "Not spam"
-msgstr "Не спам"
-
-msgid "Add sender to Contacts"
-msgstr "Добавить отправителя в «Контакты»"
-
-msgid "Mark as unread"
-msgstr "Отметить как непрочитанное"
-
-msgid "Remove star"
-msgstr "Снять звёздочку"
-
-msgid "Show conversation"
-msgstr "Показать обсуждение"
-
 msgid "Choose which folders to search"
 msgstr "Выберите папки для поиска"
 
@@ -3095,6 +3074,27 @@ msgstr "Отметить все как прочитанные"
 
 msgid "Mark All as Unread"
 msgstr "Отметить все как непрочитанные"
+
+msgid "Mark as read"
+msgstr "Отметить как прочитанное"
+
+msgid "Move to…"
+msgstr "Переместить в…"
+
+msgid "Not spam"
+msgstr "Не спам"
+
+msgid "Add sender to Contacts"
+msgstr "Добавить отправителя в «Контакты»"
+
+msgid "Mark as unread"
+msgstr "Отметить как непрочитанное"
+
+msgid "Remove star"
+msgstr "Снять звёздочку"
+
+msgid "Show conversation"
+msgstr "Показать обсуждение"
 
 #, fuzzy
 msgid "Unsubscribing…"

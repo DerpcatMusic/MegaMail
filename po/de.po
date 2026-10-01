@@ -3039,27 +3039,6 @@ msgstr ""
 "• Aktualisieren von \"xdg-desktop-portal\" und Wiedereinloggen können das "
 "Öffnen von Links direkt beheben"
 
-msgid "Mark as read"
-msgstr "Als gelesen markieren"
-
-msgid "Move to…"
-msgstr "Verschieben nach…"
-
-msgid "Not spam"
-msgstr "Nicht Spam"
-
-msgid "Add sender to Contacts"
-msgstr "Absender zu Kontakten hinzufügen"
-
-msgid "Mark as unread"
-msgstr "Als ungelesen markieren"
-
-msgid "Remove star"
-msgstr "Stern entfernen"
-
-msgid "Show conversation"
-msgstr "Unterhaltung anzeigen"
-
 msgid "Choose which folders to search"
 msgstr "Wählen Sie aus, welche Ordner gesucht werden sollen"
 
@@ -3089,6 +3068,27 @@ msgstr "Alle als gelesen markieren"
 
 msgid "Mark All as Unread"
 msgstr "Alle als ungelesen markieren"
+
+msgid "Mark as read"
+msgstr "Als gelesen markieren"
+
+msgid "Move to…"
+msgstr "Verschieben nach…"
+
+msgid "Not spam"
+msgstr "Nicht Spam"
+
+msgid "Add sender to Contacts"
+msgstr "Absender zu Kontakten hinzufügen"
+
+msgid "Mark as unread"
+msgstr "Als ungelesen markieren"
+
+msgid "Remove star"
+msgstr "Stern entfernen"
+
+msgid "Show conversation"
+msgstr "Unterhaltung anzeigen"
 
 msgid "Unsubscribing…"
 msgstr "Abmeldung läuft…"
