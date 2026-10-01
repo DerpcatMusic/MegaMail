@@ -976,6 +976,9 @@ pub struct AppModel {
     plain_font: String,
     /// The repeating auto-fetch timer, if armed.
     auto_fetch_source: Option<gtk::glib::SourceId>,
+    /// When the last wake from sleep was handled, so the second report of
+    /// the same wake is ignored.
+    last_wake: Option<std::time::Instant>,
     notifications: Controller<NotificationCenter>,
     /// The first-run welcome wizard, alive while it's on screen.
     welcome: Option<Controller<crate::ui::welcome::Welcome>>,
@@ -1662,6 +1665,8 @@ pub enum AppMsg {
     /// The system resumed from sleep — worker IMAP sockets are stale, so
     /// reconnect every account and reload the visible folder.
     SystemResumed,
+    /// The network came back after being down: the same reconnect as a wake.
+    NetworkBack,
     /// Open the settings window on the user's preferred view (the menu entry).
     OpenSettings,
     OpenPreferences,
@@ -3314,6 +3319,7 @@ impl SimpleComponent for AppModel {
             plain_monospace: plain_style.0,
             plain_font: plain_style.1,
             auto_fetch_source: None,
+            last_wake: None,
             notifications,
             welcome: None,
             notify_count: 0,
@@ -3365,11 +3371,24 @@ impl SimpleComponent for AppModel {
         });
         // Watch for resume-from-sleep: suspended IMAP sockets die silently, so
         // on wake we reconnect every worker and refresh, otherwise no new mail
-        // arrives until the app is restarted.
+        // arrives until the next auto-fetch (#322). logind is instant but out
+        // of the Flatpak's reach; the clock check covers it there.
         crate::power::watch_resume({
             let s = sender.input_sender().clone();
             move || {
                 let _ = s.send(AppMsg::SystemResumed);
+            }
+        });
+        crate::power::watch_clock_gap({
+            let s = sender.input_sender().clone();
+            move || {
+                let _ = s.send(AppMsg::SystemResumed);
+            }
+        });
+        crate::power::watch_network({
+            let s = sender.input_sender().clone();
+            move || {
+                let _ = s.send(AppMsg::NetworkBack);
             }
         });
         // With no accounts, no worker events will populate the sidebar, so render
@@ -9312,22 +9331,31 @@ impl SimpleComponent for AppModel {
             }
 
             AppMsg::SystemResumed => {
-                // Sockets left open across suspend are dead. Reconnect drops the
-                // stale session, logs in fresh and re-arms IMAP IDLE — and it
-                // unsticks any worker parked inside an IDLE wait, since the
-                // request breaks its select loop. Then reload the visible folder
-                // so new mail appears without waiting for the next auto-fetch.
-                for w in self.workers.values() {
-                    let _ = w.send(MailRequest::Reconnect);
+                // logind and the clock check both report the same wake.
+                let now = std::time::Instant::now();
+                if self.last_wake.is_some_and(|t| now - t < std::time::Duration::from_secs(30)) {
+                    return;
                 }
-                sender.input(AppMsg::Refresh);
-                // A Gravatar lookup that failed while the network was down
-                // gets another go now that it is back (#189).
-                self.warm_own_gravatars(&sender);
+                self.last_wake = Some(now);
                 // Realign the auto-fetch timer to now; its monotonic countdown
                 // did not advance during sleep.
                 self.arm_auto_fetch(&sender);
+                // Still rejoining the Wi-Fi: a reconnect now would fail and
+                // leave the account offline until the next auto-fetch.
+                // NetworkBack does it once the network is up.
+                if !crate::power::network_available() {
+                    return;
+                }
+                self.reconnect_workers(&sender);
+                // The network monitor can lag the wake by a moment and call a
+                // dead network up; one more pass shortly after catches that.
+                let input = sender.input_sender().clone();
+                gtk::glib::timeout_add_seconds_local_once(20, move || {
+                    let _ = input.send(AppMsg::Refresh);
+                });
             }
+
+            AppMsg::NetworkBack => self.reconnect_workers(&sender),
 
             AppMsg::OpenSettings => {
                 // The "opens to" preference decides the first open of the
@@ -11162,6 +11190,21 @@ impl AppModel {
     }
 
     /// (Re)arm the repeating auto-fetch timer to the current interval.
+    /// Sockets left open across a suspend or a network drop are dead.
+    /// Reconnect drops the stale session, logs in fresh and re-arms IMAP IDLE,
+    /// and it unsticks any worker parked inside an IDLE wait, since the
+    /// request breaks its select loop. Then reload the visible folder so new
+    /// mail appears without waiting for the next auto-fetch.
+    fn reconnect_workers(&self, sender: &ComponentSender<Self>) {
+        for w in self.workers.values() {
+            let _ = w.send(MailRequest::Reconnect);
+        }
+        sender.input(AppMsg::Refresh);
+        // A Gravatar lookup that failed while the network was down gets
+        // another go now that it is back (#189).
+        self.warm_own_gravatars(sender);
+    }
+
     fn arm_auto_fetch(&mut self, sender: &ComponentSender<Self>) {
         if let Some(id) = self.auto_fetch_source.take() {
             id.remove();
