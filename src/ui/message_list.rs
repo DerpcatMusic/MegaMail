@@ -2605,7 +2605,7 @@ pub struct MessageList {
     /// account_id → avatar color, for tinting rows.
     account_colors: std::collections::HashMap<u32, String>,
     /// Display-wide provider with each account's pale row-tint rule.
-    color_provider: gtk::CssProvider,
+    color_provider: crate::ui::DisplayCss,
     /// Actions palette collapse delay (seconds), shared with every row.
     palette_collapse_secs: std::rc::Rc<std::cell::Cell<u64>>,
     /// Shared with every row: open the palette on row hover.
@@ -3319,14 +3319,7 @@ impl SimpleComponent for MessageList {
     ) -> ComponentParts<Self> {
         let rows = Self::new_rows(sender.input_sender());
 
-        let color_provider = gtk::CssProvider::new();
-        if let Some(display) = gtk::gdk::Display::default() {
-            gtk::style_context_add_provider_for_display(
-                &display,
-                &color_provider,
-                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-            );
-        }
+        let color_provider = crate::ui::DisplayCss::new();
 
         let mut model = MessageList {
             rows,
@@ -6092,14 +6085,16 @@ impl MessageList {
     /// Update the display-wide CSS that rings each account's avatar with its
     /// color (used in the unified "All Inboxes" view to identify the account).
     fn refresh_tint_css(&self) {
+        // In account order, so the same colors read as the same rules.
+        let colors: std::collections::BTreeMap<_, _> = self.account_colors.iter().collect();
         let mut css = String::new();
-        for (id, color) in &self.account_colors {
+        for (id, color) in colors {
             css.push_str(&format!(
                 ".vireo-acct-ring-{0} {{ border-radius: 9999px; box-shadow: 0 0 0 3px {1}; }}\n",
                 id, color
             ));
         }
-        self.color_provider.load_from_data(&css);
+        self.color_provider.load(css);
     }
 }
 

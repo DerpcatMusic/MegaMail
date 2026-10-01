@@ -40,6 +40,16 @@
   are now grouped by folder and number. A conversation opened earlier is
   also remembered by its folder, so returning to one no longer shows
   another folder's conversation with the same number.
+- **Fixed: clicking through messages was slow** (#323, reported by yiannis
+  ioannides). Two things ran on every click. The list grouped the whole
+  folder into conversations again to find the one clicked, which on a
+  folder of 57,000 messages took a fifth of a second in a debug build. And
+  the reader loaded its colors into a stylesheet for the whole window,
+  which made GTK restyle every row of the list, another sixth of a second
+  with 500 rows. The grouping is now kept until the folder changes, and the
+  colors are loaded once and picked by class. The sidebar, the list and the
+  tag colors had the same reload on every sidebar rebuild, and now reload
+  only when a color changes.
 - **Fixed: saving a contact failed in the Flatpak** (#314, by Felix
   Günther), with "Evolution Data Server is not available". Hylki looked for
   Evolution Data Server's service files, which the Flatpak runtime does not

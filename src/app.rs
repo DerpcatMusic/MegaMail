@@ -877,7 +877,7 @@ pub struct AppModel {
     keyword_sync_at: HashMap<u32, std::time::Instant>,
     /// The tag colors as `.tag-<keyword>` classes, app-wide (the list's
     /// chips, the sidebar's rows, the menus' swatches).
-    tag_provider: gtk::CssProvider,
+    tag_provider: crate::ui::DisplayCss,
     /// The on-disk index, for reads the main thread makes itself: the tag
     /// views and folding locally-kept tags into synced summaries.
     cache: Option<crate::cache::Cache>,
@@ -3258,7 +3258,7 @@ impl SimpleComponent for AppModel {
             tag_view_loading: false,
             tag_view_dirty: false,
             keyword_sync_at: HashMap::new(),
-            tag_provider: gtk::CssProvider::new(),
+            tag_provider: crate::ui::DisplayCss::new(),
             // Demo mode gets a cache that never touches disk, seeded with the
             // sample mail: the gallery's paging, search and sort are database
             // queries, so the demo has to run them against a real database or
@@ -3333,13 +3333,6 @@ impl SimpleComponent for AppModel {
             gallery_scan_left: HashMap::new(),
         };
         model.prime_from_cache();
-        if let Some(display) = gtk::gdk::Display::default() {
-            gtk::style_context_add_provider_for_display(
-                &display,
-                &model.tag_provider,
-                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-            );
-        }
         model.refresh_tag_css();
         model.message_list.emit(MessageListInput::SetTags(model.tags.clone()));
         model.message_view.emit(MessageViewInput::SetTags(model.tags.clone()));
@@ -17274,7 +17267,7 @@ impl AppModel {
                 color = t.color,
             ));
         }
-        self.tag_provider.load_from_data(&css);
+        self.tag_provider.load(css);
     }
 
     /// Put a tag on a message or take it off (#71): the server (or the local

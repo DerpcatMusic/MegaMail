@@ -94,12 +94,15 @@ pub struct MessageView {
     remote_allowed: bool,
     /// Owning account's display name (header chip).
     account_name: Option<String>,
-    /// Provider holding the header chip's per-account colors.
-    chip_provider: gtk::CssProvider,
+    /// The header chip's per-account colors.
+    chip_rules: ClassRules,
     /// Paints the reader's spinner and its inter-document cover in the *message*
     /// theme rather than the app's. Reading a light message in a dark app used
     /// to mean a dark spinner giving way to a white page.
-    cover_provider: gtk::CssProvider,
+    cover_rules: ClassRules,
+    /// The widgets those rules are applied to, by class.
+    account_chip: Option<gtk::Label>,
+    cover: Option<gtk::Stack>,
     /// Fingerprint of what the WebView is currently showing. Re-selecting a
     /// message that renders to the same document skips the load entirely —
     /// every load blanks the view for an instant, however briefly.
@@ -1539,6 +1542,7 @@ impl Component for MessageView {
                             set_valign: gtk::Align::Center,
                             #[watch]
                             set_visible: model.account_name.is_some(),
+                            #[name = "account_chip"]
                             gtk::Label {
                                 #[watch]
                                 set_label: model.account_name.as_deref().unwrap_or_default(),
@@ -1704,20 +1708,6 @@ impl Component for MessageView {
                 }
             }
         });
-        let chip_provider = gtk::CssProvider::new();
-        let cover_provider = gtk::CssProvider::new();
-        if let Some(display) = gtk::gdk::Display::default() {
-            gtk::style_context_add_provider_for_display(
-                &display,
-                &chip_provider,
-                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-            );
-            gtk::style_context_add_provider_for_display(
-                &display,
-                &cover_provider,
-                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-            );
-        }
         let mut model = MessageView {
             always_show_recipients: false,
             single_message_card: false,
@@ -1748,8 +1738,10 @@ impl Component for MessageView {
             card_palette_menu: crate::config::load_privacy().card_palette_menu,
             remote_allowed: false,
             account_name: None,
-            chip_provider,
-            cover_provider,
+            chip_rules: ClassRules::new(),
+            cover_rules: ClassRules::new(),
+            account_chip: None,
+            cover: None,
             shown_fingerprint: None,
             did_autoscroll: false,
             saved_anchor: None,
@@ -2123,7 +2115,6 @@ impl Component for MessageView {
         // Re-render the body when the light/dark preference changes so unstyled
         // content tracks the theme live.
         let style_manager = adw::StyleManager::default();
-        model.apply_webview_bg(model.effective_dark());
         let theme_sender = sender.clone();
         style_manager.connect_dark_notify(move |_| {
             theme_sender.input(MessageViewInput::ThemeChanged);
@@ -2146,6 +2137,9 @@ impl Component for MessageView {
         let header_tags = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         let widgets = view_output!();
         model.find_entry = Some(widgets.find_entry.clone());
+        model.account_chip = Some(widgets.account_chip.clone());
+        model.cover = Some(widgets.body_stack.clone());
+        model.apply_webview_bg(model.effective_dark());
         let body_overlay = gtk::Overlay::new();
         body_overlay.set_child(Some(&model.webview));
         body_overlay.add_overlay(&model.page_fade.cover);
@@ -2204,12 +2198,17 @@ impl Component for MessageView {
                 self.loading = loading;
                 self.instant = instant;
                 if let Some(color) = &account_color {
-                    let css = format!(
-                        ".vireo-account-chip {{ background-color: {}; color: {}; }}",
-                        crate::color::pale(color, 0.18),
-                        color
+                    let class = format!(
+                        "chip-{}",
+                        color.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>()
                     );
-                    self.chip_provider.load_from_data(&css);
+                    self.chip_rules.set(vec![(
+                        format!(".vireo-account-chip.{class}"),
+                        format!("background-color: {}; color: {color};", crate::color::pale(color, 0.18)),
+                    )]);
+                    if let Some(chip) = &self.account_chip {
+                        wear_class(chip, "chip-", &class);
+                    }
                 }
                 self.remote_allowed = allow_remote;
                 let has_remote = self
@@ -4281,29 +4280,77 @@ impl MessageView {
         // The cover matches it so the spinner gives way to the document
         // without a change of color.
         let (ground, page, chrome) = self.theme_grounds(dark);
-        let ground = if self.thread.len() > 1 || (!self.thread.is_empty() && self.single_message_card) {
-            page
+        let (bg, kind) = if self.thread.len() > 1 || (!self.thread.is_empty() && self.single_message_card) {
+            (&page, "page")
         } else if self.thread.len() == 1 && (self.reader_mode || !paints_own_background(&self.thread[0].body)) {
-            chrome
+            (&chrome, "chrome")
         } else {
-            ground
+            (&ground, "ground")
         };
-        self.webview.set_background_color(&ground_rgba(&ground));
-        let bg = ground;
+        self.webview.set_background_color(&ground_rgba(bg));
         // The spinner and the cover stand in for the message, so they answer to
         // the message's theme: #1e1e1e matches the document's own dark ground,
         // white its light one. The label and spinner take a dimmed foreground
         // from the same side, so neither disappears into the ground.
-        let fg = if dark {
-            "rgba(255,255,255,0.55)"
+        let (side, fg) = if dark {
+            ("dark", "rgba(255,255,255,0.55)")
         } else {
-            "rgba(0,0,0,0.45)"
+            ("light", "rgba(0,0,0,0.45)")
         };
-        self.cover_provider.load_from_data(&format!(
-            ".reader-cover {{ background-color: {bg}; }}\
-             .reader-loading label, .reader-loading spinner {{ color: {fg}; }}"
+        // All three grounds at once, so moving between kinds of message
+        // never loads the rules again.
+        let cover = format!(".reader-cover.cover-side-{side}");
+        let mut rules: Vec<(String, String)> = [("page", &page), ("chrome", &chrome), ("ground", &ground)]
+            .iter()
+            .map(|(k, c)| (format!("{cover}.cover-ground-{k}"), format!("background-color: {c};")))
+            .collect();
+        rules.push((
+            format!("{cover} .reader-loading label, {cover} .reader-loading spinner"),
+            format!("color: {fg};"),
         ));
+        self.cover_rules.set(rules);
+        if let Some(cover) = &self.cover {
+            wear_class(cover, "cover-side-", &format!("cover-side-{side}"));
+            wear_class(cover, "cover-ground-", &format!("cover-ground-{kind}"));
+        }
     }
+}
+
+/// Style rules for a [`DisplayCss`](crate::ui::DisplayCss), each named by a
+/// class. A message's own colors used to be the one rule a provider held, so
+/// every message opened reloaded it and restyled the whole window (#323);
+/// kept side by side, they leave a class change on one widget to move
+/// between them.
+struct ClassRules {
+    css: crate::ui::DisplayCss,
+    rules: std::cell::RefCell<std::collections::BTreeMap<String, String>>,
+}
+
+impl ClassRules {
+    fn new() -> Self {
+        ClassRules { css: crate::ui::DisplayCss::new(), rules: Default::default() }
+    }
+
+    /// Add or replace rules, as (selector, declarations).
+    fn set(&self, new: Vec<(String, String)>) {
+        let mut rules = self.rules.borrow_mut();
+        rules.extend(new);
+        self.css.load(rules.iter().map(|(s, d)| format!("{s} {{ {d} }}\n")).collect());
+    }
+}
+
+/// Give `widget` the class `class` in place of any other starting with
+/// `prefix`. Nothing is touched when it already wears it.
+fn wear_class(widget: &impl IsA<gtk::Widget>, prefix: &str, class: &str) {
+    if widget.has_css_class(class) {
+        return;
+    }
+    for c in widget.css_classes() {
+        if c.starts_with(prefix) {
+            widget.remove_css_class(&c);
+        }
+    }
+    widget.add_css_class(class);
 }
 
 /// Create a sandboxed WebView: no JavaScript or dev tools, smooth scrolling, and

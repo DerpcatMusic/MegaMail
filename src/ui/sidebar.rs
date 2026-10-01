@@ -313,7 +313,7 @@ pub struct Sidebar {
     /// The "Outbox" row list box (one row), while anything is queued.
     outbox_list: Option<gtk::ListBox>,
     /// Display-wide provider holding each account's avatar color rules.
-    color_provider: gtk::CssProvider,
+    color_provider: crate::ui::DisplayCss,
     selected: Sel,
     /// Icon-only mode: hide all text, show just icons and account pills.
     collapsed: bool,
@@ -701,14 +701,7 @@ impl Component for Sidebar {
         root: Self::Root,
         _sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
-        let color_provider = gtk::CssProvider::new();
-        if let Some(display) = gtk::gdk::Display::default() {
-            gtk::style_context_add_provider_for_display(
-                &display,
-                &color_provider,
-                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-            );
-        }
+        let color_provider = crate::ui::DisplayCss::new();
 
         let mut model = Sidebar {
             sections: Vec::new(),
@@ -2761,7 +2754,7 @@ impl Sidebar {
                 s.account.id, s.color, text
             ));
         }
-        self.color_provider.load_from_data(&css);
+        self.color_provider.load(css);
 
         // The revealers were built with no transition so the rebuilt content
         // reaches full height in the very first layout pass; hand them their
