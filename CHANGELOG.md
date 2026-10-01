@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.42.0-beta.7 — 2026-10-01
+
+The seventh beta previewing 1.42.0, with what main has gained since
+1.42.0-beta.6.
+
+- **Fixed: new mail took minutes to arrive after the computer woke** (#322,
+  reported by yiannis ioannides). Connections left open across a suspend
+  are dead, and the app reconnected only when logind announced the wake,
+  which it can't hear from inside the Flatpak. There the dead connection
+  sat until the next automatic fetch, up to five minutes later. The app now
+  also notices a wake from the clock, within ten seconds, and when the
+  network is still coming back at that moment it reconnects as soon as the
+  network is up, rather than failing once and waiting for the next fetch.
+
 ## 1.42.0-beta.6 — 2026-10-01
 
 The sixth beta previewing 1.42.0, with what main has gained since

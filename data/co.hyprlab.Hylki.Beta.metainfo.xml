@@ -63,6 +63,11 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="1.42.0-beta.7" date="2026-10-01" type="development">
+      <description>
+        <p>Seventh preview of 1.42.0: new mail arrives promptly after the computer wakes from sleep.</p>
+      </description>
+    </release>
     <release version="1.42.0-beta.6" date="2026-10-01" type="development">
       <description>
         <p>Sixth preview of 1.42.0: a message list that stays fast in folders of any size, and complete Spanish and French translations.</p>
