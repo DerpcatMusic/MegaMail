@@ -4555,7 +4555,7 @@ impl SimpleComponent for AppModel {
                 if std::env::var("HYLKI_SHOWCASE_ROW_MENU").is_ok() {
                     let ml = model.message_list.sender().clone();
                     gtk::glib::timeout_add_seconds_local_once(5, move || {
-                        let _ = ml.send(MessageListInput::ContextMenu { x: 120.0, y: 40.0 });
+                        let _ = ml.send(MessageListInput::DebugRowMenu);
                     });
                 }
                 // HYLKI_SHOWCASE_APPLY_FILTERS=inboxes|<account>:<folder>
@@ -21148,21 +21148,21 @@ fn install_scheme_css(window: &impl IsA<gtk::Widget>) {
         // same shade the threaded cards float on, as the theme defines it.
         let (_, page, _) = crate::ui::message_view::theme_grounds_for(&window, dark);
         provider.load_from_string(&format!(
-            ".message-listbox > row:selected .message-row, \
-             .message-listbox > row.activatable:selected:hover .message-row, \
-             .message-listbox > row.activatable:selected:active .message-row {{ \
+            ".message-list > row:selected .message-row, \
+             .message-list > row:selected:hover .message-row, \
+             .message-list > row:selected:active .message-row {{ \
                background-color: @accent_bg_color; color: white; }}\
-             .message-listbox:not(:focus-within):not(:backdrop) > row:selected .message-row, \
-             .message-listbox:not(:focus-within):not(:backdrop) > row.activatable:selected:hover .message-row, \
-             .message-listbox:not(:focus-within):not(:backdrop) > row.activatable:selected:active .message-row {{ \
+             .message-list:not(:focus-within):not(:backdrop) > row:selected .message-row, \
+             .message-list:not(:focus-within):not(:backdrop) > row:selected:hover .message-row, \
+             .message-list:not(:focus-within):not(:backdrop) > row:selected:active .message-row {{ \
                background-color: alpha(@window_fg_color, 0.14); color: @window_fg_color; }}\
-             .message-listbox:not(:focus-within):not(:backdrop) > row:selected .message-row label:not(.tag-chip) {{ \
+             .message-list:not(:focus-within):not(:backdrop) > row:selected .message-row label:not(.tag-chip) {{ \
                color: @window_fg_color; }}\
-             .message-listbox:not(:focus-within):not(:backdrop) > row:selected .message-row .unread-dot {{ \
+             .message-list:not(:focus-within):not(:backdrop) > row:selected .message-row .unread-dot {{ \
                background: @accent_bg_color; }}\
-             .message-listbox:not(:focus-within):not(:backdrop) > row:selected .message-row .thread-chip {{ \
+             .message-list:not(:focus-within):not(:backdrop) > row:selected .message-row .thread-chip {{ \
                background: alpha(@window_fg_color, 0.1); }}\
-             .message-listbox:not(:focus-within):not(:backdrop) > row:selected .message-row .thread-chip image {{ \
+             .message-list:not(:focus-within):not(:backdrop) > row:selected .message-row .thread-chip image {{ \
                color: @window_fg_color; }}\
              .remote-alert image {{ color: {shield}; }}\
              .inline-compose-surface, .compose-pane {{ background-color: {page}; }}\

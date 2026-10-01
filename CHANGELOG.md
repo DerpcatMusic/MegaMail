@@ -54,6 +54,17 @@
   whenever anything about it changed, and the next page, the conversation
   sizes that follow each page and new mail each set it off. It now keeps
   the rows that still show the same message and builds only what changed.
+- **Changed: the message list holds the whole folder** (#323). It used to
+  build 500 rows and another 500 each time it was scrolled to the bottom,
+  and every row it held made each click slower: GTK restyles every row
+  whenever keyboard focus moves from one to the next, about a quarter of a
+  second per click with 3,000 rows. The list is now a `GtkListView`, which
+  builds only the rows on screen and reuses them while scrolling, so a
+  click costs the same in a folder of 300 messages or 57,000. There are no
+  pages any more: the count in the header is the whole folder, a
+  conversation is grouped across all of it, and Select All selects every
+  message in the folder. A conversation's size is asked of the cache when
+  its row first comes on screen, and the answer updates that row alone.
 - **Fixed: saving a contact failed in the Flatpak** (#314, by Felix
   Günther), with "Evolution Data Server is not available". Hylki looked for
   Evolution Data Server's service files, which the Flatpak runtime does not

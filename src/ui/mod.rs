@@ -17,6 +17,7 @@ pub mod icon_picker;
 pub mod initials;
 pub mod launch;
 pub mod message_list;
+pub mod message_row;
 pub mod message_view;
 pub mod message_window;
 pub mod notifications;
