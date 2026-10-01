@@ -3057,27 +3057,6 @@ msgstr ""
 "• Zaktualizowanie pakietu „xdg-desktop-portal” i ponowne zalogowanie się "
 "może rozwiązać problem z bezpośrednim otwieraniem odnośników"
 
-msgid "Mark as read"
-msgstr "Oznacz jako przeczytane"
-
-msgid "Move to…"
-msgstr "Przenieś do…"
-
-msgid "Not spam"
-msgstr "To nie jest spam"
-
-msgid "Add sender to Contacts"
-msgstr "Dodaj nadawcę do kontaktów"
-
-msgid "Mark as unread"
-msgstr "Oznacz jako nieprzeczytane"
-
-msgid "Remove star"
-msgstr "Usuń gwiazdkę"
-
-msgid "Show conversation"
-msgstr "Wyświetl rozmowę"
-
 msgid "Choose which folders to search"
 msgstr "Wybierz katalogi do przeszukania"
 
@@ -3107,6 +3086,27 @@ msgstr "Oznacz wszystkie jako przeczytane"
 
 msgid "Mark All as Unread"
 msgstr "Oznacz wszystkie jako nieprzeczytane"
+
+msgid "Mark as read"
+msgstr "Oznacz jako przeczytane"
+
+msgid "Move to…"
+msgstr "Przenieś do…"
+
+msgid "Not spam"
+msgstr "To nie jest spam"
+
+msgid "Add sender to Contacts"
+msgstr "Dodaj nadawcę do kontaktów"
+
+msgid "Mark as unread"
+msgstr "Oznacz jako nieprzeczytane"
+
+msgid "Remove star"
+msgstr "Usuń gwiazdkę"
+
+msgid "Show conversation"
+msgstr "Wyświetl rozmowę"
 
 msgid "Unsubscribing…"
 msgstr "Wypisywanie z listy…"

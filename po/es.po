@@ -3006,27 +3006,6 @@ msgstr ""
 "enlace, cópialo y ábrelo en el navegador • Actualizar «xdg-desktop-portal» y "
 "volver a iniciar sesión puede solucionar la apertura directa de enlaces"
 
-msgid "Mark as read"
-msgstr "Marcar como leído"
-
-msgid "Move to…"
-msgstr "Mover a…"
-
-msgid "Not spam"
-msgstr "No es correo no deseado"
-
-msgid "Add sender to Contacts"
-msgstr "Añadir remitente a Contactos"
-
-msgid "Mark as unread"
-msgstr "Marcar como no leído"
-
-msgid "Remove star"
-msgstr "Quitar destacado"
-
-msgid "Show conversation"
-msgstr "Mostrar conversación"
-
 msgid "Choose which folders to search"
 msgstr "Elegir las carpetas en las que buscar"
 
@@ -3056,6 +3035,27 @@ msgstr "Marcar todo como leído"
 
 msgid "Mark All as Unread"
 msgstr "Marcar todo como no leído"
+
+msgid "Mark as read"
+msgstr "Marcar como leído"
+
+msgid "Move to…"
+msgstr "Mover a…"
+
+msgid "Not spam"
+msgstr "No es correo no deseado"
+
+msgid "Add sender to Contacts"
+msgstr "Añadir remitente a Contactos"
+
+msgid "Mark as unread"
+msgstr "Marcar como no leído"
+
+msgid "Remove star"
+msgstr "Quitar destacado"
+
+msgid "Show conversation"
+msgstr "Mostrar conversación"
 
 msgid "Unsubscribing…"
 msgstr "Cancelando suscripción…"

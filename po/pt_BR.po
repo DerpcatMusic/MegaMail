@@ -3034,27 +3034,6 @@ msgstr ""
 "• Atualizar o “xdg-desktop-portal” e iniciar a sessão novamente pode "
 "corrigir a abertura direta de links"
 
-msgid "Mark as read"
-msgstr "Marcar como lida"
-
-msgid "Move to…"
-msgstr "Mover para…"
-
-msgid "Not spam"
-msgstr "Não é spam"
-
-msgid "Add sender to Contacts"
-msgstr "Adicionar remetente aos contatos"
-
-msgid "Mark as unread"
-msgstr "Marcar como não lida"
-
-msgid "Remove star"
-msgstr "Remover estrela"
-
-msgid "Show conversation"
-msgstr "Mostrar conversa"
-
 msgid "Choose which folders to search"
 msgstr "Escolher as pastas a pesquisar"
 
@@ -3084,6 +3063,27 @@ msgstr "Marcar tudo como lido"
 
 msgid "Mark All as Unread"
 msgstr "Marcar tudo como não lido"
+
+msgid "Mark as read"
+msgstr "Marcar como lida"
+
+msgid "Move to…"
+msgstr "Mover para…"
+
+msgid "Not spam"
+msgstr "Não é spam"
+
+msgid "Add sender to Contacts"
+msgstr "Adicionar remetente aos contatos"
+
+msgid "Mark as unread"
+msgstr "Marcar como não lida"
+
+msgid "Remove star"
+msgstr "Remover estrela"
+
+msgid "Show conversation"
+msgstr "Mostrar conversa"
 
 msgid "Unsubscribing…"
 msgstr "Cancelando a inscrição…"

@@ -3019,28 +3019,6 @@ msgid ""
 "directly"
 msgstr ""
 
-msgid "Mark as read"
-msgstr "Megjelölés olvasottként"
-
-#, fuzzy
-msgid "Move to…"
-msgstr "Áthelyezés ide"
-
-msgid "Not spam"
-msgstr ""
-
-msgid "Add sender to Contacts"
-msgstr "Feladó hozzáadása a névjegyekhez"
-
-msgid "Mark as unread"
-msgstr "Megjelölés olvasatlanként"
-
-msgid "Remove star"
-msgstr "Csillag eltávolítása"
-
-msgid "Show conversation"
-msgstr "Beszélgetés megjelenítése"
-
 msgid "Choose which folders to search"
 msgstr "Válassza ki a keresendő mappákat"
 
@@ -3070,6 +3048,28 @@ msgstr "Összes megjelölése olvasottként"
 
 msgid "Mark All as Unread"
 msgstr "Összes megjelölése olvasatlanként"
+
+msgid "Mark as read"
+msgstr "Megjelölés olvasottként"
+
+#, fuzzy
+msgid "Move to…"
+msgstr "Áthelyezés ide"
+
+msgid "Not spam"
+msgstr ""
+
+msgid "Add sender to Contacts"
+msgstr "Feladó hozzáadása a névjegyekhez"
+
+msgid "Mark as unread"
+msgstr "Megjelölés olvasatlanként"
+
+msgid "Remove star"
+msgstr "Csillag eltávolítása"
+
+msgid "Show conversation"
+msgstr "Beszélgetés megjelenítése"
 
 #, fuzzy
 msgid "Unsubscribing…"

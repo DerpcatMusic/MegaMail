@@ -3036,27 +3036,6 @@ msgstr ""
 "• Η ενημέρωση του «xdg-desktop-portal» και η εκ νέου σύνδεση ενδέχεται να "
 "διορθώσουν το απευθείας άνοιγμα συνδέσμων"
 
-msgid "Mark as read"
-msgstr "Σήμανση ως αναγνωσμένο"
-
-msgid "Move to…"
-msgstr "Μετακίνηση σε…"
-
-msgid "Not spam"
-msgstr "Μη ανεπιθύμητο"
-
-msgid "Add sender to Contacts"
-msgstr "Προσθήκη αποστολέα στις Επαφές"
-
-msgid "Mark as unread"
-msgstr "Σήμανση ως μη αναγνωσμένο"
-
-msgid "Remove star"
-msgstr "Αφαίρεση αστεριού"
-
-msgid "Show conversation"
-msgstr "Εμφάνιση συζήτησης"
-
 msgid "Choose which folders to search"
 msgstr "Επιλέξτε τους φακέλους αναζήτησης"
 
@@ -3086,6 +3065,27 @@ msgstr "Σήμανση όλων ως αναγνωσμένων"
 
 msgid "Mark All as Unread"
 msgstr "Σήμανση όλων ως μη αναγνωσμένων"
+
+msgid "Mark as read"
+msgstr "Σήμανση ως αναγνωσμένο"
+
+msgid "Move to…"
+msgstr "Μετακίνηση σε…"
+
+msgid "Not spam"
+msgstr "Μη ανεπιθύμητο"
+
+msgid "Add sender to Contacts"
+msgstr "Προσθήκη αποστολέα στις Επαφές"
+
+msgid "Mark as unread"
+msgstr "Σήμανση ως μη αναγνωσμένο"
+
+msgid "Remove star"
+msgstr "Αφαίρεση αστεριού"
+
+msgid "Show conversation"
+msgstr "Εμφάνιση συζήτησης"
 
 msgid "Unsubscribing…"
 msgstr "Κατάργηση εγγραφής…"

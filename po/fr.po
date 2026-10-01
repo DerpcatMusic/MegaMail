@@ -3044,27 +3044,6 @@ msgstr ""
 "• Mettre à jour « xdg-desktop-portal » et vous reconnecter peut résoudre "
 "l'ouverture directe des liens"
 
-msgid "Mark as read"
-msgstr "Marquer comme lu"
-
-msgid "Move to…"
-msgstr "Déplacer vers…"
-
-msgid "Not spam"
-msgstr "Marquer comme acceptable"
-
-msgid "Add sender to Contacts"
-msgstr "Ajouter l'expéditeur aux contacts"
-
-msgid "Mark as unread"
-msgstr "Marquer comme non lu"
-
-msgid "Remove star"
-msgstr "Retirer l'étoile"
-
-msgid "Show conversation"
-msgstr "Afficher la conversation"
-
 msgid "Choose which folders to search"
 msgstr "Choisir les dossiers dans lesquels rechercher"
 
@@ -3094,6 +3073,27 @@ msgstr "Tout marquer comme lu"
 
 msgid "Mark All as Unread"
 msgstr "Marquer tout comme non lu"
+
+msgid "Mark as read"
+msgstr "Marquer comme lu"
+
+msgid "Move to…"
+msgstr "Déplacer vers…"
+
+msgid "Not spam"
+msgstr "Marquer comme acceptable"
+
+msgid "Add sender to Contacts"
+msgstr "Ajouter l'expéditeur aux contacts"
+
+msgid "Mark as unread"
+msgstr "Marquer comme non lu"
+
+msgid "Remove star"
+msgstr "Retirer l'étoile"
+
+msgid "Show conversation"
+msgstr "Afficher la conversation"
 
 msgid "Unsubscribing…"
 msgstr "Désabonnement en cours…"
