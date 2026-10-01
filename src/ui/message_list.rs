@@ -2425,43 +2425,64 @@ fn compute_thread_keys(
 ) -> std::collections::HashMap<(u32, u32, u32), (u32, String)> {
     use std::collections::HashMap;
 
-    // Union-find over message-id nodes (namespaced by account).
-    let mut parent: HashMap<String, String> = HashMap::new();
-    fn find(parent: &mut HashMap<String, String>, x: &str) -> String {
-        let mut cur = x.to_string();
-        while let Some(p) = parent.get(&cur) {
-            if p == &cur {
-                break;
-            }
-            cur = p.clone();
-        }
-        cur
+    // Union-find over message-id nodes (namespaced by account). The nodes
+    // borrow their ids from the messages: a large folder is grouped whenever
+    // it changes, and a String per id made most of the cost (#323).
+    #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+    enum Node<'a> {
+        Id(u32, &'a str),
+        Uid(u32, u32, u32),
     }
-    fn union(parent: &mut HashMap<String, String>, a: &str, b: &str) {
-        let ra = find(parent, a);
-        let rb = find(parent, b);
-        if ra != rb {
-            parent.insert(ra, rb);
+    #[derive(Default)]
+    struct Forest<'a> {
+        index: HashMap<Node<'a>, usize>,
+        nodes: Vec<Node<'a>>,
+        parent: Vec<usize>,
+    }
+    impl<'a> Forest<'a> {
+        fn node(&mut self, n: Node<'a>) -> usize {
+            if let Some(&i) = self.index.get(&n) {
+                return i;
+            }
+            let i = self.nodes.len();
+            self.nodes.push(n);
+            self.parent.push(i);
+            self.index.insert(n, i);
+            i
+        }
+        fn find(&mut self, mut x: usize) -> usize {
+            while self.parent[x] != x {
+                self.parent[x] = self.parent[self.parent[x]];
+                x = self.parent[x];
+            }
+            x
+        }
+        fn union(&mut self, a: usize, b: usize) {
+            let (ra, rb) = (self.find(a), self.find(b));
+            if ra != rb {
+                self.parent[ra] = rb;
+            }
         }
     }
     // A message with its own Message-ID is a real node; one without gets a unique
     // node keyed by folder and uid so it only links through its references (if
     // any). A UID names a message in one folder only (#317).
-    let self_node = |m: &Message| -> String {
+    fn self_node(m: &Message) -> Node<'_> {
         if m.message_id.is_empty() {
-            format!("{}\u{0}uid{}/{}", m.account_id, m.folder_id, m.uid)
+            Node::Uid(m.account_id, m.folder_id, m.uid)
         } else {
-            format!("{}\u{0}{}", m.account_id, m.message_id)
+            Node::Id(m.account_id, &m.message_id)
         }
-    };
+    }
 
+    let mut forest = Forest::default();
+    let mut own = Vec::with_capacity(msgs.len());
     for m in msgs {
-        let sn = self_node(m);
-        parent.entry(sn.clone()).or_insert_with(|| sn.clone());
+        let sn = forest.node(self_node(m));
+        own.push(sn);
         for r in m.references.split_whitespace() {
-            let rn = format!("{}\u{0}{}", m.account_id, r);
-            parent.entry(rn.clone()).or_insert_with(|| rn.clone());
-            union(&mut parent, &sn, &rn);
+            let rn = forest.node(Node::Id(m.account_id, r));
+            forest.union(sn, rn);
         }
     }
 
@@ -2469,21 +2490,33 @@ fn compute_thread_keys(
     // appear: a reply in the Inbox and the one before it are two answers to the
     // same message in Sent, and without that message nothing says so.
     for (aid, id, refs) in links {
-        let sn = format!("{aid}\u{0}{id}");
-        parent.entry(sn.clone()).or_insert_with(|| sn.clone());
+        let sn = forest.node(Node::Id(*aid, id));
         for r in refs.split_whitespace() {
-            let rn = format!("{aid}\u{0}{r}");
-            parent.entry(rn.clone()).or_insert_with(|| rn.clone());
-            union(&mut parent, &sn, &rn);
+            let rn = forest.node(Node::Id(*aid, r));
+            forest.union(sn, rn);
         }
     }
 
-    let mut out = HashMap::new();
-    for m in msgs {
-        let root = find(&mut parent, &self_node(m));
-        out.insert(thread_slot(m), (m.account_id, root));
+    let mut names: HashMap<usize, String> = HashMap::new();
+    let mut out = HashMap::with_capacity(msgs.len());
+    for (m, sn) in msgs.iter().zip(own) {
+        let root = forest.find(sn);
+        let name = names.entry(root).or_insert_with(|| match forest.nodes[root] {
+            Node::Id(aid, id) => format!("{aid}\u{0}{id}"),
+            Node::Uid(aid, folder, uid) => format!("{aid}\u{0}uid{folder}/{uid}"),
+        });
+        out.insert(thread_slot(m), (m.account_id, name.clone()));
     }
     out
+}
+
+/// [`compute_thread_keys`] over everything a list holds, with each
+/// conversation's members as positions in that same slice.
+struct SourceThreads {
+    /// Worked out from the search pool rather than the folder.
+    pool: bool,
+    keys: std::collections::HashMap<(u32, u32, u32), (u32, String)>,
+    members: std::collections::HashMap<(u32, String), Vec<usize>>,
 }
 
 /// Where [`compute_thread_keys`] files a message: its account, folder and id.
@@ -2596,6 +2629,11 @@ pub struct MessageList {
     /// screen — every reply in an Inbox answers something in Sent — so those
     /// links are needed to see that the replies belong together.
     thread_links: Vec<(u32, String, String)>,
+    /// The conversations of everything the list holds, worked out once and
+    /// kept until the messages or the links change. Opening a message asks
+    /// which conversation it belongs to, and grouping a large folder from
+    /// scratch on every click held each one up by a visible beat (#323).
+    source_threads: std::cell::RefCell<Option<std::rc::Rc<SourceThreads>>>,
     /// What each conversation really is, read across the account's other
     /// folders and handed down by the app: its size (#222) and its newest
     /// message (#236). The list can only see its own folder, so a thread whose
@@ -3339,6 +3377,7 @@ impl SimpleComponent for MessageList {
                 crate::config::load_swipe_sensitivity(),
             )),
             thread_links: Vec::new(),
+            source_threads: std::cell::RefCell::new(None),
             thread_summaries: std::collections::HashMap::new(),
             thread_row_newest: false,
             listed_threads: Vec::new(),
@@ -3454,6 +3493,7 @@ impl SimpleComponent for MessageList {
                 let t = std::time::Instant::now();
                 let n = messages.len();
                 self.all = messages;
+                self.source_threads.take();
                 self.loaded = true;
                 // Keep any active search query: this also fires for a background
                 // re-sync of the folder you're viewing, which shouldn't drop your
@@ -3472,6 +3512,9 @@ impl SimpleComponent for MessageList {
                         self.all.push(m);
                     }
                 }
+                if self.all.len() != before {
+                    self.source_threads.take();
+                }
                 // Re-render when it could change what's visible: an active search, a
                 // sort where older messages can surface at the top, or the user is
                 // waiting at the bottom for more rows to fill the raised limit.
@@ -3486,6 +3529,7 @@ impl SimpleComponent for MessageList {
             }
             MessageListInput::SetLoading => {
                 self.all.clear();
+                self.source_threads.take();
                 self.loaded = false;
                 self.clear_search();
                 self.render_limit = RENDER_CAP;
@@ -3540,6 +3584,7 @@ impl SimpleComponent for MessageList {
             MessageListInput::SetThreadLinks(links) => {
                 if self.thread_links != links {
                     self.thread_links = links;
+                    self.source_threads.take();
                     if self.threading {
                         self.queue_rebuild(true);
                     }
@@ -3767,6 +3812,7 @@ impl SimpleComponent for MessageList {
             }
             MessageListInput::SetSearchPool(pool) => {
                 self.search_pool = pool;
+                self.source_threads.take();
                 if self.searching() && self.scope == SearchScope::AllFolders {
                     self.render_limit = RENDER_CAP;
                     self.rebuild_preserving_scroll();
@@ -4195,6 +4241,7 @@ impl SimpleComponent for MessageList {
                 }
                 self.selected_ids.retain(|(_, i)| *i != id);
                 self.all.retain(|m| m.id != id);
+                self.source_threads.take();
                 let removed_idx = self.shown.iter().position(|m| m.id == id);
                 // Was the row about to be destroyed the one holding keyboard
                 // focus? If so, and it isn't the viewed row handled below,
@@ -4257,6 +4304,7 @@ impl SimpleComponent for MessageList {
                 }
                 self.selected_ids.retain(|(_, i)| !set.contains(i));
                 self.all.retain(|m| !set.contains(&m.id));
+                self.source_threads.take();
                 // Where the first removed row sat, so we can re-select in its place.
                 let first_removed = self.shown.iter().position(|m| set.contains(&m.id));
                 // Did any row about to be destroyed hold keyboard focus? If
@@ -5167,14 +5215,36 @@ impl MessageList {
     /// `AllFolders` search is active (and the pool has arrived), otherwise the
     /// current folder's own index.
     fn active_source(&self) -> &[Message] {
-        if self.searching()
-            && self.scope == SearchScope::AllFolders
-            && !self.search_pool.is_empty()
-        {
+        if self.searching_pool() {
             &self.search_pool
         } else {
             &self.all
         }
+    }
+
+    fn searching_pool(&self) -> bool {
+        self.searching() && self.scope == SearchScope::AllFolders && !self.search_pool.is_empty()
+    }
+
+    /// The conversations of `active_source`, from the kept copy while the
+    /// source it was worked out from is still the one in use.
+    fn source_threads(&self) -> std::rc::Rc<SourceThreads> {
+        let pool = self.searching_pool();
+        if let Some(t) = self.source_threads.borrow().as_ref().filter(|t| t.pool == pool) {
+            return t.clone();
+        }
+        let source = self.active_source();
+        let keys = compute_thread_keys(source, &self.thread_links);
+        let mut members: std::collections::HashMap<(u32, String), Vec<usize>> =
+            std::collections::HashMap::new();
+        for (i, m) in source.iter().enumerate() {
+            if let Some(key) = keys.get(&thread_slot(m)) {
+                members.entry(key.clone()).or_default().push(i);
+            }
+        }
+        let t = std::rc::Rc::new(SourceThreads { pool, keys, members });
+        *self.source_threads.borrow_mut() = Some(t.clone());
+        t
     }
 
     fn search_placeholder(&self) -> String {
@@ -5815,13 +5885,12 @@ impl MessageList {
         if !self.threading {
             return None;
         }
-        let source = self.active_source();
-        let m = source.iter().find(|m| (m.account_id, m.id) == key)?;
-        let keys = compute_thread_keys(source, &self.thread_links);
-        let thread = keys.get(&thread_slot(m))?;
+        let m = self.active_source().iter().find(|m| (m.account_id, m.id) == key)?;
+        let threads = self.source_threads();
+        let thread = threads.keys.get(&thread_slot(m))?;
         self.shown
             .iter()
-            .find(|m| keys.get(&thread_slot(m)) == Some(thread))
+            .find(|m| threads.keys.get(&thread_slot(m)) == Some(thread))
             .map(|m| (m.account_id, m.id))
     }
 
@@ -5857,21 +5926,25 @@ impl MessageList {
         if !self.threading {
             return Vec::new();
         }
-        let source = self.active_source();
-        let keys = compute_thread_keys(source, &self.thread_links);
-        let Some(key) = keys.get(&thread_slot(m)).cloned() else {
-            return Vec::new();
-        };
-        let mut members: Vec<Message> = source
-            .iter()
-            .filter(|x| keys.get(&thread_slot(x)) == Some(&key))
-            .cloned()
-            .collect();
+        let mut members = self.source_members(m);
         if members.len() <= 1 {
             return Vec::new();
         }
         members.sort_by(|a, b| a.timestamp.cmp(&b.timestamp).then(a.uid.cmp(&b.uid)));
         members
+    }
+
+    /// Everything in `active_source` that shares `m`'s conversation, `m`
+    /// included, in source order. Empty when `m` is not in the source.
+    fn source_members(&self, m: &Message) -> Vec<Message> {
+        let threads = self.source_threads();
+        let source = self.active_source();
+        threads
+            .keys
+            .get(&thread_slot(m))
+            .and_then(|key| threads.members.get(key))
+            .map(|idx| idx.iter().filter_map(|&i| source.get(i)).cloned().collect())
+            .unwrap_or_default()
     }
 
     /// The conversation to show for a selected message: when `m` is the oldest
@@ -5888,16 +5961,7 @@ impl MessageList {
         }
         // Thread within whatever set is on screen (the search pool while searching,
         // otherwise the current folder) so the conversation matches the rows shown.
-        let source = self.active_source();
-        let keys = compute_thread_keys(source, &self.thread_links);
-        let Some(key) = keys.get(&thread_slot(m)).cloned() else {
-            return (vec![m.clone()], false);
-        };
-        let mut members: Vec<Message> = source
-            .iter()
-            .filter(|x| keys.get(&thread_slot(x)) == Some(&key))
-            .cloned()
-            .collect();
+        let mut members = self.source_members(m);
         if members.len() <= 1 {
             // Nothing else here to thread with. It may still have siblings in
             // another folder, so this is *not* solo — the reader may look.
