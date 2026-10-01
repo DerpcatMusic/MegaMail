@@ -49,7 +49,11 @@
   with 500 rows. The grouping is now kept until the folder changes, and the
   colors are loaded once and picked by class. The sidebar, the list and the
   tag colors had the same reload on every sidebar rebuild, and now reload
-  only when a color changes.
+  only when a color changes. With thousands of messages loaded by scrolling,
+  the app could stop responding altogether: the list built every row again
+  whenever anything about it changed, and the next page, the conversation
+  sizes that follow each page and new mail each set it off. It now keeps
+  the rows that still show the same message and builds only what changed.
 - **Fixed: saving a contact failed in the Flatpak** (#314, by Felix
   Günther), with "Evolution Data Server is not available". Hylki looked for
   Evolution Data Server's service files, which the Flatpak runtime does not

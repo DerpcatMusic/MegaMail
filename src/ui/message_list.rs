@@ -17,6 +17,13 @@ use crate::i18n::{i18n, i18n_f};
 /// days; a wider window keeps more of a conversation on the same page, and
 /// the rows past the first paint are built in idle-time chunks anyway.
 const RENDER_CAP: usize = 500;
+/// The most rows a rebuild builds again in place, and destroys, before it
+/// starts from the top instead: that path builds a chunk at a time at idle,
+/// where these are built at once.
+const PATCH_MAX: usize = 120;
+/// A row's conversation as it was built: size, whether it opens, child,
+/// last child, opened out, unread, starred.
+type RowSig = (usize, bool, bool, bool, bool, bool, bool);
 
 /// Rows built synchronously when the list is (re)built — enough to fill the
 /// pane — before the rest of the page arrives in idle-time chunks. Building
@@ -2519,6 +2526,63 @@ struct SourceThreads {
     members: std::collections::HashMap<(u32, String), Vec<usize>>,
 }
 
+/// One step of turning the rows on screen into a new page, in row order.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum RowEdit {
+    /// The row stays as it is.
+    Keep,
+    /// The row shows the same message, built again as new row `i`.
+    Redo(usize),
+    /// New row `i` goes in here.
+    Insert(usize),
+    /// The row goes.
+    Remove,
+}
+
+/// The edits that turn the rows built for `old` into rows for `new`, as far
+/// as those rows go, and the first of `new` left to build after them.
+/// `same(i)` says whether new row `i`, showing the message an old row does,
+/// would come out the same.
+fn row_edits<K: std::hash::Hash + Eq + Copy>(
+    old: &[K],
+    new: &[K],
+    same: impl Fn(usize) -> bool,
+) -> (Vec<RowEdit>, usize) {
+    let at = |keys: &[K]| -> std::collections::HashMap<K, usize> {
+        keys.iter().enumerate().map(|(n, k)| (*k, n)).collect()
+    };
+    let (old_at, new_at) = (at(old), at(new));
+    let mut edits = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    while i < new.len() && j < old.len() {
+        if new[i] == old[j] {
+            edits.push(if same(i) { RowEdit::Keep } else { RowEdit::Redo(i) });
+            i += 1;
+            j += 1;
+            continue;
+        }
+        // How far ahead the new row sits among the old ones, and the old
+        // row among the new: the nearer one is the one that moved, so a
+        // conversation a reply lifts to the top costs two edits, not every
+        // row it passed.
+        let new_row_ahead = old_at.get(&new[i]).filter(|&&n| n > j).map(|n| n - j);
+        let old_row_ahead = new_at.get(&old[j]).filter(|&&n| n > i).map(|n| n - i);
+        let remove = match (new_row_ahead, old_row_ahead) {
+            (_, None) => true,
+            (None, Some(_)) => false,
+            (Some(a), Some(b)) => a <= b,
+        };
+        if remove {
+            edits.push(RowEdit::Remove);
+            j += 1;
+        } else {
+            edits.push(RowEdit::Insert(i));
+            i += 1;
+        }
+    }
+    (edits, i)
+}
+
 /// Where [`compute_thread_keys`] files a message: its account, folder and id.
 /// The id alone is a UID, which only means something inside one folder, and a
 /// search over every folder holds the same UID many times; keyed without the
@@ -2554,10 +2618,9 @@ pub struct MessageList {
     /// one, and it need not happen before the new page shows.
     retired: Vec<FactoryVecDeque<MessageRow>>,
     retire_scheduled: bool,
-    /// A per-row signature of the last page built (thread count, expandable,
-    /// child, last, expanded, unread, starred), so growing the page can tell
-    /// that its existing rows are unchanged and only append.
-    row_sigs: Vec<(usize, bool, bool, bool, bool, bool, bool)>,
+    /// What each row of the last page was built from, by message (see
+    /// `RowSig`), so a rebuild can keep the rows that would come out the same.
+    row_sigs: std::collections::HashMap<(u32, u32, u32), RowSig>,
     /// A rebuild asked for and not yet run: `Some(preserve_scroll)`. Several
     /// arrivals in one main-loop pass (a folder's cached copy, its synced
     /// copy, fresh thread links, a view switch's flag changes) collapse into
@@ -3329,7 +3392,7 @@ impl SimpleComponent for MessageList {
             refocus_selected: false,
             retired: Vec::new(),
             retire_scheduled: false,
-            row_sigs: Vec::new(),
+            row_sigs: std::collections::HashMap::new(),
             rebuild_queued: None,
             pending_select: None,
             all: Vec::new(),
@@ -5169,6 +5232,10 @@ impl MessageList {
                 );
             }
         }
+        // Built here rather than by a rebuild: the next one builds them again.
+        for c in &children {
+            self.row_sigs.remove(&thread_slot(c));
+        }
         self.shown.splice(head_pos + 1..head_pos + 1, children);
         self.publish_drag_keys();
     }
@@ -5490,28 +5557,38 @@ impl MessageList {
                 }
             }
         }
-        // Growing the page (LoadMore) leaves its existing rows as they are
-        // when nothing about them changed — same messages in the same
-        // order, same conversation shape — and only the new rows get built.
-        // Anything else (a switch, new mail at the top, a thread that took
-        // in a newly listed member) rebuilds from the top.
-        let sigs: Vec<(usize, bool, bool, bool, bool, bool, bool)> = metas
+        // Rebuilding is the costliest thing the list does: a row takes about
+        // a millisecond to build and as long to tear down, and a page grown
+        // by scrolling holds thousands of them. So the rows already built are
+        // kept wherever they still show the same message, and only what
+        // differs is built or taken out: a row whose conversation changed
+        // (its size, whether it opens, its read and star state), new mail at
+        // the top, mail gone from the middle, the next page. Rebuilding every
+        // row for each of those (the conversation sizes the cache reports a
+        // beat after each page, every sync that brought new mail) kept a long
+        // list busy for longer than the next one took to arrive, and the app
+        // stopped responding (#323). A change bigger than `PATCH_MAX` rows,
+        // like a switch, rebuilds from the top.
+        let sigs: Vec<RowSig> = metas
             .iter()
             .map(|m| {
                 (m.count, m.expandable, m.is_child, m.is_last, m.expanded, m.unread, m.starred)
             })
             .collect();
-        let old_len = self.shown.len();
-        let append_only = !std::mem::take(&mut self.rows_stale)
-            && old_len > 0
-            && self.pending_rows.is_empty()
-            && self.rows.len() == old_len
-            && shown.len() >= old_len
-            && shown[..old_len]
-                .iter()
-                .zip(&self.shown)
-                .all(|(a, b)| (a.account_id, a.id) == (b.account_id, b.id))
-            && sigs[..old_len] == self.row_sigs[..];
+        let stale = std::mem::take(&mut self.rows_stale);
+        let built = self.rows.len().min(self.shown.len());
+        let (ops, tail_from) = if stale || built == 0 {
+            (Vec::new(), 0)
+        } else {
+            let old: Vec<_> = self.shown[..built].iter().map(thread_slot).collect();
+            let new: Vec<_> = shown.iter().map(thread_slot).collect();
+            row_edits(&old, &new, |i| self.row_sigs.get(&new[i]) == Some(&sigs[i]))
+        };
+        // Rows built, built again or taken out, the rows past the edits
+        // included.
+        let walked = ops.iter().filter(|op| !matches!(op, RowEdit::Insert(_))).count();
+        let cost = ops.iter().filter(|op| !matches!(op, RowEdit::Keep)).count() + (built - walked);
+        let patch = cost <= PATCH_MAX && ops.iter().any(|op| matches!(op, RowEdit::Keep | RowEdit::Redo(_)));
         // A message that was moved away and brought back comes home under a
         // new UID, and a row's id is its UID. The selection would find no row
         // to light, so the highlight blinked off and came back a moment later
@@ -5547,8 +5624,8 @@ impl MessageList {
                 }
             }
         }
+        self.row_sigs = shown.iter().map(thread_slot).zip(sigs).collect();
         self.shown = shown;
-        self.row_sigs = sigs;
         // Republish the row keys before the rows are built, so a drag starting on
         // any of them can map selected row indices back to messages.
         self.publish_drag_keys();
@@ -5569,14 +5646,26 @@ impl MessageList {
             // and the rest at idle: the pane fills at once and the page
             // completes a chunk at a time without holding the main loop.
             let mut inits: std::collections::VecDeque<RowInit> = std::collections::VecDeque::new();
-            let skip = if append_only { old_len } else { 0 };
-            for (m, meta) in self.shown.iter().zip(metas.into_iter()).skip(skip) {
+            let mut built_now: std::collections::HashMap<usize, RowInit> =
+                std::collections::HashMap::new();
+            let first_new = if patch { tail_from } else { 0 };
+            let needed: std::collections::HashSet<usize> = ops
+                .iter()
+                .filter_map(|op| match op {
+                    RowEdit::Redo(i) | RowEdit::Insert(i) => Some(*i),
+                    _ => None,
+                })
+                .collect();
+            for (i, (m, meta)) in self.shown.iter().zip(metas).enumerate() {
+                if i < first_new && !needed.contains(&i) {
+                    continue;
+                }
                 let ring_class = if self.colorize && self.account_colors.contains_key(&m.account_id) {
                     Some(format!("vireo-acct-ring-{}", m.account_id))
                 } else {
                     None
                 };
-                inits.push_back(RowInit {
+                let init = RowInit {
                     msg: m.clone(),
                     gravatar: self.gravatar,
                     avatars: self.avatars,
@@ -5611,7 +5700,12 @@ impl MessageList {
                     swipe_reversed: self.swipe_reversed.clone(),
                     swipe_enabled: self.swipe_enabled.clone(),
                     swipe_sensitivity: self.swipe_sensitivity.clone(),
-                });
+                };
+                if i < first_new {
+                    built_now.insert(i, init);
+                } else {
+                    inits.push_back(init);
+                }
             }
             // Discarding the rows destroys the focused one (or hides the
             // whole list box), and focus falls to the window, where Delete,
@@ -5620,13 +5714,40 @@ impl MessageList {
             // middle of deleting mail one by one (#255), and so did every
             // other full rebuild: a contact photo or Gravatar arriving, the
             // date turning over (#274). Put focus back where it was.
-            let had_focus = !append_only && self.focus_in_list();
-            if !append_only {
+            // Patching can destroy it too, when it is a row built again.
+            let had_focus = self.focus_in_list();
+            if patch {
+                let mut guard = self.rows.guard();
+                let mut pos = 0;
+                for op in ops {
+                    match op {
+                        RowEdit::Keep => pos += 1,
+                        RowEdit::Remove => {
+                            guard.remove(pos);
+                        }
+                        RowEdit::Redo(i) | RowEdit::Insert(i) => {
+                            if op == RowEdit::Redo(i) {
+                                guard.remove(pos);
+                            }
+                            if let Some(init) = built_now.remove(&i) {
+                                guard.insert(pos, init);
+                            }
+                            pos += 1;
+                        }
+                    }
+                }
+                while guard.len() > pos {
+                    guard.pop_back();
+                }
+            } else {
                 self.discard_rows();
             }
             self.pending_rows = inits;
             self.fill_rows(FIRST_ROWS);
-            if had_focus {
+            // A row built again comes up unselected, and with nothing
+            // pending the fill above lights nothing.
+            self.select_current();
+            if had_focus && !self.focus_in_list() {
                 self.restore_list_focus();
             }
         }
@@ -6102,9 +6223,73 @@ impl MessageList {
 mod tests {
     use super::{
         compute_thread_keys, heads_its_row, latest_elsewhere, nested_members, reader_conversation,
-        row_for_reader_key, swipe_progress_px, thread_slot, unasked_threads, SWIPE_ARM, SWIPE_MAX,
+        row_edits, row_for_reader_key, swipe_progress_px, thread_slot, unasked_threads, RowEdit,
+        SWIPE_ARM, SWIPE_MAX,
     };
     use crate::models::Message;
+
+    /// Apply `row_edits` to `old` the way the rebuild applies them to the
+    /// rows, then build the rest of `new`, and return the result alongside
+    /// the edits that cost a row built or destroyed.
+    fn apply_edits(old: &[u32], new: &[u32], same: impl Fn(usize) -> bool) -> (Vec<u32>, usize) {
+        let (edits, tail) = row_edits(old, new, same);
+        let mut rows = old.to_vec();
+        let mut pos = 0;
+        let mut cost = 0;
+        for e in edits {
+            match e {
+                RowEdit::Keep => pos += 1,
+                RowEdit::Remove => {
+                    rows.remove(pos);
+                    cost += 1;
+                }
+                RowEdit::Redo(i) => {
+                    rows[pos] = new[i];
+                    pos += 1;
+                    cost += 1;
+                }
+                RowEdit::Insert(i) => {
+                    rows.insert(pos, new[i]);
+                    pos += 1;
+                    cost += 1;
+                }
+            }
+        }
+        cost += rows.len() - pos;
+        rows.truncate(pos);
+        rows.extend(&new[tail..]);
+        (rows, cost)
+    }
+
+    /// #323: a rebuild keeps the rows that still show the same message and
+    /// touches only what changed, so a long list is not built again for new
+    /// mail, a lifted conversation or a grown page.
+    #[test]
+    fn rebuilds_touch_only_the_rows_that_changed() {
+        let old: Vec<u32> = (0..1000).collect();
+        let all = |_| true;
+        // The next page: nothing to touch, the rest is built after.
+        let grown: Vec<u32> = (0..1500).collect();
+        assert_eq!(apply_edits(&old, &grown, all), (grown.clone(), 0));
+        // Two new messages at the top.
+        let mut fresh = vec![5000, 5001];
+        fresh.extend(0..1000);
+        assert_eq!(apply_edits(&old, &fresh, all), (fresh.clone(), 2));
+        // A reply lifts row 700's conversation to the top.
+        let mut lifted = vec![700];
+        lifted.extend((0..1000).filter(|&n| n != 700));
+        assert_eq!(apply_edits(&old, &lifted, all), (lifted.clone(), 2));
+        // Mail deleted elsewhere, from the middle.
+        let gone: Vec<u32> = (0..1000).filter(|n| ![10, 11, 500].contains(n)).collect();
+        assert_eq!(apply_edits(&old, &gone, all), (gone.clone(), 3));
+        // A conversation's size changed: its row alone is built again.
+        assert_eq!(apply_edits(&old, &old, |i| i != 42), (old.clone(), 1));
+        // A different folder shares nothing, so everything goes.
+        let other: Vec<u32> = (2000..2010).collect();
+        let (rows, cost) = apply_edits(&old, &other, all);
+        assert_eq!(rows, other);
+        assert!(cost >= 1000);
+    }
 
     /// #236: the row a conversation collapses to is judged over the rendered
     /// window's grouping, so a conversation whose oldest message lies past
