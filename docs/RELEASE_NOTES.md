@@ -2,6 +2,38 @@
 
 Hylki (formerly Vireo) is a clean, fast, GNOME-native email client built with Rust and libadwaita for Wayland desktops. Privacy-first: no telemetry, remote content blocked by default, and credentials kept in the system keyring.
 
+## What's new in 1.42.0
+
+- **Recipients from LDAP directories** (#307): Settings > LDAP Directories
+  adds a company directory, and the composer suggests the people in it as
+  you type. Based on work by [@isaksamsten](https://github.com/isaksamsten).
+  Saving a contact and the directories work in the Flatpak, and Add to
+  Contacts names each address book (#314, #315, by
+  [@fegue](https://github.com/fegue)).
+- **Replies and forwards quote the message as it looks** (#295), and can
+  open in a window of their own. **Drag files onto the window** (#293) to
+  attach them, insert pictures or upload them to cloud storage; attachment
+  chips show each file's size and a thumbnail (#299).
+- **A faster message list** (#323): it builds only the rows on screen, so
+  clicking through and scrolling a large folder stay quick. New mail
+  arrives promptly after the computer wakes (#322).
+- **A sound for new mail** (#292), **delete an attachment from the
+  server** (#289), **how much storage an account uses** (#298), and
+  **folders in your own order**, dragged in the sidebar or picked in
+  Settings > Sidebar.
+- **Shortcuts act on the whole selection** (#313), conversations open out
+  across folders (#309), and "Flag" is called "Star" everywhere.
+- **Fixed:** messages stuck on "Loading…" (#296), plain-text messages
+  arriving empty (#297), a search of all folders mixing conversations
+  (#317), sender names with backslashes and quotes (#312), Escape closing a
+  written message without asking (#290), Unsubscribe reporting success
+  after a redirect (#284), and broken theme icons outside GNOME (#278).
+- **Five app icons** (#277): a squircle you had chosen becomes the square
+  of the same color. JMAP accounts are added through the Stalwart provider.
+- **Translations:** Polish is new, by
+  [@TomaszBojanowski](https://github.com/TomaszBojanowski); Spanish,
+  French, German, Greek and Portuguese are updated.
+
 ## What's new in 1.41.1
 
 - **Text size** (#267): Settings > Appearance makes Hylki's text 90% to

@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 1.42.0 — 2026-10-01
+
+Everything from 1.42.0-beta.1 to 1.42.0-beta.7: recipients from LDAP
+directories, replies that quote the message as it looks, files dragged onto
+the window, a sound for new mail, a faster message list for large folders,
+prompt reconnection after the computer wakes, and fixes for messages stuck
+on "Loading…". Polish is a new translation.
 
 - **Added: recipients from LDAP directories** (#307, requested by Isak
   Samsten, whose branch the composer's lookup is based on). Settings → LDAP
