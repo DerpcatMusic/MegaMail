@@ -363,6 +363,14 @@ msgstr "Αποκλεισμός απομακρυσμένου περιεχομέν
 msgid "Show Remote Content"
 msgstr "Εμφάνιση απομακρυσμένου περιεχομένου"
 
+#, fuzzy
+msgid "Expand All Messages"
+msgstr "Εύρεση στο μήνυμα"
+
+#, fuzzy
+msgid "Collapse All Messages"
+msgstr "Σύμπτυξη στην προβολή ανάγνωσης"
+
 msgid "Delete {n} messages"
 msgstr "Διαγραφή {n} μηνυμάτων"
 
@@ -4621,13 +4629,12 @@ msgstr ""
 "παλαιότερο στο νεότερο."
 
 #, fuzzy
-msgid "Collapse read messages"
-msgstr "Σύμπτυξη στην προβολή ανάγνωσης"
+msgid "Fold earlier messages"
+msgstr "Εύρεση στο μήνυμα"
 
 msgid ""
-"Show the messages of a conversation you have already read as their sender "
-"and a line of preview. The newest message and unread ones stay open; click a "
-"message's header to open or fold it."
+"Which messages of a conversation open folded to one line. The newest always "
+"opens, and a click on a folded message opens it."
 msgstr ""
 
 msgid "Show your own replies in the message list"
@@ -5284,6 +5291,13 @@ msgstr "Κατά την εμφάνιση"
 
 msgid "After two seconds"
 msgstr "Μετά από δύο δευτερόλεπτα"
+
+#, fuzzy
+msgid "Messages already read"
+msgstr "Το μήνυμα είναι έτοιμο για αποστολή"
+
+msgid "All but the newest"
+msgstr ""
 
 msgid "Remember the last choice"
 msgstr "Απομνημόνευση της τελευταίας επιλογής"

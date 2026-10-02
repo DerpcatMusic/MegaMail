@@ -358,6 +358,14 @@ msgstr "Távoli képek blokkolása"
 msgid "Show Remote Content"
 msgstr "Távoli tartalom megjelenítése"
 
+#, fuzzy
+msgid "Expand All Messages"
+msgstr "Keresés az üzenetben"
+
+#, fuzzy
+msgid "Collapse All Messages"
+msgstr "Olvasói nézetre váltás"
+
 msgid "Delete {n} messages"
 msgstr "{n} üzenet törlése"
 
@@ -4602,13 +4610,12 @@ msgstr ""
 "Kikapcsolva a legrégebbitől a legújabb felé, lefelé olvas."
 
 #, fuzzy
-msgid "Collapse read messages"
-msgstr "Olvasói nézetre váltás"
+msgid "Fold earlier messages"
+msgstr "Keresés az üzenetben"
 
 msgid ""
-"Show the messages of a conversation you have already read as their sender "
-"and a line of preview. The newest message and unread ones stay open; click a "
-"message's header to open or fold it."
+"Which messages of a conversation open folded to one line. The newest always "
+"opens, and a click on a folded message opens it."
 msgstr ""
 
 msgid "Show your own replies in the message list"
@@ -5268,6 +5275,13 @@ msgstr "Megjelenítés ideje"
 
 msgid "After two seconds"
 msgstr "Két másodperc után"
+
+#, fuzzy
+msgid "Messages already read"
+msgstr "Az üzenet elküldésre kész"
+
+msgid "All but the newest"
+msgstr ""
 
 msgid "Remember the last choice"
 msgstr "Emlékezz az utolsó választásra"

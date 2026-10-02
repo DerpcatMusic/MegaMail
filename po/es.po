@@ -361,6 +361,14 @@ msgstr "Bloquear contenido remoto"
 msgid "Show Remote Content"
 msgstr "Mostrar contenido remoto"
 
+#, fuzzy
+msgid "Expand All Messages"
+msgstr "Buscar en el mensaje"
+
+#, fuzzy
+msgid "Collapse All Messages"
+msgstr "Contraer en el lector"
+
 msgid "Delete {n} messages"
 msgstr "Eliminar {n} mensajes"
 
@@ -4585,13 +4593,12 @@ msgstr ""
 "abajo."
 
 #, fuzzy
-msgid "Collapse read messages"
-msgstr "Contraer en el lector"
+msgid "Fold earlier messages"
+msgstr "Buscar en el mensaje"
 
 msgid ""
-"Show the messages of a conversation you have already read as their sender "
-"and a line of preview. The newest message and unread ones stay open; click a "
-"message's header to open or fold it."
+"Which messages of a conversation open folded to one line. The newest always "
+"opens, and a click on a folded message opens it."
 msgstr ""
 
 msgid "Show your own replies in the message list"
@@ -5245,6 +5252,13 @@ msgstr "Al mostrarse"
 
 msgid "After two seconds"
 msgstr "Después de dos segundos"
+
+#, fuzzy
+msgid "Messages already read"
+msgstr "Mensaje listo para enviar"
+
+msgid "All but the newest"
+msgstr ""
 
 msgid "Remember the last choice"
 msgstr "Recordar la última opción"

@@ -363,6 +363,14 @@ msgstr "Блокировать удалённое содержимое"
 msgid "Show Remote Content"
 msgstr "Показать удалённое содержимое"
 
+#, fuzzy
+msgid "Expand All Messages"
+msgstr "Поиск в сообщении"
+
+#, fuzzy
+msgid "Collapse All Messages"
+msgstr "Свернуть в область чтения"
+
 msgid "Delete {n} messages"
 msgstr "Удалить {n} сообщений"
 
@@ -4616,13 +4624,12 @@ msgstr ""
 "отключено, порядок чтения будет хронологическим — от старых к новым."
 
 #, fuzzy
-msgid "Collapse read messages"
-msgstr "Свернуть в область чтения"
+msgid "Fold earlier messages"
+msgstr "Найти в сообщении"
 
 msgid ""
-"Show the messages of a conversation you have already read as their sender "
-"and a line of preview. The newest message and unread ones stay open; click a "
-"message's header to open or fold it."
+"Which messages of a conversation open folded to one line. The newest always "
+"opens, and a click on a folded message opens it."
 msgstr ""
 
 #, fuzzy
@@ -5247,6 +5254,13 @@ msgstr "Условие отметки прочитанным"
 
 msgid "After two seconds"
 msgstr "Через две секунды"
+
+#, fuzzy
+msgid "Messages already read"
+msgstr "Сообщение готово к отправке"
+
+msgid "All but the newest"
+msgstr ""
 
 #, fuzzy
 msgid "Remember the last choice"

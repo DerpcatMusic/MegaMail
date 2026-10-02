@@ -342,6 +342,12 @@ msgstr ""
 msgid "Show Remote Content"
 msgstr ""
 
+msgid "Expand All Messages"
+msgstr ""
+
+msgid "Collapse All Messages"
+msgstr ""
+
 msgid "Delete {n} messages"
 msgstr ""
 
@@ -4111,13 +4117,12 @@ msgid ""
 "reads oldest to newest, downward."
 msgstr ""
 
-msgid "Collapse read messages"
+msgid "Fold earlier messages"
 msgstr ""
 
 msgid ""
-"Show the messages of a conversation you have already read as their sender "
-"and a line of preview. The newest message and unread ones stay open; click a "
-"message's header to open or fold it."
+"Which messages of a conversation open folded to one line. The newest always "
+"opens, and a click on a folded message opens it."
 msgstr ""
 
 msgid "Show your own replies in the message list"
@@ -4628,6 +4633,12 @@ msgid "When displayed"
 msgstr ""
 
 msgid "After two seconds"
+msgstr ""
+
+msgid "Messages already read"
+msgstr ""
+
+msgid "All but the newest"
 msgstr ""
 
 msgid "Remember the last choice"
