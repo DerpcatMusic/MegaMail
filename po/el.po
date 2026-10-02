@@ -1196,6 +1196,10 @@ msgid "The service's answer could not be read."
 msgstr "δεν ήταν δυνατή η ανάγνωση της διεύθυνσης αλληλογραφίας της λίστας"
 
 #, fuzzy
+msgid "This is too long to send for translation."
+msgstr "Αυτό το μήνυμα δεν περιέχει αρχείο ημερολογίου για άνοιγμα."
+
+#, fuzzy
 msgid "The service could not be reached: {e}"
 msgstr "Δεν ήταν δυνατό το άνοιγμα του αρχείου"
 
@@ -2775,6 +2779,10 @@ msgstr "Προεπισκόπηση"
 msgid "Show the message as it will be sent"
 msgstr "Εμφάνιση του μηνύματος όπως θα σταλεί"
 
+#, fuzzy
+msgid "Translate what you wrote"
+msgstr "Μετάφραση από"
+
 msgid "More"
 msgstr "Περισσότερα"
 
@@ -2808,6 +2816,34 @@ msgstr "Αφαίρεση του {name}"
 
 msgid "Typing"
 msgstr "Πληκτρολόγηση"
+
+#, fuzzy
+msgid "{language} (the quoted message)"
+msgstr "Πάνω από το παρατιθέμενο μήνυμα"
+
+#, fuzzy
+msgid "Other Languages"
+msgstr "Γλώσσα"
+
+#, fuzzy
+msgid "Not translated"
+msgstr "Μετάφραση από"
+
+#, fuzzy
+msgid ""
+"This message is set to be encrypted, so its text is not sent for translation."
+msgstr "Αυτό το μήνυμα δεν περιέχει αρχείο ημερολογίου για άνοιγμα."
+
+#, fuzzy
+msgid "Nothing to translate yet"
+msgstr "Δεν υπάρχει τίποτα για εξαγωγή."
+
+msgid "Write something first, or select the text to translate."
+msgstr ""
+
+#, fuzzy
+msgid "Could not translate"
+msgstr "Δεν ήταν δυνατή η προσθήκη ετικέτας στο μήνυμα: {e}"
 
 msgid "Cannot send with OpenPGP"
 msgstr "Δεν είναι δυνατή η αποστολή με OpenPGP"

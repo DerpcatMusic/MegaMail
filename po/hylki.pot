@@ -1115,6 +1115,9 @@ msgstr ""
 msgid "The service's answer could not be read."
 msgstr ""
 
+msgid "This is too long to send for translation."
+msgstr ""
+
 msgid "The service could not be reached: {e}"
 msgstr ""
 
@@ -2487,6 +2490,9 @@ msgstr ""
 msgid "Show the message as it will be sent"
 msgstr ""
 
+msgid "Translate what you wrote"
+msgstr ""
+
 msgid "More"
 msgstr ""
 
@@ -2517,6 +2523,28 @@ msgid "Remove {name}"
 msgstr ""
 
 msgid "Typing"
+msgstr ""
+
+msgid "{language} (the quoted message)"
+msgstr ""
+
+msgid "Other Languages"
+msgstr ""
+
+msgid "Not translated"
+msgstr ""
+
+msgid ""
+"This message is set to be encrypted, so its text is not sent for translation."
+msgstr ""
+
+msgid "Nothing to translate yet"
+msgstr ""
+
+msgid "Write something first, or select the text to translate."
+msgstr ""
+
+msgid "Could not translate"
 msgstr ""
 
 msgid "Cannot send with OpenPGP"

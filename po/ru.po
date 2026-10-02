@@ -1227,6 +1227,10 @@ msgid "The service's answer could not be read."
 msgstr "Не удалось открыть файл"
 
 #, fuzzy
+msgid "This is too long to send for translation."
+msgstr "Сообщение содержит действительную подпись от {from}."
+
+#, fuzzy
 msgid "The service could not be reached: {e}"
 msgstr "Не удалось открыть файл"
 
@@ -2765,6 +2769,9 @@ msgstr "Предпросмотр печати"
 msgid "Show the message as it will be sent"
 msgstr ""
 
+msgid "Translate what you wrote"
+msgstr ""
+
 msgid "More"
 msgstr "Ещё"
 
@@ -2798,6 +2805,34 @@ msgstr "Удалить {name}?"
 
 msgid "Typing"
 msgstr ""
+
+#, fuzzy
+msgid "{language} (the quoted message)"
+msgstr "Архивировать это сообщение"
+
+#, fuzzy
+msgid "Other Languages"
+msgstr "Язык"
+
+#, fuzzy
+msgid "Not translated"
+msgstr "Не установлено"
+
+#, fuzzy
+msgid ""
+"This message is set to be encrypted, so its text is not sent for translation."
+msgstr "Сообщение содержит действительную подпись от {from}."
+
+#, fuzzy
+msgid "Nothing to translate yet"
+msgstr "Нечего экспортировать."
+
+msgid "Write something first, or select the text to translate."
+msgstr ""
+
+#, fuzzy
+msgid "Could not translate"
+msgstr "Не удалось добавить тег к сообщению: {e}"
 
 msgid "Cannot send with OpenPGP"
 msgstr "Невозможно отправить с помощью OpenPGP"

@@ -1201,6 +1201,10 @@ msgid "The service's answer could not be read."
 msgstr "l'adresse e-mail de la liste n'a pas pu être lue"
 
 #, fuzzy
+msgid "This is too long to send for translation."
+msgstr "Ce message ne contient aucun fichier de calendrier à ouvrir."
+
+#, fuzzy
 msgid "The service could not be reached: {e}"
 msgstr "Le fichier n'a pas pu être ouvert"
 
@@ -2774,6 +2778,10 @@ msgstr "Aperçu"
 msgid "Show the message as it will be sent"
 msgstr "Afficher le message tel qu'il sera envoyé"
 
+#, fuzzy
+msgid "Translate what you wrote"
+msgstr "Traduit par"
+
 msgid "More"
 msgstr "Plus"
 
@@ -2807,6 +2815,34 @@ msgstr "Supprimer {name}"
 
 msgid "Typing"
 msgstr "Dactylographie"
+
+#, fuzzy
+msgid "{language} (the quoted message)"
+msgstr "Au-dessus du message cité"
+
+#, fuzzy
+msgid "Other Languages"
+msgstr "Langue"
+
+#, fuzzy
+msgid "Not translated"
+msgstr "Traduit par"
+
+#, fuzzy
+msgid ""
+"This message is set to be encrypted, so its text is not sent for translation."
+msgstr "Ce message ne contient aucun fichier de calendrier à ouvrir."
+
+#, fuzzy
+msgid "Nothing to translate yet"
+msgstr "Rien à exporter."
+
+msgid "Write something first, or select the text to translate."
+msgstr ""
+
+#, fuzzy
+msgid "Could not translate"
+msgstr "Impossible d'ajouter un tag au message : {e}"
 
 msgid "Cannot send with OpenPGP"
 msgstr "Impossible d'envoyer avec OpenPGP"

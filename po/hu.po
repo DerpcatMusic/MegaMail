@@ -1180,6 +1180,10 @@ msgid "The service's answer could not be read."
 msgstr "a lista e-mail-címét nem sikerült beolvasni"
 
 #, fuzzy
+msgid "This is too long to send for translation."
+msgstr "Ez az üzenet nem tartalmaz megnyitható naptárfájlt."
+
+#, fuzzy
 msgid "The service could not be reached: {e}"
 msgstr "A fájl nem megnyitható"
 
@@ -2746,6 +2750,10 @@ msgstr "Előnézet"
 msgid "Show the message as it will be sent"
 msgstr "Az üzenet megjelenítése úgy, ahogyan elküldésre kerül"
 
+#, fuzzy
+msgid "Translate what you wrote"
+msgstr "Fordította"
+
 msgid "More"
 msgstr "Továbbiak"
 
@@ -2779,6 +2787,34 @@ msgstr "{name} eltávolítása"
 
 msgid "Typing"
 msgstr "Gépelés"
+
+#, fuzzy
+msgid "{language} (the quoted message)"
+msgstr "Az idézett üzenet felett"
+
+#, fuzzy
+msgid "Other Languages"
+msgstr "Nyelv"
+
+#, fuzzy
+msgid "Not translated"
+msgstr "Fordította"
+
+#, fuzzy
+msgid ""
+"This message is set to be encrypted, so its text is not sent for translation."
+msgstr "Ez az üzenet nem tartalmaz megnyitható naptárfájlt."
+
+#, fuzzy
+msgid "Nothing to translate yet"
+msgstr "Nincs semmi exportálható."
+
+msgid "Write something first, or select the text to translate."
+msgstr ""
+
+#, fuzzy
+msgid "Could not translate"
+msgstr "Az üzenet nem címkézhető: {e}"
 
 msgid "Cannot send with OpenPGP"
 msgstr "Nem lehet küldeni OpenPGP-vel"
