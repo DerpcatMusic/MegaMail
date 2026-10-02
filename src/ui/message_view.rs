@@ -3864,7 +3864,13 @@ impl MessageView {
                 .to_string(),
         };
         let sizer = match &nonce {
-            Some(n) => format!("<script nonce=\"{n}\">{SIZE_SCRIPT}</script>"),
+            Some(n) => {
+                // The fold's tooltips, in the user's language.
+                let qt = serde_json::to_string(&[i18n("Show quoted text"), i18n("Hide quoted text")])
+                    .unwrap_or_default()
+                    .replace("</", "<\\/");
+                format!("<script nonce=\"{n}\">var vireoQT={qt};{SIZE_SCRIPT}</script>")
+            }
             None => String::new(),
         };
         // A single message that paints no background of its own (plain mail,
@@ -3894,7 +3900,7 @@ impl MessageView {
                iframe.vireo-frame{{width:100%;border:0;display:block;background:{bg};\
                  visibility:hidden;}}\
                iframe.vireo-frame.vireo-live{{visibility:visible;}}\
-               .vireo-pan{{overflow-x:auto;}}\
+               .vireo-pan{{overflow-x:auto;position:relative;}}\
                iframe.vireo-frame.anim{{transition:height 240ms cubic-bezier(0.4,0,0.2,1);}}\
                @media (prefers-reduced-motion:reduce){{iframe.vireo-frame.anim{{transition:none;}}}}\
                .vireo-msg{{background:{bg};\
@@ -4105,7 +4111,7 @@ impl MessageView {
                  color:inherit;opacity:0.6;background:rgba(128,128,128,0.16);\
                  border:0;border-radius:999px;cursor:pointer;}}\
                .vireo-quote:hover{{opacity:0.95;background:rgba(128,128,128,0.28);}}\
-               .vireo-quote.open{{opacity:0.95;}}\
+               .vireo-quote.open{{opacity:0.95;position:absolute;left:0;z-index:2;}}\
                .vireo-acts{{display:flex;gap:2px;flex:none;align-self:center;margin-left:4px;}}\
                /* Read-toggle: the icon showing is the ACTION (read envelope\
                   means mark-as-read); the section's unread class decides. */\
@@ -6090,7 +6096,7 @@ if(f.dataset.key&&f._h!==h){f._h=h;\
 try{window.webkit.messageHandlers.hylki.postMessage('size:'+f.dataset.key+':'+h);}catch(_){}}}\
 else{f.style.height=prev;h=old;}\
 if(sy>0)window.scrollTo(0,above?sy+(h-old):sy);\
-chase();pin();\
+if(f._qp)f._qp();chase();pin();\
 }catch(_){}finally{f._s=0;}}\
 function pick(k,e){reportPos();\
 var mo=e.shiftKey?'r':((e.ctrlKey||e.metaKey)?'t':'p');\
@@ -6099,12 +6105,17 @@ var g=(e.view&&e.view.getSelection)?e.view.getSelection():null;if(g)g.removeAllR
 else{try{var t=(e.view&&e.view.getSelection)?e.view.getSelection():null;\
 if(t&&String(t).length)return;}catch(_){}}\
 try{window.webkit.messageHandlers.hylki.postMessage('sel:'+k+':'+mo);}catch(_){}}\
-var QS='.vireo-quote-attr,.gmail_quote,blockquote,#divRplyFwdMsg';\
+var QS='.vireo-quote-attr,.gmail_quote,blockquote,#divRplyFwdMsg,.yahoo_quoted';\
 var SIG='.moz-signature,#Signature,.gmail_signature,[class*=\"signature\"]';\
+var QT=window.vireoQT||['Show quoted text','Hide quoted text'];\
+var WROTE=/(wrote|writes|schrieb|a écrit|escribió|escreveu|scrisse|schreef|skrev|kirjoitti|napisał|napsal|írta|написал|написала|έγραψε)\\s*:?$/i;\
+var DIV=/^\\s*-{4,}[^-]{3,40}-{4,}\\s*$/;\
 function isq(n){return n.nodeType===1&&(n.matches(QS)||!!n.querySelector(QS));}\
-function blank(n){return n.nodeType===3?!n.textContent.trim():(n.nodeType!==1||!n.textContent.trim());}\
-function trailer(top,q){\
-if(q.matches('.vireo-quote-attr,#divRplyFwdMsg'))return true;\
+function blank(n){if(n.nodeType===1&&/^(STYLE|SCRIPT|META|LINK|TITLE)$/.test(n.tagName))return true;\
+return n.nodeType===3?!n.textContent.trim():(n.nodeType!==1||!n.textContent.trim());}\
+function kids(r){var a=[];for(var n=r.firstChild;n;n=n.nextSibling)if(!blank(n))a.push(n);return a;}\
+function trailer(top,hd){\
+if(hd)return true;\
 var n=top.nextSibling;\
 while(n&&(isq(n)||blank(n)))n=n.nextSibling;\
 var t='';\
@@ -6118,41 +6129,81 @@ for(var j=0;j<br.length;j++)br[j].parentNode.replaceChild(c.ownerDocument.create
 t+='\\n'+c.textContent;}}\
 t=t.replace(/\\u00a0/g,' ').trim();\
 return !t||/^[-_]{2,}[ \\t]*(\\n|$)/.test(t);}\
+function findq(d){\
+var sel=['.vireo-quote-attr','.gmail_quote','blockquote[type=\"cite\"]','#divRplyFwdMsg','.yahoo_quoted'];\
+for(var i=0;i<sel.length;i++){var q=d.querySelector(sel[i]);if(q)return [q,i===0||i===3];}\
+var bs=d.querySelectorAll('div[style*=\"border-top\"]');\
+for(var j=0;j<bs.length;j++){var lb=bs[j].querySelectorAll('b,strong'),c=0;\
+for(var k=0;k<lb.length;k++)if(/:\\s*$/.test(lb[k].textContent))c++;\
+if(c>=3)return [bs[j],true];}\
+var w=d.createTreeWalker(d.body,4),n;\
+while((n=w.nextNode())){if(DIV.test(n.textContent)){var pe=n.parentNode;\
+return [pe!==d.body&&pe.textContent.trim()===n.textContent.trim()?pe:n,true];}}\
+q=d.querySelector('blockquote');return q?[q,false]:null;}\
+function plain(d){var ps=d.querySelectorAll('.vireo-plain');if(!ps.length)return null;\
+var p=ps[ps.length-1],L=p.textContent.split('\\n'),i=L.length-1,qs=0,st=-1;\
+for(var j=0;j<L.length;j++)if(DIV.test(L[j])){st=j;break;}\
+if(st<0){while(i>=0&&(/^\\s*>/.test(L[i])||!L[i].trim())){if(L[i].trim())qs++;i--;}\
+if(!qs||i<0)return null;st=i+1;\
+if(WROTE.test(L[i].trim())){st=i;\
+if(i>0&&/^(On|Am|Le|El|Em|Il|Op|Den|Dne|W dniu)\\s/.test(L[i-1].trim())&&!/[.!?:]\\s*$/.test(L[i-1]))st=i-1;}}\
+var bf=false;for(var k=0;k<st;k++)if(L[k].trim()){bf=true;break;}\
+if(!bf)return null;\
+var e=st-1;while(e>=0&&!L[e].trim())e--;\
+var off=-1;for(k=0;k<=e;k++)off+=L[k].length+1;\
+var w=d.createTreeWalker(p,4),n,acc=0;\
+while((n=w.nextNode())){var l=n.textContent.length;if(acc+l>=off)break;acc+=l;}\
+if(!n)return null;\
+var r=d.createRange();r.setStart(n,off-acc);r.setEnd(p,p.childNodes.length);\
+var box=d.createElement('span');box.appendChild(r.extractContents());p.appendChild(box);\
+return box;}\
 function quote(f){try{var d=f.contentDocument;if(!d||!d.body||f._q)return;\
-var sel=['.vireo-quote-attr','.gmail_quote','blockquote[type=\"cite\"]','#divRplyFwdMsg','blockquote'];\
-var q=null;for(var i=0;i<sel.length&&!q;i++)q=d.querySelector(sel[i]);\
-if(!q)return;\
-var top=q;while(top.parentNode&&top.parentNode!==d.body)top=top.parentNode;\
+var h=findq(d);\
+if(!h){var pb=plain(d);if(pb)fold(f,d,pb);return;}\
+var q=h[0],hd=h[1];\
+var root=d.body;\
+for(;;){var ks=kids(root);if(ks.length===1&&ks[0].nodeType===1&&ks[0]!==q&&ks[0].contains(q))root=ks[0];else break;}\
+var top=q;while(top.parentNode&&top.parentNode!==root)top=top.parentNode;\
 if(!top.parentNode)return;\
+var start=top,pv=top.previousSibling;\
+while(pv&&(blank(pv)||pv.nodeName==='BR'))pv=pv.previousSibling;\
+if(pv&&!hd&&pv.textContent.length<400&&WROTE.test(pv.textContent.trim()))start=pv;\
 var before=false;\
-for(var n=d.body.firstChild;n&&n!==top;n=n.nextSibling){\
-if(n.nodeType===1||(n.nodeType===3&&n.textContent.trim()))before=true;}\
+for(var n=root.firstChild;n&&n!==start;n=n.nextSibling){\
+if(!blank(n)||n.nodeName==='IMG'||(n.nodeType===1&&!!n.querySelector('img')))before=true;}\
 if(!before)return;\
-if(!trailer(top,q))return;\
-f._q=1;\
-var box=d.createElement('div');top.parentNode.insertBefore(box,top);\
+if(!trailer(top,hd))return;\
+var box=d.createElement('div');root.insertBefore(box,start);\
 while(box.nextSibling)box.appendChild(box.nextSibling);\
-box.style.display='none';\
+fold(f,d,box);}catch(_){}}\
+function fold(f,d,box){try{f._q=1;\
+var sp=d.createElement('div');sp.style.cssText='display:none;height:28px;';\
+box.parentNode.insertBefore(sp,box);box.style.display='none';\
 if(!f.parentNode)return;\
 var b=document.createElement('button');b.className='vireo-quote';\
 b.type='button';b.textContent='\u{2022}\u{2022}\u{2022}';\
-b.setAttribute('title','Show quoted text');\
+b.setAttribute('title',QT[0]);\
 f.parentNode.insertBefore(b,f.nextSibling);\
+f._qp=function(){if(!b.classList.contains('open')){b.style.top='';return;}\
+var r=sp.getBoundingClientRect();b.style.top=Math.round(f.offsetTop+r.top+(r.height-b.offsetHeight)/2)+'px';};\
 b.addEventListener('click',function(e){e.stopPropagation();e.preventDefault();\
-var on=box.style.display==='none';\
+var on=box.style.display==='none',sy=window.scrollY;\
 var from=f.getBoundingClientRect().height;\
-box.style.display=on?'':'none';\
+box.style.display=on?'':'none';sp.style.display=on?'block':'none';\
 b.classList.toggle('open',on);\
-b.setAttribute('title',on?'Hide quoted text':'Show quoted text');\
+b.setAttribute('title',on?QT[1]:QT[0]);f._qp();\
 var to=0;try{var dd=f.contentDocument,bb=dd.body,ee=dd.documentElement;\
 var prev=f.style.height;f.style.height='0px';void f.offsetHeight;\
 to=Math.max(bb?bb.scrollHeight:0,ee?ee.scrollHeight:0,bb?bb.offsetHeight:0);\
 f.style.height=prev;void f.offsetHeight;}catch(_){}\
-if(!to){s(f);return;}\
+if(!to){s(f);window.scrollTo(0,sy);return;}\
 f.style.height=from+'px';f.classList.add('anim');\
 void f.offsetHeight;\
 f.style.height=to+'px';\
-setTimeout(function(){f.classList.remove('anim');s(f);},280);});}catch(_){}}\
+window.scrollTo(0,sy);\
+setTimeout(function(){f.classList.remove('anim');s(f);\
+if(on){var br=b.getBoundingClientRect();\
+if(br.top>innerHeight*0.6)window.scrollBy({top:Math.min(br.top-innerHeight*0.3,to-from),behavior:'smooth'});}},280);});}catch(_){}}\
 function init(f){quote(f);s(f);try{var d=f.contentDocument;if(d){if(window.ResizeObserver&&d.body){new ResizeObserver(function(){s(f);}).observe(d.body);}\
 if(f.dataset.key&&!f._c){f._c=1;d.addEventListener('click',function(e){\
 if(e.target&&e.target.closest&&e.target.closest('a'))return;pick(f.dataset.key,e);});}\

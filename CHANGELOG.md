@@ -29,6 +29,15 @@
   message's source, the keys other mail apps use for these. They work with
   single-key shortcuts switched off, and are left to the composer while
   you are writing, where Ctrl+U underlines.
+- **Fixed: quoted text that stayed unfolded, or could not be folded again**
+  (#326, reported by pdf). The reader now finds the quote inside a message
+  wrapped in one outer block, as Outlook and many templates write it, in
+  Outlook desktop's header block, under an "Original Message" divider, in
+  Yahoo replies, and in plain-text mail, where the trailing `>` lines and
+  the "On … wrote:" line above them are folded. Once opened, the ••• button
+  sits where the quote begins, so it closes it again, and opening a quote no
+  longer scrolls the conversation away from it. A forward with nothing
+  written above it is no longer folded down to nothing.
 - **Updated: Hungarian,** by Laszlo Lang (#320), now complete.
 
 ## 1.42.0 — 2026-10-01

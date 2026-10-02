@@ -649,6 +649,16 @@ System → GNOME Files** holds the same choices, so the questions can be
 skipped: what the files go into, what happens over the limit, and the limit
 itself.
 
+### Quoted text
+
+When a reply ends with the message it answers, the reader folds that part
+away behind a ••• button. It recognises the quotes Gmail, Outlook (web and
+desktop), Apple Mail, Thunderbird, Yahoo and Hylki write, an "On … wrote:"
+line before them, an "Original Message" divider, and the `>` lines of
+plain-text mail. Once opened, the button sits where the quote begins and
+folds it again. Nothing is folded when your reply comes after or between
+quoted lines, so an answer written inline always shows in full.
+
 ### Text size
 
 **Settings → Appearance → Text size** makes Hylki's text smaller or larger

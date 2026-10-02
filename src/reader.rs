@@ -225,8 +225,8 @@ fn escape_text(s: &str) -> String {
 /// The class and id markers kept on an element: what the wrapper's quote
 /// fold and the plain-text sheet look for. Nothing else of the sender's
 /// classes survives.
-const KEPT_CLASSES: [&str; 5] =
-    ["gmail_quote", "gmail_signature", "moz-signature", "vireo-quote-attr", "vireo-plain"];
+const KEPT_CLASSES: [&str; 6] =
+    ["gmail_quote", "gmail_signature", "moz-signature", "vireo-quote-attr", "vireo-plain", "yahoo_quoted"];
 const KEPT_IDS: [&str; 2] = ["divRplyFwdMsg", "Signature"];
 
 fn attr<'a>(attrs: &'a [html5ever::Attribute], name: &str) -> Option<&'a str> {
