@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Updated: Hungarian,** by Laszlo Lang (#320), now complete.
+
 ## 1.42.0 — 2026-10-01
 
 Everything from 1.42.0-beta.1 to 1.42.0-beta.7: recipients from LDAP
