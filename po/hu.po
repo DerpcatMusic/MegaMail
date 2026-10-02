@@ -5672,6 +5672,9 @@ msgstr "A melléklet már nem található az üzenetben a kiszolgálón"
 msgid "Still could not send “{subject}”: {e}"
 msgstr "A(z) „{subject}” továbbra sem küldhető el: {e}"
 
+msgid "IMAP connection stopped making progress"
+msgstr ""
+
 msgid "Could not reach the JMAP server: {e}"
 msgstr "Nem sikerült elérni a JMAP kiszolgálót: {e}"
 

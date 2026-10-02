@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Fixed: mail syncing could wait forever on a silent IMAP connection**
+  (#324, by Salem Sayed Abdel Gawad). Reads and writes now fail after 60
+  seconds without progress, including reads inside a FETCH response, so the
+  worker reconnects instead of leaving later refreshes queued behind it.
+  Downloads that keep receiving data can take longer, and IMAP IDLE waits
+  keep their own deadlines.
 - **Updated: Hungarian,** by Laszlo Lang (#320), now complete.
 
 ## 1.42.0 — 2026-10-01

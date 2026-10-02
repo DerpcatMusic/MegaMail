@@ -91,6 +91,10 @@ shows. Want to join them? See [CONTRIBUTING.md](CONTRIBUTING.md).
   reading LDAP directories in the Flatpak, which finds Evolution Data Server
   by asking the session bus, and an address book picker that names each book
   and leaves out the read-only ones.
+- [**Salem Sayed Abdel Gawad**](https://github.com/salemsayed) ([#324](https://github.com/hyprlab/hylki/pull/324)):
+  a deadline on every IMAP read and write, so a connection that stops
+  answering in the middle of a command is dropped and reconnected instead of
+  holding up the account's syncing.
 
 
 ## Reports, design and ideas
