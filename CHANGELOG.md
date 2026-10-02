@@ -41,6 +41,12 @@
   message's source, the keys other mail apps use for these. They work with
   single-key shortcuts switched off, and are left to the composer while
   you are writing, where Ctrl+U underlines.
+- **Added: folding messages in a conversation** (#326, requested by pdf).
+  A click on a message's header folds it to the sender and two lines of its
+  text, and a second click opens it. **Settings → Conversations → Collapse
+  read messages** opens conversations with every read message folded but the
+  newest, so new replies are what shows. Unread messages stay open, and
+  printing shows every message in full.
 - **Fixed: quoted text that stayed unfolded, or could not be folded again**
   (#326, reported by pdf). The reader now finds the quote inside a message
   wrapped in one outer block, as Outlook and many templates write it, in

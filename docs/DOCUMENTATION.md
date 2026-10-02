@@ -701,6 +701,17 @@ plain-text mail. Once opened, the button sits where the quote begins and
 folds it again. Nothing is folded when your reply comes after or between
 quoted lines, so an answer written inline always shows in full.
 
+### Folding messages in a conversation
+
+A click on a message's header in a conversation folds it to that header and
+two lines of its text, and another click opens it again; a double-click
+still opens the message in a window of its own. With **Settings →
+Conversations → Collapse read messages** on, a conversation opens with every
+message you have read folded, except the newest, so what is new is what
+shows. Unread messages always open, and so does a message you move to with
+`w` or `b`. What you fold or open by hand stays that way while the
+conversation is on screen. Printing shows every message in full.
+
 ### Text size
 
 **Settings → Appearance → Text size** makes Hylki's text smaller or larger

@@ -35,6 +35,8 @@ pub struct PrefInit {
     pub threads_expanded: bool,
     /// Reading pane shows conversations newest-message-first.
     pub thread_newest_first: bool,
+    /// A conversation's read messages open folded (#326).
+    pub collapse_read: bool,
     /// Reader always shows the recipients line under the sender.
     pub always_show_recipients: bool,
     /// The OpenPGP chip says its verdict in words (#300).
@@ -941,6 +943,7 @@ pub enum PrefOutput {
     SetThreading(bool),
     SetThreadsExpanded(bool),
     SetThreadNewestFirst(bool),
+    SetCollapseRead(bool),
     SetAlwaysShowRecipients(bool),
     SetPgpLabels(bool),
     SetSingleMessageCard(bool),
@@ -2525,6 +2528,18 @@ impl Component for Preferences {
                                         },
                                     },
 
+                                    #[name = "collapse_read_row"]
+                                    adw::SwitchRow {
+                                        set_title: &i18n("Collapse read messages"),
+                                        set_subtitle: &i18n("Show the messages of a conversation you have already \
+                                                       read as their sender and a line of preview. The newest \
+                                                       message and unread ones stay open; click a message's \
+                                                       header to open or fold it."),
+                                        connect_active_notify[sender] => move |row| {
+                                            let _ = sender.output(PrefOutput::SetCollapseRead(row.is_active()));
+                                        },
+                                    },
+
                                     #[name = "thread_row_newest_row"]
                                     adw::SwitchRow {
                                         #[watch]
@@ -3646,6 +3661,7 @@ impl Component for Preferences {
         widgets.threading_row.set_active(init.threading);
         widgets.threads_expanded_row.set_active(init.threads_expanded);
         widgets.thread_newest_first_row.set_active(init.thread_newest_first);
+        widgets.collapse_read_row.set_active(init.collapse_read);
         widgets.always_show_recipients_row.set_active(init.always_show_recipients);
         widgets.pgp_labels_row.set_active(init.pgp_labels);
         widgets.single_message_card_row.set_active(init.single_message_card);

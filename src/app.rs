@@ -811,6 +811,8 @@ pub struct AppModel {
     threads_expanded: bool,
     /// Reading pane shows conversations newest-message-first.
     thread_newest_first: bool,
+    /// A conversation's read messages open folded (#326).
+    collapse_read: bool,
     /// Reader always shows the recipients line under the sender.
     always_show_recipients: bool,
     /// The OpenPGP chip says its verdict in words (#300).
@@ -3228,6 +3230,7 @@ impl SimpleComponent for AppModel {
             thread_key: None,
             threads_expanded: prefs.threads_expanded,
             thread_newest_first: prefs.thread_newest_first,
+            collapse_read: prefs.collapse_read,
             always_show_recipients: prefs.always_show_recipients,
             pgp_labels: prefs.pgp_labels,
             show_unified_pref: prefs.show_unified,
@@ -3469,6 +3472,7 @@ impl SimpleComponent for AppModel {
         model
             .message_view
             .emit(MessageViewInput::SetSingleMessageCard(model.single_message_card));
+        model.message_view.emit(MessageViewInput::SetCollapseRead(model.collapse_read));
         model.message_view.emit(MessageViewInput::SetReaderMode(model.effective_reader_mode()));
         model.message_view.emit(MessageViewInput::SetZoomDefault(model.zoom_default));
         model.message_view.emit(MessageViewInput::SetZoom(model.zoom));
@@ -7599,6 +7603,12 @@ impl SimpleComponent for AppModel {
                 }
             }
 
+            AppMsg::Pref(PrefOutput::SetCollapseRead(on)) => {
+                if pref!(self.collapse_read = on) {
+                    self.message_view.emit(MessageViewInput::SetCollapseRead(on));
+                }
+            }
+
             AppMsg::Pref(PrefOutput::SetAlwaysShowRecipients(on)) => {
                 if pref!(self.always_show_recipients = on) {
                     self.message_view.emit(MessageViewInput::SetAlwaysShowRecipients(on));
@@ -10839,6 +10849,7 @@ impl AppModel {
             thread_expansion: self.thread_expansion,
             thread_row_newest: self.thread_row_newest,
             thread_newest_first: self.thread_newest_first,
+            collapse_read: self.collapse_read,
             always_show_recipients: self.always_show_recipients,
             pgp_labels: self.pgp_labels,
             single_message_card: self.single_message_card,
@@ -17518,6 +17529,7 @@ impl AppModel {
             threading: self.threading,
             threads_expanded: self.threads_expanded,
             thread_newest_first: self.thread_newest_first,
+            collapse_read: self.collapse_read,
             always_show_recipients: self.always_show_recipients,
             pgp_labels: self.pgp_labels,
             single_message_card: self.single_message_card,

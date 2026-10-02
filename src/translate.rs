@@ -316,7 +316,7 @@ pub fn differs(detected: &str, target: &str) -> bool {
 /// The words of a fragment of HTML, roughly: tags dropped, the common
 /// entities decoded, quoted text left out. Only good enough for telling
 /// the language, which is all it is used for.
-fn visible_text(html: &str) -> String {
+pub fn visible_text(html: &str) -> String {
     let mut out = String::with_capacity(html.len() / 2);
     let mut in_tag = false;
     let mut tag = String::new();

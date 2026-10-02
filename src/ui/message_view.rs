@@ -189,6 +189,11 @@ pub struct MessageView {
     unsubscribed: std::collections::HashMap<String, i64>,
     /// Cards whose unsubscribe request is under way or has just failed.
     unsub_state: std::collections::HashMap<(u32, u32), UnsubState>,
+    /// Fold a conversation's read messages to their header (#326).
+    collapse_read: bool,
+    /// Cards opened or folded by hand: these win over the default for as
+    /// long as they stay in the conversation on screen.
+    folds: std::collections::HashMap<(u32, u32), bool>,
     /// Translations (#327), per card: under way, shown, set aside for the
     /// original, or failed.
     translations: std::collections::HashMap<(u32, u32), TrState>,
@@ -372,6 +377,46 @@ impl MessageView {
                 }
             }
         }
+    }
+
+    /// The cards of the conversation on screen that show folded (#326):
+    /// those folded by hand, and, with the setting on, every read message
+    /// but the newest. Opening a conversation makes its first message the
+    /// current one, so "the one opened" would have kept the oldest open; a
+    /// message stepped to inside the conversation is opened by hand instead
+    /// (see `Show`).
+    fn folded_cards(&self) -> std::collections::HashSet<(u32, u32)> {
+        if self.thread.len() <= 1 {
+            return Default::default();
+        }
+        let newest = self.thread.iter().max_by_key(|m| (m.timestamp, m.id)).map(|m| (m.account_id, m.id));
+        self.thread
+            .iter()
+            .map(|m| (m.account_id, m.id, m.unread))
+            .filter(|&(aid, id, unread)| match self.folds.get(&(aid, id)) {
+                Some(folded) => *folded,
+                None => self.collapse_read && !unread && Some((aid, id)) != newest,
+            })
+            .map(|(aid, id, _)| (aid, id))
+            .collect()
+    }
+
+    /// Fold and open the cards of the live document to match
+    /// [`MessageView::folded_cards`], without building it again.
+    fn patch_folds(&self) {
+        if !self.webview_ready || self.thread.len() <= 1 {
+            return;
+        }
+        let keys: Vec<String> = self.folded_cards().iter().map(|(a, i)| format!("{a}:{i}")).collect();
+        let js = format!(
+            "(function(k){{var ms=document.querySelectorAll('.vireo-msg');\
+             for(var i=0;i<ms.length;i++){{var on=k.indexOf(ms[i].dataset.key)>=0;\
+             if(ms[i].classList.contains('vireo-folded')===on)continue;\
+             ms[i].classList.toggle('vireo-folded',on);\
+             if(!on){{var f=ms[i].querySelector('iframe.vireo-frame');if(f){{f._h=0;s(f);}}}}}}}})({})",
+            serde_json::to_string(&keys).unwrap_or_else(|_| "[]".into()),
+        );
+        self.webview.evaluate_javascript(&js, None, None, None::<&gtk::gio::Cancellable>, |_| {});
     }
 
     /// Which language a card's message is in, remembered per body.
@@ -798,6 +843,10 @@ pub enum MessageViewInput {
     SetAlwaysShowRecipients(bool),
     /// The "single messages as cards" preference changed (re-render follows).
     SetSingleMessageCard(bool),
+    /// Fold a conversation's read messages by default (#326).
+    SetCollapseRead(bool),
+    /// A card's header folded or opened it (#326).
+    Folded { account_id: u32, id: u32, folded: bool },
     /// The OpenPGP chip's words on or off (#300), applied to the open
     /// document at once.
     SetPgpLabels(bool),
@@ -1158,6 +1207,17 @@ impl MessageView {
 /// A card's Unsubscribe banner: the container, always emitted so a verdict
 /// arriving later can be patched into it (empty, it is hidden by the
 /// stylesheet). `inner` is what [`MessageView::unsub_inner_html`] rendered.
+/// What a folded card says of its message (#326): the list's preview, or
+/// the start of the text when the message came without one.
+fn card_snippet(m: &Message) -> String {
+    let preview = crate::models::preview_display(&m.preview);
+    if !preview.trim().is_empty() {
+        return preview.to_string();
+    }
+    let text = crate::translate::visible_text(&m.body);
+    text.split_whitespace().take(60).collect::<Vec<_>>().join(" ")
+}
+
 fn unsub_row_html(key: (u32, u32), inner: &str) -> String {
     format!("<div class=\"vireo-unsub\" data-key=\"{}:{}\">{inner}</div>", key.0, key.1)
 }
@@ -1876,6 +1936,8 @@ impl Component for MessageView {
             member_checks: std::collections::HashMap::new(),
             unsubscribed: std::collections::HashMap::new(),
             unsub_state: std::collections::HashMap::new(),
+            collapse_read: false,
+            folds: std::collections::HashMap::new(),
             translations: std::collections::HashMap::new(),
             detected: std::cell::RefCell::new(std::collections::HashMap::new()),
             identities: std::collections::HashMap::new(),
@@ -2204,6 +2266,12 @@ impl Component for MessageView {
                     }),
                     // Translate on a card, or its banner's button (#327).
                     "translate" | "tr" => open_sender.input(MessageViewInput::Translate { account_id, id }),
+                    // A header folded or opened its card (#326).
+                    "fold" => open_sender.input(MessageViewInput::Folded {
+                        account_id,
+                        id,
+                        folded: extra == Some("1"),
+                    }),
                     "viewsource" => open_sender.input(MessageViewInput::CardAction {
                         action: RowAction::ViewSource,
                         account_id,
@@ -2293,7 +2361,19 @@ impl Component for MessageView {
                     self.sender_check = None;
                     self.member_checks.clear();
                     self.unsub_state.clear();
-                    self.translations.clear();
+                }
+                // What was done to a card (translated, folded) holds while it
+                // stays in the conversation on screen: stepping to another of
+                // its messages must not undo it. The message stepped to opens.
+                let stays = |k: &(u32, u32)| thread.iter().any(|m| (m.account_id, m.id) == *k);
+                self.translations.retain(|k, _| stays(k));
+                self.folds.retain(|k, _| stays(k));
+                if !same_message {
+                    if let Some(key) = shown.as_ref().map(|s| (s.account_id, s.id)) {
+                        if self.thread.iter().any(|m| (m.account_id, m.id) == key) {
+                            self.folds.insert(key, false);
+                        }
+                    }
                 }
                 self.link_preview.set_visible(false);
                 self.current = shown;
@@ -2343,6 +2423,9 @@ impl Component for MessageView {
                 // body would just flash blank, so wait for the real body.
                 if !self.loading {
                     self.render();
+                    // Stepping to another message of the same conversation
+                    // repaints nothing, but that message must open (#326).
+                    self.patch_folds();
                 }
             }
             MessageViewInput::LoadRemoteOnce => {
@@ -2416,6 +2499,16 @@ impl Component for MessageView {
             }
             MessageViewInput::SetAlwaysShowRecipients(on) => {
                 self.always_show_recipients = on;
+            }
+            MessageViewInput::SetCollapseRead(on) => {
+                if self.collapse_read != on {
+                    self.collapse_read = on;
+                    self.folds.clear();
+                    self.render();
+                }
+            }
+            MessageViewInput::Folded { account_id, id, folded } => {
+                self.folds.insert((account_id, id), folded);
             }
             MessageViewInput::SetSingleMessageCard(on) => {
                 self.single_message_card = on;
@@ -3562,6 +3655,7 @@ impl MessageView {
         // Translations (#327): which cards show one, and whether cards
         // offer Translate at all.
         crate::translate::generation().hash(&mut h);
+        self.collapse_read.hash(&mut h);
         let mut shown: Vec<(u32, u32, usize)> = self
             .translations
             .iter()
@@ -3623,6 +3717,7 @@ impl MessageView {
                 .map(|m| ((m.account_id, m.id), self.invite_inner_html(m)))
                 .collect()
         });
+        LIVE_FOLDED.with(|f| *f.borrow_mut() = self.folded_cards());
         let translation = crate::translate::load();
         LIVE_TRANSLATE_ON.with(|on| on.set(translation.enabled()));
         LIVE_TRANSLATE.with(|t| {
@@ -3721,7 +3816,7 @@ impl MessageView {
             };
             if conversation {
                 sections.push_str(&format!(
-                    "<section class=\"vireo-msg{sel}{unread_cls}\" data-key=\"{aid}:{id}\">\
+                    "<section class=\"vireo-msg{sel}{unread_cls}{folded_cls}\" data-key=\"{aid}:{id}\">\
                        <header class=\"vireo-msg-hdr\" data-key=\"{aid}:{id}\" \
                          title=\"{hdr_title}\">\
                          <div class=\"vireo-hdr-line\">\
@@ -3731,7 +3826,7 @@ impl MessageView {
                              <span class=\"vireo-date\">{date}</span></span>\
                            {acts_toggle}{acts}\
                          </div>{rcpt}\
-                       </header>{invite}{unsub}{tr}{body}{atts}</section>",
+                       </header>{snip}{invite}{unsub}{tr}{body}{atts}</section>",
                     aid = m.account_id,
                     id = m.id,
                     // The message's own attachments beneath its body (#213).
@@ -3899,6 +3994,17 @@ impl MessageView {
                         ""
                     },
                     unread_cls = if m.unread { " unread" } else { "" },
+                    // Folded (#326): the header and a line of preview.
+                    folded_cls = if LIVE_FOLDED.with(|f| f.borrow().contains(&(m.account_id, m.id))) {
+                        " vireo-folded"
+                    } else {
+                        ""
+                    },
+                    snip = if thread.len() > 1 {
+                        format!("<div class=\"vireo-snip\">{}</div>", escape_text(&card_snippet(m)))
+                    } else {
+                        String::new()
+                    },
                     // `escape_text`, not `attr_escape`: these land in element
                     // text content, where `<` and `>` are structural. A `From:`
                     // display name is attacker-controlled (and RFC 2047-decoded,
@@ -4159,6 +4265,15 @@ impl MessageView {
                .vireo-msg{{user-select:none;}}\
                body:not(.vireo-conv) .vireo-msg{{border-radius:0;margin:0;}}\
                .vireo-msg.selected{{box-shadow:0 0 0 2px {accent};}}\
+               .vireo-snip{{display:none;}}\
+               .vireo-msg.vireo-folded>.vireo-snip{{display:-webkit-box;-webkit-box-orient:vertical;\
+                 -webkit-line-clamp:2;overflow:hidden;padding:0 16px 12px;opacity:0.7;\
+                 font-size:0.92em;line-height:1.45;}}\
+               body.vireo-conv .vireo-msg.vireo-folded>.vireo-snip{{padding:0 10px 12px;}}\
+               .vireo-msg.vireo-folded>:not(.vireo-msg-hdr):not(.vireo-snip){{display:none;}}\
+               body.vireo-folds .vireo-msg-hdr{{cursor:pointer;}}\
+               @media print{{.vireo-msg.vireo-folded>:not(.vireo-snip){{display:revert !important;}}\
+                 .vireo-msg.vireo-folded>.vireo-snip{{display:none !important;}}}}\
                .vireo-msg-hdr{{cursor:pointer;}}\
                .vireo-msg-hdr{{padding:12px 16px;cursor:default;user-select:none;\
                  position:sticky;top:0;z-index:1;background-color:{bg};}}\
@@ -6344,6 +6459,9 @@ thread_local! {
     /// shows instead of its message, if it shows one. Empty in tests.
     static LIVE_TRANSLATE: std::cell::RefCell<std::collections::HashMap<(u32, u32), (String, Option<String>)>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
+    /// The cards that open folded (#326). Empty in tests.
+    static LIVE_FOLDED: std::cell::RefCell<std::collections::HashSet<(u32, u32)>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
     /// Whether a translation service is set up, so cards offer Translate.
     static LIVE_TRANSLATE_ON: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -6485,6 +6603,10 @@ window.scrollTo(0,sy);\
 setTimeout(function(){f.classList.remove('anim');s(f);\
 if(on){var br=b.getBoundingClientRect();\
 if(br.top>innerHeight*0.6)window.scrollBy({top:Math.min(br.top-innerHeight*0.3,to-from),behavior:'smooth'});}},280);});}catch(_){}}\
+function foldCard(sec){if(!sec)return;var on=!sec.classList.contains('vireo-folded');\
+sec.classList.toggle('vireo-folded',on);\
+try{window.webkit.messageHandlers.hylki.postMessage('fold:'+sec.dataset.key+':'+(on?1:0));}catch(_){}\
+if(!on){var f=sec.querySelector('iframe.vireo-frame');if(f){f._h=0;s(f);setTimeout(function(){s(f);},80);}}}\
 function init(f){quote(f);s(f);try{var d=f.contentDocument;if(d){if(window.ResizeObserver&&d.body){new ResizeObserver(function(){s(f);}).observe(d.body);}\
 if(f.dataset.key&&!f._c){f._c=1;d.addEventListener('click',function(e){\
 if(e.target&&e.target.closest&&e.target.closest('a'))return;pick(f.dataset.key,e);});}\
@@ -6521,6 +6643,13 @@ setTimeout(ready,450);\
 var hs=document.querySelectorAll('.vireo-msg-hdr');\
 for(var j=0;j<hs.length;j++){hs[j].addEventListener('dblclick',function(){\
 try{window.webkit.messageHandlers.hylki.postMessage('open:'+this.dataset.key);}catch(_){}});}\
+if(document.querySelectorAll('.vireo-msg').length>1){document.body.classList.add('vireo-folds');\
+for(var j=0;j<hs.length;j++){(function(h){var tm=null;\
+h.addEventListener('click',function(e){\
+if(e.ctrlKey||e.metaKey||e.shiftKey||e.altKey)return;\
+if(e.target.closest&&e.target.closest('button,a,.vireo-addr,.vireo-acts,.vireo-tags,.vireo-verify,.vireo-rcpt'))return;\
+if(tm){clearTimeout(tm);tm=null;return;}\
+tm=setTimeout(function(){tm=null;foldCard(h.closest('.vireo-msg'));},260);});})(hs[j]);}}\
 var rbd=document.body.dataset;\
 if(rbd.vireoReadmark&&document.body.classList.contains('vireo-conv')){\
 var rdel=parseInt(rbd.vireoReadmark,10)||250;var rt={};\

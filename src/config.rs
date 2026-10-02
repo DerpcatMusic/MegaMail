@@ -1076,6 +1076,10 @@ pub(crate) struct PrivacyFile {
     /// Whether the reading pane shows a conversation newest-message-first.
     #[serde(default)]
     pub(crate) thread_newest_first: bool,
+    /// Whether a conversation's read messages open folded to their header
+    /// and a preview (#326).
+    #[serde(default)]
+    pub(crate) collapse_read: bool,
     /// Whether the reader always shows the recipients line under the sender.
     #[serde(default)]
     pub(crate) always_show_recipients: bool,
@@ -1503,6 +1507,7 @@ impl Default for PrivacyFile {
             thread_expansion: default_thread_expansion(),
             thread_row_newest: false,
             thread_newest_first: false,
+            collapse_read: false,
             always_show_recipients: false,
             pgp_labels: false,
             single_message_card: default_single_message_card(),
