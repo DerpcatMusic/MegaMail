@@ -4573,6 +4573,16 @@ msgstr ""
 "panel de lectura. Desactivado muestra de más antiguo a más reciente, hacia "
 "abajo."
 
+#, fuzzy
+msgid "Collapse read messages"
+msgstr "Contraer en el lector"
+
+msgid ""
+"Show the messages of a conversation you have already read as their sender "
+"and a line of preview. The newest message and unread ones stay open; click a "
+"message's header to open or fold it."
+msgstr ""
+
 msgid "Show your own replies in the message list"
 msgstr "Mostrar tus propias respuestas en la lista de mensajes"
 

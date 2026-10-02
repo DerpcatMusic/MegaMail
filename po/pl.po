@@ -4631,6 +4631,16 @@ msgstr ""
 "Wyświetla najnowszą wiadomość rozmowy na górze panelu czytania. Po "
 "wyłączeniu wiadomości są ułożone od najstarszej do najnowszej, z góry na dół."
 
+#, fuzzy
+msgid "Collapse read messages"
+msgstr "Zwiń do panelu czytania"
+
+msgid ""
+"Show the messages of a conversation you have already read as their sender "
+"and a line of preview. The newest message and unread ones stay open; click a "
+"message's header to open or fold it."
+msgstr ""
+
 msgid "Show your own replies in the message list"
 msgstr "Wyświetlanie własnych odpowiedzi na liście wiadomości"
 
