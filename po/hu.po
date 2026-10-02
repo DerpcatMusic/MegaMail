@@ -1159,6 +1159,46 @@ msgstr "A gpg nem írta alá az üzenetet."
 msgid "gpg did not encrypt the message."
 msgstr "A gpg nem titkosította az üzenetet."
 
+msgid "Off"
+msgstr "Ki"
+
+msgid "Choose a translation service in Settings → Translation first."
+msgstr ""
+
+msgid "No key for {service}: add one in Settings → Translation."
+msgstr ""
+
+msgid "There is no text to translate."
+msgstr ""
+
+#, fuzzy
+msgid "This message is too long to send for translation."
+msgstr "Ez az üzenet nem tartalmaz megnyitható naptárfájlt."
+
+#, fuzzy
+msgid "The service's answer could not be read."
+msgstr "a lista e-mail-címét nem sikerült beolvasni"
+
+#, fuzzy
+msgid "The service could not be reached: {e}"
+msgstr "A fájl nem megnyitható"
+
+#, fuzzy
+msgid "The service did not accept the key."
+msgstr "A könyvtár nem fogadta el a jelszót."
+
+msgid "Too many requests: try again in a moment."
+msgstr ""
+
+msgid "This month's allowance is used up."
+msgstr ""
+
+msgid "The service refused the request (error {code})."
+msgstr ""
+
+msgid "Enter the LibreTranslate server's address in Settings → Translation."
+msgstr ""
+
 msgid "Open Hylki"
 msgstr "Hylki megnyitása"
 
@@ -1667,9 +1707,6 @@ msgstr "Beállítások követése"
 
 msgid "On"
 msgstr "Be"
-
-msgid "Off"
-msgstr "Ki"
 
 msgid "Choose a Picture"
 msgstr "Kép választása"
@@ -2534,6 +2571,62 @@ msgstr ""
 msgid "Signed in as {who}. {terms}"
 msgstr "Bejelentkezve mint: {who}. {terms}"
 
+#, fuzzy
+msgid "Translation"
+msgstr "Fordította"
+
+msgid ""
+"Translate messages with a service you have an account with, under your own "
+"key. The text of a message you translate is sent to that service, and "
+"nothing is sent until you ask."
+msgstr ""
+
+msgid "Server"
+msgstr "Kiszolgáló"
+
+msgid "Region (empty for a global resource)"
+msgstr ""
+
+#, fuzzy
+msgid "Check the settings"
+msgstr "Keresési beállítások"
+
+msgid "Translates a greeting, to see that the service answers."
+msgstr ""
+
+msgid "Check"
+msgstr ""
+
+#, fuzzy
+msgid "Messages"
+msgstr "Nincsenek üzenetek"
+
+#, fuzzy
+msgid "Hylki's language ({language})"
+msgstr "Rendszer nyelve — {language}"
+
+#, fuzzy
+msgid "Translate into"
+msgstr "Fordította"
+
+msgid "Offer to translate"
+msgstr ""
+
+msgid ""
+"Messages in another language show a Translate button. Which language a "
+"message is in is worked out on this computer."
+msgstr ""
+
+msgid "Key (if the server asks for one)"
+msgstr ""
+
+#, fuzzy
+msgid "Checking…"
+msgstr "Keresés…"
+
+msgid "It works: “{sent}” came back as “{back}”."
+msgstr ""
+
 msgid "Rich text"
 msgstr "Formázott szöveg"
 
@@ -2869,9 +2962,6 @@ msgstr "Könyvtár hozzáadása"
 msgid "Look up recipients in this directory"
 msgstr "Címzettek keresése ebben a címjegyzékben"
 
-msgid "Server"
-msgstr "Kiszolgáló"
-
 msgid "Encryption"
 msgstr "Titkosítás"
 
@@ -3111,6 +3201,41 @@ msgstr "Unsubscribe…"
 msgid "Opens the list's unsubscribe page in your browser"
 msgstr "Megnyitja a lista leiratkozási oldalát a böngészőben"
 
+#, fuzzy
+msgid "Translating…"
+msgstr "Tesztelés folyamatban…"
+
+#, fuzzy
+msgid "Could not translate: {why}"
+msgstr "Az üzenet nem címkézhető: {e}"
+
+msgid "Translated from {language} by {service}."
+msgstr ""
+
+#, fuzzy
+msgid "Translated by {service}."
+msgstr "Fordította"
+
+#, fuzzy
+msgid "Show Original"
+msgstr "Címzettek megjelenítése"
+
+#, fuzzy
+msgid "Showing the original."
+msgstr "Megjelenítés rámutatáskor"
+
+#, fuzzy
+msgid "Show Translation"
+msgstr "Beszélgetés megjelenítése"
+
+#, fuzzy
+msgid "This message is in {language}."
+msgstr "Ez az üzenet egy levelezőlistáról származik."
+
+#, fuzzy
+msgid "Translate"
+msgstr "Fordította"
+
 msgid "Meeting"
 msgstr "Megbeszélés"
 
@@ -3294,6 +3419,13 @@ msgstr "Olvasó nézet"
 msgid "Loading…"
 msgstr "Betöltés…"
 
+msgid "Encrypted messages are not sent for translation."
+msgstr ""
+
+#, fuzzy
+msgid "The message has not loaded yet."
+msgstr "Ezt az üzenetet még nem ellenőrizték."
+
 msgid "That key is no longer in your keyring."
 msgstr "Ez a kulcs már nincs a kulcstartóján."
 
@@ -3356,6 +3488,10 @@ msgstr "Üzenet törlése"
 
 msgid "View source"
 msgstr "Forrás megtekintése"
+
+#, fuzzy
+msgid "Translate this message"
+msgstr "Üzenet törlése"
 
 msgid "Back to my fonts and colors"
 msgstr "Vissza a saját betűtípusaimhoz és színeimhez"

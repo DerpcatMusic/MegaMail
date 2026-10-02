@@ -1180,6 +1180,46 @@ msgstr "gpg n'a pas signé le message."
 msgid "gpg did not encrypt the message."
 msgstr "gpg n'a pas chiffré le message."
 
+msgid "Off"
+msgstr "Désactivé"
+
+msgid "Choose a translation service in Settings → Translation first."
+msgstr ""
+
+msgid "No key for {service}: add one in Settings → Translation."
+msgstr ""
+
+msgid "There is no text to translate."
+msgstr ""
+
+#, fuzzy
+msgid "This message is too long to send for translation."
+msgstr "Ce message ne contient aucun fichier de calendrier à ouvrir."
+
+#, fuzzy
+msgid "The service's answer could not be read."
+msgstr "l'adresse e-mail de la liste n'a pas pu être lue"
+
+#, fuzzy
+msgid "The service could not be reached: {e}"
+msgstr "Le fichier n'a pas pu être ouvert"
+
+#, fuzzy
+msgid "The service did not accept the key."
+msgstr "L'annuaire n'a pas accepté le mot de passe."
+
+msgid "Too many requests: try again in a moment."
+msgstr ""
+
+msgid "This month's allowance is used up."
+msgstr ""
+
+msgid "The service refused the request (error {code})."
+msgstr ""
+
+msgid "Enter the LibreTranslate server's address in Settings → Translation."
+msgstr ""
+
 msgid "Open Hylki"
 msgstr "Ouvrir Hylki"
 
@@ -1694,9 +1734,6 @@ msgstr "Suivre les paramètres"
 
 msgid "On"
 msgstr "Activé"
-
-msgid "Off"
-msgstr "Désactivé"
 
 msgid "Choose a Picture"
 msgstr "Choisir une photo"
@@ -2562,6 +2599,62 @@ msgstr ""
 msgid "Signed in as {who}. {terms}"
 msgstr "Connecté en tant que {who}. {terms}"
 
+#, fuzzy
+msgid "Translation"
+msgstr "Traduit par"
+
+msgid ""
+"Translate messages with a service you have an account with, under your own "
+"key. The text of a message you translate is sent to that service, and "
+"nothing is sent until you ask."
+msgstr ""
+
+msgid "Server"
+msgstr "Serveur"
+
+msgid "Region (empty for a global resource)"
+msgstr ""
+
+#, fuzzy
+msgid "Check the settings"
+msgstr "Rechercher des paramètres"
+
+msgid "Translates a greeting, to see that the service answers."
+msgstr ""
+
+msgid "Check"
+msgstr ""
+
+#, fuzzy
+msgid "Messages"
+msgstr "Aucun message"
+
+#, fuzzy
+msgid "Hylki's language ({language})"
+msgstr "Langue du système — {language}"
+
+#, fuzzy
+msgid "Translate into"
+msgstr "Traduit par"
+
+msgid "Offer to translate"
+msgstr ""
+
+msgid ""
+"Messages in another language show a Translate button. Which language a "
+"message is in is worked out on this computer."
+msgstr ""
+
+msgid "Key (if the server asks for one)"
+msgstr ""
+
+#, fuzzy
+msgid "Checking…"
+msgstr "Recherche…"
+
+msgid "It works: “{sent}” came back as “{back}”."
+msgstr ""
+
 msgid "Rich text"
 msgstr "Texte enrichi"
 
@@ -2898,9 +2991,6 @@ msgstr "Ajouter un annuaire"
 msgid "Look up recipients in this directory"
 msgstr "Rechercher les destinataires dans cet annuaire"
 
-msgid "Server"
-msgstr "Serveur"
-
 msgid "Encryption"
 msgstr "Chiffrement"
 
@@ -3138,6 +3228,41 @@ msgstr "Se désabonner…"
 msgid "Opens the list's unsubscribe page in your browser"
 msgstr "Ouvre la page de désabonnement de la liste dans votre navigateur"
 
+#, fuzzy
+msgid "Translating…"
+msgstr "Test en cours…"
+
+#, fuzzy
+msgid "Could not translate: {why}"
+msgstr "Impossible d'ajouter un tag au message : {e}"
+
+msgid "Translated from {language} by {service}."
+msgstr ""
+
+#, fuzzy
+msgid "Translated by {service}."
+msgstr "Traduit par"
+
+#, fuzzy
+msgid "Show Original"
+msgstr "Afficher les destinataires"
+
+#, fuzzy
+msgid "Showing the original."
+msgstr "Affiché au survol"
+
+#, fuzzy
+msgid "Show Translation"
+msgstr "Afficher la conversation"
+
+#, fuzzy
+msgid "This message is in {language}."
+msgstr "Ce message provient d'une liste de diffusion."
+
+#, fuzzy
+msgid "Translate"
+msgstr "Traduit par"
+
 msgid "Meeting"
 msgstr "Réunion"
 
@@ -3321,6 +3446,13 @@ msgstr "Mode Lecture"
 msgid "Loading…"
 msgstr "Chargement…"
 
+msgid "Encrypted messages are not sent for translation."
+msgstr ""
+
+#, fuzzy
+msgid "The message has not loaded yet."
+msgstr "Ce message n'a pas été vérifié."
+
 msgid "That key is no longer in your keyring."
 msgstr "Cette clé ne se trouve plus sur votre trousseau."
 
@@ -3384,6 +3516,10 @@ msgstr "Supprimer ce message"
 
 msgid "View source"
 msgstr "Afficher le code source"
+
+#, fuzzy
+msgid "Translate this message"
+msgstr "Supprimer ce message"
 
 msgid "Back to my fonts and colors"
 msgstr "Retour à mes polices et couleurs"

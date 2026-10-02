@@ -1175,6 +1175,46 @@ msgstr "Το gpg δεν υπέγραψε το μήνυμα."
 msgid "gpg did not encrypt the message."
 msgstr "Το gpg δεν κρυπτογράφησε το μήνυμα."
 
+msgid "Off"
+msgstr "Ανενεργό"
+
+msgid "Choose a translation service in Settings → Translation first."
+msgstr ""
+
+msgid "No key for {service}: add one in Settings → Translation."
+msgstr ""
+
+msgid "There is no text to translate."
+msgstr ""
+
+#, fuzzy
+msgid "This message is too long to send for translation."
+msgstr "Αυτό το μήνυμα δεν περιέχει αρχείο ημερολογίου για άνοιγμα."
+
+#, fuzzy
+msgid "The service's answer could not be read."
+msgstr "δεν ήταν δυνατή η ανάγνωση της διεύθυνσης αλληλογραφίας της λίστας"
+
+#, fuzzy
+msgid "The service could not be reached: {e}"
+msgstr "Δεν ήταν δυνατό το άνοιγμα του αρχείου"
+
+#, fuzzy
+msgid "The service did not accept the key."
+msgstr "Το gpg δεν δημιούργησε το κλειδί."
+
+msgid "Too many requests: try again in a moment."
+msgstr ""
+
+msgid "This month's allowance is used up."
+msgstr ""
+
+msgid "The service refused the request (error {code})."
+msgstr ""
+
+msgid "Enter the LibreTranslate server's address in Settings → Translation."
+msgstr ""
+
 msgid "Open Hylki"
 msgstr "Άνοιγμα Hylki"
 
@@ -1694,9 +1734,6 @@ msgstr "Ακολούθηση ρυθμίσεων"
 
 msgid "On"
 msgstr "Ενεργό"
-
-msgid "Off"
-msgstr "Ανενεργό"
 
 msgid "Choose a Picture"
 msgstr "Επιλογή εικόνας"
@@ -2563,6 +2600,62 @@ msgstr ""
 msgid "Signed in as {who}. {terms}"
 msgstr "Συνδεθήκατε ως {who}. {terms}"
 
+#, fuzzy
+msgid "Translation"
+msgstr "Μετάφραση από"
+
+msgid ""
+"Translate messages with a service you have an account with, under your own "
+"key. The text of a message you translate is sent to that service, and "
+"nothing is sent until you ask."
+msgstr ""
+
+msgid "Server"
+msgstr ""
+
+msgid "Region (empty for a global resource)"
+msgstr ""
+
+#, fuzzy
+msgid "Check the settings"
+msgstr "Αναζήτηση ρυθμίσεων"
+
+msgid "Translates a greeting, to see that the service answers."
+msgstr ""
+
+msgid "Check"
+msgstr ""
+
+#, fuzzy
+msgid "Messages"
+msgstr "Δεν υπάρχουν μηνύματα"
+
+#, fuzzy
+msgid "Hylki's language ({language})"
+msgstr "Γλώσσα συστήματος — {language}"
+
+#, fuzzy
+msgid "Translate into"
+msgstr "Μετάφραση από"
+
+msgid "Offer to translate"
+msgstr ""
+
+msgid ""
+"Messages in another language show a Translate button. Which language a "
+"message is in is worked out on this computer."
+msgstr ""
+
+msgid "Key (if the server asks for one)"
+msgstr ""
+
+#, fuzzy
+msgid "Checking…"
+msgstr "Αναζήτηση…"
+
+msgid "It works: “{sent}” came back as “{back}”."
+msgstr ""
+
 msgid "Rich text"
 msgstr "Εμπλουτισμένο κείμενο"
 
@@ -2892,9 +2985,6 @@ msgstr ""
 msgid "Look up recipients in this directory"
 msgstr ""
 
-msgid "Server"
-msgstr ""
-
 msgid "Encryption"
 msgstr ""
 
@@ -3130,6 +3220,41 @@ msgstr "Κατάργηση εγγραφής…"
 msgid "Opens the list's unsubscribe page in your browser"
 msgstr "Ανοίγει τη σελίδα διαγραφής από τη λίστα στο πρόγραμμα περιήγησής σας"
 
+#, fuzzy
+msgid "Translating…"
+msgstr "Δοκιμή…"
+
+#, fuzzy
+msgid "Could not translate: {why}"
+msgstr "Δεν ήταν δυνατή η προσθήκη ετικέτας στο μήνυμα: {e}"
+
+msgid "Translated from {language} by {service}."
+msgstr ""
+
+#, fuzzy
+msgid "Translated by {service}."
+msgstr "Μετάφραση από"
+
+#, fuzzy
+msgid "Show Original"
+msgstr "Εμφάνιση παραληπτών"
+
+#, fuzzy
+msgid "Showing the original."
+msgstr "Εμφάνιση κατά την αιώρηση"
+
+#, fuzzy
+msgid "Show Translation"
+msgstr "Εμφάνιση συζήτησης"
+
+#, fuzzy
+msgid "This message is in {language}."
+msgstr "Αυτό το μήνυμα προέρχεται από λίστα αλληλογραφίας."
+
+#, fuzzy
+msgid "Translate"
+msgstr "Μετάφραση από"
+
 msgid "Meeting"
 msgstr "Συνάντηση"
 
@@ -3312,6 +3437,13 @@ msgstr "Προβολή ανάγνωσης"
 msgid "Loading…"
 msgstr "Φόρτωση…"
 
+msgid "Encrypted messages are not sent for translation."
+msgstr ""
+
+#, fuzzy
+msgid "The message has not loaded yet."
+msgstr "Αυτό το μήνυμα δεν έχει ελεγχθεί."
+
 msgid "That key is no longer in your keyring."
 msgstr "Αυτό το κλειδί δεν βρίσκεται πλέον στην κλειδοθήκη σας."
 
@@ -3375,6 +3507,10 @@ msgstr "Διαγραφή αυτού του μηνύματος"
 
 msgid "View source"
 msgstr "Προβολή πηγαίου κώδικα"
+
+#, fuzzy
+msgid "Translate this message"
+msgstr "Διαγραφή αυτού του μηνύματος"
 
 msgid "Back to my fonts and colors"
 msgstr "Επιστροφή στις γραμματοσειρές και τα χρώματά μου"

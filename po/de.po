@@ -1188,6 +1188,46 @@ msgstr "gpg hat die Nachricht nicht unterschrieben."
 msgid "gpg did not encrypt the message."
 msgstr "gpg hat die Nachricht nicht verschlüsselt."
 
+msgid "Off"
+msgstr "Aus"
+
+msgid "Choose a translation service in Settings → Translation first."
+msgstr ""
+
+msgid "No key for {service}: add one in Settings → Translation."
+msgstr ""
+
+msgid "There is no text to translate."
+msgstr ""
+
+#, fuzzy
+msgid "This message is too long to send for translation."
+msgstr "Diese Nachricht enthält keine Kalenderdatei zum Öffnen."
+
+#, fuzzy
+msgid "The service's answer could not be read."
+msgstr "Die E-Mail-Adresse der Liste konnte nicht gelesen werden"
+
+#, fuzzy
+msgid "The service could not be reached: {e}"
+msgstr "Die Datei konnte nicht geöffnet werden"
+
+#, fuzzy
+msgid "The service did not accept the key."
+msgstr "Das Verzeichnis hat das Passwort nicht akzeptiert."
+
+msgid "Too many requests: try again in a moment."
+msgstr ""
+
+msgid "This month's allowance is used up."
+msgstr ""
+
+msgid "The service refused the request (error {code})."
+msgstr ""
+
+msgid "Enter the LibreTranslate server's address in Settings → Translation."
+msgstr ""
+
 msgid "Open Hylki"
 msgstr "Hylki öffnen"
 
@@ -1699,9 +1739,6 @@ msgstr "Einstellungen folgen"
 
 msgid "On"
 msgstr "Ein"
-
-msgid "Off"
-msgstr "Aus"
 
 msgid "Choose a Picture"
 msgstr "Wählen Sie ein Bild"
@@ -2555,6 +2592,62 @@ msgstr ""
 msgid "Signed in as {who}. {terms}"
 msgstr "Angemeldet als {who}. {terms}"
 
+#, fuzzy
+msgid "Translation"
+msgstr "Übersetzt von"
+
+msgid ""
+"Translate messages with a service you have an account with, under your own "
+"key. The text of a message you translate is sent to that service, and "
+"nothing is sent until you ask."
+msgstr ""
+
+msgid "Server"
+msgstr "Server"
+
+msgid "Region (empty for a global resource)"
+msgstr ""
+
+#, fuzzy
+msgid "Check the settings"
+msgstr "Einstellungen durchsuchen"
+
+msgid "Translates a greeting, to see that the service answers."
+msgstr ""
+
+msgid "Check"
+msgstr ""
+
+#, fuzzy
+msgid "Messages"
+msgstr "Keine Nachrichten"
+
+#, fuzzy
+msgid "Hylki's language ({language})"
+msgstr "Systemsprache — {language}"
+
+#, fuzzy
+msgid "Translate into"
+msgstr "Übersetzt von"
+
+msgid "Offer to translate"
+msgstr ""
+
+msgid ""
+"Messages in another language show a Translate button. Which language a "
+"message is in is worked out on this computer."
+msgstr ""
+
+msgid "Key (if the server asks for one)"
+msgstr ""
+
+#, fuzzy
+msgid "Checking…"
+msgstr "Wird gesucht…"
+
+msgid "It works: “{sent}” came back as “{back}”."
+msgstr ""
+
 msgid "Rich text"
 msgstr "Formatierter Text"
 
@@ -2892,9 +2985,6 @@ msgstr "Verzeichnis hinzufügen"
 msgid "Look up recipients in this directory"
 msgstr "Empfänger in diesem Verzeichnis suchen"
 
-msgid "Server"
-msgstr "Server"
-
 msgid "Encryption"
 msgstr "Verschlüsselung"
 
@@ -3133,6 +3223,41 @@ msgstr "Abmelden…"
 msgid "Opens the list's unsubscribe page in your browser"
 msgstr "Öffnet die Abmeldeseite der Liste in Ihrem Browser"
 
+#, fuzzy
+msgid "Translating…"
+msgstr "Wird getestet…"
+
+#, fuzzy
+msgid "Could not translate: {why}"
+msgstr "Nachricht konnte nicht mit Tag versehen werden: {e}"
+
+msgid "Translated from {language} by {service}."
+msgstr ""
+
+#, fuzzy
+msgid "Translated by {service}."
+msgstr "Übersetzt von"
+
+#, fuzzy
+msgid "Show Original"
+msgstr "Empfänger anzeigen"
+
+#, fuzzy
+msgid "Showing the original."
+msgstr "Beim Darüberfahren sichtbar"
+
+#, fuzzy
+msgid "Show Translation"
+msgstr "Unterhaltung anzeigen"
+
+#, fuzzy
+msgid "This message is in {language}."
+msgstr "Diese Nachricht stammt aus einer Mailingliste."
+
+#, fuzzy
+msgid "Translate"
+msgstr "Übersetzt von"
+
 msgid "Meeting"
 msgstr "Besprechung"
 
@@ -3315,6 +3440,13 @@ msgstr "Leseansicht"
 msgid "Loading…"
 msgstr "Wird geladen…"
 
+msgid "Encrypted messages are not sent for translation."
+msgstr ""
+
+#, fuzzy
+msgid "The message has not loaded yet."
+msgstr "Diese Nachricht wurde nicht überprüft."
+
 msgid "That key is no longer in your keyring."
 msgstr "Dieser Schlüssel ist nicht mehr in Ihrem Schlüsselring."
 
@@ -3379,6 +3511,10 @@ msgstr "Diese Nachricht löschen"
 
 msgid "View source"
 msgstr "Quelltext anzeigen"
+
+#, fuzzy
+msgid "Translate this message"
+msgstr "Diese Nachricht löschen"
 
 msgid "Back to my fonts and colors"
 msgstr "Eigene Schriftarten und Farben verwenden"
