@@ -21,6 +21,7 @@
     <file>icons/scalable/actions/document-edit-symbolic.svg</file>
     <file>icons/scalable/actions/document-open-recent-symbolic.svg</file>
     <file>icons/scalable/actions/document-open-symbolic.svg</file>
+    <file>icons/scalable/actions/document-save-as-symbolic.svg</file>
     <file>icons/scalable/actions/document-save-symbolic.svg</file>
     <file>icons/scalable/actions/edit-clear-symbolic.svg</file>
     <file>icons/scalable/actions/edit-copy-symbolic.svg</file>
@@ -56,6 +57,7 @@
     <file>icons/scalable/actions/mail-send-symbolic.svg</file>
     <file>icons/scalable/actions/mail-unread-symbolic.svg</file>
     <file>icons/scalable/actions/markdown-symbolic.svg</file>
+    <file>icons/scalable/actions/media-playback-start-symbolic.svg</file>
     <file>icons/scalable/actions/open-book-symbolic.svg</file>
     <file>icons/scalable/actions/open-menu-symbolic.svg</file>
     <file>icons/scalable/actions/package-x-generic-symbolic.svg</file>
@@ -84,6 +86,7 @@
     <file>icons/scalable/actions/view-restore-symbolic.svg</file>
     <file>icons/scalable/actions/view-sort-ascending-symbolic.svg</file>
     <file>icons/scalable/actions/view-sort-descending-symbolic.svg</file>
+    <file>icons/scalable/actions/web-browser-symbolic.svg</file>
     <file>icons/scalable/actions/window-close-symbolic.svg</file>
     <file>icons/scalable/actions/x-office-address-book-symbolic.svg</file>
     <file>icons/scalable/actions/x-office-calendar-symbolic.svg</file>
