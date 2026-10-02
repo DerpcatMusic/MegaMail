@@ -805,7 +805,8 @@ pub fn dropbox_connect(account: &CloudAccount) -> Result<(String, String, String
     }
     let flow = crate::oauth::run_flow(&settings).map_err(|e| format!("Dropbox sign-in failed: {e}"))?;
     let access = crate::oauth::refresh_access_token(&settings, &flow.refresh_token)
-        .map_err(|e| format!("Dropbox sign-in failed: {e}"))?;
+        .map_err(|e| format!("Dropbox sign-in failed: {e}"))?
+        .access_token;
     let (email, name) = dropbox_whoami(&access)?;
     Ok((flow.refresh_token, email, name))
 }
@@ -826,7 +827,8 @@ fn dropbox_access(account: &CloudAccount, refresh: &str) -> Result<String, Strin
         return Err("The Dropbox app key is missing: open the account's settings and enter it.".to_string());
     }
     let tok = crate::oauth::refresh_access_token(&settings, refresh)
-        .map_err(|e| format!("Dropbox refused the sign-in ({e}). Open Settings, Cloud Storage, and connect the account again."))?;
+        .map_err(|e| format!("Dropbox refused the sign-in ({e}). Open Settings, Cloud Storage, and connect the account again."))?
+        .access_token;
     if let Ok(mut g) = DROPBOX_ACCESS.lock() {
         g.get_or_insert_with(HashMap::new).insert(refresh.to_string(), (tok.clone(), Instant::now()));
     }

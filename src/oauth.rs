@@ -295,6 +295,20 @@ struct TokenResponse {
     access_token: String,
     #[serde(default)]
     refresh_token: String,
+    #[serde(default)]
+    expires_in: Option<u64>,
+}
+
+/// What a refresh gives back.
+pub struct Refreshed {
+    pub access_token: String,
+    /// A replacement for the refresh token that was spent, when the provider
+    /// rotates them (Microsoft does, on every refresh). Keeping the old one
+    /// works only until it expires, about 90 days on, and then the account
+    /// has to sign in again.
+    pub refresh_token: Option<String>,
+    /// Seconds the access token is good for, when the provider says.
+    pub expires_in: Option<u64>,
 }
 
 /// Result of a completed sign-in (the refresh token to persist).
@@ -411,7 +425,7 @@ pub fn run_flow(settings: &OAuthSettings) -> Result<FlowResult, String> {
 }
 
 /// Mint a fresh access token from a stored refresh token (blocking).
-pub fn refresh_access_token(settings: &OAuthSettings, refresh_token: &str) -> Result<String, String> {
+pub fn refresh_access_token(settings: &OAuthSettings, refresh_token: &str) -> Result<Refreshed, String> {
     let mut form: Vec<(&str, &str)> = vec![
         ("grant_type", "refresh_token"),
         ("refresh_token", refresh_token),
@@ -428,7 +442,12 @@ pub fn refresh_access_token(settings: &OAuthSettings, refresh_token: &str) -> Re
     if token.access_token.is_empty() {
         return Err("no access token in refresh response".into());
     }
-    Ok(token.access_token)
+    let rotated = Some(token.refresh_token).filter(|t| !t.is_empty() && t != refresh_token);
+    Ok(Refreshed {
+        access_token: token.access_token,
+        refresh_token: rotated,
+        expires_in: token.expires_in,
+    })
 }
 
 /// Listen on a fixed loopback port. An earlier sign-in of ours still

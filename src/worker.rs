@@ -4961,10 +4961,81 @@ async fn fetch_oauth_token(account: &AccountConfig) -> Option<String> {
     // re-adding the account (a fresh sign-in), not swapping creds here.
     let settings = account.oauth_settings.clone()?;
     let refresh = crate::config::load_oauth_refresh(&account.email)?;
-    tokio::task::spawn_blocking(move || crate::oauth::refresh_access_token(&settings, &refresh).ok())
-        .await
-        .ok()
-        .flatten()
+    if let Some(token) = cached_access_token(&refresh) {
+        return Some(token);
+    }
+    let email = account.email.clone();
+    tokio::task::spawn_blocking(move || {
+        let fresh = crate::oauth::refresh_access_token(&settings, &refresh)
+            .map_err(|e| tracing::warn!("OAuth token refresh for {email} failed: {e}"))
+            .ok()?;
+        // The provider spent the old refresh token and handed out another:
+        // that one is what works from now on.
+        let refresh = match fresh.refresh_token {
+            Some(rotated) => match crate::config::store_oauth_refresh(&email, &rotated) {
+                Ok(()) => rotated,
+                Err(e) => {
+                    tracing::warn!("could not keep the new OAuth refresh token for {email}: {e}");
+                    refresh
+                }
+            },
+            None => refresh,
+        };
+        if let Some(secs) = fresh.expires_in {
+            remember_access_token(&refresh, &fresh.access_token, secs);
+        }
+        Some(fresh.access_token)
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// Access tokens minted for natively-added OAuth accounts, by the refresh
+/// token they came from, with when to stop using them. Every IMAP
+/// connection, SMTP send and Graph request asked the provider for a new one
+/// before; a token is good for an hour. Keyed by refresh token, so a fresh
+/// sign-in never picks up the old account's token.
+static ACCESS_TOKENS: std::sync::Mutex<Option<std::collections::HashMap<String, (String, std::time::Instant)>>> =
+    std::sync::Mutex::new(None);
+
+/// How long before its stated expiry a token is no longer handed out, so a
+/// long sync that starts with it does not run past the end.
+const ACCESS_TOKEN_MARGIN: u64 = 5 * 60;
+
+fn cached_access_token(refresh: &str) -> Option<String> {
+    let mut g = ACCESS_TOKENS.lock().ok()?;
+    let map = g.get_or_insert_with(Default::default);
+    match map.get(refresh) {
+        Some((token, until)) if std::time::Instant::now() < *until => Some(token.clone()),
+        Some(_) => {
+            map.remove(refresh);
+            None
+        }
+        None => None,
+    }
+}
+
+fn remember_access_token(refresh: &str, token: &str, expires_in: u64) {
+    let Some(secs) = expires_in.checked_sub(ACCESS_TOKEN_MARGIN).filter(|s| *s > 0) else { return };
+    if let Ok(mut g) = ACCESS_TOKENS.lock() {
+        let until = std::time::Instant::now() + Duration::from_secs(secs);
+        g.get_or_insert_with(Default::default).insert(refresh.to_string(), (token.to_string(), until));
+    }
+}
+
+/// Stop handing out this account's remembered access token: the server
+/// turned it down, so the next sign-in asks the provider for a new one.
+fn forget_access_token(account: &AccountConfig) {
+    if account.goa_id.is_some() || account.oauth_settings.is_none() {
+        return;
+    }
+    let Some(refresh) = crate::config::load_oauth_refresh(&account.email) else { return };
+    if let Ok(mut g) = ACCESS_TOKENS.lock() {
+        if let Some(map) = g.as_mut() {
+            map.remove(&refresh);
+        }
+    }
 }
 
 /// XOAUTH2 SASL authenticator for async-imap.
@@ -5864,7 +5935,10 @@ async fn connect_inner(account: &AccountConfig) -> Result<ImapSession, Box<dyn s
         let r = client.authenticate("XOAUTH2", auth).await.map_err(|(e, _client)| e);
         match &r {
             Ok(_) => tracing::debug!(target: "hylki::imap", "< OK (AUTHENTICATE XOAUTH2)"),
-            Err(e) => tracing::warn!(target: "hylki::imap", "< {e} (AUTHENTICATE XOAUTH2)"),
+            Err(e) => {
+                tracing::warn!(target: "hylki::imap", "< {e} (AUTHENTICATE XOAUTH2)");
+                forget_access_token(account);
+            }
         }
         r?
     } else {

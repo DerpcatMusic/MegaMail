@@ -19,6 +19,11 @@
   message until they were scrolled away and back. A quiet sync now changes
   nothing, a sync with new mail redraws only the rows that changed, and
   conversation rows keep what they show while it is checked again.
+- **Fixed: Microsoft accounts added with Custom OAuth would have to sign
+  in again after about 90 days.** Microsoft replaces the refresh token on
+  every use, and Hylki kept the first one. It now keeps the new one, and
+  reuses each access token until shortly before it expires instead of
+  asking for a new one for every connection.
 - **Updated: Hungarian,** by Laszlo Lang (#320), now complete.
 
 ## 1.42.0 — 2026-10-01
