@@ -3291,6 +3291,20 @@ msgstr "Αυτό το μήνυμα προέρχεται από λίστα αλλ
 msgid "Translate"
 msgstr "Μετάφραση από"
 
+msgid "Starred"
+msgstr "Με αστέρι"
+
+msgid "Received"
+msgstr ""
+
+#, fuzzy
+msgid "Has attachments"
+msgstr "Δεν υπάρχουν συνημμένα"
+
+#, fuzzy
+msgid "Click to open this message"
+msgstr "Απάντηση σε αυτό το μήνυμα"
+
 msgid "Meeting"
 msgstr "Συνάντηση"
 
@@ -4353,9 +4367,6 @@ msgstr ""
 "Ενοποιημένα εισερχόμενα που συνδυάζουν όλους τους λογαριασμούς, στην κορυφή "
 "της πλευρικής στήλης. Εμφανίζονται μόνο με περισσότερους από έναν "
 "λογαριασμούς."
-
-msgid "Starred"
-msgstr "Με αστέρι"
 
 msgid ""
 "Every account's starred folder as one list, opening to each account's own."

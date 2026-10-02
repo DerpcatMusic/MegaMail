@@ -3299,6 +3299,20 @@ msgstr "Ce message provient d'une liste de diffusion."
 msgid "Translate"
 msgstr "Traduit par"
 
+msgid "Starred"
+msgstr "Favoris"
+
+msgid "Received"
+msgstr ""
+
+#, fuzzy
+msgid "Has attachments"
+msgstr "Aucune pièce jointe"
+
+#, fuzzy
+msgid "Click to open this message"
+msgstr "Répondre à ce message"
+
 msgid "Meeting"
 msgstr "Réunion"
 
@@ -4360,9 +4374,6 @@ msgid ""
 msgstr ""
 "Une boîte de réception unifiée regroupant chaque compte, en haut de la barre "
 "latérale. Affichée uniquement si vous avez plusieurs comptes."
-
-msgid "Starred"
-msgstr "Favoris"
 
 msgid ""
 "Every account's starred folder as one list, opening to each account's own."

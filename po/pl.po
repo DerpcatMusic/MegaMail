@@ -3310,6 +3310,20 @@ msgstr "Ta wiadomość pochodzi z listy dyskusyjnej."
 msgid "Translate"
 msgstr "Tłumacze"
 
+msgid "Starred"
+msgstr "Oznaczone gwiazdką"
+
+msgid "Received"
+msgstr ""
+
+#, fuzzy
+msgid "Has attachments"
+msgstr "Brak załączników"
+
+#, fuzzy
+msgid "Click to open this message"
+msgstr "Odpowiedz na tę wiadomość"
+
 msgid "Meeting"
 msgstr "Spotkanie"
 
@@ -4381,9 +4395,6 @@ msgid ""
 msgstr ""
 "Zbiorcza skrzynka odbiorcza łącząca wszystkie konta, u góry panelu bocznego. "
 "Wyświetlana tylko przy więcej niż jednym koncie."
-
-msgid "Starred"
-msgstr "Oznaczone gwiazdką"
 
 msgid ""
 "Every account's starred folder as one list, opening to each account's own."

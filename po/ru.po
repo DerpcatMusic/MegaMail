@@ -3297,6 +3297,20 @@ msgstr "Это сообщение не проверялось."
 msgid "Translate"
 msgstr ""
 
+msgid "Starred"
+msgstr "Отмеченные"
+
+msgid "Received"
+msgstr ""
+
+#, fuzzy
+msgid "Has attachments"
+msgstr "Нет вложений"
+
+#, fuzzy
+msgid "Click to open this message"
+msgstr "Ответить на это сообщение"
+
 #, fuzzy
 msgid "Meeting"
 msgstr "Настройки"
@@ -4352,9 +4366,6 @@ msgid ""
 msgstr ""
 "Общий ящик «Входящие», объединяющий все учётные записи в верхней части "
 "боковой панели. Отображается только при наличии двух и более учётных записей."
-
-msgid "Starred"
-msgstr "Отмеченные"
 
 msgid ""
 "Every account's starred folder as one list, opening to each account's own."

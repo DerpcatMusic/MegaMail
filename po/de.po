@@ -3294,6 +3294,20 @@ msgstr "Diese Nachricht stammt aus einer Mailingliste."
 msgid "Translate"
 msgstr "Übersetzt von"
 
+msgid "Starred"
+msgstr "Markiert"
+
+msgid "Received"
+msgstr ""
+
+#, fuzzy
+msgid "Has attachments"
+msgstr "Keine Anhänge"
+
+#, fuzzy
+msgid "Click to open this message"
+msgstr "Antwort auf diese Nachricht"
+
 msgid "Meeting"
 msgstr "Besprechung"
 
@@ -4356,9 +4370,6 @@ msgid ""
 msgstr ""
 "Ein einheitlicher Posteingang, der jedes Konto in der oberen Seitenleiste "
 "kombiniert und nur mit mehr als einem Konto angezeigt wird."
-
-msgid "Starred"
-msgstr "Markiert"
 
 msgid ""
 "Every account's starred folder as one list, opening to each account's own."

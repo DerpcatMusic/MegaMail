@@ -2964,6 +2964,18 @@ msgstr ""
 msgid "Translate"
 msgstr ""
 
+msgid "Starred"
+msgstr ""
+
+msgid "Received"
+msgstr ""
+
+msgid "Has attachments"
+msgstr ""
+
+msgid "Click to open this message"
+msgstr ""
+
 msgid "Meeting"
 msgstr ""
 
@@ -3903,9 +3915,6 @@ msgstr ""
 msgid ""
 "A unified inbox combining every account, at the top of the sidebar. Only "
 "shown with more than one account."
-msgstr ""
-
-msgid "Starred"
 msgstr ""
 
 msgid ""

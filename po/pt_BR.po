@@ -3288,6 +3288,20 @@ msgstr "Esta mensagem vem de uma lista de discussão."
 msgid "Translate"
 msgstr "Traduzido por"
 
+msgid "Starred"
+msgstr "Com estrela"
+
+msgid "Received"
+msgstr ""
+
+#, fuzzy
+msgid "Has attachments"
+msgstr "Sem anexos"
+
+#, fuzzy
+msgid "Click to open this message"
+msgstr "Responder a esta mensagem"
+
 msgid "Meeting"
 msgstr "Reunião"
 
@@ -4354,9 +4368,6 @@ msgid ""
 msgstr ""
 "Uma caixa de entrada unificada que reúne todas as contas no topo da barra "
 "lateral. Só é mostrada quando existe mais do que uma conta."
-
-msgid "Starred"
-msgstr "Com estrela"
 
 msgid ""
 "Every account's starred folder as one list, opening to each account's own."

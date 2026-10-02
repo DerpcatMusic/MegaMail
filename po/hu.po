@@ -3272,6 +3272,20 @@ msgstr "Ez az üzenet egy levelezőlistáról származik."
 msgid "Translate"
 msgstr "Fordította"
 
+msgid "Starred"
+msgstr "Csillakerülzott"
+
+msgid "Received"
+msgstr ""
+
+#, fuzzy
+msgid "Has attachments"
+msgstr "Nincsenek mellékletek"
+
+#, fuzzy
+msgid "Click to open this message"
+msgstr "Válasz erre az üzenetre"
+
 msgid "Meeting"
 msgstr "Megbeszélés"
 
@@ -4336,9 +4350,6 @@ msgid ""
 msgstr ""
 "Egységes beérkezett nézet, amely minden fiókot egyesít az oldalsáv tetején. "
 "Csak egynél több fiók esetén jelenik meg."
-
-msgid "Starred"
-msgstr "Csillakerülzott"
 
 msgid ""
 "Every account's starred folder as one list, opening to each account's own."

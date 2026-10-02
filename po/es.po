@@ -3261,6 +3261,20 @@ msgstr "Este mensaje procede de una lista de correo."
 msgid "Translate"
 msgstr "Traducido por"
 
+msgid "Starred"
+msgstr "Destacados"
+
+msgid "Received"
+msgstr ""
+
+#, fuzzy
+msgid "Has attachments"
+msgstr "No hay archivos adjuntos"
+
+#, fuzzy
+msgid "Click to open this message"
+msgstr "Responder a este mensaje"
+
 msgid "Meeting"
 msgstr "Reunión"
 
@@ -4317,9 +4331,6 @@ msgid ""
 msgstr ""
 "Una bandeja de entrada unificada que combina todas las cuentas, situada en "
 "la parte superior de la barra lateral. Solo se muestra con más de una cuenta."
-
-msgid "Starred"
-msgstr "Destacados"
 
 msgid ""
 "Every account's starred folder as one list, opening to each account's own."
