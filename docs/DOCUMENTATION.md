@@ -12,6 +12,7 @@ keyboard.
 - [OAuth (Google / Microsoft)](#oauth-google--microsoft)
 - [Cloud attachments (Nextcloud, OneDrive, Dropbox, Seafile)](#cloud-attachments-nextcloud-onedrive-dropbox-seafile)
 - [LDAP directories](#ldap-directories)
+- [Translating messages](#translating-messages)
 - [Writing in Markdown or HTML](#writing-in-markdown-or-html)
 - [OpenPGP (encrypted and signed mail)](#openpgp-encrypted-and-signed-mail)
 - [Send with Hylki from GNOME Files](#send-with-hylki-from-gnome-files)
@@ -366,6 +367,38 @@ Saving checks the connection and says whether the directory answered, or
 why not (a password it refused, a server it could not reach). The Flatpak
 reaches the desktop's Evolution Data Server, which has to be installed on
 the system, as it is with GNOME.
+
+### Translating messages
+
+Settings → Translation sets up a translation service you have an account
+with, under your own key:
+
+| Service | What it needs | Notes |
+| --- | --- | --- |
+| DeepL | an API key | A free key (ending in `:fx`) covers 500,000 characters a month. |
+| Google Cloud Translation | an API key | The Basic (v2) API; the project needs billing turned on, even for the free allowance. |
+| Microsoft Translator | a key, and the resource's region | Leave the region empty for a global resource. |
+| LibreTranslate | the server's address, and a key if it asks for one | Can run on your own computer or network, so messages never leave it. |
+
+**Check the settings** translates a greeting to show that the service
+answers. **Translate into** is Hylki's own language unless another is chosen.
+
+A message is translated from the A文 button in its card's actions. The card
+then shows the translation, with a banner naming the service and the language
+it came from, and **Show Original** switches back. A translation is kept for
+the rest of the session, so opening the message again costs nothing more.
+
+What is sent is the message as Reader View shows it: its text, paragraphs,
+lists, links and quotes, without the sender's styling, images or tracking.
+Long messages go in pieces, and one over about 120,000 characters is not sent.
+Messages that arrived encrypted are never sent.
+
+With **Offer to translate** on, a message in a language other than the one
+translations go into shows a Translate button above it. Which language a
+message is in is worked out on this computer; nothing is sent until the
+button is pressed.
+
+The settings are in `translation.toml`; the key is in the keyring.
 
 ### Where the signature goes
 
@@ -724,3 +757,8 @@ mail index and cached messages in `~/.cache/hylki/`, and account avatars in
 
 Passwords and tokens are never in those files: they go to the system keyring
 through the Secret Service. Decrypted OpenPGP messages are never cached at all.
+
+**Translation** is off until a service is chosen in Settings → Translation.
+After that, a message's text goes to that service only when you press
+Translate on it, and encrypted messages never do. See
+[Translating messages](#translating-messages).

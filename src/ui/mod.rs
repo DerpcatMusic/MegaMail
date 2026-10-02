@@ -5,6 +5,7 @@ pub mod carry_over;
 pub mod chip_flow;
 pub mod fade_label;
 pub mod cloud_accounts;
+pub mod translation_page;
 pub mod compose;
 pub mod contacts_browser;
 pub mod contacts_page;

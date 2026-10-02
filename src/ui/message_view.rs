@@ -189,6 +189,12 @@ pub struct MessageView {
     unsubscribed: std::collections::HashMap<String, i64>,
     /// Cards whose unsubscribe request is under way or has just failed.
     unsub_state: std::collections::HashMap<(u32, u32), UnsubState>,
+    /// Translations (#327), per card: under way, shown, set aside for the
+    /// original, or failed.
+    translations: std::collections::HashMap<(u32, u32), TrState>,
+    /// Which language each card's message is in, for the Translate offer,
+    /// worked out once per body (by its length) rather than on every paint.
+    detected: std::cell::RefCell<std::collections::HashMap<(u32, u32), (usize, Option<String>)>>,
     /// The addresses each account answers to (its own and its aliases), so
     /// an invitation's attendee list can be searched for the reader (#223).
     identities: std::collections::HashMap<u32, Vec<String>>,
@@ -320,6 +326,95 @@ impl MessageView {
             .evaluate_javascript(&js, None, None, None::<&gtk::gio::Cancellable>, |_| {});
     }
 
+
+    /// What a card's translation banner holds right now (#327): where a
+    /// translation stands, or, with the offer switched on, a Translate
+    /// button on a message in another language. Nothing otherwise.
+    fn translate_inner_html(&self, m: &Message, settings: &crate::translate::Settings) -> String {
+        let key = (m.account_id, m.id);
+        let button = |label: &str| {
+            format!(
+                "<button type=\"button\" class=\"vireo-tr-btn\" data-key=\"{}:{}\">{}</button>",
+                key.0,
+                key.1,
+                escape_text(label),
+            )
+        };
+        let line = |text: &str, btn: String| format!("<span class=\"vireo-tr-text\">{}</span>{btn}", escape_text(text));
+        let name = crate::translate::language_name;
+        match self.translations.get(&key) {
+            Some(TrState::Working) => line(&i18n("Translating…"), String::new()),
+            Some(TrState::Failed(why)) => line(
+                &i18n_f("Could not translate: {why}", &[("why", why)]),
+                button(&i18n("Try Again")),
+            ),
+            Some(TrState::Shown(t)) => {
+                let text = match &t.from {
+                    Some(from) => i18n_f(
+                        "Translated from {language} by {service}.",
+                        &[("language", &name(from)), ("service", &t.service.name())],
+                    ),
+                    None => i18n_f("Translated by {service}.", &[("service", &t.service.name())]),
+                };
+                line(&text, button(&i18n("Show Original")))
+            }
+            Some(TrState::Original(_)) => line(&i18n("Showing the original."), button(&i18n("Show Translation"))),
+            None => {
+                if !(settings.enabled() && settings.offer) || self.encrypted(key) || m.body.trim().is_empty() {
+                    return String::new();
+                }
+                match self.detected_language(m) {
+                    Some(lang) if crate::translate::differs(&lang, &settings.target_language()) => line(
+                        &i18n_f("This message is in {language}.", &[("language", &name(&lang))]),
+                        button(&i18n("Translate")),
+                    ),
+                    _ => String::new(),
+                }
+            }
+        }
+    }
+
+    /// Which language a card's message is in, remembered per body.
+    fn detected_language(&self, m: &Message) -> Option<String> {
+        let key = (m.account_id, m.id);
+        if let Some((len, lang)) = self.detected.borrow().get(&key) {
+            if *len == m.body.len() {
+                return lang.clone();
+            }
+        }
+        let lang = crate::translate::detect(&crate::reader::extract(&m.body));
+        self.detected.borrow_mut().insert(key, (m.body.len(), lang.clone()));
+        lang
+    }
+
+    /// Whether a card's message came encrypted: its text is never sent to
+    /// a translation service.
+    fn encrypted(&self, key: (u32, u32)) -> bool {
+        self.member_checks.get(&key).and_then(|c| c.pgp.as_ref()).is_some_and(|p| p.encrypted)
+            || self
+                .thread
+                .iter()
+                .find(|m| (m.account_id, m.id) == key)
+                .is_some_and(|m| crate::models::preview_is_encrypted(&m.preview))
+    }
+
+    /// Redraw one card's translation banner in the live document.
+    fn patch_translate(&self, account_id: u32, id: u32) {
+        if !self.webview_ready || self.current.is_none() {
+            return;
+        }
+        let Some(m) = self.thread.iter().find(|m| m.account_id == account_id && m.id == id) else {
+            return;
+        };
+        let html = self.translate_inner_html(m, &crate::translate::load());
+        let js = format!(
+            "(function(){{var d=document.querySelector('.vireo-tr[data-key=\"{account_id}:{id}\"]');\
+             if(d)d.innerHTML={};}})()",
+            serde_json::to_string(&html).unwrap_or_else(|_| "''".into()),
+        );
+        self.webview
+            .evaluate_javascript(&js, None, None, None::<&gtk::gio::Cancellable>, |_| {});
+    }
 
     /// What a card's invitation banner holds right now (#223): nothing for
     /// an ordinary message; otherwise the meeting — what, when, where and
@@ -798,6 +893,11 @@ pub enum MessageViewInput {
     SetUnsubscribed(std::collections::HashMap<String, i64>),
     /// A card's Unsubscribe button was clicked.
     Unsubscribe { account_id: u32, id: u32 },
+    /// A card's Translate button or its translation banner (#327): start a
+    /// translation, or switch between it and the original.
+    Translate { account_id: u32, id: u32 },
+    /// A translation came back, or failed.
+    Translated { account_id: u32, id: u32, result: Result<crate::translate::Translated, String> },
     /// The app reports where a card's unsubscribe request stands: under way,
     /// failed, or over (`None` — the banner goes back to its resting state,
     /// which says "unsubscribed" once `SetUnsubscribed` carries the list).
@@ -993,6 +1093,19 @@ pub enum UnsubState {
     /// The request is on its way.
     Working,
     /// It failed, and this is why (plain words for the banner).
+    Failed(String),
+}
+
+/// Where a card's translation stands (#327).
+#[derive(Debug, Clone, PartialEq)]
+pub enum TrState {
+    /// The service has been asked.
+    Working,
+    /// The card shows the translation.
+    Shown(crate::translate::Translated),
+    /// Translated, but the card is back on the original.
+    Original(crate::translate::Translated),
+    /// It failed, and this is why.
     Failed(String),
 }
 
@@ -1763,6 +1876,8 @@ impl Component for MessageView {
             member_checks: std::collections::HashMap::new(),
             unsubscribed: std::collections::HashMap::new(),
             unsub_state: std::collections::HashMap::new(),
+            translations: std::collections::HashMap::new(),
+            detected: std::cell::RefCell::new(std::collections::HashMap::new()),
             identities: std::collections::HashMap::new(),
             invite_answers: std::collections::HashMap::new(),
             link_preview: link_preview.clone(),
@@ -2086,6 +2201,8 @@ impl Component for MessageView {
                         account_id,
                         id,
                     }),
+                    // Translate on a card, or its banner's button (#327).
+                    "translate" | "tr" => open_sender.input(MessageViewInput::Translate { account_id, id }),
                     "viewsource" => open_sender.input(MessageViewInput::CardAction {
                         action: RowAction::ViewSource,
                         account_id,
@@ -2175,6 +2292,7 @@ impl Component for MessageView {
                     self.sender_check = None;
                     self.member_checks.clear();
                     self.unsub_state.clear();
+                    self.translations.clear();
                 }
                 self.link_preview.set_visible(false);
                 self.current = shown;
@@ -2435,6 +2553,77 @@ impl Component for MessageView {
                 let keys: Vec<(u32, u32)> = self.thread.iter().map(|m| (m.account_id, m.id)).collect();
                 for (account_id, id) in keys {
                     self.patch_unsub(account_id, id);
+                }
+            }
+            MessageViewInput::Translate { account_id, id } => {
+                let key = (account_id, id);
+                match self.translations.get(&key).cloned() {
+                    Some(TrState::Working) => {}
+                    Some(TrState::Shown(t)) => {
+                        self.translations.insert(key, TrState::Original(t));
+                        self.render();
+                    }
+                    Some(TrState::Original(t)) => {
+                        self.translations.insert(key, TrState::Shown(t));
+                        self.render();
+                    }
+                    None | Some(TrState::Failed(_)) => {
+                        let Some(m) = self.thread.iter().find(|m| (m.account_id, m.id) == key).cloned() else {
+                            return;
+                        };
+                        let settings = crate::translate::load();
+                        let refused = if self.encrypted(key) {
+                            Some(i18n("Encrypted messages are not sent for translation."))
+                        } else if !settings.enabled() {
+                            Some(i18n("Choose a translation service in Settings → Translation first."))
+                        } else if m.body.trim().is_empty() {
+                            Some(i18n("The message has not loaded yet."))
+                        } else {
+                            None
+                        };
+                        if let Some(why) = refused {
+                            self.translations.insert(key, TrState::Failed(why));
+                            self.patch_translate(account_id, id);
+                            return;
+                        }
+                        let cache = crate::translate::cache_key(
+                            account_id,
+                            if m.message_id.is_empty() { &m.body } else { &m.message_id },
+                            &settings,
+                        );
+                        // Already translated this session: no second request.
+                        if let Some(t) = crate::translate::cached(&cache) {
+                            self.translations.insert(key, TrState::Shown(t));
+                            self.render();
+                            return;
+                        }
+                        self.translations.insert(key, TrState::Working);
+                        self.patch_translate(account_id, id);
+                        let input = sender.input_sender().clone();
+                        std::thread::spawn(move || {
+                            let api_key = crate::translate::load_key(settings.service).unwrap_or_default();
+                            let result = crate::translate::translate(&settings, &api_key, &m.body, &cache);
+                            input.emit(MessageViewInput::Translated { account_id, id, result });
+                        });
+                    }
+                }
+            }
+            MessageViewInput::Translated { account_id, id, result } => {
+                let key = (account_id, id);
+                // The reader moved on to another message meanwhile.
+                if self.translations.get(&key) != Some(&TrState::Working) {
+                    return;
+                }
+                match result {
+                    Ok(t) => {
+                        self.translations.insert(key, TrState::Shown(t));
+                        self.render();
+                    }
+                    Err(why) => {
+                        tracing::warn!("translation failed: {why}");
+                        self.translations.insert(key, TrState::Failed(why));
+                        self.patch_translate(account_id, id);
+                    }
                 }
             }
             MessageViewInput::Unsubscribe { account_id, id } => {
@@ -3359,6 +3548,19 @@ impl MessageView {
         self.remote_allowed.hash(&mut h);
         self.reader_style.hash(&mut h);
         self.reader_mode.hash(&mut h);
+        // Translations (#327): which cards show one, and whether cards
+        // offer Translate at all.
+        crate::translate::generation().hash(&mut h);
+        let mut shown: Vec<(u32, u32, usize)> = self
+            .translations
+            .iter()
+            .filter_map(|(k, t)| match t {
+                TrState::Shown(t) => Some((k.0, k.1, t.html.len())),
+                _ => None,
+            })
+            .collect();
+        shown.sort_unstable();
+        shown.hash(&mut h);
         self.card_actions_hover.hash(&mut h);
         self.card_actions_auto.hash(&mut h);
         self.palette_collapse_secs.hash(&mut h);
@@ -3408,6 +3610,22 @@ impl MessageView {
                 .thread
                 .iter()
                 .map(|m| ((m.account_id, m.id), self.invite_inner_html(m)))
+                .collect()
+        });
+        let translation = crate::translate::load();
+        LIVE_TRANSLATE_ON.with(|on| on.set(translation.enabled()));
+        LIVE_TRANSLATE.with(|t| {
+            *t.borrow_mut() = self
+                .thread
+                .iter()
+                .map(|m| {
+                    let key = (m.account_id, m.id);
+                    let shown = match self.translations.get(&key) {
+                        Some(TrState::Shown(t)) => Some(t.html.clone()),
+                        _ => None,
+                    };
+                    (key, (self.translate_inner_html(m, &translation), shown))
+                })
                 .collect()
         });
         Self::conversation_document(
@@ -3466,11 +3684,15 @@ impl MessageView {
         let mark_selection = thread.len() > 1;
         let mut sections = String::new();
         for m in thread {
-            let body = if m.body.trim().is_empty() {
+            // A card showing its translation (#327) shows it as Reader View
+            // does, which is what was sent.
+            let translated =
+                LIVE_TRANSLATE.with(|t| t.borrow().get(&(m.account_id, m.id)).and_then(|(_, html)| html.clone()));
+            let body = if m.body.trim().is_empty() && translated.is_none() {
                 "<div class=\"vireo-loading\">Loading…</div>".to_string()
             } else {
                 message_frame(
-                    &m.body,
+                    translated.as_deref().unwrap_or(&m.body),
                     restrict,
                     dark,
                     (m.account_id, m.id),
@@ -3482,7 +3704,7 @@ impl MessageView {
                         style
                     },
                     accent,
-                    reader,
+                    reader || translated.is_some(),
                     zoom,
                 )
             };
@@ -3498,7 +3720,7 @@ impl MessageView {
                              <span class=\"vireo-date\">{date}</span></span>\
                            {acts_toggle}{acts}\
                          </div>{rcpt}\
-                       </header>{invite}{unsub}{body}{atts}</section>",
+                       </header>{invite}{unsub}{tr}{body}{atts}</section>",
                     aid = m.account_id,
                     id = m.id,
                     // The message's own attachments beneath its body (#213).
@@ -3523,6 +3745,15 @@ impl MessageView {
                     // container is always there, empty (hidden) for a
                     // message from no list, so a verdict arriving after the
                     // paint is patched in without a re-render.
+                    // The translation banner (#327), on the same terms.
+                    tr = LIVE_TRANSLATE.with(|t| {
+                        format!(
+                            "<div class=\"vireo-tr\" data-key=\"{}:{}\">{}</div>",
+                            m.account_id,
+                            m.id,
+                            t.borrow().get(&(m.account_id, m.id)).map(|(b, _)| b.as_str()).unwrap_or("")
+                        )
+                    }),
                     unsub = LIVE_UNSUB.with(|u| {
                         unsub_row_html(
                             (m.account_id, m.id),
@@ -3594,7 +3825,15 @@ impl MessageView {
                             card_action_button(key, "delete", "user-trash-symbolic", &i18n("Delete this message")),
                             card_action_button(key, "spam", "mail-mark-junk-symbolic", &i18n("Mark as Spam")),
                             card_action_button(key, "contact", "contact-new-symbolic", &i18n("Add sender to Contacts")),
-                            card_action_button(key, "viewsource", "code-symbolic", &i18n("View source")),
+                            format!(
+                                "{}{}",
+                                card_action_button(key, "viewsource", "code-symbolic", &i18n("View source")),
+                                if LIVE_TRANSLATE_ON.with(|on| on.get()) {
+                                    card_action_button(key, "translate", "translate-symbolic", &i18n("Translate this message"))
+                                } else {
+                                    String::new()
+                                },
+                            ),
                             // The escape from the reader's own fonts and
                             // colors (#56): only offered while an override
                             // is on, lit while this card shows the sender's.
@@ -3957,6 +4196,14 @@ impl MessageView {
                .vireo-atts:empty{{display:none;}}\
                /* The Unsubscribe banner between a list message's header and\
                   body: a line of text and one button. */\
+               .vireo-tr{{display:flex;align-items:center;gap:10px;padding:8px 14px 9px;\
+                 font-size:0.9em;border-bottom:1px solid rgba(128,128,128,0.25);}}\
+               .vireo-tr:empty{{display:none;}}\
+               .vireo-tr-text{{flex:1 1 auto;min-width:0;opacity:0.8;}}\
+               .vireo-tr-btn{{flex:none;border:1px solid rgba(128,128,128,0.4);border-radius:6px;\
+                 padding:3px 12px;background:rgba(128,128,128,0.1);color:inherit;font:inherit;\
+                 font-size:0.95em;font-weight:600;cursor:pointer;}}\
+               .vireo-tr-btn:hover{{background:rgba(128,128,128,0.22);}}\
                .vireo-unsub{{display:flex;align-items:center;gap:10px;padding:8px 14px 9px;\
                  font-size:0.9em;border-bottom:1px solid rgba(128,128,128,0.25);}}\
                .vireo-unsub:empty{{display:none;}}\
@@ -6065,6 +6312,12 @@ thread_local! {
     /// And each card's invitation banner (#223), the same way again.
     static LIVE_INVITE: std::cell::RefCell<std::collections::HashMap<(u32, u32), String>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Each card's translation banner (#327), and the translation the card
+    /// shows instead of its message, if it shows one. Empty in tests.
+    static LIVE_TRANSLATE: std::cell::RefCell<std::collections::HashMap<(u32, u32), (String, Option<String>)>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Whether a translation service is set up, so cards offer Translate.
+    static LIVE_TRANSLATE_ON: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// That ground as a color the WebView itself can be painted with.
@@ -6355,6 +6608,9 @@ as[k].addEventListener('dblclick',function(e){e.stopPropagation();});}\
 document.addEventListener('click',function(e){var b=e.target&&e.target.closest?e.target.closest('.vireo-unsub-btn'):null;\
 if(!b)return;e.stopPropagation();e.preventDefault();\
 try{window.webkit.messageHandlers.hylki.postMessage('unsub:'+b.dataset.key);}catch(_){}});\
+document.addEventListener('click',function(e){var b=e.target&&e.target.closest?e.target.closest('.vireo-tr-btn'):null;\
+if(!b)return;e.stopPropagation();e.preventDefault();\
+try{window.webkit.messageHandlers.hylki.postMessage('tr:'+b.dataset.key);}catch(_){}});\
 document.addEventListener('click',function(e){var b=e.target&&e.target.closest?e.target.closest('.vireo-inv-btn'):null;\
 if(!b)return;e.stopPropagation();e.preventDefault();\
 try{window.webkit.messageHandlers.hylki.postMessage('invite:'+b.dataset.key+':'+b.dataset.inv);}catch(_){}});\

@@ -89,6 +89,9 @@ css-inline = { version = "0.21.2", default-features = false }
 wayland-client = "0.31"
 wayland-backend = { version = "0.3", features = ["client_system"] }
 wayland-scanner = "0.31"
+# Message translation (#327): which language a message is in is found here,
+# offline, so a Translate offer sends nothing until it is clicked.
+whatlang = "0.18"
 
 [build-dependencies]
 # Compiles resources/veem.gresource.xml (the bundled symbolic icons) into a

@@ -105,6 +105,11 @@ The full list. The [README](../README.md) carries a shorter one.
 - **Meeting invitations:** what the meeting is, when it runs in your own
   clock and time zone, where it is and who organised it, with Accept, Maybe,
   Decline and Add to Calendar.
+- **Translation:** with a DeepL, Google, Microsoft or LibreTranslate key of
+  your own, a message is translated in place, and switched back to the
+  original with a click. A message in another language can offer it; the
+  language is recognised offline. See
+  [Translating messages](DOCUMENTATION.md#translating-messages).
 - **One-click unsubscribe:** a banner on list mail that leaves the list for
   you, by request or by email, without a browser where the list allows it.
 - **OpenPGP:** read encrypted and signed mail, sign and encrypt what you

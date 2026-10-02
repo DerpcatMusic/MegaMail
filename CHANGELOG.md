@@ -24,6 +24,14 @@
   every use, and Hylki kept the first one. It now keeps the new one, and
   reuses each access token until shortly before it expires instead of
   asking for a new one for every connection.
+- **Added: translating messages** (#327, requested by pdf). Settings →
+  Translation takes a DeepL, Google Cloud Translation, Microsoft Translator
+  or LibreTranslate key of your own, and the A文 button in a card's actions
+  shows the message in your language, with a banner naming the service and
+  **Show Original** to switch back. What is sent is the message as Reader
+  View shows it, and encrypted messages are never sent. **Offer to
+  translate** adds a Translate button to messages in another language,
+  recognised on the computer itself, so nothing is sent until it is pressed.
 - **Added: Ctrl+N, Ctrl+R, Ctrl+Shift+R and Ctrl+U** (#328, requested by
   pdf). They start a new message, reply, reply to all and show the
   message's source, the keys other mail apps use for these. They work with

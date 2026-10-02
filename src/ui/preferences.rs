@@ -665,6 +665,7 @@ const SIDE_PAGES: &[(&str, &[SidePage])] = &[
             SidePage { id: "senders", title: i18n_noop("Senders"), icon: "contact-new-symbolic", accounts: true },
             SidePage { id: "openpgp", title: i18n_noop("OpenPGP"), icon: "channel-secure-symbolic", accounts: false },
             SidePage { id: "cloud", title: i18n_noop("Cloud Storage"), icon: "cloud-symbolic", accounts: false },
+            SidePage { id: "translation", title: i18n_noop("Translation"), icon: "translate-symbolic", accounts: false },
             SidePage { id: "directories", title: i18n_noop("LDAP Directories"), icon: "x-office-address-book-symbolic", accounts: false },
         ],
     ),
@@ -1609,6 +1610,10 @@ impl Component for Preferences {
                             // Cloud attachment accounts (#144), its own component.
                             #[name = "cloud_slot"]
                             add_named[Some("cloud")] = &adw::Bin {},
+
+                            // Message translation (#327), built by its own module.
+                            #[name = "translation_slot"]
+                            add_named[Some("translation")] = &adw::Bin {},
 
                             // LDAP directories (#307), their own component.
                             #[name = "directories_slot"]
@@ -4006,6 +4011,7 @@ impl Component for Preferences {
                 crate::ui::cloud_accounts::CloudAccountsOutput::EditorOpen(open) => PrefInput::CloudEditorOpen(open),
             });
         widgets.cloud_slot.set_child(Some(cloud.widget()));
+        widgets.translation_slot.set_child(Some(&crate::ui::translation_page::build()));
         model.cloud = Some(cloud);
         let directories = crate::ui::directories::Directories::builder()
             .launch(())
