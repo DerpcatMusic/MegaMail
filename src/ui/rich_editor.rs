@@ -716,6 +716,14 @@ impl RichEditor {
         exec(&self.webview, js);
     }
 
+    /// Run a snippet and hand back what it returns, as text ("" when it
+    /// failed).
+    pub fn eval(&self, js: &str, cb: impl FnOnce(String) + 'static) {
+        self.webview.evaluate_javascript(js, None, None, gtk::gio::Cancellable::NONE, move |res| {
+            cb(res.map(|v| v.to_str().to_string()).unwrap_or_default())
+        });
+    }
+
     /// Whether keyboard focus is currently inside the editor's WebView — the
     /// guard a host's paste shortcut uses so it never hijacks Ctrl+V aimed at
     /// an address entry.

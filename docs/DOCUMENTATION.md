@@ -398,6 +398,15 @@ translations go into shows a Translate button above it. Which language a
 message is in is worked out on this computer; nothing is sent until the
 button is pressed.
 
+In the composer, the A文 button beside the format chooser translates what
+you are writing: the selection if there is one, otherwise everything you
+wrote above the quote and signature, which are left as they are. It offers
+the language of the message you are answering first, recognised offline,
+then the one you used last, then every other. The translation replaces your
+text as one edit, so Ctrl+Z gives back what you wrote. It works in rich
+text, plain text, Markdown and HTML. A message set to be encrypted is never
+sent for translation.
+
 The settings are in `translation.toml`; the key is in the keyring.
 
 ### Where the signature goes

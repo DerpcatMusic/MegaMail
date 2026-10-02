@@ -108,7 +108,8 @@ The full list. The [README](../README.md) carries a shorter one.
 - **Translation:** with a DeepL, Google, Microsoft or LibreTranslate key of
   your own, a message is translated in place, and switched back to the
   original with a click. A message in another language can offer it; the
-  language is recognised offline. See
+  language is recognised offline. In the composer, what you write goes into
+  the language of the message you are answering. See
   [Translating messages](DOCUMENTATION.md#translating-messages).
 - **One-click unsubscribe:** a banner on list mail that leaves the list for
   you, by request or by email, without a browser where the list allows it.

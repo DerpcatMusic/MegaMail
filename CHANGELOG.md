@@ -32,6 +32,10 @@
   View shows it, and encrypted messages are never sent. **Offer to
   translate** adds a Translate button to messages in another language,
   recognised on the computer itself, so nothing is sent until it is pressed.
+  In the composer, the same button beside the format chooser translates what
+  you wrote, or the selection, leaving the quote and signature alone. It
+  offers the language of the message you are answering first, and Ctrl+Z
+  undoes it.
 - **Added: Ctrl+N, Ctrl+R, Ctrl+Shift+R and Ctrl+U** (#328, requested by
   pdf). They start a new message, reply, reply to all and show the
   message's source, the keys other mail apps use for these. They work with

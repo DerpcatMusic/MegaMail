@@ -415,31 +415,9 @@ pub fn translate(settings: &Settings, key: &str, body: &str, cache: &str) -> Res
     if total > LIMIT {
         return Err(i18n("This message is too long to send for translation."));
     }
-    let chunks = chunk(&blocks);
     let target = settings.target_language();
-    let to = service_code(service, &target);
-    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(45)).build();
-    let mut out = String::new();
-    let mut from = None;
-    for batch in batches(&chunks, service) {
-        let (texts, detected) = match service {
-            Service::DeepL => deepl(&agent, key, &batch, &to)?,
-            Service::Google => google(&agent, key, &batch, &to)?,
-            Service::Microsoft => microsoft(&agent, key, &settings.region, &batch, &to)?,
-            Service::Libre => libre(&agent, key, &settings.url, &batch, &to)?,
-            Service::Off => unreachable!(),
-        };
-        if texts.len() != batch.len() {
-            return Err(i18n("The service's answer could not be read."));
-        }
-        if from.is_none() {
-            from = detected.map(|d| from_service_code(&d));
-        }
-        for t in texts {
-            out.push_str(&t);
-        }
-    }
-    let done = Translated { html: out, from, service, to: target };
+    let (texts, from) = run(settings, key, &chunk(&blocks), &target)?;
+    let done = Translated { html: texts.concat(), from, service, to: target };
     if let Ok(mut g) = DONE.lock() {
         let map = g.get_or_insert_with(HashMap::new);
         if map.len() > 200 {
@@ -448,6 +426,111 @@ pub fn translate(settings: &Settings, key: &str, body: &str, cache: &str) -> Res
         map.insert(cache.to_string(), done.clone());
     }
     Ok(done)
+}
+
+/// Send `pieces` of HTML to the configured service, to be put into
+/// `target`: one translation per piece, in order, and the language the
+/// service found the first in.
+fn run(settings: &Settings, key: &str, pieces: &[String], target: &str) -> Result<(Vec<String>, Option<String>), String> {
+    let service = settings.service;
+    let to = service_code(service, target);
+    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(45)).build();
+    let mut out = Vec::with_capacity(pieces.len());
+    let mut from = None;
+    for batch in batches(pieces, service) {
+        let (texts, detected) = match service {
+            Service::DeepL => deepl(&agent, key, &batch, &to)?,
+            Service::Google => google(&agent, key, &batch, &to)?,
+            Service::Microsoft => microsoft(&agent, key, &settings.region, &batch, &to)?,
+            Service::Libre => libre(&agent, key, &settings.url, &batch, &to)?,
+            Service::Off => return Err(i18n("Choose a translation service in Settings → Translation first.")),
+        };
+        if texts.len() != batch.len() {
+            return Err(i18n("The service's answer could not be read."));
+        }
+        if from.is_none() {
+            from = detected.map(|d| from_service_code(&d));
+        }
+        out.extend(texts);
+    }
+    Ok((out, from))
+}
+
+/// Translate what is being written (blocking): pieces of the composer's
+/// own HTML, each kept whole so it goes back where it came from, into
+/// `target`. Nothing is cached; the text is the user's, and changes.
+pub fn translate_parts(settings: &Settings, key: &str, parts: &[String], target: &str) -> Result<Vec<String>, String> {
+    if !settings.enabled() {
+        return Err(i18n("Choose a translation service in Settings → Translation first."));
+    }
+    if key.is_empty() && settings.service != Service::Libre {
+        return Err(i18n_f(
+            "No key for {service}: add one in Settings → Translation.",
+            &[("service", &settings.service.name())],
+        ));
+    }
+    if parts.iter().map(String::len).sum::<usize>() > LIMIT {
+        return Err(i18n("This is too long to send for translation."));
+    }
+    let (texts, _) = run(settings, key, parts, target)?;
+    remember_compose_target(target);
+    Ok(texts)
+}
+
+/// The language the composer last translated into this session, offered
+/// first the next time.
+static COMPOSE_TARGET: Mutex<String> = Mutex::new(String::new());
+
+pub fn last_compose_target() -> Option<String> {
+    COMPOSE_TARGET.lock().ok().map(|g| g.clone()).filter(|t| !t.is_empty())
+}
+
+fn remember_compose_target(target: &str) {
+    if let Ok(mut g) = COMPOSE_TARGET.lock() {
+        *g = target.to_string();
+    }
+}
+
+/// Plain text as paragraphs of HTML, for a service asked to keep markup:
+/// a blank line starts a paragraph, a line break stays a line break.
+pub fn text_to_parts(text: &str) -> Vec<String> {
+    text.split("\n\n")
+        .map(|p| p.trim_matches('\n'))
+        .filter(|p| !p.trim().is_empty())
+        .map(|p| {
+            let esc = p.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+            format!("<p>{}</p>", esc.replace('\n', "<br>"))
+        })
+        .collect()
+}
+
+/// [`text_to_parts`] the other way: the paragraphs that came back, as text.
+pub fn parts_to_text(parts: &[String]) -> String {
+    parts
+        .iter()
+        .map(|p| {
+            let p = p.replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n");
+            let mut out = String::with_capacity(p.len());
+            let mut in_tag = false;
+            for c in p.chars() {
+                match c {
+                    '<' => in_tag = true,
+                    '>' if in_tag => in_tag = false,
+                    _ if !in_tag => out.push(c),
+                    _ => {}
+                }
+            }
+            out.replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&quot;", "\"")
+                .replace("&#39;", "'")
+                .replace("&nbsp;", " ")
+                .replace("&amp;", "&")
+                .trim()
+                .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 /// The Reader View of a body as top-level blocks. Plain text, which the
@@ -692,6 +775,14 @@ mod tests {
         assert_eq!(detect("<p>OK</p>"), None, "too little to go on");
         assert!(differs("de", "en"));
         assert!(!differs("pt", "pt-BR"));
+    }
+
+    #[test]
+    fn written_text_goes_as_paragraphs_and_comes_back_as_text() {
+        let parts = text_to_parts("Hi Anna,\nthanks <3\n\n**Ben**\n");
+        assert_eq!(parts, ["<p>Hi Anna,<br>thanks &lt;3</p>", "<p>**Ben**</p>"]);
+        let back = parts_to_text(&["<p>Hallo Anna,<br/>danke &lt;3</p>".to_string(), "<p>**Ben**</p>".to_string()]);
+        assert_eq!(back, "Hallo Anna,\ndanke <3\n\n**Ben**");
     }
 
     #[test]
