@@ -1076,10 +1076,9 @@ pub(crate) struct PrivacyFile {
     /// Whether the reading pane shows a conversation newest-message-first.
     #[serde(default)]
     pub(crate) thread_newest_first: bool,
-    /// Whether a conversation's read messages open folded to their header
-    /// and a preview (#326).
+    /// Which messages of a conversation open folded to one line (#326).
     #[serde(default)]
-    pub(crate) collapse_read: bool,
+    pub(crate) fold_messages: FoldMessages,
     /// Whether the reader always shows the recipients line under the sender.
     #[serde(default)]
     pub(crate) always_show_recipients: bool,
@@ -1507,7 +1506,7 @@ impl Default for PrivacyFile {
             thread_expansion: default_thread_expansion(),
             thread_row_newest: false,
             thread_newest_first: false,
-            collapse_read: false,
+            fold_messages: FoldMessages::Never,
             always_show_recipients: false,
             pgp_labels: false,
             single_message_card: default_single_message_card(),
@@ -2504,6 +2503,20 @@ impl ComposeFormat {
     pub fn is_source(self) -> bool {
         matches!(self, ComposeFormat::Markdown | ComposeFormat::Html)
     }
+}
+
+/// Which messages of a conversation open folded to one line (#326). The
+/// newest always opens; a folded one opens with a click.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FoldMessages {
+    /// Every message opens.
+    #[default]
+    Never,
+    /// The messages already read.
+    Read,
+    /// Every message but the newest, read or not.
+    AllButNewest,
 }
 
 /// Where the split reply opens in the reading pane (#212): above the

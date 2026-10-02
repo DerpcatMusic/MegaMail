@@ -811,8 +811,8 @@ pub struct AppModel {
     threads_expanded: bool,
     /// Reading pane shows conversations newest-message-first.
     thread_newest_first: bool,
-    /// A conversation's read messages open folded (#326).
-    collapse_read: bool,
+    /// Which messages of a conversation open folded (#326).
+    fold_messages: config::FoldMessages,
     /// Reader always shows the recipients line under the sender.
     always_show_recipients: bool,
     /// The OpenPGP chip says its verdict in words (#300).
@@ -3230,7 +3230,7 @@ impl SimpleComponent for AppModel {
             thread_key: None,
             threads_expanded: prefs.threads_expanded,
             thread_newest_first: prefs.thread_newest_first,
-            collapse_read: prefs.collapse_read,
+            fold_messages: prefs.fold_messages,
             always_show_recipients: prefs.always_show_recipients,
             pgp_labels: prefs.pgp_labels,
             show_unified_pref: prefs.show_unified,
@@ -3472,7 +3472,7 @@ impl SimpleComponent for AppModel {
         model
             .message_view
             .emit(MessageViewInput::SetSingleMessageCard(model.single_message_card));
-        model.message_view.emit(MessageViewInput::SetCollapseRead(model.collapse_read));
+        model.message_view.emit(MessageViewInput::SetFoldMessages(model.fold_messages));
         model.message_view.emit(MessageViewInput::SetReaderMode(model.effective_reader_mode()));
         model.message_view.emit(MessageViewInput::SetZoomDefault(model.zoom_default));
         model.message_view.emit(MessageViewInput::SetZoom(model.zoom));
@@ -7603,9 +7603,9 @@ impl SimpleComponent for AppModel {
                 }
             }
 
-            AppMsg::Pref(PrefOutput::SetCollapseRead(on)) => {
-                if pref!(self.collapse_read = on) {
-                    self.message_view.emit(MessageViewInput::SetCollapseRead(on));
+            AppMsg::Pref(PrefOutput::SetFoldMessages(fold)) => {
+                if pref!(self.fold_messages = fold) {
+                    self.message_view.emit(MessageViewInput::SetFoldMessages(fold));
                 }
             }
 
@@ -10849,7 +10849,7 @@ impl AppModel {
             thread_expansion: self.thread_expansion,
             thread_row_newest: self.thread_row_newest,
             thread_newest_first: self.thread_newest_first,
-            collapse_read: self.collapse_read,
+            fold_messages: self.fold_messages,
             always_show_recipients: self.always_show_recipients,
             pgp_labels: self.pgp_labels,
             single_message_card: self.single_message_card,
@@ -13950,6 +13950,22 @@ impl AppModel {
                 let _ = s.send(AppMsg::SetRemoteContent { account_id, id, show: !showing });
             })
             .icon(format!("{icon}-symbolic"))]);
+        }
+        // Expand All and Collapse All, for the whole conversation (#326).
+        if let Some((any_folded, any_open, reader)) = hit.folds.clone() {
+            let open = reader.clone();
+            sections.push(vec![
+                MenuEntry::new(i18n("Expand All Messages"), move || {
+                    open.emit(crate::ui::message_view::MessageViewInput::FoldAll(false));
+                })
+                .icon("pan-down-symbolic")
+                .enabled(any_folded),
+                MenuEntry::new(i18n("Collapse All Messages"), move || {
+                    reader.emit(crate::ui::message_view::MessageViewInput::FoldAll(true));
+                })
+                .icon("pan-up-symbolic")
+                .enabled(any_open),
+            ]);
         }
         let mut last = Vec::new();
         if let Some(t) = hit.translate.clone() {
@@ -17540,7 +17556,7 @@ impl AppModel {
             threading: self.threading,
             threads_expanded: self.threads_expanded,
             thread_newest_first: self.thread_newest_first,
-            collapse_read: self.collapse_read,
+            fold_messages: self.fold_messages,
             always_show_recipients: self.always_show_recipients,
             pgp_labels: self.pgp_labels,
             single_message_card: self.single_message_card,

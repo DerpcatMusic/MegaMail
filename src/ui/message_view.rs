@@ -189,8 +189,8 @@ pub struct MessageView {
     unsubscribed: std::collections::HashMap<String, i64>,
     /// Cards whose unsubscribe request is under way or has just failed.
     unsub_state: std::collections::HashMap<(u32, u32), UnsubState>,
-    /// Fold a conversation's read messages to their header (#326).
-    collapse_read: bool,
+    /// Which messages of a conversation open folded (#326).
+    fold_messages: crate::config::FoldMessages,
     /// The conversation's messages filed in Sent, for the folded bar.
     sent: std::collections::HashSet<(u32, u32)>,
     /// Cards opened or folded by hand: these win over the default for as
@@ -382,8 +382,8 @@ impl MessageView {
     }
 
     /// The cards of the conversation on screen that show folded (#326):
-    /// those folded by hand, and, with the setting on, every read message
-    /// but the newest. Opening a conversation makes its first message the
+    /// those folded by hand, and the ones Settings folds: the read
+    /// messages, or every message, but the newest either way. Opening a conversation makes its first message the
     /// current one, so "the one opened" would have kept the oldest open; a
     /// message stepped to inside the conversation is opened by hand instead
     /// (see `Show`).
@@ -397,7 +397,14 @@ impl MessageView {
             .map(|m| (m.account_id, m.id, m.unread))
             .filter(|&(aid, id, unread)| match self.folds.get(&(aid, id)) {
                 Some(folded) => *folded,
-                None => self.collapse_read && !unread && Some((aid, id)) != newest,
+                None => {
+                    Some((aid, id)) != newest
+                        && match self.fold_messages {
+                            crate::config::FoldMessages::Never => false,
+                            crate::config::FoldMessages::Read => !unread,
+                            crate::config::FoldMessages::AllButNewest => true,
+                        }
+                }
             })
             .map(|(aid, id, _)| (aid, id))
             .collect()
@@ -435,7 +442,7 @@ impl MessageView {
         };
         format!(
             "<div class=\"vireo-fbar\" data-key=\"{}:{}\" title=\"{}\">\
-             <span class=\"vireo-fbar-from\">{}</span>{star}{place}{clip}\
+             {FOLD_BAR_FACE}<span class=\"vireo-fbar-from\">{}</span>{star}{place}{clip}\
              <span class=\"vireo-fbar-date\">{}</span></div>",
             key.0,
             key.1,
@@ -887,10 +894,13 @@ pub enum MessageViewInput {
     SetAlwaysShowRecipients(bool),
     /// The "single messages as cards" preference changed (re-render follows).
     SetSingleMessageCard(bool),
-    /// Fold a conversation's read messages by default (#326).
-    SetCollapseRead(bool),
+    /// Which messages of a conversation open folded (#326).
+    SetFoldMessages(crate::config::FoldMessages),
     /// A card's header folded or opened it (#326).
     Folded { account_id: u32, id: u32, folded: bool },
+    /// Expand All (false) or Collapse All (true) from the reading pane's
+    /// menu (#326).
+    FoldAll(bool),
     /// The OpenPGP chip's words on or off (#300), applied to the open
     /// document at once.
     SetPgpLabels(bool),
@@ -1254,6 +1264,10 @@ impl MessageView {
 /// A card's Unsubscribe banner: the container, always emitted so a verdict
 /// arriving later can be patched into it (empty, it is hidden by the
 /// stylesheet). `inner` is what [`MessageView::unsub_inner_html`] rendered.
+/// Where a folded card's bar takes the sender's circle, which the document
+/// builder fills in with the one the card's header wears.
+const FOLD_BAR_FACE: &str = "\u{1}face\u{1}";
+
 /// The day on a folded card's bar, short as Proton has it: the time for
 /// today, the day and month this year, the year too before that.
 fn fold_bar_date(m: &Message) -> String {
@@ -1989,7 +2003,7 @@ impl Component for MessageView {
             member_checks: std::collections::HashMap::new(),
             unsubscribed: std::collections::HashMap::new(),
             unsub_state: std::collections::HashMap::new(),
-            collapse_read: false,
+            fold_messages: crate::config::FoldMessages::Never,
             sent: std::collections::HashSet::new(),
             folds: std::collections::HashMap::new(),
             translations: std::collections::HashMap::new(),
@@ -2083,6 +2097,7 @@ impl Component for MessageView {
                     image: hit.context_is_image().then(|| hit.image_uri()).flatten().map(|u| u.to_string()),
                     selection: None,
                     translate: None,
+                    folds: None,
                 };
                 let selected = hit.context_is_selection();
                 let (x, y) = point.get();
@@ -2556,15 +2571,21 @@ impl Component for MessageView {
             MessageViewInput::SetAlwaysShowRecipients(on) => {
                 self.always_show_recipients = on;
             }
-            MessageViewInput::SetCollapseRead(on) => {
-                if self.collapse_read != on {
-                    self.collapse_read = on;
+            MessageViewInput::SetFoldMessages(fold) => {
+                if self.fold_messages != fold {
+                    self.fold_messages = fold;
                     self.folds.clear();
                     self.render();
                 }
             }
             MessageViewInput::Folded { account_id, id, folded } => {
                 self.folds.insert((account_id, id), folded);
+            }
+            MessageViewInput::FoldAll(folded) => {
+                for m in &self.thread {
+                    self.folds.insert((m.account_id, m.id), folded);
+                }
+                self.patch_folds();
             }
             MessageViewInput::SetSingleMessageCard(on) => {
                 self.single_message_card = on;
@@ -3124,6 +3145,10 @@ impl Component for MessageView {
                         _ => i18n("Translate"),
                     };
                     hit.translate = Some(TranslateEntry { label, reader: sender.input_sender().clone() });
+                }
+                if self.thread.len() > 1 {
+                    let folded = self.folded_cards();
+                    hit.folds = Some((!folded.is_empty(), folded.len() < self.thread.len(), sender.input_sender().clone()));
                 }
                 let point = self.webview.root().and_then(|root| {
                     let root: gtk::Widget = root.upcast();
@@ -3711,7 +3736,7 @@ impl MessageView {
         // Translations (#327): which cards show one, and whether cards
         // offer Translate at all.
         crate::translate::generation().hash(&mut h);
-        self.collapse_read.hash(&mut h);
+        self.fold_messages.hash(&mut h);
         let mut shown: Vec<(u32, u32, usize)> = self
             .translations
             .iter()
@@ -3878,6 +3903,73 @@ impl MessageView {
                 )
             };
             if conversation {
+                let ava_html = {
+                    // One of your own mailboxes wrote this card (#189):
+                    // show what its account chose — the sidebar's picture,
+                    // or its emoji on the account color — so your own
+                    // replies in a conversation wear the face you gave
+                    // that mailbox rather than plain initials.
+                    let own = crate::avatar::own_face(&m.from_addr).and_then(|face| {
+                        // The account's own Gravatar leads when it asked
+                        // for one and the address has one; the picture and
+                        // the emoji are what it falls back to.
+                        let gravatar = face
+                            .gravatar
+                            .then(|| crate::avatar::own_gravatar_data_uri(&m.from_addr, 26))
+                            .flatten();
+                        if let Some(uri) = gravatar {
+                            return Some(format!("<img class=\"vireo-ava\" src=\"{uri}\" alt=\"\">"));
+                        }
+                        match (&face.picture, &face.emoji) {
+                            (Some(path), _) => crate::ui::initials::picture_data_uri(path, 26)
+                                .map(|uri| format!("<img class=\"vireo-ava\" src=\"{uri}\" alt=\"\">")),
+                            (None, Some(emoji)) => {
+                                let png = gtk::gdk::RGBA::parse(&face.color)
+                                    .ok()
+                                    .and_then(|bg| crate::ui::initials::png_data_uri(emoji, bg, 26));
+                                Some(match png {
+                                    Some(uri) => {
+                                        format!("<img class=\"vireo-ava\" src=\"{uri}\" alt=\"\">")
+                                    }
+                                    None => format!(
+                                        "<span class=\"vireo-ava\" style=\"background:{bg}\">{glyph}</span>",
+                                        bg = attr_escape(&face.color),
+                                        glyph = escape_text(emoji),
+                                    ),
+                                })
+                            }
+                            (None, None) => None,
+                        }
+                    });
+                    own.unwrap_or_else(|| {
+                        let initial = m
+                            .from_name
+                            .trim()
+                            .chars()
+                            .next()
+                            .or_else(|| m.from_addr.trim().chars().next())
+                            .map(|c| c.to_uppercase().to_string())
+                            .unwrap_or_else(|| "?".to_string());
+                        let hue = m
+                            .from_addr
+                            .to_ascii_lowercase()
+                            .bytes()
+                            .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32))
+                            % 360;
+                        let l = if dark { 38 } else { 45 };
+                        // Drawn ink-centred by ui::initials and embedded as
+                        // a PNG (the same tint); the markup span stands in
+                        // only before a window exists to render with.
+                        let bg = crate::ui::initials::hsl(f64::from(hue), 0.52, f64::from(l) / 100.0);
+                        match crate::ui::initials::png_data_uri(&initial, bg, 26) {
+                            Some(uri) => format!("<img class=\"vireo-ava\" src=\"{uri}\" alt=\"\">"),
+                            None => format!(
+                                "<span class=\"vireo-ava\" style=\"background:hsl({hue},52%,{l}%)\">{}</span>",
+                                escape_text(&initial),
+                            ),
+                        }
+                    })
+                };
                 sections.push_str(&format!(
                     "<section class=\"vireo-msg{sel}{unread_cls}{folded_cls}\" data-key=\"{aid}:{id}\">{fbar}\
                        <header class=\"vireo-msg-hdr\" data-key=\"{aid}:{id}\" \
@@ -4064,7 +4156,12 @@ impl MessageView {
                         ""
                     },
                     // What a folded card shows instead of all of it (#326).
-                    fbar = LIVE_FOLDBAR.with(|b| b.borrow().get(&(m.account_id, m.id)).cloned().unwrap_or_default()),
+                    fbar = LIVE_FOLDBAR.with(|b| {
+                        b.borrow()
+                            .get(&(m.account_id, m.id))
+                            .map(|bar| bar.replace(FOLD_BAR_FACE, &ava_html))
+                            .unwrap_or_default()
+                    }),
                     // `escape_text`, not `attr_escape`: these land in element
                     // text content, where `<` and `>` are structural. A `From:`
                     // display name is attacker-controlled (and RFC 2047-decoded,
@@ -4095,73 +4192,7 @@ impl MessageView {
                     // arrives as an embedded PNG, never a path the document
                     // could reach for, and the initial is escaped like every
                     // other header field.
-                    ava = {
-                        // One of your own mailboxes wrote this card (#189):
-                        // show what its account chose — the sidebar's picture,
-                        // or its emoji on the account color — so your own
-                        // replies in a conversation wear the face you gave
-                        // that mailbox rather than plain initials.
-                        let own = crate::avatar::own_face(&m.from_addr).and_then(|face| {
-                            // The account's own Gravatar leads when it asked
-                            // for one and the address has one; the picture and
-                            // the emoji are what it falls back to.
-                            let gravatar = face
-                                .gravatar
-                                .then(|| crate::avatar::own_gravatar_data_uri(&m.from_addr, 26))
-                                .flatten();
-                            if let Some(uri) = gravatar {
-                                return Some(format!("<img class=\"vireo-ava\" src=\"{uri}\" alt=\"\">"));
-                            }
-                            match (&face.picture, &face.emoji) {
-                                (Some(path), _) => crate::ui::initials::picture_data_uri(path, 26)
-                                    .map(|uri| format!("<img class=\"vireo-ava\" src=\"{uri}\" alt=\"\">")),
-                                (None, Some(emoji)) => {
-                                    let png = gtk::gdk::RGBA::parse(&face.color)
-                                        .ok()
-                                        .and_then(|bg| crate::ui::initials::png_data_uri(emoji, bg, 26));
-                                    Some(match png {
-                                        Some(uri) => {
-                                            format!("<img class=\"vireo-ava\" src=\"{uri}\" alt=\"\">")
-                                        }
-                                        None => format!(
-                                            "<span class=\"vireo-ava\" style=\"background:{bg}\">{glyph}</span>",
-                                            bg = attr_escape(&face.color),
-                                            glyph = escape_text(emoji),
-                                        ),
-                                    })
-                                }
-                                (None, None) => None,
-                            }
-                        });
-                        own.unwrap_or_else(|| {
-                            let initial = m
-                                .from_name
-                                .trim()
-                                .chars()
-                                .next()
-                                .or_else(|| m.from_addr.trim().chars().next())
-                                .map(|c| c.to_uppercase().to_string())
-                                .unwrap_or_else(|| "?".to_string());
-                            let hue = m
-                                .from_addr
-                                .to_ascii_lowercase()
-                                .bytes()
-                                .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32))
-                                % 360;
-                            let l = if dark { 38 } else { 45 };
-                            // Drawn ink-centred by ui::initials and embedded as
-                            // a PNG (the same tint); the markup span stands in
-                            // only before a window exists to render with.
-                            let bg = crate::ui::initials::hsl(f64::from(hue), 0.52, f64::from(l) / 100.0);
-                            match crate::ui::initials::png_data_uri(&initial, bg, 26) {
-                                Some(uri) => format!("<img class=\"vireo-ava\" src=\"{uri}\" alt=\"\">"),
-                                None => format!(
-                                    "<span class=\"vireo-ava\" style=\"background:hsl({hue},52%,{l}%)\">{}</span>",
-                                    escape_text(&initial),
-                                ),
-                            }
-                        })
-                    },
+                    ava = ava_html.clone(),
                     addr = if m.from_addr.is_empty() {
                         String::new()
                     } else {
@@ -5473,6 +5504,9 @@ pub struct MenuHit {
     /// The message's translation entry (#327), when a service is set up:
     /// what it says, and the reader to tell.
     pub translate: Option<TranslateEntry>,
+    /// Expand All and Collapse All (#326), in a conversation: whether any
+    /// message is folded, whether any is open, and the reader to tell.
+    pub folds: Option<(bool, bool, relm4::Sender<MessageViewInput>)>,
 }
 
 /// Translate, Show Original or Show Translation in a message's menu, sent

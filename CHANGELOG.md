@@ -43,11 +43,12 @@
   you are writing, where Ctrl+U underlines.
 - **Added: folding messages in a conversation** (#326, requested by pdf).
   A click on a message's header folds it to one line, as Proton Mail shows
-  them: the sender, then whether it is starred, sent or received and has
-  files, and the day. A click on the line opens it again. **Settings → Conversations → Collapse
-  read messages** opens conversations with every read message folded but the
-  newest, so new replies are what shows. Unread messages stay open, and
-  printing shows every message in full.
+  them: the sender's circle and name, then whether it is starred, sent or
+  received and has files, and the day. A click on the line opens it again.
+  **Settings → Conversations → Fold earlier messages** opens conversations
+  with the read messages, or all of them, folded but the newest, and the
+  reading pane's right-click menu has Expand All Messages and Collapse All
+  Messages. Printing shows every message in full.
 - **Fixed: quoted text that stayed unfolded, or could not be folded again**
   (#326, reported by pdf). The reader now finds the quote inside a message
   wrapped in one outer block, as Outlook and many templates write it, in

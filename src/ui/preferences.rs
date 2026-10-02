@@ -35,8 +35,8 @@ pub struct PrefInit {
     pub threads_expanded: bool,
     /// Reading pane shows conversations newest-message-first.
     pub thread_newest_first: bool,
-    /// A conversation's read messages open folded (#326).
-    pub collapse_read: bool,
+    /// Which messages of a conversation open folded (#326).
+    pub fold_messages: crate::config::FoldMessages,
     /// Reader always shows the recipients line under the sender.
     pub always_show_recipients: bool,
     /// The OpenPGP chip says its verdict in words (#300).
@@ -888,6 +888,7 @@ pub enum PrefInput {
     ChangeMessageTheme(u32),
     ChangeComposeFormat(u32),
     ChangeReplyPosition(u32),
+    ChangeFoldMessages(u32),
     ChangeSignaturePosition(u32),
     ChangeAppTheme(u32),
     ChangeTextScale(u32),
@@ -943,7 +944,7 @@ pub enum PrefOutput {
     SetThreading(bool),
     SetThreadsExpanded(bool),
     SetThreadNewestFirst(bool),
-    SetCollapseRead(bool),
+    SetFoldMessages(crate::config::FoldMessages),
     SetAlwaysShowRecipients(bool),
     SetPgpLabels(bool),
     SetSingleMessageCard(bool),
@@ -2528,15 +2529,14 @@ impl Component for Preferences {
                                         },
                                     },
 
-                                    #[name = "collapse_read_row"]
-                                    adw::SwitchRow {
-                                        set_title: &i18n("Collapse read messages"),
-                                        set_subtitle: &i18n("Show the messages of a conversation you have already \
-                                                       read as their sender and a line of preview. The newest \
-                                                       message and unread ones stay open; click a message's \
-                                                       header to open or fold it."),
-                                        connect_active_notify[sender] => move |row| {
-                                            let _ = sender.output(PrefOutput::SetCollapseRead(row.is_active()));
+                                    #[name = "fold_messages_row"]
+                                    adw::ComboRow {
+                                        set_title: &i18n("Fold earlier messages"),
+                                        set_subtitle: &i18n("Which messages of a conversation open folded to one \
+                                                       line. The newest always opens, and a click on a folded \
+                                                       message opens it."),
+                                        connect_selected_notify[sender] => move |row| {
+                                            sender.input(PrefInput::ChangeFoldMessages(row.selected()));
                                         },
                                     },
 
@@ -3661,7 +3661,17 @@ impl Component for Preferences {
         widgets.threading_row.set_active(init.threading);
         widgets.threads_expanded_row.set_active(init.threads_expanded);
         widgets.thread_newest_first_row.set_active(init.thread_newest_first);
-        widgets.collapse_read_row.set_active(init.collapse_read);
+        widgets.fold_messages_row.set_model(Some(&gtk::StringList::new(&[
+            &i18n("Never"),
+            &i18n("Messages already read"),
+            &i18n("All but the newest"),
+        ])));
+        no_truncate(&widgets.fold_messages_row);
+        widgets.fold_messages_row.set_selected(match init.fold_messages {
+            crate::config::FoldMessages::Never => 0,
+            crate::config::FoldMessages::Read => 1,
+            crate::config::FoldMessages::AllButNewest => 2,
+        });
         widgets.always_show_recipients_row.set_active(init.always_show_recipients);
         widgets.pgp_labels_row.set_active(init.pgp_labels);
         widgets.single_message_card_row.set_active(init.single_message_card);
@@ -4658,6 +4668,14 @@ impl Component for Preferences {
                     _ => crate::config::ComposeFormat::Rich,
                 };
                 let _ = sender.output(PrefOutput::SetComposeFormat(format));
+            }
+            PrefInput::ChangeFoldMessages(idx) => {
+                let fold = match idx {
+                    1 => crate::config::FoldMessages::Read,
+                    2 => crate::config::FoldMessages::AllButNewest,
+                    _ => crate::config::FoldMessages::Never,
+                };
+                let _ = sender.output(PrefOutput::SetFoldMessages(fold));
             }
             PrefInput::ChangeReplyPosition(idx) => {
                 let position = match idx {
