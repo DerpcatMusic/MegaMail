@@ -383,9 +383,9 @@ with, under your own key:
 **Check the settings** translates a greeting to show that the service
 answers. **Translate into** is Hylki's own language unless another is chosen.
 
-A message is translated from the A文 button in its card's actions. The card
-then shows the translation, with a banner naming the service and the language
-it came from, and **Show Original** switches back. A translation is kept for
+A message is translated from the A文 button in its card's actions, or from
+Translate in its right-click menu. The card then shows the translation, with a banner naming the service and the language
+it came from, and **Show Original** in the banner or the menu switches back. A translation is kept for
 the rest of the session, so opening the message again costs nothing more.
 
 What is sent is the message as Reader View shows it: its text, paragraphs,

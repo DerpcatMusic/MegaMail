@@ -13940,7 +13940,18 @@ impl AppModel {
             })
             .icon(format!("{icon}-symbolic"))]);
         }
-        sections.push(vec![item(RowAction::ViewSource, i18n("View Source"), "code")]);
+        let mut last = Vec::new();
+        if let Some(t) = hit.translate.clone() {
+            let (account_id, id) = (m.account_id, m.id);
+            last.push(
+                MenuEntry::new(t.label, move || {
+                    t.reader.emit(crate::ui::message_view::MessageViewInput::Translate { account_id, id });
+                })
+                .icon("translate-symbolic"),
+            );
+        }
+        last.push(item(RowAction::ViewSource, i18n("View Source"), "code"));
+        sections.push(last);
         show_context_menu(&parent, x, y, sections);
     }
 

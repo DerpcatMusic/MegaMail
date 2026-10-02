@@ -1966,6 +1966,7 @@ impl Component for MessageView {
                         .filter(|u| is_launchable_uri(u)),
                     image: hit.context_is_image().then(|| hit.image_uri()).flatten().map(|u| u.to_string()),
                     selection: None,
+                    translate: None,
                 };
                 let selected = hit.context_is_selection();
                 let (x, y) = point.get();
@@ -2965,6 +2966,16 @@ impl Component for MessageView {
                     .and_then(|(a, i)| self.thread.iter().find(|m| m.account_id == a && m.id == i))
                     .or_else(|| self.thread.first());
                 let Some(m) = m.cloned() else { return };
+                let mut hit = hit;
+                let key = (m.account_id, m.id);
+                if crate::translate::load().enabled() && !self.encrypted(key) {
+                    let label = match self.translations.get(&key) {
+                        Some(TrState::Shown(_)) => i18n("Show Original"),
+                        Some(TrState::Original(_)) => i18n("Show Translation"),
+                        _ => i18n("Translate"),
+                    };
+                    hit.translate = Some(TranslateEntry { label, reader: sender.input_sender().clone() });
+                }
                 let point = self.webview.root().and_then(|root| {
                     let root: gtk::Widget = root.upcast();
                     self.webview
@@ -5276,6 +5287,23 @@ pub struct MenuHit {
     pub image: Option<String>,
     /// The selected text, when the click was on it.
     pub selection: Option<String>,
+    /// The message's translation entry (#327), when a service is set up:
+    /// what it says, and the reader to tell.
+    pub translate: Option<TranslateEntry>,
+}
+
+/// Translate, Show Original or Show Translation in a message's menu, sent
+/// back to the reader that showed the menu (the main one or a pop-out's).
+#[derive(Clone)]
+pub struct TranslateEntry {
+    pub label: String,
+    pub reader: relm4::Sender<MessageViewInput>,
+}
+
+impl std::fmt::Debug for TranslateEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TranslateEntry").field("label", &self.label).finish()
+    }
 }
 
 /// The entries a right-click's `hit` puts at the top of the message's menu:

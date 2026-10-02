@@ -26,8 +26,8 @@
   asking for a new one for every connection.
 - **Added: translating messages** (#327, requested by pdf). Settings →
   Translation takes a DeepL, Google Cloud Translation, Microsoft Translator
-  or LibreTranslate key of your own, and the A文 button in a card's actions
-  shows the message in your language, with a banner naming the service and
+  or LibreTranslate key of your own, and the A文 button in a card's actions,
+  or Translate in the message's right-click menu, shows it in your language, with a banner naming the service and
   **Show Original** to switch back. What is sent is the message as Reader
   View shows it, and encrypted messages are never sent. **Offer to
   translate** adds a Translate button to messages in another language,
