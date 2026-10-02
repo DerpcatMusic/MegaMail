@@ -1900,6 +1900,10 @@ fn document(content: &str, webview: &webkit6::WebView, image_policy: &str) -> St
 /// because what comes back out has to be exactly what was typed — no
 /// normalised whitespace, no inserted line divs — and because undo, paste
 /// and the engine's own spell checking all behave there without help.
+///
+/// The text goes in after a newline: an HTML parser drops the first newline
+/// of a textarea's content, which took the blank line a Markdown reply opens
+/// with and left the caret on the quote's "wrote:" line.
 fn source_document(text: &str, webview: &webkit6::WebView) -> String {
     let dark = adw::StyleManager::default().is_dark();
     let scheme = if dark { "dark" } else { "light" };
@@ -1917,7 +1921,7 @@ fn source_document(text: &str, webview: &webkit6::WebView) -> String {
              tab-size:2;}}\
          </style></head><body>\
          <textarea id=\"src\" spellcheck=\"true\" autocapitalize=\"off\" \
-           autocorrect=\"off\">{text}</textarea>\
+           autocorrect=\"off\">\n{text}</textarea>\
          <script>\
          (function(){{\
            var t=document.getElementById('src');\

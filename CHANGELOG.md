@@ -50,6 +50,11 @@
   sits where the quote begins, so it closes it again, and opening a quote no
   longer scrolls the conversation away from it. A forward with nothing
   written above it is no longer folded down to nothing.
+- **Fixed: a reply written in Markdown started on the quote's "wrote:"
+  line.** The empty line above the quote was lost when the body became
+  Markdown, so whatever was typed first ran into the attribution and was
+  sent as one paragraph with it. The reply now opens on its own line, with a
+  blank line before the quote.
 - **Updated: Hungarian,** by Laszlo Lang (#320), now complete.
 
 ## 1.42.0 — 2026-10-01

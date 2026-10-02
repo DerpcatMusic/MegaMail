@@ -29,6 +29,20 @@ fn sig_html(sig: &str, dashes: bool) -> String {
     format!("<div class=\"vireo-sig\"><br>{dashes}{body}</div>")
 }
 
+/// A body as Markdown, keeping the empty line a reply opens with above its
+/// quote and signature. The conversion drops leading blank lines, which
+/// left the caret at the start of the "On … wrote:" line, so whatever was
+/// typed joined it.
+fn markdown_body(html: &str) -> String {
+    let md = crate::markdown::from_html(html);
+    let top = html.trim_start();
+    if !md.is_empty() && (top.starts_with("<p><br></p>") || top.starts_with("<div><br></div>")) {
+        format!("\n\n{md}")
+    } else {
+        md
+    }
+}
+
 /// The signature as it reads in a source-mode body: Markdown (under its
 /// `-- ` line when `dashes` is set), or the same HTML block the rich
 /// editor holds.
@@ -959,9 +973,7 @@ impl Component for Compose {
         // source: a reply's quoted original becomes `> ` lines in Markdown,
         // or the HTML it already was.
         match format {
-            ComposeFormat::Markdown => {
-                editor.set_source(SourceKind::Markdown, &crate::markdown::from_html(&content))
-            }
+            ComposeFormat::Markdown => editor.set_source(SourceKind::Markdown, &markdown_body(&content)),
             ComposeFormat::Html => {
                 editor.set_source(SourceKind::Html, &crate::markdown::pretty_html(&content))
             }
@@ -2291,9 +2303,7 @@ impl Component for Compose {
                     _ => body,
                 };
                 match to {
-                    ComposeFormat::Markdown => self
-                        .editor
-                        .set_source(SourceKind::Markdown, &crate::markdown::from_html(&html)),
+                    ComposeFormat::Markdown => self.editor.set_source(SourceKind::Markdown, &markdown_body(&html)),
                     ComposeFormat::Html => self
                         .editor
                         .set_source(SourceKind::Html, &crate::markdown::pretty_html(&html)),
@@ -3671,6 +3681,17 @@ var t=document.getElementById('src');if(t)t.readOnly=false;window.__hylkiTr=null
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_markdown_reply_has_a_line_to_write_on_above_the_quote() {
+        let reply = "<p><br></p><p class=\"vireo-quote-attr\">On Monday, Ann wrote:</p><blockquote><p>Hi</p></blockquote>";
+        let md = super::markdown_body(reply);
+        assert!(md.starts_with("\n\nOn Monday, Ann wrote:"), "{md:?}");
+        // A new message stays empty, and written text is left as it is.
+        assert_eq!(super::markdown_body("<p><br></p>"), "");
+        assert!(super::markdown_body("<p>Hello</p>").starts_with("Hello"));
+    }
+
     use super::{sig_html, sig_source};
     use crate::ui::rich_editor::SourceKind;
 
