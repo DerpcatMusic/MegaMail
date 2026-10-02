@@ -42,8 +42,9 @@
   single-key shortcuts switched off, and are left to the composer while
   you are writing, where Ctrl+U underlines.
 - **Added: folding messages in a conversation** (#326, requested by pdf).
-  A click on a message's header folds it to the sender and two lines of its
-  text, and a second click opens it. **Settings → Conversations → Collapse
+  A click on a message's header folds it to one line, as Proton Mail shows
+  them: the sender, then whether it is starred, sent or received and has
+  files, and the day. A click on the line opens it again. **Settings → Conversations → Collapse
   read messages** opens conversations with every read message folded but the
   newest, so new replies are what shows. Unread messages stay open, and
   printing shows every message in full.

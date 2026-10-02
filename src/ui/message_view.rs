@@ -191,6 +191,8 @@ pub struct MessageView {
     unsub_state: std::collections::HashMap<(u32, u32), UnsubState>,
     /// Fold a conversation's read messages to their header (#326).
     collapse_read: bool,
+    /// The conversation's messages filed in Sent, for the folded bar.
+    sent: std::collections::HashSet<(u32, u32)>,
     /// Cards opened or folded by hand: these win over the default for as
     /// long as they stay in the conversation on screen.
     folds: std::collections::HashMap<(u32, u32), bool>,
@@ -399,6 +401,48 @@ impl MessageView {
             })
             .map(|(aid, id, _)| (aid, id))
             .collect()
+    }
+
+    /// A folded card's one line, as Proton Mail draws it: who it is from,
+    /// then whether it is starred, whether it was sent or received, whether
+    /// it carries files, and the day. A click on it opens the card.
+    fn fold_bar_html(&self, m: &Message) -> String {
+        let key = (m.account_id, m.id);
+        let from = if m.from_name.trim().is_empty() { &m.from_addr } else { &m.from_name };
+        let icon = |name: &str, title: &str| {
+            format!(
+                "<span class=\"vireo-fbar-ico\" title=\"{}\">{}</span>",
+                attr_escape(title),
+                inline_icon_svg(name)
+            )
+        };
+        let star = if m.starred {
+            icon("starred-symbolic", &i18n("Starred"))
+        } else {
+            icon("hylki-non-starred-symbolic", "")
+        };
+        let place = if self.sent.contains(&key) {
+            icon("mail-send-symbolic", &i18n("Sent"))
+        } else {
+            icon("mail-inbox-symbolic", &i18n("Received"))
+        };
+        // An empty slot when there are no files, so the icons of every bar
+        // stand in the same columns.
+        let clip = if m.has_attachment {
+            icon("mail-attachment-symbolic", &i18n("Has attachments"))
+        } else {
+            "<span class=\"vireo-fbar-ico vireo-fbar-none\"></span>".to_string()
+        };
+        format!(
+            "<div class=\"vireo-fbar\" data-key=\"{}:{}\" title=\"{}\">\
+             <span class=\"vireo-fbar-from\">{}</span>{star}{place}{clip}\
+             <span class=\"vireo-fbar-date\">{}</span></div>",
+            key.0,
+            key.1,
+            attr_escape(&i18n("Click to open this message")),
+            escape_text(from),
+            escape_text(&fold_bar_date(m)),
+        )
     }
 
     /// Fold and open the cards of the live document to match
@@ -887,6 +931,9 @@ pub enum MessageViewInput {
         /// (account, message id) — "Sent" beside a reply of yours read from the
         /// Inbox. Messages from the folder on screen aren't in here.
         folder_labels: std::collections::HashMap<(u32, u32), String>,
+        /// The conversation's messages filed in a Sent folder: a folded card
+        /// shows a paper plane for those, an inbox for the rest (#326).
+        sent: std::collections::HashSet<(u32, u32)>,
     },
     LoadRemoteOnce,
     AllowSenderAlways,
@@ -1207,15 +1254,21 @@ impl MessageView {
 /// A card's Unsubscribe banner: the container, always emitted so a verdict
 /// arriving later can be patched into it (empty, it is hidden by the
 /// stylesheet). `inner` is what [`MessageView::unsub_inner_html`] rendered.
-/// What a folded card says of its message (#326): the list's preview, or
-/// the start of the text when the message came without one.
-fn card_snippet(m: &Message) -> String {
-    let preview = crate::models::preview_display(&m.preview);
-    if !preview.trim().is_empty() {
-        return preview.to_string();
+/// The day on a folded card's bar, short as Proton has it: the time for
+/// today, the day and month this year, the year too before that.
+fn fold_bar_date(m: &Message) -> String {
+    use crate::datefmt as d;
+    if m.timestamp <= 0 {
+        return m.date.clone();
     }
-    let text = crate::translate::visible_text(&m.body);
-    text.split_whitespace().take(60).collect::<Vec<_>>().join(" ")
+    let now = d::now();
+    if d::day_key(m.timestamp) == d::day_key(now) {
+        d::time(m.timestamp)
+    } else if d::year(m.timestamp) == d::year(now) {
+        d::day_month(m.timestamp)
+    } else {
+        d::day_month_year(m.timestamp)
+    }
 }
 
 fn unsub_row_html(key: (u32, u32), inner: &str) -> String {
@@ -1937,6 +1990,7 @@ impl Component for MessageView {
             unsubscribed: std::collections::HashMap::new(),
             unsub_state: std::collections::HashMap::new(),
             collapse_read: false,
+            sent: std::collections::HashSet::new(),
             folds: std::collections::HashMap::new(),
             translations: std::collections::HashMap::new(),
             detected: std::cell::RefCell::new(std::collections::HashMap::new()),
@@ -2350,6 +2404,7 @@ impl Component for MessageView {
                 primary,
                 folder_labels,
                 instant,
+                sent,
             } => {
                 let shown = primary.map(|p| *p).or_else(|| thread.first().cloned());
                 // A new message: the previous message's verdict must not linger
@@ -2393,6 +2448,7 @@ impl Component for MessageView {
                 }
                 self.thread = thread;
                 self.folder_labels = folder_labels;
+                self.sent = sent;
                 self.account_name = account_name;
                 self.loading = loading;
                 self.instant = instant;
@@ -3718,6 +3774,13 @@ impl MessageView {
                 .collect()
         });
         LIVE_FOLDED.with(|f| *f.borrow_mut() = self.folded_cards());
+        LIVE_FOLDBAR.with(|b| {
+            *b.borrow_mut() = if self.thread.len() > 1 {
+                self.thread.iter().map(|m| ((m.account_id, m.id), self.fold_bar_html(m))).collect()
+            } else {
+                Default::default()
+            }
+        });
         let translation = crate::translate::load();
         LIVE_TRANSLATE_ON.with(|on| on.set(translation.enabled()));
         LIVE_TRANSLATE.with(|t| {
@@ -3816,7 +3879,7 @@ impl MessageView {
             };
             if conversation {
                 sections.push_str(&format!(
-                    "<section class=\"vireo-msg{sel}{unread_cls}{folded_cls}\" data-key=\"{aid}:{id}\">\
+                    "<section class=\"vireo-msg{sel}{unread_cls}{folded_cls}\" data-key=\"{aid}:{id}\">{fbar}\
                        <header class=\"vireo-msg-hdr\" data-key=\"{aid}:{id}\" \
                          title=\"{hdr_title}\">\
                          <div class=\"vireo-hdr-line\">\
@@ -3826,7 +3889,7 @@ impl MessageView {
                              <span class=\"vireo-date\">{date}</span></span>\
                            {acts_toggle}{acts}\
                          </div>{rcpt}\
-                       </header>{snip}{invite}{unsub}{tr}{body}{atts}</section>",
+                       </header>{invite}{unsub}{tr}{body}{atts}</section>",
                     aid = m.account_id,
                     id = m.id,
                     // The message's own attachments beneath its body (#213).
@@ -4000,11 +4063,8 @@ impl MessageView {
                     } else {
                         ""
                     },
-                    snip = if thread.len() > 1 {
-                        format!("<div class=\"vireo-snip\">{}</div>", escape_text(&card_snippet(m)))
-                    } else {
-                        String::new()
-                    },
+                    // What a folded card shows instead of all of it (#326).
+                    fbar = LIVE_FOLDBAR.with(|b| b.borrow().get(&(m.account_id, m.id)).cloned().unwrap_or_default()),
                     // `escape_text`, not `attr_escape`: these land in element
                     // text content, where `<` and `>` are structural. A `From:`
                     // display name is attacker-controlled (and RFC 2047-decoded,
@@ -4265,15 +4325,23 @@ impl MessageView {
                .vireo-msg{{user-select:none;}}\
                body:not(.vireo-conv) .vireo-msg{{border-radius:0;margin:0;}}\
                .vireo-msg.selected{{box-shadow:0 0 0 2px {accent};}}\
-               .vireo-snip{{display:none;}}\
-               .vireo-msg.vireo-folded>.vireo-snip{{display:-webkit-box;-webkit-box-orient:vertical;\
-                 -webkit-line-clamp:2;overflow:hidden;padding:0 16px 12px;opacity:0.7;\
-                 font-size:0.92em;line-height:1.45;}}\
-               body.vireo-conv .vireo-msg.vireo-folded>.vireo-snip{{padding:0 10px 12px;}}\
-               .vireo-msg.vireo-folded>:not(.vireo-msg-hdr):not(.vireo-snip){{display:none;}}\
+               .vireo-fbar{{display:none;}}\
+               .vireo-msg.vireo-folded{{background-image:linear-gradient(rgba(128,128,128,0.07),rgba(128,128,128,0.07));}}\
+               .vireo-msg.vireo-folded>.vireo-fbar{{display:flex;align-items:center;gap:12px;\
+                 padding:14px 18px;cursor:pointer;user-select:none;}}\
+               .vireo-fbar-from{{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;\
+                 white-space:nowrap;opacity:0.85;}}\
+               .vireo-msg.unread .vireo-fbar-from{{font-weight:700;opacity:1;}}\
+               .vireo-fbar-ico{{flex:none;display:inline-flex;opacity:0.55;line-height:0;}}\
+               .vireo-fbar-ico svg{{width:16px;height:16px;}}\
+               .vireo-fbar-none{{width:16px;height:16px;}}\
+               .vireo-fbar-ico svg,.vireo-fbar-ico svg *{{fill:currentColor;}}\
+               .vireo-fbar-date{{flex:none;min-width:6.5em;text-align:right;opacity:0.7;\
+                 font-size:0.92em;white-space:nowrap;}}\
+               .vireo-msg.vireo-folded>:not(.vireo-fbar){{display:none;}}\
                body.vireo-folds .vireo-msg-hdr{{cursor:pointer;}}\
-               @media print{{.vireo-msg.vireo-folded>:not(.vireo-snip){{display:revert !important;}}\
-                 .vireo-msg.vireo-folded>.vireo-snip{{display:none !important;}}}}\
+               @media print{{.vireo-msg.vireo-folded>:not(.vireo-fbar){{display:revert !important;}}\
+                 .vireo-msg.vireo-folded>.vireo-fbar{{display:none !important;}}}}\
                .vireo-msg-hdr{{cursor:pointer;}}\
                .vireo-msg-hdr{{padding:12px 16px;cursor:default;user-select:none;\
                  position:sticky;top:0;z-index:1;background-color:{bg};}}\
@@ -6459,6 +6527,9 @@ thread_local! {
     /// shows instead of its message, if it shows one. Empty in tests.
     static LIVE_TRANSLATE: std::cell::RefCell<std::collections::HashMap<(u32, u32), (String, Option<String>)>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Each card's folded bar (#326), already rendered. Empty in tests.
+    static LIVE_FOLDBAR: std::cell::RefCell<std::collections::HashMap<(u32, u32), String>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
     /// The cards that open folded (#326). Empty in tests.
     static LIVE_FOLDED: std::cell::RefCell<std::collections::HashSet<(u32, u32)>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
@@ -6649,7 +6720,9 @@ h.addEventListener('click',function(e){\
 if(e.ctrlKey||e.metaKey||e.shiftKey||e.altKey)return;\
 if(e.target.closest&&e.target.closest('button,a,.vireo-addr,.vireo-acts,.vireo-tags,.vireo-verify,.vireo-rcpt'))return;\
 if(tm){clearTimeout(tm);tm=null;return;}\
-tm=setTimeout(function(){tm=null;foldCard(h.closest('.vireo-msg'));},260);});})(hs[j]);}}\
+tm=setTimeout(function(){tm=null;foldCard(h.closest('.vireo-msg'));},260);});})(hs[j]);}\
+var fb=document.querySelectorAll('.vireo-fbar');\
+for(var j=0;j<fb.length;j++){fb[j].addEventListener('click',function(){foldCard(this.closest('.vireo-msg'));});}}\
 var rbd=document.body.dataset;\
 if(rbd.vireoReadmark&&document.body.classList.contains('vireo-conv')){\
 var rdel=parseInt(rbd.vireoReadmark,10)||250;var rt={};\

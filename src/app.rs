@@ -14091,6 +14091,7 @@ impl AppModel {
             loading,
             primary: None, // a single message is its own primary
             folder_labels: HashMap::new(),
+            sent: Default::default(),
             // A single message is one small frame; it is never covered anyway.
             instant: true,
         });
@@ -14161,6 +14162,7 @@ impl AppModel {
             account_color: Some(self.account_color(account_id)),
             loading,
             folder_labels: self.thread_folder_labels(),
+            sent: self.thread_sent(),
             primary: Some(Box::new(primary)),
             // Nothing to wait for when the conversation was already assembled
             // and its bodies are in hand.
@@ -14172,6 +14174,15 @@ impl AppModel {
     /// Name the folder each conversation message came from, for the ones that
     /// aren't from the folder on screen. The message list only ever shows one
     /// folder, so anything else was pulled in from the cache (#21).
+    /// The open conversation's messages that are filed in a Sent folder.
+    fn thread_sent(&self) -> std::collections::HashSet<(u32, u32)> {
+        self.current_thread
+            .iter()
+            .filter(|m| self.folder_kind(m.account_id, m.folder_id) == Some(FolderKind::Sent))
+            .map(|m| (m.account_id, m.id))
+            .collect()
+    }
+
     fn thread_folder_labels(&self) -> HashMap<(u32, u32), String> {
         let shown_folder = self.current.as_ref().map(|m| m.folder_id);
         self.current_thread

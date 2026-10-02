@@ -703,9 +703,11 @@ quoted lines, so an answer written inline always shows in full.
 
 ### Folding messages in a conversation
 
-A click on a message's header in a conversation folds it to that header and
-two lines of its text, and another click opens it again; a double-click
-still opens the message in a window of its own. With **Settings →
+A click on a message's header in a conversation folds it to one line: who
+it is from, then a star, a paper plane or an inbox for sent or received, a
+paperclip when it has files, and the day. A click on that line opens it
+again; a double-click on the header still opens the message in a window of
+its own. With **Settings →
 Conversations → Collapse read messages** on, a conversation opens with every
 message you have read folded, except the newest, so what is new is what
 shows. Unread messages always open, and so does a message you move to with
