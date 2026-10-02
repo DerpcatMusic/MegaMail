@@ -123,6 +123,7 @@ pub fn new_mail(
         }
     }
     send(&mail_id(account_id), &n);
+    POSTED.with(|p| p.borrow_mut().insert(account_id, (folder_id, message_id)));
     if let Some(sound) = crate::config::new_mail_sound() {
         if crate::desktop::quiet() {
             tracing::debug!("new-mail sound: the desktop asks for quiet");
@@ -130,6 +131,20 @@ pub fn new_mail(
             play_sound(&sound, false);
         }
     }
+}
+
+thread_local! {
+    /// What each account's new-mail notification points at, (folder,
+    /// message id), while it is up: once that mail is read, or its folder
+    /// has nothing unread, the notification is stale (#333).
+    static POSTED: std::cell::RefCell<std::collections::HashMap<u32, (u32, u32)>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// The (folder, message id) an account's new-mail notification points at,
+/// if one is up.
+pub fn posted_for(account_id: u32) -> Option<(u32, u32)> {
+    POSTED.with(|p| p.borrow().get(&account_id).copied())
 }
 
 thread_local! {
@@ -183,6 +198,7 @@ pub fn play_sound(sound: &crate::config::SoundSource, restart: bool) {
 /// Withdraw an account's new-mail notification (once its mail has been read).
 pub fn withdraw_mail(account_id: u32) {
     relm4::main_application().withdraw_notification(&mail_id(account_id));
+    POSTED.with(|p| p.borrow_mut().remove(&account_id));
 }
 
 /// Post a genuine error alert (e.g. send/auth failure).

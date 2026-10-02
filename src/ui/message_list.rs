@@ -704,13 +704,16 @@ pub enum MessageListInput {
     FinishCollapseThread((u32, String)),
     /// Change the list sort order.
     SetSort(SortOrder),
-    MarkRead(u32),
-    SetRead { id: u32, read: bool },
+    /// A message was read. Messages are named by their slot (account,
+    /// folder, UID) here: a UID repeats from folder to folder and, in the
+    /// unified view, from account to account (#333).
+    MarkRead((u32, u32, u32)),
+    SetRead { slot: (u32, u32, u32), read: bool },
     /// A hover-palette action for a specific message (forwarded to the app).
     RowAction { action: RowAction, message: Box<Message> },
-    SetStarred { id: u32, starred: bool },
+    SetStarred { slot: (u32, u32, u32), starred: bool },
     /// A message's keywords changed (a tag put on or taken off, #71).
-    SetKeywords { id: u32, keywords: Vec<String> },
+    SetKeywords { slot: (u32, u32, u32), keywords: Vec<String> },
     /// The tag definitions changed: rows rebuild their chips.
     SetTags(Vec<crate::config::Tag>),
     /// A row's tag menu toggled a tag — passed up to the app.
@@ -1871,20 +1874,20 @@ impl SimpleComponent for MessageList {
                     let _ = sender.output(MessageListOutput::Activated { message: m, thread });
                 }
             }
-            MessageListInput::MarkRead(id) => {
-                self.update_message(|m| m.id == id, |m| m.unread = false);
-                self.refresh_thread_unread(id);
+            MessageListInput::MarkRead(slot) => {
+                self.update_message(|m| thread_slot(m) == slot, |m| m.unread = false);
+                self.refresh_thread_head(slot);
             }
-            MessageListInput::SetRead { id, read } => {
-                self.update_message(|m| m.id == id, |m| m.unread = !read);
-                self.refresh_thread_unread(id);
+            MessageListInput::SetRead { slot, read } => {
+                self.update_message(|m| thread_slot(m) == slot, |m| m.unread = !read);
+                self.refresh_thread_head(slot);
             }
-            MessageListInput::SetStarred { id, starred } => {
-                self.update_message(|m| m.id == id, |m| m.starred = starred);
-                self.refresh_thread_star(id);
+            MessageListInput::SetStarred { slot, starred } => {
+                self.update_message(|m| thread_slot(m) == slot, |m| m.starred = starred);
+                self.refresh_thread_head(slot);
             }
-            MessageListInput::SetKeywords { id, keywords } => {
-                self.update_message(|m| m.id == id, |m| m.keywords = keywords.clone());
+            MessageListInput::SetKeywords { slot, keywords } => {
+                self.update_message(|m| thread_slot(m) == slot, |m| m.keywords = keywords.clone());
             }
             MessageListInput::SetTags(tags) => {
                 if *self.shared.tags.borrow() != tags {
@@ -2650,64 +2653,37 @@ impl MessageList {
         }
     }
 
-    /// A message's read state changed: recompute its conversation's aggregate
-    /// unread flag and push it to the head row, so a collapsed thread's heavy
-    /// highlight clears exactly when its last unread message is read.
-    fn refresh_thread_unread(&mut self, id: u32) {
-        let Some(key) = self
-            .all
-            .iter()
-            .find(|m| m.id == id)
-            .map(|m| (m.account_id, m.id))
-        else {
+    /// A message's read or starred state changed: recompute what its
+    /// conversation's head row says, so a collapsed thread's highlight
+    /// clears exactly when its last unread message is read.
+    ///
+    /// As [`MessageList::describe_group`] does, only this folder's own
+    /// messages count, and they are found by slot. Going through the
+    /// (account, UID) thread maps let a message in another folder (the reply
+    /// you sent, filed in Sent) stand in for an unread one here that shared
+    /// its UID, and the row stayed bold after it was read (#333).
+    fn refresh_thread_head(&mut self, slot: (u32, u32, u32)) {
+        let Some(own) = self.groups.values().find(|g| g.iter().any(|m| thread_slot(m) == slot)).cloned() else {
             return;
         };
-        let Some(tkey) = self.msg_thread.get(&key) else {
+        let head = thread_slot(&own[0]);
+        let Some(idx) = self.shown.iter().position(|m| thread_slot(m) == head) else {
             return;
         };
-        let Some(members) = self.thread_members.get(tkey).cloned() else {
+        // A row that stands for one message shows that message's own state.
+        if self.shared.model.row(idx).is_none_or(|r| r.meta.key.is_none()) {
             return;
-        };
-        let any_unread = members
-            .iter()
-            .any(|k| self.all.iter().any(|m| (m.account_id, m.id) == *k && m.unread));
-        // The head is the first (and, when collapsed, only) member in `shown`.
-        if let Some(idx) = self
-            .shown
-            .iter()
-            .position(|m| members.contains(&(m.account_id, m.id)))
-        {
-            self.shared.model.update_row(idx, |d| d.meta.unread = any_unread);
         }
-    }
-
-    /// Mirror of [`refresh_thread_unread`] for the star: the head shows a
-    /// conversation as starred while any member is.
-    fn refresh_thread_star(&mut self, id: u32) {
-        let Some(key) = self
-            .all
-            .iter()
-            .find(|m| m.id == id)
-            .map(|m| (m.account_id, m.id))
-        else {
-            return;
+        let now = |m: &Rc<Message>| -> Rc<Message> {
+            let s = thread_slot(m);
+            self.all.iter().find(|a| thread_slot(a) == s).cloned().unwrap_or_else(|| m.clone())
         };
-        let Some(tkey) = self.msg_thread.get(&key) else {
-            return;
-        };
-        let Some(members) = self.thread_members.get(tkey).cloned() else {
-            return;
-        };
-        let any = members
-            .iter()
-            .any(|k| self.all.iter().any(|m| (m.account_id, m.id) == *k && m.starred));
-        if let Some(idx) = self
-            .shown
-            .iter()
-            .position(|m| members.contains(&(m.account_id, m.id)))
-        {
-            self.shared.model.update_row(idx, |d| d.meta.starred = any);
-        }
+        let unread = own.iter().any(|m| now(m).unread);
+        let starred = own.iter().any(|m| now(m).starred);
+        self.shared.model.update_row(idx, |d| {
+            d.meta.unread = unread;
+            d.meta.starred = starred;
+        });
     }
 
 

@@ -63,6 +63,16 @@
   Markdown, so whatever was typed first ran into the attribution and was
   sent as one paragraph with it. The reply now opens on its own line, with a
   blank line before the quote.
+- **Fixed: a message could stay marked unread after it was read** (#333,
+  reported by yioannides). Read and star changes found their message by
+  its UID alone, which repeats from folder to folder and, in the unified
+  view, from account to account, so another message took the change; and a
+  conversation's row counted a message from another folder that happened
+  to share a UID. The new-mail notification is now withdrawn when the mail
+  is read inside its conversation, read elsewhere, or when its folder has
+  nothing unread, and a notification left over from an earlier run is
+  withdrawn at startup. Unread counts the server sent while a read was
+  being stored are asked for again once it is.
 - **Updated: Hungarian,** by Laszlo Lang (#320), now complete.
 
 ## 1.42.0 — 2026-10-01

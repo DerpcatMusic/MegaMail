@@ -1285,8 +1285,15 @@ impl Row {
             st.gen += 1;
             st.item.take()
         };
+        // Only if the item still points here: when GTK binds it to its next
+        // row before unbinding it from this one, clearing it would leave the
+        // row on screen deaf to every later change of the message, a read
+        // mark included (#333).
         if let Some(item) = item {
-            item.imp().row.replace(Weak::new());
+            let mine = item.imp().row.borrow().upgrade().is_none_or(|r| std::ptr::eq(Rc::as_ptr(&r), self));
+            if mine {
+                item.imp().row.replace(Weak::new());
+            }
         }
     }
 
