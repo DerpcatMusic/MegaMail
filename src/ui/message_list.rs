@@ -444,8 +444,11 @@ pub struct MessageList {
     /// every keystroke of a search and on every sync, and each ask is a scan of
     /// the account's index — so a thread is asked about once and remembered,
     /// not re-asked whenever its row is redrawn. Cleared per account by
-    /// [`MessageListInput::ForgetThreadSummaries`] when that account's mail moves.
+    /// [`MessageListInput::RecheckThreadSummaries`] when that account's mail moves.
     asked_threads: std::collections::HashSet<(u32, String)>,
+    /// Accounts whose conversations on screen are to be asked about again
+    /// once the rebuild under way has run.
+    recheck_accounts: std::collections::HashSet<u32>,
     /// Every selected message key, so the whole selection survives list rebuilds
     /// (background syncs) until the user clicks away.
     selected_ids: Vec<(u32, u32)>,
@@ -606,9 +609,9 @@ pub enum MessageListInput {
     /// key (#222, #236).
     SetThreadSummaries(Vec<((u32, String), ThreadSummary)>),
     /// This account's mail changed, so what was read may no longer be the
-    /// conversation: drop its summaries and let the next rebuild ask again
-    /// (#222).
-    ForgetThreadSummaries(u32),
+    /// conversation: ask again about the ones on screen (#222). What the rows
+    /// say stays until the answers arrive.
+    RecheckThreadSummaries(u32),
     /// Whether a conversation's row speaks for the newest message anywhere in
     /// the account, the replies you sent included (#236).
     SetThreadRowNewest(bool),
@@ -1129,6 +1132,7 @@ impl SimpleComponent for MessageList {
             groups: std::collections::HashMap::new(),
             listed_folders: std::collections::HashSet::new(),
             asked_threads: std::collections::HashSet::new(),
+            recheck_accounts: std::collections::HashSet::new(),
             selected_id: None,
             selected_ids: Vec::new(),
             emitted_thread: Vec::new(),
@@ -1296,6 +1300,7 @@ impl SimpleComponent for MessageList {
                         self.scroll_top();
                     }
                 }
+                self.recheck_bound_rows();
                 // The rows exist now: run the selection that waited for them.
                 if let Some(key) = self.pending_select.take() {
                     let _ = self.input.send(MessageListInput::SelectAndLoad(key));
@@ -1330,14 +1335,16 @@ impl SimpleComponent for MessageList {
                     }
                 }
             }
-            MessageListInput::ForgetThreadSummaries(account_id) => {
-                let before = self.thread_summaries.len();
-                self.thread_summaries.retain(|(aid, _), _| *aid != account_id);
+            MessageListInput::RecheckThreadSummaries(account_id) => {
+                // The summaries are kept, not dropped: dropping them turned
+                // every conversation row on screen back into its folder-only
+                // self, and a row kept across the rebuild is not bound again,
+                // so it never asked again either (#330). The answers replace
+                // whatever has changed.
                 self.asked_threads.retain(|(aid, _)| *aid != account_id);
-                // Only rebuild if a row actually loses what it was told; the
-                // re-ask itself rides on the rebuild the new mail causes.
-                if self.thread_summaries.len() != before && self.threading {
-                    self.queue_rebuild(true);
+                self.recheck_accounts.insert(account_id);
+                if self.rebuild_queued.is_none() {
+                    self.recheck_bound_rows();
                 }
             }
             MessageListInput::SetThreadRowNewest(on) => {
@@ -2980,6 +2987,22 @@ impl MessageList {
             ..Default::default()
         };
         (meta, msgs)
+    }
+
+    /// Ask again about the conversations on screen whose account's mail
+    /// changed. A row only asks when it is first bound, and the rows on
+    /// screen already are.
+    fn recheck_bound_rows(&mut self) {
+        let accounts = std::mem::take(&mut self.recheck_accounts);
+        if accounts.is_empty() || !self.threading {
+            return;
+        }
+        for row in self.shared.bound_rows() {
+            let group = row.data().and_then(|d| d.meta.group.clone());
+            if let Some(group) = group.filter(|(aid, _)| accounts.contains(aid)) {
+                self.shared.want(group);
+            }
+        }
     }
 
     /// Fresh sizes for these conversations (#222): their head rows say so in

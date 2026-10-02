@@ -847,12 +847,12 @@ impl Cache {
             for m in messages {
                 tx.execute(
                     "INSERT INTO messages
-                     (account_id, folder_path, uid, from_name, from_addr, subject, date, ts, unread, starred, has_attachment, recipients, cc, message_id, references_, reply_to, keywords)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                     (account_id, folder_path, uid, from_name, from_addr, subject, date, ts, unread, starred, has_attachment, recipients, cc, message_id, references_, preview, reply_to, keywords)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
                     params![
                         account_id, folder_path, m.uid, m.from_name, m.from_addr, m.subject,
                         m.date, m.timestamp, m.unread, m.starred, m.has_attachment, m.to, m.cc,
-                        m.message_id, m.references, m.reply_to, m.keywords.join(" ")
+                        m.message_id, m.references, m.preview, m.reply_to, m.keywords.join(" ")
                     ],
                 )?;
             }
@@ -2454,6 +2454,38 @@ mod tests {
         }
         let subjects: Vec<String> = c.outbox_items(1).into_iter().map(|i| i.subject).collect();
         assert_eq!(subjects, ["first", "second", "third"]);
+    }
+
+    /// Graph, JMAP and POP3 store a folder whole. The preview went missing
+    /// on the way, so the list served from the cache had none and every sync
+    /// blanked the previews until the server's answer came in (#330).
+    #[test]
+    fn a_folder_saved_whole_keeps_its_previews() {
+        let c = Cache::in_memory().unwrap();
+        let m = Message {
+            id: 9,
+            account_id: 1,
+            folder_id: 2,
+            uid: 9,
+            from_name: "Ada".into(),
+            from_addr: "ada@example.com".into(),
+            reply_to: String::new(),
+            to: String::new(),
+            cc: String::new(),
+            subject: "Hello".into(),
+            preview: "The first line".into(),
+            body: String::new(),
+            date: String::new(),
+            timestamp: 1,
+            unread: false,
+            starred: false,
+            keywords: Vec::new(),
+            has_attachment: false,
+            message_id: String::new(),
+            references: String::new(),
+        };
+        c.save_messages(1, "Inbox", std::slice::from_ref(&m));
+        assert_eq!(c.load_messages(1, "Inbox", 2), [m]);
     }
 
     fn add_msg(c: &Cache, folder: &str, uid: u32, from: &str, subject: &str, ts: i64) {

@@ -8,6 +8,17 @@
   worker reconnects instead of leaving later refreshes queued behind it.
   Downloads that keep receiving data can take longer, and IMAP IDLE waits
   keep their own deadlines.
+- **Fixed: the message list redrew itself on every sync** (#330, reported
+  by pdf). Microsoft 365, JMAP and POP3 accounts never stored the
+  preview with the rest of a message, so each sync showed the folder from
+  the cache with every preview blank and then filled them in again from
+  the server. On IMAP, a sync with no new mail still counted as a change
+  whenever the server sent a message without a preview, because the cached
+  one was kept on disk but not in the list the sync produced. Each of these
+  rebuilt the list, and conversation rows forgot their size and newest
+  message until they were scrolled away and back. A quiet sync now changes
+  nothing, a sync with new mail redraws only the rows that changed, and
+  conversation rows keep what they show while it is checked again.
 - **Updated: Hungarian,** by Laszlo Lang (#320), now complete.
 
 ## 1.42.0 — 2026-10-01

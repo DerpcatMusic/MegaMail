@@ -9865,7 +9865,7 @@ impl SimpleComponent for AppModel {
                     // conversations are; the badges have to be counted again
                     // rather than kept from before it (#222).
                     self.message_list
-                        .emit(MessageListInput::ForgetThreadSummaries(account_id));
+                        .emit(MessageListInput::RecheckThreadSummaries(account_id));
                 }
                 // After that sweep, not before it: a conversation carried over
                 // a move (#200) goes back under the id the message now has,
@@ -10170,7 +10170,7 @@ impl SimpleComponent for AppModel {
                 // badges counted it.
                 self.forget_threads(account_id);
                 self.message_list
-                    .emit(MessageListInput::ForgetThreadSummaries(account_id));
+                    .emit(MessageListInput::RecheckThreadSummaries(account_id));
                 if self.current_thread.len() != before {
                     if self.current_thread.len() > 1 {
                         self.queue_thread_render(&sender);

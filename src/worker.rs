@@ -7494,10 +7494,20 @@ fn mp_thread_ids(parsed: Option<&mail_parser::Message>) -> (String, String) {
 /// replace their cached versions (updated flags / new mail), the rest are kept.
 /// No size cap — the whole folder is searchable once the background backfill has
 /// indexed it.
+///
+/// A recent row that came back without a preview keeps the cached one, as
+/// [`Cache::upsert_messages`] does. Otherwise the list this returns never
+/// matched the one served from the cache a moment earlier, and every quiet
+/// sync looked to the app like new mail (#330).
 fn merge_index(cached: Vec<Message>, recent: Vec<Message>) -> Vec<Message> {
     let mut map: std::collections::HashMap<u32, Message> =
         cached.into_iter().map(|m| (m.uid, m)).collect();
-    for m in recent {
+    for mut m in recent {
+        if m.preview.is_empty() {
+            if let Some(old) = map.get_mut(&m.uid) {
+                m.preview = std::mem::take(&mut old.preview);
+            }
+        }
         map.insert(m.uid, m);
     }
     let mut out: Vec<Message> = map.into_values().collect();
@@ -10144,6 +10154,24 @@ NIL NIL NIL NIL NIL NIL NIL))\r\n";
             message_id: String::new(),
             references: String::new(),
         }
+    }
+
+    /// A sync whose recent window came back without some previews must give
+    /// the same list the cache served, or every quiet poll redraws the list
+    /// (#330).
+    #[test]
+    fn merging_a_recent_window_keeps_the_cached_previews() {
+        let cached: Vec<Message> = (1..=3)
+            .map(|uid| Message { preview: format!("text {uid}"), ..flagged_message(uid) })
+            .collect();
+        let recent = vec![
+            Message { unread: false, ..flagged_message(3) },
+            Message { preview: "new text".into(), ..flagged_message(2) },
+        ];
+        let merged = merge_index(cached, recent);
+        let previews: Vec<&str> = merged.iter().map(|m| m.preview.as_str()).collect();
+        assert_eq!(previews, ["text 3", "new text", "text 1"]);
+        assert!(!merged[0].unread, "the server's flags still win");
     }
 
     /// The loop behind the 2.6 GB report: a message the attachment prefetch

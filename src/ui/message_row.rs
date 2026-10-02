@@ -79,7 +79,7 @@ pub type ThreadDragKeys = HashMap<(u32, u32), Vec<(u32, u32, u32, u32)>>;
 pub type Slot = (u32, u32, u32);
 
 /// What a row says about its conversation, worked out by the list's rebuild.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct RowMeta {
     /// Size of the conversation (thread heads only; 1 or 0 otherwise).
     pub count: usize,
@@ -112,7 +112,7 @@ pub struct RowMeta {
 }
 
 /// One row's worth of the list: the message and what the row says about it.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RowData {
     pub msg: Rc<Message>,
     pub meta: RowMeta,
@@ -370,7 +370,9 @@ impl MessageModel {
         {
             let mut rows = self.imp().rows.borrow_mut();
             let Some(row) = rows.get_mut(pos) else { return };
-            if Rc::ptr_eq(row, &data) {
+            // A rebuild makes new data for every row; one that says the same
+            // as before is not drawn again (#330).
+            if Rc::ptr_eq(row, &data) || **row == *data {
                 return;
             }
             *row = data.clone();
@@ -523,7 +525,7 @@ impl RowShared {
 
     /// Ask the list, once the current pass is over, about the conversations
     /// rows have just started showing (#222).
-    fn want(&self, group: (u32, String)) {
+    pub fn want(&self, group: (u32, String)) {
         self.wanted.borrow_mut().push(group);
         if !self.wanted_queued.replace(true) {
             let input = self.input.clone();
