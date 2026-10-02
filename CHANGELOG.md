@@ -63,6 +63,13 @@
   Markdown, so whatever was typed first ran into the attribution and was
   sent as one paragraph with it. The reply now opens on its own line, with a
   blank line before the quote.
+- **Fixed: a notification could open the window with an empty reading
+  pane** (#332, reported by yioannides). A message shown while the window
+  was hidden, running in the background, could be loaded without ever
+  being painted; it is now loaded again when the window comes back. Mail
+  that had only just arrived when its notification was clicked, before its
+  folder's list was in, is opened once the list has it, instead of the
+  request being dropped.
 - **Fixed: a message could stay marked unread after it was read** (#333,
   reported by yioannides). Read and star changes found their message by
   its UID alone, which repeats from folder to folder and, in the unified

@@ -191,6 +191,8 @@ pub struct MessageView {
     unsub_state: std::collections::HashMap<(u32, u32), UnsubState>,
     /// Which messages of a conversation open folded (#326).
     fold_messages: crate::config::FoldMessages,
+    /// A document was loaded while the view was not on screen (#332).
+    painted_hidden: bool,
     /// The conversation's messages filed in Sent, for the folded bar.
     sent: std::collections::HashSet<(u32, u32)>,
     /// Cards opened or folded by hand: these win over the default for as
@@ -901,6 +903,8 @@ pub enum MessageViewInput {
     /// Expand All (false) or Collapse All (true) from the reading pane's
     /// menu (#326).
     FoldAll(bool),
+    /// The view came on screen (#332).
+    Mapped,
     /// The OpenPGP chip's words on or off (#300), applied to the open
     /// document at once.
     SetPgpLabels(bool),
@@ -2004,6 +2008,7 @@ impl Component for MessageView {
             unsubscribed: std::collections::HashMap::new(),
             unsub_state: std::collections::HashMap::new(),
             fold_messages: crate::config::FoldMessages::Never,
+            painted_hidden: false,
             sent: std::collections::HashSet::new(),
             folds: std::collections::HashMap::new(),
             translations: std::collections::HashMap::new(),
@@ -2371,6 +2376,12 @@ impl Component for MessageView {
         // content tracks the theme live.
         let style_manager = adw::StyleManager::default();
         let theme_sender = sender.clone();
+        {
+            let s = sender.input_sender().clone();
+            model.webview.connect_map(move |_| {
+                let _ = s.send(MessageViewInput::Mapped);
+            });
+        }
         style_manager.connect_dark_notify(move |_| {
             theme_sender.input(MessageViewInput::ThemeChanged);
         });
@@ -2580,6 +2591,12 @@ impl Component for MessageView {
             }
             MessageViewInput::Folded { account_id, id, folded } => {
                 self.folds.insert((account_id, id), folded);
+            }
+            MessageViewInput::Mapped => {
+                if std::mem::take(&mut self.painted_hidden) && self.current.is_some() && !self.loading {
+                    self.shown_fingerprint = None;
+                    self.render();
+                }
             }
             MessageViewInput::FoldAll(folded) => {
                 for m in &self.thread {
@@ -3531,6 +3548,12 @@ impl MessageView {
             return;
         }
         self.shown_fingerprint = Some(fingerprint);
+        // A page handed over while the window is hidden (running in the
+        // background, a notification about to bring it back) may never be
+        // painted: it is loaded again once the view is on screen (#332).
+        if !self.webview.is_mapped() {
+            self.painted_hidden = true;
+        }
         // A conversation is covered until its new document has painted: the
         // spinner is already up from the moment the thread was opened, so it
         // simply stays until there is something to replace it — one transition,

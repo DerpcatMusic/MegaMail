@@ -366,6 +366,10 @@ pub struct MessageList {
     /// after it (a notification click follows the folder's list into the
     /// channel in the same pass, and the list is only built on the idle).
     pending_select: Option<(u32, u32)>,
+    /// A message asked for from outside (a notification click) that the list
+    /// does not hold yet, and when: it is selected once a rebuild brings it,
+    /// unless the user picks something first (#332).
+    late_select: Option<((u32, u32), std::time::Instant)>,
     /// All messages for the current folder (full searchable index). Shared
     /// with the rows rather than copied: a large folder is listed whole.
     all: Vec<Rc<Message>>,
@@ -1105,6 +1109,7 @@ impl SimpleComponent for MessageList {
             input: sender.input_sender().clone(),
             rebuild_queued: None,
             pending_select: None,
+            late_select: None,
             all: Vec::new(),
             search_pool: Vec::new(),
             scope: SearchScope::AllFolders,
@@ -1261,6 +1266,7 @@ impl SimpleComponent for MessageList {
             }
             MessageListInput::ResetPaging => {
                 // Folder switch: drop any active search, scrolled to the top.
+                self.late_select = None;
                 self.clear_search();
                 self.emitted_thread.clear();
                 self.scroll_top();
@@ -1307,6 +1313,14 @@ impl SimpleComponent for MessageList {
                 // The rows exist now: run the selection that waited for them.
                 if let Some(key) = self.pending_select.take() {
                     let _ = self.input.send(MessageListInput::SelectAndLoad(key));
+                } else if let Some((key, at)) = self.late_select {
+                    if at.elapsed() > std::time::Duration::from_secs(30) {
+                        self.late_select = None;
+                    } else if self.shown.iter().any(|m| (m.account_id, m.id) == key)
+                        || self.thread_head_for(key).is_some()
+                    {
+                        let _ = self.input.send(MessageListInput::SelectAndLoad(key));
+                    }
                 }
                 self.report_thread_growth(&sender);
             }
@@ -1617,7 +1631,11 @@ impl SimpleComponent for MessageList {
                     // Something else moved the selection — stop expecting ours.
                     self.from_reader = 0;
                 }
-                // A selection the user made here; the reader outlines it.
+                // A selection the user made here; the reader outlines it, and
+                // it wins over one still waiting for its row.
+                if !keys.is_empty() {
+                    self.late_select = None;
+                }
                 let _ = sender.output(MessageListOutput::SelectionKeys(keys.clone()));
                 match keys.as_slice() {
                     [] => self.selected_id = None,
@@ -2091,6 +2109,8 @@ impl SimpleComponent for MessageList {
                     self.pending_select = Some(key);
                     return;
                 }
+                self.late_select = None;
+                let asked = key;
                 // A reply inside a conversation has no row of its own: its
                 // thread head does, and opening that shows the whole thread,
                 // the reply included.
@@ -2132,6 +2152,11 @@ impl SimpleComponent for MessageList {
                     let (thread, solo) = self.conversation_for(&m);
                     self.emitted_thread = thread.iter().map(|t| (t.account_id, t.id)).collect();
                     let _ = sender.output(MessageListOutput::Selected { message: m, thread, solo });
+                } else {
+                    // Not listed yet: mail that has only just arrived, whose
+                    // notification was clicked before its folder's list was in.
+                    // Dropping the request left the reader empty (#332).
+                    self.late_select = Some((asked, std::time::Instant::now()));
                 }
             }
             MessageListInput::RowMoveTo { message, x, y } => {
