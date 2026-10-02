@@ -34,6 +34,11 @@ the composer window's close button do; <kbd>Esc</kbd> again keeps editing.
 It works whether or not single-key shortcuts are enabled, as does everything
 in the menus, and in a search field it still clears the search.
 
+<kbd>Ctrl+N</kbd> starts a new message, <kbd>Ctrl+R</kbd> replies,
+<kbd>Ctrl+Shift+R</kbd> replies to all and <kbd>Ctrl+U</kbd> shows the
+message's source, with or without single-key shortcuts. While you are
+writing, the composer keeps them: there <kbd>Ctrl+U</kbd> underlines.
+
 <kbd>Ctrl+Enter</kbd> sends the message you are writing, from the body or
 any of its address rows. It does what the Send button does, so a message with
 no recipient is not sent, and one scheduled for later is queued.

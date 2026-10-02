@@ -24,6 +24,11 @@
   every use, and Hylki kept the first one. It now keeps the new one, and
   reuses each access token until shortly before it expires instead of
   asking for a new one for every connection.
+- **Added: Ctrl+N, Ctrl+R, Ctrl+Shift+R and Ctrl+U** (#328, requested by
+  pdf). They start a new message, reply, reply to all and show the
+  message's source, the keys other mail apps use for these. They work with
+  single-key shortcuts switched off, and are left to the composer while
+  you are writing, where Ctrl+U underlines.
 - **Updated: Hungarian,** by Laszlo Lang (#320), now complete.
 
 ## 1.42.0 — 2026-10-01

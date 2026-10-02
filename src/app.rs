@@ -4164,6 +4164,16 @@ impl SimpleComponent for AppModel {
                     s.input(AppMsg::CopyReaderSelection);
                     return gtk::glib::Propagation::Proceed;
                 }
+                // The keys other mail apps use (#328), with or without
+                // single-key shortcuts. A composer keeps them: Ctrl+U
+                // underlines there, and a reply should not start from the
+                // middle of another.
+                if ctrl && !state.contains(gtk::gdk::ModifierType::ALT_MASK) && !focus_in_compose(&window) {
+                    if let Some(msg) = ctrl_shortcut_for(keyval, shift) {
+                        s.input(msg);
+                        return gtk::glib::Propagation::Stop;
+                    }
+                }
                 if ctrl || state.contains(gtk::gdk::ModifierType::ALT_MASK) {
                     return gtk::glib::Propagation::Proceed;
                 }
@@ -20144,6 +20154,18 @@ fn shortcut_for(key: gtk::gdk::Key, shift: bool) -> Option<Shortcut> {
     Some(action)
 }
 
+/// The Ctrl shortcuts that work whether or not single-key ones are on (#328).
+fn ctrl_shortcut_for(key: gtk::gdk::Key, shift: bool) -> Option<AppMsg> {
+    use gtk::gdk::Key;
+    match key {
+        Key::n | Key::N if !shift => Some(AppMsg::Shortcut(Shortcut::Compose)),
+        Key::r | Key::R if !shift => Some(AppMsg::Shortcut(Shortcut::Reply)),
+        Key::r | Key::R => Some(AppMsg::Shortcut(Shortcut::ReplyAll)),
+        Key::u | Key::U if !shift => Some(AppMsg::ViewSource),
+        _ => None,
+    }
+}
+
 /// Every shortcut with its key and description, for the reference window.
 const SHORTCUT_HELP: &[(&str, &[(&str, &str)])] = &[
     (
@@ -20161,8 +20183,8 @@ const SHORTCUT_HELP: &[(&str, &[(&str, &str)])] = &[
     (
         i18n_noop("Act on a message"),
         &[
-            ("r", i18n_noop("Reply")),
-            ("R", i18n_noop("Reply to all")),
+            ("r  or  Ctrl+R", i18n_noop("Reply")),
+            ("R  or  Ctrl+Shift+R", i18n_noop("Reply to all")),
             ("f", i18n_noop("Forward")),
             ("a", i18n_noop("Archive")),
             ("d", i18n_noop("Delete")),
@@ -20177,7 +20199,8 @@ const SHORTCUT_HELP: &[(&str, &[(&str, &str)])] = &[
     (
         i18n_noop("Everything else"),
         &[
-            ("c", i18n_noop("Compose")),
+            ("c  or  Ctrl+N", i18n_noop("Compose")),
+            ("Ctrl+U", i18n_noop("View Source")),
             ("Ctrl+Enter", i18n_noop("Send the message you are writing")),
             ("Esc", i18n_noop("Back out of a reply and return to the list")),
             ("Ctrl+Z", i18n_noop("Undo the last action, or the last edit while you are writing")),
@@ -22436,6 +22459,21 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_shortcuts_follow_other_mail_apps() {
+        use gtk::gdk::Key;
+        // #328. Shift arrives as the capital, and Caps Lock alone as well.
+        assert!(matches!(ctrl_shortcut_for(Key::n, false), Some(AppMsg::Shortcut(Shortcut::Compose))));
+        assert!(matches!(ctrl_shortcut_for(Key::r, false), Some(AppMsg::Shortcut(Shortcut::Reply))));
+        assert!(matches!(ctrl_shortcut_for(Key::R, false), Some(AppMsg::Shortcut(Shortcut::Reply))));
+        assert!(matches!(ctrl_shortcut_for(Key::R, true), Some(AppMsg::Shortcut(Shortcut::ReplyAll))));
+        assert!(matches!(ctrl_shortcut_for(Key::u, false), Some(AppMsg::ViewSource)));
+        // Taken elsewhere, or not ours.
+        assert!(ctrl_shortcut_for(Key::N, true).is_none());
+        assert!(ctrl_shortcut_for(Key::U, true).is_none());
+        assert!(ctrl_shortcut_for(Key::f, false).is_none());
+    }
+
+    #[test]
     fn every_shortcut_is_documented() {
         // The reference window is the only place the keys are written down, so a
         // new shortcut without a line there would be invisible.
@@ -22443,7 +22481,10 @@ mod tests {
             .iter()
             .flat_map(|(_, keys)| keys.iter().map(|(key, _)| *key))
             .collect();
-        for key in ["j  or  ↓", "r", "a", "d", "w", "b", "x", "?", "1 … 9", "0"] {
+        for key in [
+            "j  or  ↓", "r  or  Ctrl+R", "R  or  Ctrl+Shift+R", "c  or  Ctrl+N", "Ctrl+U", "a", "d", "w", "b",
+            "x", "?", "1 … 9", "0",
+        ] {
             assert!(documented.contains(&key), "{key} is not in the reference");
         }
         // Every documented line has a description.
