@@ -3408,6 +3408,16 @@ msgstr "Masquer les destinataires"
 msgid "Show recipients"
 msgstr "Afficher les destinataires"
 
+#. The fold's tooltips, in the user's language.
+#, fuzzy
+msgid "Show quoted text"
+msgstr "Afficher le contenu distant"
+
+#. The fold's tooltips, in the user's language.
+#, fuzzy
+msgid "Hide quoted text"
+msgstr "Masquer le texte d'aperçu"
+
 msgid "Save Image"
 msgstr "Enregistrer l'image"
 

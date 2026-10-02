@@ -3380,6 +3380,16 @@ msgstr "Címzettek elrejtése"
 msgid "Show recipients"
 msgstr "Címzettek megjelenítése"
 
+#. The fold's tooltips, in the user's language.
+#, fuzzy
+msgid "Show quoted text"
+msgstr "Távoli tartalom megjelenítése"
+
+#. The fold's tooltips, in the user's language.
+#, fuzzy
+msgid "Hide quoted text"
+msgstr "Elrejtés a preview text"
+
 msgid "Save Image"
 msgstr "Kép mentése"
 

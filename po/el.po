@@ -3399,6 +3399,16 @@ msgstr "Απόκρυψη παραληπτών"
 msgid "Show recipients"
 msgstr "Εμφάνιση παραληπτών"
 
+#. The fold's tooltips, in the user's language.
+#, fuzzy
+msgid "Show quoted text"
+msgstr "Εμφάνιση απομακρυσμένου περιεχομένου"
+
+#. The fold's tooltips, in the user's language.
+#, fuzzy
+msgid "Hide quoted text"
+msgstr "Απόκρυψη του κειμένου προεπισκόπησης"
+
 msgid "Save Image"
 msgstr "Αποθήκευση εικόνας"
 

@@ -3084,6 +3084,14 @@ msgstr ""
 msgid "Show recipients"
 msgstr ""
 
+#. The fold's tooltips, in the user's language.
+msgid "Show quoted text"
+msgstr ""
+
+#. The fold's tooltips, in the user's language.
+msgid "Hide quoted text"
+msgstr ""
+
 msgid "Save Image"
 msgstr ""
 

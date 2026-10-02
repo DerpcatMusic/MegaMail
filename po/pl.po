@@ -3420,6 +3420,16 @@ msgstr "Ukryj odbiorców"
 msgid "Show recipients"
 msgstr "Wyświetl odbiorców"
 
+#. The fold's tooltips, in the user's language.
+#, fuzzy
+msgid "Show quoted text"
+msgstr "Wyświetl zdalne treści"
+
+#. The fold's tooltips, in the user's language.
+#, fuzzy
+msgid "Hide quoted text"
+msgstr "Ukrywanie podglądu treści"
+
 msgid "Save Image"
 msgstr "Zapisz obraz"
 

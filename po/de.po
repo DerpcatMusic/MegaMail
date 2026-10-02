@@ -3403,6 +3403,16 @@ msgstr "Empfänger ausblenden"
 msgid "Show recipients"
 msgstr "Empfänger anzeigen"
 
+#. The fold's tooltips, in the user's language.
+#, fuzzy
+msgid "Show quoted text"
+msgstr "Externe Inhalte anzeigen"
+
+#. The fold's tooltips, in the user's language.
+#, fuzzy
+msgid "Hide quoted text"
+msgstr "Vorschautext ausblenden"
+
 msgid "Save Image"
 msgstr "Bild speichern"
 
