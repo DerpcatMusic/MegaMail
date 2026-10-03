@@ -13,8 +13,10 @@
   The cache gains importance and due-date columns in place; mail already
   cached reads as normal importance until it is fetched again. **Column
   headings** names the columns above the list; clicking one sorts by it,
-  and clicking again reverses the order. The sort menu says "Starred
-  first" where it said "Flagged first".
+  and clicking again reverses the order. Dragging the line at a
+  heading's edge resizes the name and date columns, and a double click on
+  it restores the column's width. The sort menu says "Starred first" where
+  it said "Flagged first". On one line the star and paperclip are smaller.
 - **Fixed: mail syncing could wait forever on a silent IMAP connection**
   (#324, by Salem Sayed Abdel Gawad). Reads and writes now fail after 60
   seconds without progress, including reads inside a FETCH response, so the

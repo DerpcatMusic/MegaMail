@@ -835,6 +835,18 @@ flowbox.attach-flow > flowboxchild {
   opacity: 0.6;
 }
 
+/* A heading's resize handle: a faint divider on the edge it drags, in the
+   accent color under the pointer. */
+.column-resize-handle {
+  background: linear-gradient(to right, transparent 3px, alpha(currentColor, 0.15) 3px,
+                              alpha(currentColor, 0.15) 4px, transparent 4px);
+}
+
+.column-resize-handle:hover {
+  background: linear-gradient(to right, transparent 2px, @accent_color 2px,
+                              @accent_color 5px, transparent 5px);
+}
+
 .list-headings .sorted .list-heading,
 .list-headings .list-heading.sorted {
   color: @accent_color;

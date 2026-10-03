@@ -758,6 +758,8 @@ pub struct AppModel {
     list_columns: Vec<config::ListColumn>,
     /// Headings over them, which sort the list when clicked (#334).
     list_headings: bool,
+    /// The widths columns were dragged to by their headings (#334).
+    list_column_widths: std::collections::HashMap<config::ListColumn, i32>,
     /// The list pane is wide enough for one line per message, which
     /// Automatic follows.
     list_wide: bool,
@@ -1442,6 +1444,8 @@ pub enum AppMsg {
     ListCount(String),
     /// A column heading sorted the list (#334): the sort menus follow.
     ListSortChanged(&'static str),
+    /// A column heading was dragged to a new width (#334): keep it.
+    ListColumnWidths(std::collections::HashMap<config::ListColumn, i32>),
     /// Build the Settings window ahead of its first open (see the handler).
     PrewarmSettings,
     /// Close the Settings window as the user would (the showcase's reopen
@@ -2803,6 +2807,7 @@ impl SimpleComponent for AppModel {
                     MessageListOutput::SelectionCleared => AppMsg::ClearReader,
                     MessageListOutput::SearchActive(active) => AppMsg::SearchActive(active),
                     MessageListOutput::SortChanged(key) => AppMsg::ListSortChanged(key),
+                    MessageListOutput::ColumnWidths(widths) => AppMsg::ListColumnWidths(widths),
                 });
 
         let message_view =
@@ -3232,6 +3237,7 @@ impl SimpleComponent for AppModel {
             list_layout: config::load_list_layout(),
             list_columns: config::load_list_columns(),
             list_headings: config::load_privacy().list_headings,
+            list_column_widths: config::load_list_column_widths(),
             list_wide: config::load_list_pane_width() >= LIST_WIDE_ON,
             shortcuts_win: None,
             run_in_background: std::rc::Rc::new(std::cell::Cell::new(
@@ -3478,6 +3484,7 @@ impl SimpleComponent for AppModel {
         model.push_single_line();
         model.message_list.emit(MessageListInput::SetColumns(model.list_columns.clone()));
         model.message_list.emit(MessageListInput::SetHeadings(model.list_headings));
+        model.message_list.emit(MessageListInput::SetColumnWidths(model.list_column_widths.clone()));
         model.sidebars_emit(SidebarInput::SetFocus {
             hide_accounts: model.focus.active(config::FocusPart::HideAccounts),
             fold_unified: model.focus.active(config::FocusPart::FoldUnified),
@@ -7509,6 +7516,14 @@ impl SimpleComponent for AppModel {
             }
 
             AppMsg::ListCount(text) => self.list_count = text,
+            AppMsg::ListColumnWidths(widths) => {
+                pref!(self.list_column_widths = widths);
+            }
+            AppMsg::Pref(PrefOutput::ResetColumnWidths) => {
+                if pref!(self.list_column_widths = Default::default()) {
+                    self.message_list.emit(MessageListInput::SetColumnWidths(Default::default()));
+                }
+            }
             AppMsg::ListSortChanged(key) => {
                 if let Some(lh) = self.list_header_widgets.get() {
                     lh.sort.set_state(&key.to_variant());
@@ -11004,6 +11019,7 @@ impl AppModel {
             list_layout: self.list_layout,
             list_columns: config::ListColumn::to_keys(&self.list_columns),
             list_headings: self.list_headings,
+            list_column_widths: config::list_column_widths_to(&self.list_column_widths),
             single_key_shortcuts: self.single_key.get(),
             run_in_background: self.run_in_background.get(),
             autostart: self.autostart,

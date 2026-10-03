@@ -1199,6 +1199,8 @@ pub enum PrefOutput {
     /// The single-line list's columns, in order (#334).
     SetListColumns(Vec<crate::config::ListColumn>),
     SetListHeadings(bool),
+    /// Every column back to its own width (#334).
+    ResetColumnWidths,
     SetSingleKey(bool),
     SetRunInBackground(bool),
     SetAutostart(bool),
@@ -4780,6 +4782,7 @@ impl Component for Preferences {
                 }
             }
             PrefInput::ColumnRestore => {
+                let _ = sender.output(PrefOutput::ResetColumnWidths);
                 let default = crate::config::ListColumn::DEFAULT.to_vec();
                 if self.list_columns != default {
                     self.list_columns = default;

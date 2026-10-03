@@ -770,6 +770,13 @@ reverses the order; the sorted heading is in the accent color, with an
 arrow. Tags and Correspondents do not sort. The sort menu follows the
 headings.
 
+The name and date columns are resized by dragging the faint line at a
+heading's edge: the right edge of a column left of the subject, the left
+edge of one right of it. A double click on that line puts the column back
+to its usual width, and **Restore Defaults** puts every column back. When
+the list is too narrow for the widths set, the name columns give way in
+proportion and the dates keep theirs.
+
 ### Text size
 
 **Settings → Appearance → Text size** makes Hylki's text smaller or larger

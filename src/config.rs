@@ -1305,6 +1305,9 @@ pub(crate) struct PrivacyFile {
     /// Headings over those columns, which sort the list when clicked.
     #[serde(default)]
     pub(crate) list_headings: bool,
+    /// The widths columns were dragged to, in pixels, by column name.
+    #[serde(default)]
+    pub(crate) list_column_widths: std::collections::BTreeMap<String, i32>,
     /// Single-key shortcuts (j/k, r, a, d…) without a modifier. Off by default:
     /// a stray keystroke shouldn't archive mail for someone who never asked.
     #[serde(default)]
@@ -1575,6 +1578,7 @@ impl Default for PrivacyFile {
             list_layout: ListLayout::Cards,
             list_columns: default_list_columns(),
             list_headings: false,
+            list_column_widths: Default::default(),
             single_key_shortcuts: false,
             run_in_background: false,
             autostart: false,
@@ -2993,6 +2997,23 @@ fn default_list_columns() -> Vec<String> {
     ListColumn::to_keys(&ListColumn::DEFAULT)
 }
 
+/// The widths single-line columns were dragged to (#334), by column.
+pub fn load_list_column_widths() -> std::collections::HashMap<ListColumn, i32> {
+    list_column_widths_from(&load_privacy().list_column_widths)
+}
+
+pub fn list_column_widths_from(
+    saved: &std::collections::BTreeMap<String, i32>,
+) -> std::collections::HashMap<ListColumn, i32> {
+    saved.iter().filter_map(|(k, px)| Some((ListColumn::from_key(k)?, (*px).clamp(32, 800)))).collect()
+}
+
+pub fn list_column_widths_to(
+    widths: &std::collections::HashMap<ListColumn, i32>,
+) -> std::collections::BTreeMap<String, i32> {
+    widths.iter().map(|(c, px)| (c.key().to_string(), *px)).collect()
+}
+
 /// The single-line list's columns, in order (#334).
 pub fn load_list_columns() -> Vec<ListColumn> {
     ListColumn::from_keys(&load_privacy().list_columns)
@@ -3692,6 +3713,15 @@ mod tests {
             vec![ListColumn::Star, ListColumn::Sender, ListColumn::Subject, ListColumn::Date]
         );
         assert_eq!(ListColumn::from_keys(&ListColumn::to_keys(&ListColumn::DEFAULT)), ListColumn::DEFAULT.to_vec());
+        // Dragged widths keep their column, within reason; an unknown
+        // column's is dropped.
+        let saved: std::collections::BTreeMap<String, i32> =
+            [("sender".into(), 240), ("date".into(), 5), ("colour".into(), 90)].into_iter().collect();
+        let widths = super::list_column_widths_from(&saved);
+        assert_eq!(widths.len(), 2);
+        assert_eq!(widths[&ListColumn::Sender], 240);
+        assert_eq!(widths[&ListColumn::Date], 32);
+        assert_eq!(super::list_column_widths_to(&widths).get("sender"), Some(&240));
         // A settings file from before the columns has the old layout.
         let old: PrivacyFile = toml::from_str("list_layout = \"single_line\"").unwrap();
         assert_eq!(ListColumn::from_keys(&old.list_columns), ListColumn::DEFAULT.to_vec());

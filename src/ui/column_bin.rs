@@ -18,7 +18,8 @@ mod imp {
     #[derive(Default)]
     pub struct ColumnBin {
         /// The width asked for; 0 asks for no more than the minimum, for
-        /// the column that takes whatever room the others leave.
+        /// the column that takes whatever room the others leave, and a
+        /// negative width asks for whatever the child does.
         pub width: Cell<i32>,
     }
 
@@ -43,7 +44,9 @@ mod imp {
             let (min, nat, base_min, base_nat) = child.measure(orientation, for_size);
             if orientation == gtk::Orientation::Horizontal {
                 let width = self.width.get();
-                if width > 0 {
+                if width < 0 {
+                    (min, nat, -1, -1)
+                } else if width > 0 {
                     (min.min(width), width, -1, -1)
                 } else {
                     (min, min, -1, -1)
@@ -72,6 +75,18 @@ impl ColumnBin {
         let obj: Self = glib::Object::new();
         obj.imp().width.set(width);
         obj
+    }
+
+    /// Ask for `width` instead (see `width`): a column resized.
+    pub fn set_width(&self, width: i32) {
+        if self.imp().width.replace(width) != width {
+            self.queue_resize();
+        }
+    }
+
+    /// The width asked for, as set (not the width given).
+    pub fn asked_width(&self) -> i32 {
+        self.imp().width.get()
     }
 
     /// Hold `child`, or nothing.

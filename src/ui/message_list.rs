@@ -581,6 +581,10 @@ pub struct MessageList {
     /// Show the column headings over a single-line list (#334).
     headings: bool,
     headings_bar: gtk::Box,
+    /// The widths columns were dragged to by their headings (#334).
+    widths: std::collections::HashMap<crate::config::ListColumn, i32>,
+    /// How wide the rows are, for fitting the columns into it.
+    pane_width: i32,
 }
 
 /// The Correspondents column (#334): who wrote in a conversation, oldest
@@ -756,6 +760,15 @@ pub enum MessageListInput {
     SetHeadings(bool),
     /// A column's heading was clicked: sort by it, or the other way (#334).
     SortByColumn(crate::config::ListColumn),
+    /// A heading's edge was dragged to `width`, or double-clicked (`None`:
+    /// the column's own width). `done` once the drag is over (#334).
+    ResizeColumn { column: crate::config::ListColumn, width: Option<i32>, done: bool },
+    /// The saved column widths (#334).
+    SetColumnWidths(std::collections::HashMap<crate::config::ListColumn, i32>),
+    /// Fill the headings again, once a handler that set them going is over.
+    RefreshHeadings,
+    /// The rows are this wide now.
+    PaneWidth(i32),
     /// Each account's name for the Account column, and which accounts are
     /// Microsoft 365 ones, for the Due column (#334).
     SetAccountNames {
@@ -954,6 +967,8 @@ pub enum MessageListOutput {
     /// A column heading changed the sort (#334), by its key: the sort
     /// menus follow.
     SortChanged(&'static str),
+    /// A column was resized by its heading (#334): the widths to keep.
+    ColumnWidths(std::collections::HashMap<crate::config::ListColumn, i32>),
 }
 
 #[relm4::component(pub)]
@@ -1312,6 +1327,8 @@ impl SimpleComponent for MessageList {
             sort_reversed: false,
             headings: false,
             headings_bar: gtk::Box::new(gtk::Orientation::Horizontal, 8),
+            widths: std::collections::HashMap::new(),
+            pane_width: 0,
             bulk_tag_btn: gtk::Button::new(),
         };
 
@@ -1319,6 +1336,14 @@ impl SimpleComponent for MessageList {
         let headings_bar = model.headings_bar.clone();
         let widgets = view_output!();
         model.scroller = Some(widgets.scroller.clone());
+        {
+            // The rows' width, which the single line's columns fit into: the
+            // view's page across, set as it is allocated.
+            let input = sender.input_sender().clone();
+            widgets.scroller.hadjustment().connect_notify_local(Some("page-size"), move |adj, _| {
+                let _ = input.send(MessageListInput::PaneWidth(adj.page_size() as i32));
+            });
+        }
         {
             // Whether the list sits at its bottom, for the spinner that says
             // more of the folder is on its way.
@@ -2029,6 +2054,40 @@ impl SimpleComponent for MessageList {
                     self.rebuild();
                     self.scroll_top();
                     self.sync_headings();
+                }
+            }
+            MessageListInput::ResizeColumn { column, width, done } => {
+                match width {
+                    Some(px) => self.widths.insert(column, px),
+                    None => self.widths.remove(&column),
+                };
+                // The rows follow every step; the headings are left alone
+                // while their handle is held, as rebuilding them would drop
+                // it mid-drag. It has moved its own heading already.
+                self.shared.look.borrow_mut().widths = self.fitted_widths();
+                self.shared.refresh_all();
+                if done {
+                    let input = self.shared.input.clone();
+                    glib::idle_add_local_once(move || {
+                        let _ = input.send(MessageListInput::RefreshHeadings);
+                    });
+                    let _ = sender.output(MessageListOutput::ColumnWidths(self.widths.clone()));
+                }
+            }
+            MessageListInput::SetColumnWidths(widths) => {
+                if self.widths != widths {
+                    self.widths = widths;
+                    self.sync_look();
+                }
+            }
+            MessageListInput::RefreshHeadings => self.sync_headings(),
+            MessageListInput::PaneWidth(width) => {
+                if self.pane_width != width {
+                    let before = self.single_line.then(|| self.fitted_widths());
+                    self.pane_width = width;
+                    if before.is_some_and(|b| b != self.fitted_widths()) {
+                        self.sync_look();
+                    }
                 }
             }
             MessageListInput::SetHeadings(on) => {
@@ -2827,9 +2886,63 @@ impl MessageList {
             look.ringed = if self.colorize { self.account_colors.keys().copied().collect() } else { Default::default() };
             look.face_gen = self.face_gen;
             look.tags_gen = self.tags_gen;
+            look.widths = self.fitted_widths();
         }
         self.shared.refresh_all();
         self.sync_headings();
+    }
+
+    /// The columns' widths as the rows and the headings draw them (#334):
+    /// as set, unless together they leave the subject too little room, when
+    /// the name columns give way in proportion (the dates keep theirs). Fitted here rather than left to each
+    /// row's box, which shares out a shortage by what that row holds (tags,
+    /// a conversation's count), so a heading and its column would part.
+    fn fitted_widths(&self) -> std::collections::HashMap<crate::config::ListColumn, i32> {
+        use crate::config::ListColumn as C;
+        use crate::ui::message_row::{default_width, resizable};
+        /// What a date as wide as its text takes, about.
+        const DATE_PX: i32 = 64;
+        /// Room kept for the subject, and for tags beside it.
+        const SUBJECT_PX: i32 = 100;
+        const TAGS_PX: i32 = 60;
+        let mut widths = self.widths.clone();
+        if self.pane_width <= 0 {
+            return widths;
+        }
+        let columns: Vec<C> =
+            self.columns.iter().copied().filter(|c| *c != C::Due || self.graph_in_view).collect();
+        // The pill's margins and padding, the unread dot and the spacing.
+        let mut fixed = 12 + 18 + 18 + 8 * columns.len().saturating_sub(1) as i32;
+        if self.avatars {
+            fixed += 16 + 8;
+        }
+        let mut wanted: Vec<(C, i32)> = Vec::new();
+        for c in &columns {
+            match c {
+                C::Star | C::Attachment => fixed += 12,
+                C::Importance => fixed += 16,
+                C::Tags => fixed += TAGS_PX,
+                C::Subject => fixed += SUBJECT_PX,
+                // A date cut short says nothing: the names give way instead.
+                C::Due | C::Date => {
+                    let px = widths.get(c).copied().unwrap_or_else(|| default_width(*c));
+                    fixed += if px > 0 { px } else { DATE_PX };
+                }
+                c if resizable(*c) => {
+                    let px = widths.get(c).copied().unwrap_or_else(|| default_width(*c));
+                    wanted.push((*c, px.max(1)));
+                }
+                _ => {}
+            }
+        }
+        let sum: i32 = wanted.iter().map(|(_, px)| px).sum();
+        let room = (self.pane_width - fixed).max(0);
+        if sum > room && sum > 0 {
+            for (c, px) in wanted {
+                widths.insert(c, ((px as i64 * room as i64 / sum as i64) as i32).max(40));
+            }
+        }
+        widths
     }
 
     /// Fill the column headings from the look and the sort (#334). Only
@@ -2851,6 +2964,7 @@ impl MessageList {
             })
             .map(|c| (c, self.sort.downwards() != self.sort_reversed));
         let input = self.shared.input.clone();
+        let resized = self.shared.input.clone();
         crate::ui::message_row::fill_headings(
             &self.headings_bar,
             &look,
@@ -2858,6 +2972,9 @@ impl MessageList {
             &|c| column_sort(c, show_recipient).is_some(),
             Rc::new(move |c| {
                 let _ = input.send(MessageListInput::SortByColumn(c));
+            }),
+            Rc::new(move |column, width, done| {
+                let _ = resized.send(MessageListInput::ResizeColumn { column, width, done });
             }),
         );
     }
