@@ -964,6 +964,37 @@ msgstr "Nome (Z–A)"
 msgid "Full Path"
 msgstr ""
 
+#, fuzzy
+msgid "Sender"
+msgstr "Remetentes"
+
+#, fuzzy
+msgid "Recipients"
+msgstr "Ocultar destinatários"
+
+msgid "Correspondents"
+msgstr ""
+
+msgid "Subject"
+msgstr "Assunto"
+
+#, fuzzy
+msgid "Attachment"
+msgstr "Anexos"
+
+#, fuzzy
+msgid "Importance"
+msgstr "Importar chave"
+
+msgid "Account"
+msgstr "Conta"
+
+msgid "Due Date"
+msgstr ""
+
+msgid "Date"
+msgstr ""
+
 msgid "Spam"
 msgstr "Lixo eletrónico"
 
@@ -1393,9 +1424,6 @@ msgstr "Endereço ou domínio"
 
 msgid "Block this sender"
 msgstr "Bloquear este remetente"
-
-msgid "Account"
-msgstr "Conta"
 
 msgid "Save"
 msgstr "Guardar"
@@ -2778,9 +2806,6 @@ msgstr "Bcc"
 msgid "Reply-To"
 msgstr "Responder a"
 
-msgid "Subject"
-msgstr "Assunto"
-
 msgid "Writing in {format}"
 msgstr "A escrever em {format}"
 
@@ -3189,6 +3214,10 @@ msgstr ""
 "• Atualizar o “xdg-desktop-portal” e terminar e voltar a iniciar a sessão "
 "poderá corrigir a abertura direta das ligações"
 
+#, fuzzy
+msgid "me"
+msgstr "Nome"
+
 msgid "Choose which folders to search"
 msgstr "Escolher as pastas a pesquisar"
 
@@ -3218,6 +3247,13 @@ msgstr "Marcar tudo como lido"
 
 msgid "Mark All as Unread"
 msgstr "Marcar tudo como não lido"
+
+msgid "High importance"
+msgstr ""
+
+#, fuzzy
+msgid "Low importance"
+msgstr "Chave importada"
 
 msgid "Mark as read"
 msgstr "Marcar como lida"
@@ -3939,6 +3975,9 @@ msgstr "A cada 15 minutos"
 msgid "Every 30 minutes"
 msgstr "A cada 30 minutos"
 
+msgid "Drag to move"
+msgstr "Arraste para mover"
+
 msgid "Left group"
 msgstr "Grupo esquerdo"
 
@@ -3957,8 +3996,16 @@ msgstr "Não mostrado"
 msgid "Drop a button here to hide it"
 msgstr "Largue um botão aqui para o ocultar"
 
-msgid "Drag to move"
-msgstr "Arraste para mover"
+#, fuzzy
+msgid "Shown"
+msgstr "Mostrar"
+
+msgid "Left to right"
+msgstr ""
+
+#, fuzzy
+msgid "Drop a column here to hide it"
+msgstr "Largue um botão aqui para o ocultar"
 
 msgid "Senders"
 msgstr "Remetentes"
@@ -4618,6 +4665,16 @@ msgid ""
 msgstr ""
 "Número de segundos durante os quais a paleta de ações da lista de mensagens "
 "permanece aberta depois de o cursor sair."
+
+msgid "Columns"
+msgstr ""
+
+msgid ""
+"What a message shows when the list is on one line, from left to right. Drag "
+"the columns into the order you want, or out of the list. The subject always "
+"stays. Due Date appears only in lists with Microsoft 365 mail. Changes apply "
+"at once."
+msgstr ""
 
 msgid "Group messages by conversation"
 msgstr "Agrupar mensagens por conversa"

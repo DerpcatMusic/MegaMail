@@ -949,6 +949,37 @@ msgstr "Név (Z–A)"
 msgid "Full Path"
 msgstr "Teljes elérési út"
 
+#, fuzzy
+msgid "Sender"
+msgstr "Feladók"
+
+#, fuzzy
+msgid "Recipients"
+msgstr "Címzettek elrejtése"
+
+msgid "Correspondents"
+msgstr ""
+
+msgid "Subject"
+msgstr "Tárgy"
+
+#, fuzzy
+msgid "Attachment"
+msgstr "Mellékletek"
+
+#, fuzzy
+msgid "Importance"
+msgstr "Kulcs importálása"
+
+msgid "Account"
+msgstr "Fiók"
+
+msgid "Due Date"
+msgstr ""
+
+msgid "Date"
+msgstr ""
+
 msgid "Spam"
 msgstr "Levélszemét"
 
@@ -1364,9 +1395,6 @@ msgstr "Cím vagy tartomány"
 
 msgid "Block this sender"
 msgstr "Feladó blokkolása"
-
-msgid "Account"
-msgstr "Fiók"
 
 msgid "Save"
 msgstr "Mentés"
@@ -2746,9 +2774,6 @@ msgstr "Titkos másolat (Bcc)"
 msgid "Reply-To"
 msgstr "Válaszcím"
 
-msgid "Subject"
-msgstr "Tárgy"
-
 msgid "Writing in {format}"
 msgstr "{format} formátumben írás"
 
@@ -3154,6 +3179,10 @@ msgstr ""
 "• Az „xdg-desktop-portal” frissítése és az újbóli bejelentkezés megoldhatja "
 "a hivatkozások közvetlen megnyitásának problémáját"
 
+#, fuzzy
+msgid "me"
+msgstr "Név"
+
 msgid "Choose which folders to search"
 msgstr "Válassza ki a keresendő mappákat"
 
@@ -3183,6 +3212,13 @@ msgstr "Összes megjelölése olvasottként"
 
 msgid "Mark All as Unread"
 msgstr "Összes megjelölése olvasatlanként"
+
+msgid "High importance"
+msgstr ""
+
+#, fuzzy
+msgid "Low importance"
+msgstr "Kulcs importálva"
 
 msgid "Mark as read"
 msgstr "Megjelölés olvasottként"
@@ -3898,6 +3934,9 @@ msgstr "15 percenként"
 msgid "Every 30 minutes"
 msgstr "30 percenként"
 
+msgid "Drag to move"
+msgstr "Húzás ide move"
+
 msgid "Left group"
 msgstr "Bal oldali csoport"
 
@@ -3916,8 +3955,16 @@ msgstr "Nem jelenik meg"
 msgid "Drop a button here to hide it"
 msgstr "Helyezze a kerülmb here ide hide it"
 
-msgid "Drag to move"
-msgstr "Húzás ide move"
+#, fuzzy
+msgid "Shown"
+msgstr "Megjelenítés"
+
+msgid "Left to right"
+msgstr ""
+
+#, fuzzy
+msgid "Drop a column here to hide it"
+msgstr "Helyezze a kerülmb here ide hide it"
 
 msgid "Senders"
 msgstr "Feladók"
@@ -4580,6 +4627,16 @@ msgid ""
 msgstr ""
 "Annyi másodpercig marad nyitva az üzenetlista műveletpalettája, miután a "
 "kurzor elhagyta azt."
+
+msgid "Columns"
+msgstr ""
+
+msgid ""
+"What a message shows when the list is on one line, from left to right. Drag "
+"the columns into the order you want, or out of the list. The subject always "
+"stays. Due Date appears only in lists with Microsoft 365 mail. Changes apply "
+"at once."
+msgstr ""
 
 msgid "Group messages by conversation"
 msgstr "Üzenetek csoportosítása beszélgetés szerint"

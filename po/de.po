@@ -961,6 +961,37 @@ msgstr "Name (Z–A)"
 msgid "Full Path"
 msgstr "Vollständiger Pfad"
 
+#, fuzzy
+msgid "Sender"
+msgstr "Absender"
+
+#, fuzzy
+msgid "Recipients"
+msgstr "Empfänger ausblenden"
+
+msgid "Correspondents"
+msgstr ""
+
+msgid "Subject"
+msgstr "Betreff"
+
+#, fuzzy
+msgid "Attachment"
+msgstr "Anhänge"
+
+#, fuzzy
+msgid "Importance"
+msgstr "Schlüssel importieren"
+
+msgid "Account"
+msgstr "Konto"
+
+msgid "Due Date"
+msgstr ""
+
+msgid "Date"
+msgstr ""
+
 msgid "Spam"
 msgstr "Spam"
 
@@ -1392,9 +1423,6 @@ msgstr "Adresse oder Domäne"
 
 msgid "Block this sender"
 msgstr "Diesen Absender sperren"
-
-msgid "Account"
-msgstr "Konto"
 
 msgid "Save"
 msgstr "Speichern"
@@ -2767,9 +2795,6 @@ msgstr "Bcc"
 msgid "Reply-To"
 msgstr "Antwort an"
 
-msgid "Subject"
-msgstr "Betreff"
-
 msgid "Writing in {format}"
 msgstr "Schreiben in {format}"
 
@@ -3175,6 +3200,10 @@ msgstr ""
 "• Aktualisieren von \"xdg-desktop-portal\" und Wiedereinloggen können das "
 "Öffnen von Links direkt beheben"
 
+#, fuzzy
+msgid "me"
+msgstr "Name"
+
 msgid "Choose which folders to search"
 msgstr "Wählen Sie aus, welche Ordner gesucht werden sollen"
 
@@ -3204,6 +3233,13 @@ msgstr "Alle als gelesen markieren"
 
 msgid "Mark All as Unread"
 msgstr "Alle als ungelesen markieren"
+
+msgid "High importance"
+msgstr ""
+
+#, fuzzy
+msgid "Low importance"
+msgstr "Schlüssel importiert"
 
 msgid "Mark as read"
 msgstr "Als gelesen markieren"
@@ -3923,6 +3959,9 @@ msgstr "Alle 15 Minuten"
 msgid "Every 30 minutes"
 msgstr "Alle 30 Minuten"
 
+msgid "Drag to move"
+msgstr "Zum Verschieben ziehen"
+
 msgid "Left group"
 msgstr "Linke Gruppe"
 
@@ -3941,8 +3980,16 @@ msgstr "Nicht angezeigt"
 msgid "Drop a button here to hide it"
 msgstr "Lassen Sie einen Knopf hier, um es zu verstecken"
 
-msgid "Drag to move"
-msgstr "Zum Verschieben ziehen"
+#, fuzzy
+msgid "Shown"
+msgstr "Anzeigen"
+
+msgid "Left to right"
+msgstr ""
+
+#, fuzzy
+msgid "Drop a column here to hide it"
+msgstr "Lassen Sie einen Knopf hier, um es zu verstecken"
 
 msgid "Senders"
 msgstr "Absender"
@@ -4595,6 +4642,16 @@ msgid ""
 msgstr ""
 "Seconds Die Aktionspalette der Nachrichtenliste bleibt geöffnet, nachdem der "
 "Cursor sie verlassen hat."
+
+msgid "Columns"
+msgstr ""
+
+msgid ""
+"What a message shows when the list is on one line, from left to right. Drag "
+"the columns into the order you want, or out of the list. The subject always "
+"stays. Due Date appears only in lists with Microsoft 365 mail. Changes apply "
+"at once."
+msgstr ""
 
 msgid "Group messages by conversation"
 msgstr "Nachrichten nach Unterhaltung gruppieren"

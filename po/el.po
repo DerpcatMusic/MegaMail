@@ -961,6 +961,37 @@ msgstr ""
 msgid "Full Path"
 msgstr ""
 
+#, fuzzy
+msgid "Sender"
+msgstr "Αποστολείς"
+
+#, fuzzy
+msgid "Recipients"
+msgstr "Απόκρυψη παραληπτών"
+
+msgid "Correspondents"
+msgstr ""
+
+msgid "Subject"
+msgstr "Θέμα"
+
+#, fuzzy
+msgid "Attachment"
+msgstr "Συνημμένα"
+
+#, fuzzy
+msgid "Importance"
+msgstr "Εισαγωγή κλειδιού"
+
+msgid "Account"
+msgstr "Λογαριασμός"
+
+msgid "Due Date"
+msgstr ""
+
+msgid "Date"
+msgstr ""
+
 msgid "Spam"
 msgstr "Ανεπιθύμητα"
 
@@ -1384,9 +1415,6 @@ msgstr "Διεύθυνση ή τομέας"
 
 msgid "Block this sender"
 msgstr "Αποκλεισμός αυτού του αποστολέα"
-
-msgid "Account"
-msgstr "Λογαριασμός"
 
 msgid "Save"
 msgstr "Αποθήκευση"
@@ -2775,9 +2803,6 @@ msgstr "Κρυφή κοιν."
 msgid "Reply-To"
 msgstr "Απάντηση προς"
 
-msgid "Subject"
-msgstr "Θέμα"
-
 msgid "Writing in {format}"
 msgstr "Σύνταξη σε {format}"
 
@@ -3172,6 +3197,10 @@ msgstr ""
 "• Η ενημέρωση του «xdg-desktop-portal» και η εκ νέου σύνδεση ενδέχεται να "
 "διορθώσουν το απευθείας άνοιγμα συνδέσμων"
 
+#, fuzzy
+msgid "me"
+msgstr "Όνομα"
+
 msgid "Choose which folders to search"
 msgstr "Επιλέξτε τους φακέλους αναζήτησης"
 
@@ -3201,6 +3230,13 @@ msgstr "Σήμανση όλων ως αναγνωσμένων"
 
 msgid "Mark All as Unread"
 msgstr "Σήμανση όλων ως μη αναγνωσμένων"
+
+msgid "High importance"
+msgstr ""
+
+#, fuzzy
+msgid "Low importance"
+msgstr "Το κλειδί εισήχθη"
 
 msgid "Mark as read"
 msgstr "Σήμανση ως αναγνωσμένο"
@@ -3920,6 +3956,9 @@ msgstr "Κάθε 15 λεπτά"
 msgid "Every 30 minutes"
 msgstr "Κάθε 30 λεπτά"
 
+msgid "Drag to move"
+msgstr "Σύρετε για μετακίνηση"
+
 msgid "Left group"
 msgstr "Αριστερή ομάδα"
 
@@ -3938,8 +3977,16 @@ msgstr "Δεν εμφανίζεται"
 msgid "Drop a button here to hide it"
 msgstr "Αποθέστε ένα κουμπί εδώ για να το αποκρύψετε"
 
-msgid "Drag to move"
-msgstr "Σύρετε για μετακίνηση"
+#, fuzzy
+msgid "Shown"
+msgstr "Εμφάνιση"
+
+msgid "Left to right"
+msgstr ""
+
+#, fuzzy
+msgid "Drop a column here to hide it"
+msgstr "Αποθέστε ένα κουμπί εδώ για να το αποκρύψετε"
 
 msgid "Senders"
 msgstr "Αποστολείς"
@@ -4599,6 +4646,16 @@ msgid ""
 msgstr ""
 "Για πόσα δευτερόλεπτα παραμένει ανοικτή η παλέτα ενεργειών της λίστας "
 "μηνυμάτων αφού φύγει ο δείκτης."
+
+msgid "Columns"
+msgstr ""
+
+msgid ""
+"What a message shows when the list is on one line, from left to right. Drag "
+"the columns into the order you want, or out of the list. The subject always "
+"stays. Due Date appears only in lists with Microsoft 365 mail. Changes apply "
+"at once."
+msgstr ""
 
 msgid "Group messages by conversation"
 msgstr "Ομαδοποίηση μηνυμάτων κατά συζήτηση"

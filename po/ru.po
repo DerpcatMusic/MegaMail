@@ -987,6 +987,37 @@ msgstr "По имени (Я–А)"
 msgid "Full Path"
 msgstr ""
 
+#, fuzzy
+msgid "Sender"
+msgstr "Отправители"
+
+#, fuzzy
+msgid "Recipients"
+msgstr "Скрыть получателей"
+
+msgid "Correspondents"
+msgstr ""
+
+msgid "Subject"
+msgstr "Тема"
+
+#, fuzzy
+msgid "Attachment"
+msgstr "Вложения"
+
+#, fuzzy
+msgid "Importance"
+msgstr "Импортировать ключ"
+
+msgid "Account"
+msgstr "Учётная запись"
+
+msgid "Due Date"
+msgstr ""
+
+msgid "Date"
+msgstr ""
+
 msgid "Spam"
 msgstr "Спам"
 
@@ -1406,9 +1437,6 @@ msgstr "Адрес или домен"
 
 msgid "Block this sender"
 msgstr "Заблокировать этого отправителя"
-
-msgid "Account"
-msgstr "Учётная запись"
 
 msgid "Save"
 msgstr "Сохранить"
@@ -2765,9 +2793,6 @@ msgstr "Скрытая копия"
 msgid "Reply-To"
 msgstr "Адрес для ответа"
 
-msgid "Subject"
-msgstr "Тема"
-
 msgid "Writing in {format}"
 msgstr "Формат письма: {format}"
 
@@ -3178,6 +3203,10 @@ msgid ""
 "directly"
 msgstr ""
 
+#, fuzzy
+msgid "me"
+msgstr "Имя"
+
 msgid "Choose which folders to search"
 msgstr "Выберите папки для поиска"
 
@@ -3207,6 +3236,13 @@ msgstr "Отметить все как прочитанные"
 
 msgid "Mark All as Unread"
 msgstr "Отметить все как непрочитанные"
+
+msgid "High importance"
+msgstr ""
+
+#, fuzzy
+msgid "Low importance"
+msgstr "Ключ импортирован"
 
 msgid "Mark as read"
 msgstr "Отметить как прочитанное"
@@ -3938,6 +3974,9 @@ msgstr "Каждые 15 минут"
 msgid "Every 30 minutes"
 msgstr "Каждые 30 минут"
 
+msgid "Drag to move"
+msgstr "Перетащите для перемещения"
+
 msgid "Left group"
 msgstr "Левая группа"
 
@@ -3956,8 +3995,15 @@ msgstr "Скрыты"
 msgid "Drop a button here to hide it"
 msgstr "Перетащите кнопку сюда, чтобы скрыть её"
 
-msgid "Drag to move"
-msgstr "Перетащите для перемещения"
+msgid "Shown"
+msgstr ""
+
+msgid "Left to right"
+msgstr ""
+
+#, fuzzy
+msgid "Drop a column here to hide it"
+msgstr "Перетащите кнопку сюда, чтобы скрыть её"
 
 msgid "Senders"
 msgstr "Отправители"
@@ -4595,6 +4641,16 @@ msgid ""
 msgstr ""
 "Время в секундах, в течение которого палитра действий списка сообщений "
 "остаётся открытой после того, как курсор покинул её."
+
+msgid "Columns"
+msgstr ""
+
+msgid ""
+"What a message shows when the list is on one line, from left to right. Drag "
+"the columns into the order you want, or out of the list. The subject always "
+"stays. Due Date appears only in lists with Microsoft 365 mail. Changes apply "
+"at once."
+msgstr ""
 
 msgid "Group messages by conversation"
 msgstr "Группировать сообщения по обсуждениям"
