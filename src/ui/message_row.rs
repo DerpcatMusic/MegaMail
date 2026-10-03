@@ -1823,7 +1823,7 @@ impl Row {
             w.name.set_xalign(0.0);
             w.date.set_width_chars(9);
             w.date.set_xalign(1.0);
-            w.avatar.set_size(24);
+            w.avatar.set_size(16);
         } else {
             into(&w.top, &[name, clip, star, date, chip]);
             into(&w.subject_line, &[subject, tags]);
