@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Fixed: Email… in GNOME Files could open no message** (#339, reported by
+  frenchy82). When none of the files could be read, Hylki asked where zero
+  files should go instead of opening a message; it now opens one, with the
+  error beside it. File paths from the desktop's Email portal are read as
+  they come, unescaped, so a name with `&` or `%` in it, or a
+  `file://localhost/` URI, attaches too. A message started from files
+  asks before it is closed unsaved.
 - **Fixed: a message could be lost when an attachment had moved** (#340,
   reported by 7system7). Attachments are read when the message is sent, and
   the composer closed on Send. When a file had been moved or deleted, the

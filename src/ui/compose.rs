@@ -922,6 +922,7 @@ impl Component for Compose {
         let draft_origin = prefill.draft_origin.clone();
         let outbox_origin = prefill.outbox_origin;
         let prefill_attachments = prefill.attachments.clone();
+        let handed_files = !prefill_attachments.is_empty() && draft_origin.is_none() && outbox_origin.is_none();
         let prefill_encrypt = prefill.encrypt;
         let send_at = prefill.send_at;
         let current_sig = accounts.get(selected).map(|a| a.signature.clone()).unwrap_or_default();
@@ -1084,7 +1085,9 @@ impl Component for Compose {
             decorations,
             fields_shown: crate::config::load_privacy().reply_fields,
             narrow: false,
-            fields_dirty: false,
+            // Files handed in from outside are something to lose: closing
+            // asks first, as it would once the user had attached them.
+            fields_dirty: handed_files,
             asking_discard: false,
             sign: false,
             sign_touched: false,

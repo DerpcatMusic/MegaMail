@@ -8528,12 +8528,15 @@ impl SimpleComponent for AppModel {
                     attachments.len() + dropped.len(),
                     attachments.len()
                 );
-                if !attachments.is_empty() || !dropped.is_empty() {
+                if !attachments.is_empty() {
                     // Files came along (Files' own "Email…" entry): the same
                     // choice of destination as "Send with Hylki".
                     self.begin_hand_off(FileHandOff { base: prefill, files: attachments, dropped }, &sender);
                     return;
                 }
+                // None of the named files could be read (#339): asking where
+                // no files should go helps nobody, so the message opens with
+                // the error beside it.
                 self.leave_gallery();
                 let account = self
                     .current
@@ -8546,7 +8549,7 @@ impl SimpleComponent for AppModel {
                 } else {
                     self.open_compose(account, prefill, &sender);
                 }
-                self.after_hand_off(0, Vec::new());
+                self.after_hand_off(0, dropped);
             }
 
             AppMsg::PresentComposers => {
@@ -20820,9 +20823,27 @@ fn parse_mailto(uri: &str) -> Option<crate::ui::compose::ComposePrefill> {
     let (mut cc, mut bcc, mut subject, mut body) =
         (String::new(), String::new(), String::new(), String::new());
     let mut attachments: Vec<std::path::PathBuf> = Vec::new();
-    for pair in query.split('&').filter(|p| !p.is_empty()) {
-        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
-        let v = crate::percent::decode(v, false);
+    // The Email portal writes `attachment=` paths raw, unescaped (#339), so
+    // an `&` inside a file name splits the query: a piece with no `=` after
+    // an attachment is the rest of its path.
+    let mut pairs: Vec<String> = Vec::new();
+    for piece in query.split('&').filter(|p| !p.is_empty()) {
+        let continues = !piece.contains('=')
+            && pairs.last().is_some_and(|p| {
+                let key = p.split_once('=').map_or("", |(k, _)| k).to_ascii_lowercase();
+                key == "attach" || key == "attachment"
+            });
+        match pairs.last_mut() {
+            Some(last) if continues => {
+                last.push('&');
+                last.push_str(piece);
+            }
+            _ => pairs.push(piece.to_string()),
+        }
+    }
+    for pair in &pairs {
+        let (k, raw) = pair.split_once('=').unwrap_or((pair, ""));
+        let v = crate::percent::decode(raw, false);
         match k.to_ascii_lowercase().as_str() {
             // A second `to` joins the address part, comma-separated.
             "to" if !v.is_empty() => {
@@ -20836,13 +20857,31 @@ fn parse_mailto(uri: &str) -> Option<crate::ui::compose::ComposePrefill> {
             "subject" => subject = v,
             "body" => body = v,
             // Nautilus's "Send by email" (and xdg-email) pass the files as
-            // attach= parameters (#90) — an absolute path or a file:// URI.
-            // Only absolute paths are accepted; the caller re-checks that
-            // each names a real file before attaching.
+            // attach= parameters (#90), the Email portal as attachment=: an
+            // absolute path or a file:// URI. Only absolute paths are
+            // accepted; the caller re-checks that each names a real file
+            // before attaching.
             "attach" | "attachment" if !v.is_empty() => {
-                let path = v.strip_prefix("file://").unwrap_or(&v);
-                if path.starts_with('/') {
-                    attachments.push(std::path::PathBuf::from(path));
+                let path = if v.starts_with("file:") {
+                    // A URI of its own: GIO undoes its escapes and any
+                    // `localhost` host.
+                    gtk::gio::File::for_uri(&v).path()
+                } else {
+                    Some(std::path::PathBuf::from(&v))
+                };
+                // A raw path with a `%` in its name decodes into another
+                // name; when that one is not there and the raw one is, the
+                // raw one was meant.
+                let path = path.map(|p| {
+                    let literal = std::path::Path::new(raw);
+                    if raw != v && !p.exists() && literal.exists() {
+                        literal.to_path_buf()
+                    } else {
+                        p
+                    }
+                });
+                if let Some(p) = path.filter(|p| p.is_absolute()) {
+                    attachments.push(p);
                 }
             }
             _ => {}
@@ -22409,6 +22448,21 @@ mod tests {
             vec![
                 std::path::PathBuf::from("/home/u/a b.pdf"),
                 std::path::PathBuf::from("/tmp/c.png"),
+            ],
+        );
+
+        // The Email portal (#339): attachment=, raw paths, an `&` in a name,
+        // and file:// URIs with their own escapes or a localhost host.
+        let p = super::parse_mailto(
+            "mailto:a@b.c?subject=&body=&attachment=/home/u/Mes Docs/A & B été.pdf\
+             &attachment=file://localhost/tmp/x%20y.txt",
+        )
+        .unwrap();
+        assert_eq!(
+            p.attachments,
+            vec![
+                std::path::PathBuf::from("/home/u/Mes Docs/A & B été.pdf"),
+                std::path::PathBuf::from("/tmp/x y.txt"),
             ],
         );
     }
