@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Added: choosing the single-line list's columns** (#334, requested by
+  erenoglu). Settings → Message List → Columns shows and hides columns and
+  orders them by dragging. Besides the star, sender, subject, tags,
+  paperclip and date there are now Recipients, Correspondents (everyone who
+  wrote in the conversation, filed in other folders included), Importance
+  (from the `X-Priority`, `Importance` and `Priority` headers, or from
+  Microsoft 365), Account, and Due Date, which a Microsoft 365 follow-up
+  flag carries and which takes room only in a list with Microsoft 365 mail.
+  The cache gains importance and due-date columns in place; mail already
+  cached reads as normal importance until it is fetched again.
 - **Fixed: mail syncing could wait forever on a silent IMAP connection**
   (#324, by Salem Sayed Abdel Gawad). Reads and writes now fail after 60
   seconds without progress, including reads inside a FETCH response, so the

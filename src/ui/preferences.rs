@@ -146,6 +146,7 @@ pub struct PrefInit {
     pub focus: crate::config::FocusMode,
     pub preview_lines: u32,
     pub list_layout: crate::config::ListLayout,
+    pub list_columns: Vec<crate::config::ListColumn>,
     pub single_key_shortcuts: bool,
     pub run_in_background: bool,
     pub autostart: bool,
@@ -335,6 +336,12 @@ pub struct Preferences {
     focus: crate::config::FocusMode,
     /// The three drop zones of the toolbar editor, filled from `toolbar`.
     toolbar_editor: Option<ToolbarEditor>,
+    /// The single-line columns being edited (#334), and their editor.
+    list_columns: Vec<crate::config::ListColumn>,
+    column_editor: Option<ColumnEditor>,
+    /// Whether the list can be on one line at all, which the columns are
+    /// for.
+    list_single_possible: bool,
     /// Whether swipe actions are on (the reverse switch follows it).
     swipe_enabled: bool,
     /// Mirrors the threading switch, so the "threaded message list" row below
@@ -404,25 +411,28 @@ pub struct Preferences {
     files_rows: Option<(adw::ComboRow, adw::ComboRow, adw::SpinRow)>,
 }
 
-/// The reader toolbar editor (Settings → Appearance → Toolbar): one drop zone per
-/// side plus a "not shown" pool, each a wrapping row of draggable chips
-/// that slide apart under a drag to show where the drop will land.
-struct ToolbarEditor {
-    zones: Vec<ToolbarZone>,
+/// A drag-and-drop chip editor (Settings → Appearance → Toolbar, and
+/// Settings → Message List → Columns): its zones are rows of one raised
+/// card, each a wrapping row of draggable chips that slide apart under a
+/// drag to show where the drop will land.
+struct ChipZones {
+    /// Each zone's chips, and the caption shown while it has none.
+    zones: Vec<(ChipFlow, gtk::Label)>,
     /// The size of the chip being dragged (zero when none), written by the
     /// chip's drag source and read by every zone for its gap.
     drag_size: Rc<std::cell::Cell<(i32, i32)>>,
 }
 
-struct ToolbarZone {
-    side: Option<ToolbarSide>,
-    flow: ChipFlow,
-    /// Shown while the zone is empty, so there is still something to aim at.
-    empty: gtk::Label,
-}
-
-impl ToolbarEditor {
-    fn build(host: &gtk::Box, sender: &ComponentSender<Preferences>) -> Self {
+impl ChipZones {
+    /// One zone per `(title, hint)`. `has_room` says whether a zone takes
+    /// another chip; `on_drop` is handed the chip's key, the zone and the
+    /// slot, and says whether it took it.
+    fn build(
+        host: &gtk::Box,
+        heads: &[(String, String)],
+        has_room: impl Fn(usize, &ChipFlow) -> bool + Clone + 'static,
+        on_drop: impl Fn(String, usize, usize) -> bool + Clone + 'static,
+    ) -> Self {
         let mut zones = Vec::new();
         // One chip's size, learnt from whichever zone has chips, so an
         // empty zone opens a gap of the right size too.
@@ -434,22 +444,18 @@ impl ToolbarEditor {
         list.add_css_class("boxed-list");
         list.set_selection_mode(gtk::SelectionMode::None);
         host.append(&list);
-        for (side, title, hint) in [
-            (Some(ToolbarSide::Left), i18n("Left group"), i18n("Always shown · up to 6")),
-            (Some(ToolbarSide::Right), i18n("Right group"), i18n("Folds into ⋯ when narrow · up to 6")),
-            (None, i18n("Not shown"), i18n("Drop a button here to hide it")),
-        ] {
+        for (zone, (title, hint)) in heads.iter().enumerate() {
             let column = gtk::Box::new(gtk::Orientation::Vertical, 6);
             column.set_margin_top(10);
             column.set_margin_bottom(12);
             column.set_margin_start(12);
             column.set_margin_end(12);
             let heading = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            let label = gtk::Label::new(Some(&title));
+            let label = gtk::Label::new(Some(title));
             label.add_css_class("heading");
             label.set_halign(gtk::Align::Start);
             heading.append(&label);
-            let hint = gtk::Label::new(Some(&hint));
+            let hint = gtk::Label::new(Some(hint));
             hint.add_css_class("dim-label");
             hint.add_css_class("caption");
             hint.set_halign(gtk::Align::Start);
@@ -484,26 +490,26 @@ impl ToolbarEditor {
             // that slot. The dragged chip is hidden in its own zone for
             // the duration, so the hole it left closes the same way.
             let drop = gtk::DropTarget::new(gtk::glib::Type::STRING, gtk::gdk::DragAction::MOVE);
-            let input = sender.input_sender().clone();
             let fb = flow.clone();
-            let empty_label = empty.clone();
+            let room = has_room.clone();
+            let take = on_drop.clone();
             drop.connect_drop(move |_, value, x, y| {
                 let Ok(key) = value.get::<String>() else {
                     return false;
                 };
-                if !zone_has_room(&fb, side) {
+                if !room(zone, &fb) {
                     fb.set_gap(None);
                     return false;
                 }
                 let index = fb.insertion_index(x, y);
                 fb.set_gap(None);
-                let _ = input.send(PrefInput::ToolbarDrop { key, side, index });
-                true
+                take(key, zone, index)
             });
             let fb = flow.clone();
+            let room = has_room.clone();
             drop.connect_enter(move |_, x, y| {
-                // A full side takes nothing: no gap, no drop.
-                if !zone_has_room(&fb, side) {
+                // A full zone takes nothing: no gap, no drop.
+                if !room(zone, &fb) {
                     return gtk::gdk::DragAction::empty();
                 }
                 fb.add_css_class("drop-active");
@@ -511,9 +517,10 @@ impl ToolbarEditor {
                 gtk::gdk::DragAction::MOVE
             });
             let fb = flow.clone();
-            let el = empty_label.clone();
+            let el = empty.clone();
+            let room = has_room.clone();
             drop.connect_motion(move |_, x, y| {
-                if !zone_has_room(&fb, side) {
+                if !room(zone, &fb) {
                     return gtk::gdk::DragAction::empty();
                 }
                 el.set_visible(false);
@@ -521,43 +528,53 @@ impl ToolbarEditor {
                 gtk::gdk::DragAction::MOVE
             });
             let fb = flow.clone();
+            let el = empty.clone();
             drop.connect_leave(move |_| {
                 fb.remove_css_class("drop-active");
                 fb.set_gap(None);
                 // The "Empty" caption comes back with the next rebuild if
-                // the zone is still empty (see rebuild_toolbar_chips).
-                empty_label.set_visible(fb.first_child().is_none());
+                // the zone is still empty.
+                el.set_visible(fb.first_child().is_none());
             });
             flow.add_controller(drop);
 
-            zones.push(ToolbarZone { side, flow, empty });
+            zones.push((flow, empty));
         }
-        ToolbarEditor { zones, drag_size }
+        ChipZones { zones, drag_size }
     }
 
-    /// One draggable chip: the button's icon over its name.
-    fn chip(item: ToolbarItem, drag_size: &Rc<std::cell::Cell<(i32, i32)>>) -> gtk::Box {
+    /// Refill zone `zone` with chips: (key, icon, untranslated label).
+    fn fill(&self, zone: usize, chips: &[(&'static str, &'static str, &'static str)]) {
+        let Some((flow, empty)) = self.zones.get(zone) else { return };
+        flow.remove_all();
+        empty.set_visible(chips.is_empty());
+        for (key, icon, label) in chips {
+            flow.append(&self.chip(key, icon, label));
+        }
+    }
+
+    /// One draggable chip: an icon over its name.
+    fn chip(&self, key: &'static str, icon: &str, label: &str) -> gtk::Box {
         let chip = gtk::Box::new(gtk::Orientation::Vertical, 4);
         chip.add_css_class("toolbar-chip");
-        chip.set_widget_name(item.key());
+        chip.set_widget_name(key);
         chip.set_tooltip_text(Some(&i18n("Drag to move")));
-        let icon = gtk::Image::from_icon_name(item.icon());
-        icon.set_pixel_size(16);
-        chip.append(&icon);
-        let label = gtk::Label::new(Some(&i18n(item.label())));
-        label.add_css_class("caption");
-        chip.append(&label);
+        let image = gtk::Image::from_icon_name(icon);
+        image.set_pixel_size(16);
+        chip.append(&image);
+        let text = gtk::Label::new(Some(&i18n(label)));
+        text.add_css_class("caption");
+        chip.append(&text);
 
         let drag = gtk::DragSource::new();
         drag.set_actions(gtk::gdk::DragAction::MOVE);
-        let key = item.key();
         // The chip's likeness is taken while it is still on screen: it is
         // hidden once the drag is under way, and a hidden widget paints
         // nothing.
         let likeness: Rc<std::cell::RefCell<Option<gtk::gdk::Paintable>>> = Rc::new(std::cell::RefCell::new(None));
         let c = chip.clone();
         let l = likeness.clone();
-        let ds = drag_size.clone();
+        let ds = self.drag_size.clone();
         drag.connect_prepare(move |_, _, _| {
             *l.borrow_mut() = Some(gtk::WidgetPaintable::new(Some(&c)).current_image());
             // The zones open their gap at this chip's own size.
@@ -574,7 +591,7 @@ impl ToolbarEditor {
             c.set_visible(false);
         });
         let c = chip.clone();
-        let ds = drag_size.clone();
+        let ds = self.drag_size.clone();
         drag.connect_drag_end(move |_, _, _| {
             ds.set((0, 0));
             // Dropped nowhere (or somewhere that rebuilt the zones, in
@@ -583,6 +600,67 @@ impl ToolbarEditor {
         });
         chip.add_controller(drag);
         chip
+    }
+}
+
+/// The reader toolbar editor (Settings → Appearance → Toolbar): one drop
+/// zone per side plus a "not shown" pool.
+struct ToolbarEditor {
+    zones: ChipZones,
+}
+
+/// The toolbar editor's zones, in order.
+const TOOLBAR_ZONES: [Option<ToolbarSide>; 3] = [Some(ToolbarSide::Left), Some(ToolbarSide::Right), None];
+
+impl ToolbarEditor {
+    fn build(host: &gtk::Box, sender: &ComponentSender<Preferences>) -> Self {
+        let heads = [
+            (i18n("Left group"), i18n("Always shown · up to 6")),
+            (i18n("Right group"), i18n("Folds into ⋯ when narrow · up to 6")),
+            (i18n("Not shown"), i18n("Drop a button here to hide it")),
+        ];
+        let input = sender.input_sender().clone();
+        let zones = ChipZones::build(
+            host,
+            &heads,
+            |zone, flow| zone_has_room(flow, TOOLBAR_ZONES[zone]),
+            move |key, zone, index| {
+                let _ = input.send(PrefInput::ToolbarDrop { key, side: TOOLBAR_ZONES[zone], index });
+                true
+            },
+        );
+        ToolbarEditor { zones }
+    }
+}
+
+/// The single-line list's column editor (Settings → Message List →
+/// Columns, #334): the columns shown, left to right, and the rest.
+struct ColumnEditor {
+    zones: ChipZones,
+}
+
+impl ColumnEditor {
+    fn build(host: &gtk::Box, sender: &ComponentSender<Preferences>) -> Self {
+        let heads = [
+            (i18n("Shown"), i18n("Left to right")),
+            (i18n("Not shown"), i18n("Drop a column here to hide it")),
+        ];
+        let input = sender.input_sender().clone();
+        let zones = ChipZones::build(
+            host,
+            &heads,
+            |_, _| true,
+            move |key, zone, index| {
+                // The subject is the column that takes the room the others
+                // leave, so it stays.
+                if zone == 1 && key == crate::config::ListColumn::Subject.key() {
+                    return false;
+                }
+                let _ = input.send(PrefInput::ColumnDrop { key, shown: zone == 0, index });
+                true
+            },
+        );
+        ColumnEditor { zones }
     }
 }
 
@@ -633,18 +711,28 @@ impl Preferences {
         let Some(editor) = &self.toolbar_editor else {
             return;
         };
-        for zone in &editor.zones {
-            zone.flow.remove_all();
-            let items: Vec<ToolbarItem> = match zone.side {
+        for (zone, side) in TOOLBAR_ZONES.iter().enumerate() {
+            let items: Vec<ToolbarItem> = match side {
                 Some(ToolbarSide::Left) => self.toolbar.left.clone(),
                 Some(ToolbarSide::Right) => self.toolbar.right.clone(),
                 None => self.toolbar.hidden(),
             };
-            zone.empty.set_visible(items.is_empty());
-            for item in items {
-                zone.flow.append(&ToolbarEditor::chip(item, &editor.drag_size));
-            }
+            let chips: Vec<_> = items.iter().map(|i| (i.key(), i.icon(), i.label())).collect();
+            editor.zones.fill(zone, &chips);
         }
+    }
+
+    /// Refill the column editor's zones from the columns being edited.
+    fn rebuild_column_chips(&self) {
+        use crate::config::ListColumn;
+        let Some(editor) = &self.column_editor else {
+            return;
+        };
+        let chip = |c: &ListColumn| (c.key(), c.icon(), c.label());
+        let shown: Vec<_> = self.list_columns.iter().map(chip).collect();
+        let hidden: Vec<_> = ListColumn::ALL.iter().filter(|c| !self.list_columns.contains(c)).map(chip).collect();
+        editor.zones.fill(0, &shown);
+        editor.zones.fill(1, &hidden);
     }
 }
 
@@ -867,6 +955,10 @@ pub enum PrefInput {
     /// A reader toolbar chip was dropped: `key` names the button, `side`
     /// the zone (None = not shown), `index` its place in that zone.
     ToolbarDrop { key: String, side: Option<ToolbarSide>, index: usize },
+    /// A column chip dropped among the shown columns at `index`, or among
+    /// the hidden ones (#334).
+    ColumnDrop { key: String, shown: bool, index: usize },
+    ColumnRestore,
     ToolbarRestore,
     /// The showcase's stand-in for a drag hovering a zone: open the gap at
     /// `index` of the zone (0 left, 1 right, 2 not shown).
@@ -1015,6 +1107,8 @@ pub enum PrefOutput {
     SetSettingsOpenAccounts(bool),
     SetPreviewLines(u32),
     SetListLayout(crate::config::ListLayout),
+    /// The single-line list's columns, in order (#334).
+    SetListColumns(Vec<crate::config::ListColumn>),
     SetSingleKey(bool),
     SetRunInBackground(bool),
     SetAutostart(bool),
@@ -2491,6 +2585,32 @@ impl Component for Preferences {
                                         },
                                     },
                                 },
+
+                                // The single-line list's columns (#334): two
+                                // drop zones of draggable chips, filled in init.
+                                add = &adw::PreferencesGroup {
+                                    set_title: &i18n("Columns"),
+                                    set_description: Some(
+                                        &i18n("What a message shows when the list is on one line, from left \
+                                               to right. Drag the columns into the order you want, or out \
+                                               of the list. The subject always stays. Due Date appears \
+                                               only in lists with Microsoft 365 mail. Changes apply at once."),
+                                    ),
+                                    #[watch]
+                                    set_sensitive: model.list_single_possible,
+                                    #[name = "column_editor_box"]
+                                    gtk::Box {
+                                        set_orientation: gtk::Orientation::Vertical,
+                                        set_spacing: 12,
+
+                                        gtk::Button {
+                                            set_label: &i18n("Restore Defaults"),
+                                            set_halign: gtk::Align::End,
+                                            set_valign: gtk::Align::Center,
+                                            connect_clicked => PrefInput::ColumnRestore,
+                                        },
+                                    },
+                                },
                             },
 
                             add_named[Some("conversations")] = &adw::PreferencesPage {
@@ -3361,6 +3481,9 @@ impl Component for Preferences {
             toolbar: init.reader_toolbar.clone(),
             focus: init.focus,
             toolbar_editor: None,
+            list_columns: init.list_columns.clone(),
+            column_editor: None,
+            list_single_possible: init.list_layout != crate::config::ListLayout::Cards,
             show_unified: init.show_unified,
             unified_kinds: init.unified_kinds,
             unified_chips: init.unified_chips,
@@ -4112,6 +4235,8 @@ impl Component for Preferences {
         // column is 40px wider than the stock preferences clamp allows.
         widen_page(widgets.appearance_page.upcast_ref(), 640);
         model.rebuild_toolbar_chips();
+        model.column_editor = Some(ColumnEditor::build(&widgets.column_editor_box, &sender));
+        model.rebuild_column_chips();
         tracing::debug!("settings window: prefs tail E (sidebar rows built) at {:?}", t_init.elapsed());
         model.side_list = Some(widgets.side_list.clone());
         model.search = Some(SettingsSearch::build(
@@ -4526,13 +4651,36 @@ impl Component for Preferences {
                 if let Some(editor) = &self.toolbar_editor {
                     // A gap the size of the first chip found, as a drag of
                     // it would open.
-                    if let Some(chip) = editor.zones.iter().find_map(|z| z.flow.first_child()) {
-                        editor.drag_size.set((chip.width(), chip.height()));
+                    let zones = &editor.zones;
+                    if let Some(chip) = zones.zones.iter().find_map(|(flow, _)| flow.first_child()) {
+                        zones.drag_size.set((chip.width(), chip.height()));
                     }
-                    if let Some(z) = editor.zones.get(zone) {
-                        z.flow.add_css_class("drop-active");
-                        z.flow.set_gap(Some(index));
+                    if let Some((flow, _)) = zones.zones.get(zone) {
+                        flow.add_css_class("drop-active");
+                        flow.set_gap(Some(index));
                     }
+                }
+            }
+            PrefInput::ColumnDrop { key, shown, index } => {
+                if let Some(column) = crate::config::ListColumn::from_key(&key) {
+                    // The slot counts the chips still on screen, the dragged
+                    // one hidden: the same list with it taken out.
+                    let mut columns = self.list_columns.clone();
+                    columns.retain(|c| *c != column);
+                    if shown {
+                        columns.insert(index.min(columns.len()), column);
+                    }
+                    self.list_columns = crate::config::ListColumn::from_keys(&crate::config::ListColumn::to_keys(&columns));
+                    self.rebuild_column_chips();
+                    let _ = sender.output(PrefOutput::SetListColumns(self.list_columns.clone()));
+                }
+            }
+            PrefInput::ColumnRestore => {
+                let default = crate::config::ListColumn::DEFAULT.to_vec();
+                if self.list_columns != default {
+                    self.list_columns = default;
+                    self.rebuild_column_chips();
+                    let _ = sender.output(PrefOutput::SetListColumns(self.list_columns.clone()));
                 }
             }
             PrefInput::ToolbarRestore => {
@@ -4608,6 +4756,7 @@ impl Component for Preferences {
                     2 => crate::config::ListLayout::Automatic,
                     _ => crate::config::ListLayout::Cards,
                 };
+                self.list_single_possible = layout != crate::config::ListLayout::Cards;
                 let _ = sender.output(PrefOutput::SetListLayout(layout));
             }
             PrefInput::ChangePreviewLines(index) => {

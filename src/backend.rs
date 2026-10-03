@@ -365,6 +365,8 @@ fn build(s: &Spec) -> Message {
             .in_reply_to
             .map(|p| format!("<demo-{p}@hylki.local>"))
             .unwrap_or_default(),
+        importance: Default::default(),
+        due: 0,
     }
 }
 
@@ -418,6 +420,8 @@ pub fn seed_demo_cache(cache: &crate::cache::Cache) {
                 has_attachment: true,
                 message_id: String::new(),
                 references: String::new(),
+                importance: Default::default(),
+                due: 0,
             };
             // Insert-or-replace, not save: `save_messages` clears the folder
             // first, so seeding one message at a time would leave only the last.
@@ -478,6 +482,8 @@ pub fn seed_demo_cache(cache: &crate::cache::Cache) {
                     has_attachment: true,
                     message_id: String::new(),
                     references: String::new(),
+                    importance: Default::default(),
+                    due: 0,
                 };
                 cache.upsert_messages(account.id, folder, std::slice::from_ref(&message));
                 cache.save_attachment_meta(
@@ -822,6 +828,8 @@ fn sample_messages() -> Vec<Message> {
                         has_attachment: false,
                         message_id: format!("<bulk-{id}@hylki.local>"),
                         references: String::new(),
+                        importance: Default::default(),
+                        due: 0,
                     });
                 }
             }

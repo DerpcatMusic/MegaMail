@@ -310,13 +310,34 @@ fn graph_message(v: &serde_json::Value, account_id: u32, folder_id: u32) -> Opti
             .as_str()
             .map(|c| format!("graph-conv:{}", c.to_ascii_lowercase()))
             .unwrap_or_default(),
+        importance: match v["importance"].as_str() {
+            Some("high") => crate::models::Importance::High,
+            Some("low") => crate::models::Importance::Low,
+            _ => crate::models::Importance::Normal,
+        },
+        due: graph_due(&v["flag"]),
     };
     Some((msg, gid))
 }
 
 const GRAPH_MSG_SELECT: &str = "$select=id,internetMessageId,conversationId,subject,bodyPreview,\
                                 from,replyTo,toRecipients,ccRecipients,receivedDateTime,isRead,\
-                                flag,hasAttachments,categories";
+                                flag,hasAttachments,categories,importance";
+
+/// When a still-open follow-up flag falls due, in Unix seconds, or 0 (#334).
+/// Graph gives a wall-clock time and the zone it is in, which is UTC unless
+/// the request asked for another.
+fn graph_due(flag: &serde_json::Value) -> i64 {
+    if flag["flagStatus"].as_str() != Some("flagged") {
+        return 0;
+    }
+    let Some(at) = flag["dueDateTime"]["dateTime"].as_str() else { return 0 };
+    // Seven decimal places of seconds, which chrono will not take whole.
+    let at = at.split('.').next().unwrap_or(at);
+    chrono::NaiveDateTime::parse_from_str(at, "%Y-%m-%dT%H:%M:%S")
+        .map(|t| t.and_utc().timestamp())
+        .unwrap_or(0)
+}
 
 /// List a folder's newest summaries (newest first).
 fn graph_list_messages(
@@ -1705,4 +1726,25 @@ async fn emit_graph_body_hits(
     }
     tracing::info!("filter: Graph body search over {} messages hit {}", listed.len(), hits.len());
     emit(WorkerEvent::BodyHits { folder_id, hits });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::graph_due;
+
+    /// #334: a flagged message's due date, in UTC; none once the flag is
+    /// complete or cleared, or without a date.
+    #[test]
+    fn a_due_date_is_read_only_from_an_open_flag() {
+        let flag = |status: &str| {
+            serde_json::json!({
+                "flagStatus": status,
+                "dueDateTime": { "dateTime": "2026-10-05T04:00:00.0000000", "timeZone": "UTC" },
+            })
+        };
+        assert_eq!(graph_due(&flag("flagged")), 1_791_172_800);
+        assert_eq!(graph_due(&flag("complete")), 0);
+        assert_eq!(graph_due(&flag("notFlagged")), 0);
+        assert_eq!(graph_due(&serde_json::json!({ "flagStatus": "flagged" })), 0);
+    }
 }

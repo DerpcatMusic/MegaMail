@@ -7809,6 +7809,8 @@ mod tests {
             has_attachment: false,
             message_id: String::new(),
             references: String::new(),
+            importance: Default::default(),
+            due: 0,
         }
     }
 

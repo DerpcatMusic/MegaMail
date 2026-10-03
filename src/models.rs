@@ -277,6 +277,68 @@ pub struct Message {
     /// Referenced Message-IDs (In-Reply-To + References), space-separated and
     /// normalized. Links a reply to the messages it descends from.
     pub references: String,
+    /// How important the sender marked it (#334).
+    pub importance: Importance,
+    /// When a Microsoft 365 follow-up flag falls due (Unix seconds), or 0.
+    /// Only Graph has such a date; IMAP and JMAP have no standard for one.
+    pub due: i64,
+}
+
+/// How important a message's sender marked it: the `X-Priority`, `Importance`
+/// or `Priority` header, or Microsoft 365's `importance` (#334).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Importance {
+    #[default]
+    Normal,
+    High,
+    Low,
+}
+
+impl Importance {
+    /// The value a header gives: `X-Priority: 1 (Highest)`, `Importance:
+    /// high`, `Priority: urgent` and so on. Anything else is normal.
+    pub fn from_header(name: &str, value: &str) -> Importance {
+        let value = value.trim().to_ascii_lowercase();
+        if name.eq_ignore_ascii_case("x-priority") {
+            return match value.chars().next() {
+                Some('1' | '2') => Importance::High,
+                Some('4' | '5') => Importance::Low,
+                _ => Importance::Normal,
+            };
+        }
+        match value.split(|c: char| !c.is_ascii_alphanumeric() && c != '-').next().unwrap_or("") {
+            "high" | "urgent" => Importance::High,
+            "low" | "non-urgent" => Importance::Low,
+            _ => Importance::Normal,
+        }
+    }
+
+    /// The first of `X-Priority`, `Importance` and `Priority` that says
+    /// anything, from a lookup by header name.
+    pub fn from_headers<'a>(header: impl Fn(&'static str) -> Option<&'a str>) -> Importance {
+        ["X-Priority", "Importance", "Priority"]
+            .iter()
+            .filter_map(|name| header(name).map(|v| Importance::from_header(name, v)))
+            .find(|i| *i != Importance::Normal)
+            .unwrap_or_default()
+    }
+
+    /// The number the cache stores.
+    pub fn to_i64(self) -> i64 {
+        match self {
+            Importance::Normal => 0,
+            Importance::High => 1,
+            Importance::Low => -1,
+        }
+    }
+
+    pub fn from_i64(n: i64) -> Importance {
+        match n {
+            1 => Importance::High,
+            -1 => Importance::Low,
+            _ => Importance::Normal,
+        }
+    }
 }
 
 /// Identifies an existing draft being edited, so saving/sending replaces it
@@ -867,6 +929,8 @@ impl OutboxItem {
             has_attachment: false,
             message_id: String::new(),
             references: String::new(),
+            importance: Default::default(),
+            due: 0,
         }
     }
 }
@@ -1241,6 +1305,28 @@ pub fn thread_ids<'a>(msgs: impl IntoIterator<Item = &'a Message>) -> Vec<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #334: each priority header's spellings, and normal for anything else.
+    #[test]
+    fn importance_reads_every_priority_header() {
+        assert_eq!(Importance::from_header("X-Priority", "1 (Highest)"), Importance::High);
+        assert_eq!(Importance::from_header("x-priority", " 2"), Importance::High);
+        assert_eq!(Importance::from_header("X-Priority", "3 (Normal)"), Importance::Normal);
+        assert_eq!(Importance::from_header("X-Priority", "5 (Lowest)"), Importance::Low);
+        assert_eq!(Importance::from_header("Importance", "High"), Importance::High);
+        assert_eq!(Importance::from_header("Importance", "low"), Importance::Low);
+        assert_eq!(Importance::from_header("Priority", "urgent"), Importance::High);
+        assert_eq!(Importance::from_header("Priority", "non-urgent"), Importance::Low);
+        assert_eq!(Importance::from_header("Importance", "whatever"), Importance::Normal);
+        // The first header that says anything wins; a normal one says nothing.
+        let headers = [("X-Priority", "3"), ("Importance", "high")];
+        let lookup = |name: &str| headers.iter().find(|(n, _)| *n == name).map(|(_, v)| *v);
+        assert_eq!(Importance::from_headers(lookup), Importance::High);
+        assert_eq!(Importance::from_headers(|_| None), Importance::Normal);
+        for i in [Importance::Normal, Importance::High, Importance::Low] {
+            assert_eq!(Importance::from_i64(i.to_i64()), i);
+        }
+    }
 
     #[test]
     fn a_quota_says_what_is_used_and_free() {

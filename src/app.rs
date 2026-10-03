@@ -754,6 +754,8 @@ pub struct AppModel {
     preview_lines: u32,
     /// The message list's layout setting (#334).
     list_layout: config::ListLayout,
+    /// The columns of a single-line list, in order (#334).
+    list_columns: Vec<config::ListColumn>,
     /// The list pane is wide enough for one line per message, which
     /// Automatic follows.
     list_wide: bool,
@@ -3223,6 +3225,7 @@ impl SimpleComponent for AppModel {
             list_count: String::new(),
             preview_lines: config::load_preview_lines(),
             list_layout: config::load_list_layout(),
+            list_columns: config::load_list_columns(),
             list_wide: config::load_list_pane_width() >= LIST_WIDE_ON,
             shortcuts_win: None,
             run_in_background: std::rc::Rc::new(std::cell::Cell::new(
@@ -3467,6 +3470,7 @@ impl SimpleComponent for AppModel {
             animate: false,
         });
         model.push_single_line();
+        model.message_list.emit(MessageListInput::SetColumns(model.list_columns.clone()));
         model.sidebars_emit(SidebarInput::SetFocus {
             hide_accounts: model.focus.active(config::FocusPart::HideAccounts),
             fold_unified: model.focus.active(config::FocusPart::FoldUnified),
@@ -7452,6 +7456,11 @@ impl SimpleComponent for AppModel {
                     self.push_single_line();
                 }
             }
+            AppMsg::Pref(PrefOutput::SetListColumns(columns)) => {
+                if pref!(self.list_columns = columns.clone()) {
+                    self.message_list.emit(MessageListInput::SetColumns(columns));
+                }
+            }
             AppMsg::ListPaneWidth(width) => {
                 // A margin each way, so a drag that rests near the line does
                 // not flick the rows back and forth.
@@ -10976,6 +10985,7 @@ impl AppModel {
             spellcheck_langs: self.spellcheck_langs.clone(),
             preview_lines: self.preview_lines,
             list_layout: self.list_layout,
+            list_columns: config::ListColumn::to_keys(&self.list_columns),
             single_key_shortcuts: self.single_key.get(),
             run_in_background: self.run_in_background.get(),
             autostart: self.autostart,
@@ -13005,7 +13015,8 @@ impl AppModel {
             tags_placement: self.tags_placement,
         });
 
-        // Keep the list's per-account tint colors in sync.
+        // Keep the list's per-account tint colors in sync, and what its
+        // Account and Due columns need to know (#334).
         let colors: std::collections::HashMap<u32, String> = self
             .accounts
             .iter()
@@ -13013,6 +13024,19 @@ impl AppModel {
             .collect();
         self.message_list
             .emit(MessageListInput::SetAccountColors(colors));
+        let names: std::collections::HashMap<u32, String> =
+            self.accounts.iter().map(|a| (a.id, self.account_label(a.id))).collect();
+        let graph: std::collections::HashSet<u32> = self
+            .accounts
+            .iter()
+            .filter(|a| {
+                self.config
+                    .get(a.id.saturating_sub(1) as usize)
+                    .is_some_and(|c| c.protocol == config::Protocol::Graph)
+            })
+            .map(|a| a.id)
+            .collect();
+        self.message_list.emit(MessageListInput::SetAccountNames { names, graph });
     }
 
     fn remote_allowed(&self, m: &Message) -> bool {
@@ -17717,6 +17741,7 @@ impl AppModel {
             theme: self.theme.clone(),
             preview_lines: self.preview_lines,
             list_layout: self.list_layout,
+            list_columns: self.list_columns.clone(),
             single_key_shortcuts: self.single_key.get(),
             run_in_background: self.run_in_background.get(),
             autostart: self.autostart,
@@ -22464,6 +22489,8 @@ mod tests {
             has_attachment: false,
             message_id: message_id.to_string(),
             references: String::new(),
+            importance: Default::default(),
+            due: 0,
         }
     }
 
@@ -22721,6 +22748,8 @@ mod tests {
             has_attachment: false,
             message_id: String::new(),
             references: String::new(),
+            importance: Default::default(),
+            due: 0,
         }
     }
 

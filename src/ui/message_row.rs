@@ -15,8 +15,10 @@ use adw::prelude::*;
 use gtk::glib;
 use gtk::subclass::prelude::ObjectSubclassIsExt;
 
+use crate::config::ListColumn;
 use crate::i18n::i18n;
-use crate::models::Message;
+use crate::models::{Importance, Message};
+use crate::ui::column_bin::ColumnBin;
 use crate::ui::context_menu::{show_context_menu, MenuEntry};
 use crate::ui::message_list::MessageListInput;
 
@@ -53,6 +55,12 @@ pub const SWIPE_MAX: f64 = 120.0;
 /// reply's rail stub reaches 2px the same way. The swipe surface's clip
 /// leaves this much room on the left, or both come out cut in half.
 const THREAD_NODE_REACH: f32 = 8.0;
+/// The single line's name columns, in pixels (#334): wide enough for most
+/// names, and fixed so the columns after them line up.
+const SENDER_COLUMN_PX: i32 = 160;
+const PEOPLE_COLUMN_PX: i32 = 200;
+const ACCOUNT_COLUMN_PX: i32 = 110;
+
 /// Distance past which the indicator reads as "armed" (full color) — purely
 /// a visual cue; `AdwSwipeTracker` makes the real commit decision on
 /// release, factoring in velocity too.
@@ -104,6 +112,9 @@ pub struct RowMeta {
     /// Any message of the conversation is unread / starred (heads only).
     pub unread: bool,
     pub starred: bool,
+    /// Who took part in the conversation, for the Correspondents column
+    /// (#334); worked out only while that column is shown.
+    pub people: Option<String>,
     /// The row's height is open. False only while a reply slides shut
     /// before it is taken out of the list.
     pub revealed: bool,
@@ -414,6 +425,9 @@ pub struct RowLook {
     /// One line per message, in columns, instead of the three-line card
     /// (#334).
     pub single_line: bool,
+    /// Those columns, in order, the Due column left out of a list without
+    /// Microsoft 365 mail in it.
+    pub columns: Vec<ListColumn>,
     /// How many lines of the message's text a row shows (0–3).
     pub preview_lines: u32,
     /// Whether the subject line is drawn (Focus Mode can take it away).
@@ -444,6 +458,7 @@ impl Default for RowLook {
             avatars: true,
             sender_logos: false,
             single_line: false,
+            columns: ListColumn::DEFAULT.to_vec(),
             preview_lines: 1,
             show_subject: true,
             show_palette: true,
@@ -464,6 +479,8 @@ pub struct RowShared {
     /// The tags (#71): the chips a row shows are the message's keywords that
     /// name one of these.
     pub tags: RefCell<Vec<crate::config::Tag>>,
+    /// Each account's name, for the Account column (#334).
+    pub account_names: RefCell<HashMap<u32, String>>,
     /// How long an actions palette stays open after the pointer leaves it.
     pub palette_collapse_secs: Cell<u64>,
     /// Open the palette on row hover.
@@ -496,6 +513,7 @@ impl RowShared {
         Rc::new(RowShared {
             look: RefCell::new(RowLook::default()),
             tags: RefCell::new(Vec::new()),
+            account_names: RefCell::new(HashMap::new()),
             palette_collapse_secs: Cell::new(5),
             palette_hover: Cell::new(privacy.list_palette_hover),
             swipe_reversed: Cell::new(privacy.swipe_reversed),
@@ -667,7 +685,7 @@ pub async fn find_logo(email: String) -> FaceCmd {
 }
 
 /// Display names from a raw To header: "Ann <a@x>, b@y" -> "Ann, b@y".
-fn recipient_names(to: &str) -> String {
+pub fn recipient_names(to: &str) -> String {
     let mut names: Vec<String> = Vec::new();
     for part in to.split(',') {
         let part = part.trim();
@@ -694,6 +712,18 @@ fn first_recipient_addr(to: &str) -> Option<String> {
         None => first,
     };
     (!addr.is_empty()).then(|| addr.to_string())
+}
+
+/// A follow-up flag's due date for the Due column (#334): the day alone,
+/// the year too when it is not this one. Empty when there is none.
+fn due_label(due: i64) -> String {
+    if due <= 0 {
+        String::new()
+    } else if crate::datefmt::year(due) == crate::datefmt::year(crate::datefmt::now()) {
+        crate::datefmt::day_month(due)
+    } else {
+        crate::datefmt::day_month_year(due)
+    }
 }
 
 /// The tag section of a message menu (#71): one entry per tag, its swatch
@@ -968,6 +998,19 @@ pub struct RowWidgets {
     top: gtk::Box,
     /// The single-line layout's one line (#334).
     line: gtk::Box,
+    /// The single-line layout's own columns, which a card has no place for,
+    /// each in the bin that sizes its column.
+    recipients: gtk::Label,
+    recipients_col: ColumnBin,
+    people: gtk::Label,
+    people_col: ColumnBin,
+    importance: gtk::Image,
+    account: gtk::Label,
+    account_col: ColumnBin,
+    due: gtk::Label,
+    /// The bins the sender and the subject move into on one line.
+    name_col: ColumnBin,
+    subject_col: ColumnBin,
     name: gtk::Label,
     clip: gtk::Image,
     star: gtk::Image,
@@ -1010,8 +1053,9 @@ struct RowState {
     tags_for: Option<(Vec<String>, u64)>,
     avatar_shown: bool,
     hovered: bool,
-    /// The widgets are laid out on one line (#334).
-    single: bool,
+    /// The columns the widgets are laid out in on one line, or `None` for
+    /// the card (#334).
+    columns: Option<Vec<ListColumn>>,
     dragging: bool,
     palette_open: bool,
     palette: Option<PaletteButtons>,
@@ -1365,8 +1409,10 @@ impl Row {
         let msg = &data.msg;
         let meta = &data.meta;
         let w = &self.w;
-        self.arrange(look.single_line);
+        self.arrange(look.single_line.then_some(&look.columns[..]));
         let single = look.single_line;
+        // Whether a widget's column is on: a card shows what it always has.
+        let col = |c: ListColumn| !single || look.columns.contains(&c);
 
         self.sync_host_classes();
         {
@@ -1436,14 +1482,20 @@ impl Row {
         w.dot.set_opacity(if unread { 1.0 } else { 0.0 });
         w.text.set_valign(if look.avatars { gtk::Align::Center } else { gtk::Align::Start });
 
+        w.name_col.set_visible(col(ListColumn::Sender));
         w.name.set_label(&self.name_line(&data, &look));
         w.name.set_css_classes(if unread { &["message-sender", "unread"] } else { &["message-sender"] });
-        w.clip.set_visible(msg.has_attachment);
-        // On one line the star keeps its column whether lit or not, so the
-        // senders line up.
+        // On one line an icon keeps its column whether lit or not, so the
+        // columns after it line up.
+        w.clip.set_visible(if single { col(ListColumn::Attachment) } else { msg.has_attachment });
+        w.clip.set_opacity(if msg.has_attachment { 1.0 } else { 0.0 });
         let starred = msg.starred || meta.starred;
-        w.star.set_visible(starred || single);
+        w.star.set_visible(if single { col(ListColumn::Star) } else { starred });
         w.star.set_opacity(if starred { 1.0 } else { 0.0 });
+        if single {
+            self.fill_columns(&data, &look, &shared, unread);
+        }
+        w.date.set_visible(col(ListColumn::Date));
         match (&meta.latest, &meta.latest_at) {
             (_, Some((ts, date))) if single => w.date.set_label(&crate::models::date_short(*ts, date)),
             (Some(latest), _) if !single => w.date.set_label(latest),
@@ -1476,6 +1528,7 @@ impl Row {
             w.subject.set_label(&msg.subject);
         }
         w.subject.set_css_classes(if unread { &["message-subject", "unread"] } else { &["message-subject"] });
+        w.tags_box.set_visible(col(ListColumn::Tags));
         self.render_tags(msg, &shared, &look);
 
         let preview = meta.preview.as_deref().unwrap_or(&msg.preview);
@@ -1499,6 +1552,54 @@ impl Row {
         }
         self.sync_palette_buttons();
         self.sync_swipe_strip();
+    }
+
+    /// The columns only a single line has (#334): each shown or not as the
+    /// setting says, and filled from the message when it is.
+    fn fill_columns(&self, data: &RowData, look: &RowLook, shared: &RowShared, unread: bool) {
+        let w = &self.w;
+        let msg = &data.msg;
+        let on = |c: ListColumn| look.columns.contains(&c);
+        let weight: &[&str] = if unread { &["message-sender", "unread"] } else { &["message-sender"] };
+
+        w.recipients_col.set_visible(on(ListColumn::Recipients));
+        if on(ListColumn::Recipients) {
+            w.recipients.set_label(&recipient_names(&msg.to));
+            w.recipients.set_css_classes(weight);
+        }
+
+        w.people_col.set_visible(on(ListColumn::Correspondents));
+        if on(ListColumn::Correspondents) {
+            let people = data.meta.people.clone().unwrap_or_else(|| msg.from_name.clone());
+            w.people.set_tooltip_text(Some(&people));
+            w.people.set_label(&people);
+            w.people.set_css_classes(weight);
+        }
+
+        w.importance.set_visible(on(ListColumn::Importance));
+        let (icon, class, tip) = match msg.importance {
+            Importance::High => ("emblem-important-symbolic", "importance-high", Some(i18n("High importance"))),
+            Importance::Low => ("hylki-importance-low-symbolic", "importance-low", Some(i18n("Low importance"))),
+            Importance::Normal => ("emblem-important-symbolic", "importance-high", None),
+        };
+        w.importance.set_icon_name(Some(icon));
+        w.importance.set_css_classes(&[class]);
+        w.importance.set_opacity(if tip.is_some() { 1.0 } else { 0.0 });
+        w.importance.set_tooltip_text(tip.as_deref());
+
+        w.account_col.set_visible(on(ListColumn::Account));
+        if on(ListColumn::Account) {
+            let name = shared.account_names.borrow().get(&msg.account_id).cloned().unwrap_or_default();
+            w.account.set_tooltip_text(Some(&name));
+            w.account.set_label(&name);
+        }
+
+        w.due.set_visible(on(ListColumn::Due));
+        if on(ListColumn::Due) {
+            w.due.set_label(&due_label(msg.due));
+            let overdue = msg.due > 0 && crate::datefmt::day_key(msg.due) < crate::datefmt::day_key(crate::datefmt::now());
+            w.due.set_css_classes(if overdue { &["message-date", "overdue"] } else { &["message-date"] });
+        }
     }
 
     /// The row's own classes, on the item widget the view wraps it in.
@@ -1791,17 +1892,22 @@ impl Row {
     /// Lay the row's widgets out on one line or as the three-line card
     /// (#334). They are moved, not copied, and only when the layout
     /// changes: a row is recycled across messages but rarely across layouts.
-    fn arrange(&self, single: bool) {
-        if self.st.borrow().single == single {
+    fn arrange(&self, columns: Option<&[ListColumn]>) {
+        if self.st.borrow().columns.as_deref() == columns {
             return;
         }
-        self.st.borrow_mut().single = single;
+        self.st.borrow_mut().columns = columns.map(<[ListColumn]>::to_vec);
         let w = &self.w;
+        fn detach(widget: &gtk::Widget) {
+            if let Some(from) = widget.parent().and_downcast::<gtk::Box>() {
+                from.remove(widget);
+            } else if let Some(bin) = widget.parent().and_downcast::<ColumnBin>() {
+                bin.set_child(None::<&gtk::Widget>);
+            }
+        }
         fn into(to: &gtk::Box, widgets: &[&gtk::Widget]) {
             for widget in widgets {
-                if let Some(from) = widget.parent().and_downcast::<gtk::Box>() {
-                    from.remove(*widget);
-                }
+                detach(widget);
                 to.append(*widget);
             }
         }
@@ -1814,14 +1920,36 @@ impl Row {
         let tags: &gtk::Widget = w.tags_box.upcast_ref();
         let lock: &gtk::Widget = w.lock.upcast_ref();
         let preview: &gtk::Widget = w.preview.upcast_ref();
-        if single {
-            // [star][sender][lock][subject — preview][tags][clip][chip][date]
-            into(&w.line, &[star, name, lock, subject, tags, clip, chip, date]);
-            // A fixed width in pixels, not characters: bold characters are
-            // wider, and the subjects of read and unread rows must line up.
+        if let Some(columns) = columns {
+            // In the setting's order; a column that is off keeps its widget
+            // wherever it was, hidden. The conversation chip rides at the
+            // subject's end, where the subject gives way to it.
+            for c in columns {
+                match c {
+                    ListColumn::Star => into(&w.line, &[star]),
+                    ListColumn::Sender => {
+                        detach(name);
+                        w.name_col.set_child(Some(name));
+                        into(&w.line, &[w.name_col.upcast_ref()]);
+                    }
+                    ListColumn::Recipients => into(&w.line, &[w.recipients_col.upcast_ref()]),
+                    ListColumn::Correspondents => into(&w.line, &[w.people_col.upcast_ref()]),
+                    ListColumn::Subject => {
+                        detach(subject);
+                        w.subject_col.set_child(Some(subject));
+                        into(&w.line, &[lock, w.subject_col.upcast_ref(), chip]);
+                    }
+                    ListColumn::Tags => into(&w.line, &[tags]),
+                    ListColumn::Attachment => into(&w.line, &[clip]),
+                    ListColumn::Importance => into(&w.line, &[w.importance.upcast_ref()]),
+                    ListColumn::Account => into(&w.line, &[w.account_col.upcast_ref()]),
+                    ListColumn::Due => into(&w.line, &[w.due.upcast_ref()]),
+                    ListColumn::Date => into(&w.line, &[date]),
+                }
+            }
+            // Its bin sets the width (see `ColumnBin`); expanding, the
+            // name would take the subject's room.
             w.name.set_hexpand(false);
-            w.name.set_size_request(160, -1);
-            w.name.set_max_width_chars(1);
             w.name.set_xalign(0.0);
             w.date.set_width_chars(9);
             w.date.set_xalign(1.0);
@@ -1831,14 +1959,12 @@ impl Row {
             into(&w.subject_line, &[subject, tags]);
             into(&w.preview_line, &[lock, preview]);
             w.name.set_hexpand(true);
-            w.name.set_size_request(-1, -1);
-            w.name.set_max_width_chars(-1);
             w.date.set_width_chars(-1);
             w.date.set_xalign(0.5);
             w.avatar.set_size(38);
         }
-        w.text.set_visible(!single);
-        w.line.set_visible(single);
+        w.text.set_visible(columns.is_none());
+        w.line.set_visible(columns.is_some());
     }
 
     pub fn set_preview_lines(&self, lines: u32) {
@@ -2545,6 +2671,34 @@ fn build_widgets() -> RowWidgets {
     line.set_hexpand(true);
     line.set_visible(false);
     content.append(&line);
+    // The columns a card has no place for, which live on that line, each in
+    // a bin that keeps it the same width on every row.
+    let column_label = |px: i32| {
+        let label = gtk::Label::new(None);
+        label.set_xalign(0.0);
+        label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        let bin = ColumnBin::new(px);
+        bin.set_child(Some(&label));
+        bin.set_visible(false);
+        line.append(&bin);
+        (label, bin)
+    };
+    let (recipients, recipients_col) = column_label(SENDER_COLUMN_PX);
+    let (people, people_col) = column_label(PEOPLE_COLUMN_PX);
+    let (account, account_col) = column_label(ACCOUNT_COLUMN_PX);
+    let name_col = ColumnBin::new(SENDER_COLUMN_PX);
+    let subject_col = ColumnBin::new(0);
+    // The subject takes whatever room the other columns leave.
+    subject_col.set_hexpand(true);
+    account.add_css_class("message-account");
+    let due = gtk::Label::new(None);
+    due.set_width_chars(9);
+    due.set_xalign(1.0);
+    due.set_visible(false);
+    line.append(&due);
+    let importance = gtk::Image::from_icon_name("emblem-important-symbolic");
+    importance.set_visible(false);
+    line.append(&importance);
 
     // The last reply's rail: a real dotted border on a widget spanning
     // exactly the row's top half, so it ends at the node dot. Added before
@@ -2621,6 +2775,16 @@ fn build_widgets() -> RowWidgets {
         palette_spacer,
         palette_inner,
         content,
+        recipients,
+        recipients_col,
+        people,
+        people_col,
+        importance,
+        account,
+        account_col,
+        due,
+        name_col,
+        subject_col,
         avatar_revealer,
         avatar,
         dot,

@@ -535,6 +535,46 @@ pub struct MessageList {
     /// One line per message (#334): set by the Layout setting, or by the
     /// pane's width when it is Automatic.
     single_line: bool,
+    /// The single-line columns, in order, as the setting has them (#334).
+    columns: Vec<crate::config::ListColumn>,
+    /// The Microsoft 365 accounts: only their mail has a due date, so the
+    /// Due column takes room only while the list holds some of it.
+    graph_accounts: std::collections::HashSet<u32>,
+    /// The list holds mail of one of `graph_accounts`.
+    graph_in_view: bool,
+}
+
+/// The Correspondents column (#334): who wrote in a conversation, oldest
+/// first and each once, you as "me". A conversation only you have written
+/// in, a message in Sent say, names who it went to instead.
+fn correspondents(msgs: &[&Message]) -> String {
+    let mut sorted = msgs.to_vec();
+    sorted.sort_by_key(|m| m.timestamp);
+    let mut seen = std::collections::HashSet::new();
+    let mut names: Vec<String> = Vec::new();
+    let mut others = false;
+    for m in &sorted {
+        let own = crate::avatar::account_face(&m.from_addr).is_some();
+        let key = if own { String::new() } else { m.from_addr.to_ascii_lowercase() };
+        if !seen.insert(key) {
+            continue;
+        }
+        if own {
+            names.push(i18n("me"));
+        } else {
+            others = true;
+            names.push(if m.from_name.is_empty() { m.from_addr.clone() } else { m.from_name.clone() });
+        }
+    }
+    if !others {
+        if let Some(newest) = sorted.last() {
+            let to = crate::ui::message_row::recipient_names(&newest.to);
+            if !to.is_empty() {
+                return format!("To: {to}");
+            }
+        }
+    }
+    names.join(", ")
 }
 
 /// How the message list is ordered.
@@ -642,6 +682,14 @@ pub enum MessageListInput {
     LookSettled,
     /// Lay the rows out on one line, or as cards (#334).
     SetSingleLine(bool),
+    /// The single-line columns, in order (#334).
+    SetColumns(Vec<crate::config::ListColumn>),
+    /// Each account's name for the Account column, and which accounts are
+    /// Microsoft 365 ones, for the Due column (#334).
+    SetAccountNames {
+        names: std::collections::HashMap<u32, String>,
+        graph: std::collections::HashSet<u32>,
+    },
     /// Fill them with senders' own site icons, or stop (#30).
     SetSenderLogos(bool),
     /// The date or clock preference changed: every row's date is built with the
@@ -1171,6 +1219,9 @@ impl SimpleComponent for MessageList {
             thread_expansion: true,
             list_palette: true,
             single_line: false,
+            columns: crate::config::ListColumn::DEFAULT.to_vec(),
+            graph_accounts: std::collections::HashSet::new(),
+            graph_in_view: false,
             bulk_tag_btn: gtk::Button::new(),
         };
 
@@ -1453,6 +1504,27 @@ impl SimpleComponent for MessageList {
             MessageListInput::SetSingleLine(on) => {
                 if self.single_line != on {
                     self.single_line = on;
+                    self.sync_look();
+                }
+            }
+            MessageListInput::SetColumns(columns) => {
+                if self.columns != columns {
+                    // The Correspondents column is worked out by the rebuild.
+                    let people = |c: &[crate::config::ListColumn]| c.contains(&crate::config::ListColumn::Correspondents);
+                    let rebuild = people(&columns) != people(&self.columns);
+                    self.columns = columns;
+                    self.sync_look();
+                    if rebuild {
+                        self.queue_rebuild(true);
+                    }
+                }
+            }
+            MessageListInput::SetAccountNames { names, graph } => {
+                let changed = *self.shared.account_names.borrow() != names || self.graph_accounts != graph;
+                if changed {
+                    *self.shared.account_names.borrow_mut() = names;
+                    self.graph_accounts = graph;
+                    self.graph_in_view = self.listed_folders.iter().any(|(a, _)| self.graph_accounts.contains(a));
                     self.sync_look();
                 }
             }
@@ -2628,6 +2700,12 @@ impl MessageList {
             // it, so actions come from the menu, swipes and keys there.
             look.show_palette = self.list_palette && !self.single_line;
             look.single_line = self.single_line;
+            look.columns = self
+                .columns
+                .iter()
+                .copied()
+                .filter(|c| *c != crate::config::ListColumn::Due || self.graph_in_view)
+                .collect();
             look.in_junk = self.in_junk;
             look.in_drafts = self.in_drafts;
             look.show_recipient = self.show_recipient;
@@ -2929,6 +3007,12 @@ impl MessageList {
         // found in another folder — the reply you sent, filed in Sent (#236).
         let newest_here = msgs.last().expect("a group holds at least one message").clone();
         let elsewhere = self.thread_row_newest.then(|| latest_elsewhere(summary, newest_here.timestamp)).flatten();
+        // Who took part (#334), the replies filed in other folders included.
+        let people = self.columns.contains(&crate::config::ListColumn::Correspondents).then(|| {
+            let mut all: Vec<&Message> = msgs.iter().map(|m| &**m).collect();
+            all.extend(summary.iter().flat_map(|s| s.members.iter()));
+            correspondents(&all)
+        });
         // `expanded_threads` stores toggles away from the default state. With
         // expansion disabled no thread ever opens in the list; the stored
         // toggles survive for when it is re-enabled.
@@ -3001,6 +3085,7 @@ impl MessageList {
             latest_at,
             unread: any_unread,
             starred: any_starred,
+            people,
             revealed: true,
             group: self.threading.then(|| key.clone()),
             ..Default::default()
@@ -3054,6 +3139,11 @@ impl MessageList {
         let mut matches: Vec<Rc<Message>> = self.active_source().iter().filter(|m| passes(m)).cloned().collect();
         let filtered = matches.len() != source_len;
         self.listed_folders = matches.iter().map(|m| (m.account_id, m.folder_id)).collect();
+        let graph_in_view = self.listed_folders.iter().any(|(a, _)| self.graph_accounts.contains(a));
+        if graph_in_view != self.graph_in_view {
+            self.graph_in_view = graph_in_view;
+            self.sync_look();
+        }
         let sort = self.sort;
         matches.sort_by(|a, b| message_cmp(a, b, sort));
         self.total_matches = matches.len();
@@ -3448,7 +3538,7 @@ impl MessageList {
 #[cfg(test)]
 mod tests {
     use super::{
-        compute_thread_keys, heads_its_row, latest_elsewhere, nested_members, reader_conversation,
+        compute_thread_keys, correspondents, heads_its_row, latest_elsewhere, nested_members, reader_conversation,
         row_for_reader_key, thread_slot, unasked_threads,
     };
     use crate::ui::message_row::{row_edits, swipe_progress_px, RowEdit, SWIPE_ARM, SWIPE_MAX};
@@ -3586,7 +3676,26 @@ mod tests {
             has_attachment: false,
             message_id: message_id.into(),
             references: references.into(),
+            importance: Default::default(),
+            due: 0,
         }
+    }
+
+    /// #334: who wrote, oldest first and each once; who it went to when
+    /// nobody else has written.
+    #[test]
+    fn correspondents_name_each_writer_once() {
+        let from = |id, name: &str, addr: &str, ts| Message {
+            from_name: name.into(),
+            from_addr: addr.into(),
+            timestamp: ts,
+            to: "Zoe <z@example.com>".into(),
+            ..msg(id, "", "")
+        };
+        let (a, b, a2) = (from(1, "Ann", "a@example.com", 10), from(2, "", "b@example.com", 20), from(3, "Ann", "A@example.com", 30));
+        assert_eq!(correspondents(&[&a2, &b, &a]), "Ann, b@example.com");
+        assert_eq!(correspondents(&[&a]), "Ann");
+        assert_eq!(correspondents(&[]), "");
     }
 
     /// #309: a conversation opens out into its parts in other folders, but

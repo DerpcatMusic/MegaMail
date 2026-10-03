@@ -53,7 +53,10 @@ const FIRST_PAGE: u32 = 200;
 /// Sent — the chain breaks and each incoming message starts a thread of its own,
 /// which is why conversations hardly ever grouped (#21). References carries the
 /// whole ancestry, so one of its ids is almost always present locally.
-const REFS_FETCH_ITEM: &str = " BODY.PEEK[HEADER.FIELDS (REFERENCES)]";
+///
+/// The priority headers ride along for the list's Importance column (#334):
+/// the ENVELOPE has none of them either.
+const REFS_FETCH_ITEM: &str = " BODY.PEEK[HEADER.FIELDS (REFERENCES X-PRIORITY IMPORTANCE PRIORITY)]";
 
 /// Background index backfill: how many messages to fetch per idle drain step.
 /// Bigger = fewer round-trips; smaller = more responsive to interleaved requests.
@@ -7530,6 +7533,8 @@ fn summary_from_headers(account_id: u32, fetch: &Fetch, folder_id: u32) -> Messa
         has_attachment,
         message_id,
         references,
+        importance: mp_importance(parsed.as_ref()),
+        due: 0,
     };
     msg.scrub_nuls();
     msg
@@ -7975,6 +7980,8 @@ fn build_summary(account_id: u32, fetch: &Fetch, folder_id: u32) -> Message {
         has_attachment,
         message_id,
         references,
+        importance: importance_of(fetch),
+        due: 0,
     };
     msg.scrub_nuls();
     msg
@@ -8046,25 +8053,57 @@ fn normalize_msgids(raw: &[u8]) -> String {
         .join(" ")
 }
 
+/// The headers of a `HEADER.FIELDS` block, unfolded, as (name, value).
+///
+/// What comes back is a small header block (the requested headers that the
+/// message has, each folded across lines like any other, terminated by a
+/// blank line) or nothing at all.
+fn header_fields(raw: &[u8]) -> Vec<(String, String)> {
+    let text = String::from_utf8_lossy(raw);
+    let mut out: Vec<(String, String)> = Vec::new();
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if line.starts_with([' ', '\t']) {
+            if let Some((_, value)) = out.last_mut() {
+                value.push(' ');
+                value.push_str(line.trim());
+            }
+        } else if let Some((name, value)) = line.split_once(':') {
+            out.push((name.trim().to_string(), value.trim().to_string()));
+        }
+    }
+    out
+}
+
+/// The headers a fetch that asked for [`REFS_FETCH_ITEM`] brought back.
+fn fetched_fields(fetch: &Fetch) -> Vec<(String, String)> {
+    use async_imap::imap_proto::types::{MessageSection, SectionPath};
+    fetch.section(&SectionPath::Full(MessageSection::Header)).map(header_fields).unwrap_or_default()
+}
+
 /// The `References:` value from a fetch that asked for [`REFS_FETCH_ITEM`],
 /// normalized into the same space-separated form as the ENVELOPE ids.
-///
-/// What comes back is a small header block — the one requested header, folded
-/// across lines like any other, terminated by a blank line — or nothing at all
-/// when the message has no References.
 fn references_of(fetch: &Fetch) -> String {
-    use async_imap::imap_proto::types::{MessageSection, SectionPath};
-    let Some(raw) = fetch.section(&SectionPath::Full(MessageSection::Header)) else {
-        return String::new();
-    };
-    let text = String::from_utf8_lossy(raw);
-    let Some((name, value)) = text.split_once(':') else {
-        return String::new();
-    };
-    if !name.trim().eq_ignore_ascii_case("references") {
-        return String::new();
-    }
-    normalize_msgids(value.as_bytes())
+    fetched_fields(fetch)
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("references"))
+        .map(|(_, value)| normalize_msgids(value.as_bytes()))
+        .unwrap_or_default()
+}
+
+/// The importance the priority headers of a [`REFS_FETCH_ITEM`] fetch give.
+fn importance_of(fetch: &Fetch) -> crate::models::Importance {
+    let fields = fetched_fields(fetch);
+    crate::models::Importance::from_headers(|name| {
+        fields.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
+    })
+}
+
+/// The importance a parsed message's priority headers give.
+fn mp_importance(parsed: Option<&mail_parser::Message>) -> crate::models::Importance {
+    crate::models::Importance::from_headers(|name| parsed.and_then(|p| p.header_raw(name)))
 }
 
 /// The `Message-ID:` value from a fetch that asked for
@@ -8520,6 +8559,8 @@ fn summary_from_raw(account_id: u32, folder_id: u32, uid: u32, raw: &[u8]) -> Me
         has_attachment,
         message_id,
         references,
+        importance: mp_importance(parsed.as_ref()),
+        due: 0,
     };
     msg.scrub_nuls();
     msg
@@ -10227,6 +10268,8 @@ NIL NIL NIL NIL NIL NIL NIL))\r\n";
             has_attachment: true,
             message_id: String::new(),
             references: String::new(),
+            importance: Default::default(),
+            due: 0,
         }
     }
 
@@ -11432,6 +11475,18 @@ NIL NIL NIL NIL NIL NIL NIL))\r\n";
         assert_eq!(merge_msgids("", ""), "");
         // A malformed reply whose In-Reply-To names an ancestor References omits.
         assert_eq!(merge_msgids("a@x", "c@z"), "a@x c@z");
+    }
+
+    #[test]
+    fn header_fields_unfold_each_requested_header() {
+        // #334: References and the priority headers come back in one block.
+        let raw = b"References: <a@x>\r\n <b@y>\r\nX-Priority: 1 (Highest)\r\nImportance: high\r\n\r\n";
+        let fields = header_fields(raw);
+        assert_eq!(fields.len(), 3);
+        assert_eq!(fields[0], ("References".to_string(), "<a@x> <b@y>".to_string()));
+        assert_eq!(normalize_msgids(fields[0].1.as_bytes()), "a@x b@y");
+        assert_eq!(fields[1], ("X-Priority".to_string(), "1 (Highest)".to_string()));
+        assert!(header_fields(b"").is_empty());
     }
 
     #[test]

@@ -34,6 +34,7 @@ const CAP_QUOTA: &str = "urn:ietf:params:jmap:quota";
 const EMAIL_PROPS: &[&str] = &[
     "id", "blobId", "threadId", "mailboxIds", "keywords", "hasAttachment", "receivedAt",
     "subject", "from", "replyTo", "to", "cc", "messageId", "inReplyTo", "references", "preview",
+    "header:X-Priority:asText", "header:Importance:asText", "header:Priority:asText",
 ];
 
 /// Keywords the server holds that are flags, not tags: what IMAP's system
@@ -574,6 +575,8 @@ fn jmap_message(v: &serde_json::Value, account_id: u32, folder_id: u32) -> Optio
         has_attachment: v["hasAttachment"].as_bool().unwrap_or(false),
         message_id: jmap_msgids(&v["messageId"]).into_iter().next().unwrap_or_default(),
         references: refs.join(" "),
+        importance: crate::models::Importance::from_headers(|name| v[format!("header:{name}:asText")].as_str()),
+        due: 0,
     };
     Some((msg, id, blob))
 }

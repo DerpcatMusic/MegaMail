@@ -797,6 +797,34 @@ flowbox.attach-flow > flowboxchild {
   font-weight: 700;
 }
 
+/* The single line's own columns (#334): the account in the date's grey, a
+   due date red once it has passed, and the importance mark red when high
+   and grey when low. */
+.message-row.single-line .message-account {
+  font-size: 0.82em;
+  opacity: 0.5;
+}
+
+.message-row.single-line .message-date.overdue {
+  color: @error_color;
+  opacity: 1;
+}
+
+.message-row.single-line .importance-high {
+  color: @error_color;
+}
+
+.message-row.single-line .importance-low {
+  opacity: 0.5;
+}
+
+/* On the accent ground of a selected row they read in white, as the rest
+   of the row does. */
+.message-list > row:selected .message-row.single-line .message-date.overdue,
+.message-list > row:selected .message-row.single-line .importance-high {
+  color: white;
+}
+
 /* Conversation threading: count chip + compact expand/collapse chevron on the
    thread head, and an indented, accent-edged look for nested replies. */
 /* Thread heads: the conversation's message count and its expand/collapse

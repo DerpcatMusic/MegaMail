@@ -1297,6 +1297,11 @@ pub(crate) struct PrivacyFile {
     /// whichever the pane's width suits (#334).
     #[serde(default)]
     pub(crate) list_layout: ListLayout,
+    /// The columns a single-line list shows, in order, by name (#334).
+    /// Names, not the enum, so a column a later version adds does not make
+    /// an older one throw the whole file away.
+    #[serde(default = "default_list_columns")]
+    pub(crate) list_columns: Vec<String>,
     /// Single-key shortcuts (j/k, r, a, d…) without a modifier. Off by default:
     /// a stray keystroke shouldn't archive mail for someone who never asked.
     #[serde(default)]
@@ -1565,6 +1570,7 @@ impl Default for PrivacyFile {
             theme: String::new(),
             preview_lines: default_preview_lines(),
             list_layout: ListLayout::Cards,
+            list_columns: default_list_columns(),
             single_key_shortcuts: false,
             run_in_background: false,
             autostart: false,
@@ -2858,6 +2864,136 @@ pub fn load_list_layout() -> ListLayout {
     load_privacy().list_layout
 }
 
+/// One column of the single-line message list (#334).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ListColumn {
+    Star,
+    Sender,
+    Recipients,
+    Correspondents,
+    Subject,
+    Tags,
+    Attachment,
+    Importance,
+    Account,
+    /// A Microsoft 365 follow-up flag's due date, the one kind of mail
+    /// that has one: the column takes no room in a list without any.
+    Due,
+    Date,
+}
+
+impl ListColumn {
+    pub const ALL: [ListColumn; 11] = [
+        ListColumn::Star,
+        ListColumn::Sender,
+        ListColumn::Recipients,
+        ListColumn::Correspondents,
+        ListColumn::Subject,
+        ListColumn::Tags,
+        ListColumn::Attachment,
+        ListColumn::Importance,
+        ListColumn::Account,
+        ListColumn::Due,
+        ListColumn::Date,
+    ];
+
+    /// The columns a single line shows until they are changed: the ones it
+    /// had before they could be.
+    pub const DEFAULT: [ListColumn; 6] = [
+        ListColumn::Star,
+        ListColumn::Sender,
+        ListColumn::Subject,
+        ListColumn::Tags,
+        ListColumn::Attachment,
+        ListColumn::Date,
+    ];
+
+    /// The stable name written to `privacy.toml`.
+    pub fn key(self) -> &'static str {
+        match self {
+            ListColumn::Star => "star",
+            ListColumn::Sender => "sender",
+            ListColumn::Recipients => "recipients",
+            ListColumn::Correspondents => "correspondents",
+            ListColumn::Subject => "subject",
+            ListColumn::Tags => "tags",
+            ListColumn::Attachment => "attachment",
+            ListColumn::Importance => "importance",
+            ListColumn::Account => "account",
+            ListColumn::Due => "due",
+            ListColumn::Date => "date",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<ListColumn> {
+        ListColumn::ALL.iter().copied().find(|c| c.key() == key)
+    }
+
+    /// The icon on the column's chip in Settings.
+    pub fn icon(self) -> &'static str {
+        match self {
+            ListColumn::Star => "starred-symbolic",
+            ListColumn::Sender => "avatar-default-symbolic",
+            ListColumn::Recipients => "mail-send-symbolic",
+            ListColumn::Correspondents => "chat-bubbles-text-symbolic",
+            ListColumn::Subject => "text-x-generic-symbolic",
+            ListColumn::Tags => "tag-outline-symbolic",
+            ListColumn::Attachment => "mail-attachment-symbolic",
+            ListColumn::Importance => "emblem-important-symbolic",
+            ListColumn::Account => "mail-inbox-symbolic",
+            ListColumn::Due => "alarm-symbolic",
+            ListColumn::Date => "x-office-calendar-symbolic",
+        }
+    }
+
+    /// The untranslated label (callers pass it through `i18n`).
+    pub fn label(self) -> &'static str {
+        match self {
+            ListColumn::Star => crate::i18n::i18n_noop("Star"),
+            ListColumn::Sender => crate::i18n::i18n_noop("Sender"),
+            ListColumn::Recipients => crate::i18n::i18n_noop("Recipients"),
+            ListColumn::Correspondents => crate::i18n::i18n_noop("Correspondents"),
+            ListColumn::Subject => crate::i18n::i18n_noop("Subject"),
+            ListColumn::Tags => crate::i18n::i18n_noop("Tags"),
+            ListColumn::Attachment => crate::i18n::i18n_noop("Attachment"),
+            ListColumn::Importance => crate::i18n::i18n_noop("Importance"),
+            ListColumn::Account => crate::i18n::i18n_noop("Account"),
+            ListColumn::Due => crate::i18n::i18n_noop("Due Date"),
+            ListColumn::Date => crate::i18n::i18n_noop("Date"),
+        }
+    }
+
+    /// The shown columns, in order, from their saved names. Names this
+    /// version does not know are skipped, and the subject is always there:
+    /// it is the column that takes the room the others leave.
+    pub fn from_keys(keys: &[String]) -> Vec<ListColumn> {
+        let mut out: Vec<ListColumn> = Vec::new();
+        for c in keys.iter().filter_map(|k| ListColumn::from_key(k)) {
+            if !out.contains(&c) {
+                out.push(c);
+            }
+        }
+        if !out.contains(&ListColumn::Subject) {
+            let at = out.iter().position(|c| *c == ListColumn::Sender).map(|i| i + 1).unwrap_or(0);
+            out.insert(at, ListColumn::Subject);
+        }
+        out
+    }
+
+    pub fn to_keys(columns: &[ListColumn]) -> Vec<String> {
+        columns.iter().map(|c| c.key().to_string()).collect()
+    }
+}
+
+fn default_list_columns() -> Vec<String> {
+    ListColumn::to_keys(&ListColumn::DEFAULT)
+}
+
+/// The single-line list's columns, in order (#334).
+pub fn load_list_columns() -> Vec<ListColumn> {
+    ListColumn::from_keys(&load_privacy().list_columns)
+}
+
 /// Lines of message text shown under the subject in the list; 0 means previews
 /// are off. Clamped in case the file was edited by hand.
 pub fn load_preview_lines() -> u32 {
@@ -3536,7 +3672,26 @@ pub fn save_contacts_pane_width(width: i32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_gallery_folder, encode_gallery_folder, ConfigFile, PrivacyFile, StateFile};
+    use super::{decode_gallery_folder, encode_gallery_folder, ConfigFile, ListColumn, PrivacyFile, StateFile};
+
+    /// #334: the saved columns come back in order; a name this version does
+    /// not know, or a repeat, is dropped, and the subject is never missing.
+    #[test]
+    fn list_columns_keep_their_order_and_the_subject() {
+        let keys = |k: &[&str]| k.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            ListColumn::from_keys(&keys(&["date", "subject", "star", "date", "colour"])),
+            vec![ListColumn::Date, ListColumn::Subject, ListColumn::Star]
+        );
+        assert_eq!(
+            ListColumn::from_keys(&keys(&["star", "sender", "date"])),
+            vec![ListColumn::Star, ListColumn::Sender, ListColumn::Subject, ListColumn::Date]
+        );
+        assert_eq!(ListColumn::from_keys(&ListColumn::to_keys(&ListColumn::DEFAULT)), ListColumn::DEFAULT.to_vec());
+        // A settings file from before the columns has the old layout.
+        let old: PrivacyFile = toml::from_str("list_layout = \"single_line\"").unwrap();
+        assert_eq!(ListColumn::from_keys(&old.list_columns), ListColumn::DEFAULT.to_vec());
+    }
 
     /// Every gallery folder override survives the trip to the file and back,
     /// including the paths servers really use: dots, slashes, spaces, UTF-7.

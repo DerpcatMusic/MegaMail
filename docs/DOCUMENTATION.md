@@ -739,6 +739,31 @@ line while the list pane is dragged wider than about 600 pixels and cards
 when it is narrower. On one line the actions palette is not shown; the
 right-click menu, swipes and keyboard shortcuts do the same things.
 
+**Settings → Message List → Columns** chooses what a single line shows and
+in what order: drag a column between **Shown** and **Not shown**, or along
+the row. The subject always stays, and the conversation's size rides at its
+end. The columns are:
+
+| Column | What it shows |
+| --- | --- |
+| Star | The star, lit when the message is starred |
+| Sender | Who it is from; in Sent, who it went to |
+| Recipients | Who it went to |
+| Correspondents | Everyone who wrote in the conversation, you as "me" |
+| Subject | The subject, with the start of the text dimmed after it |
+| Tags | The message's tags |
+| Attachment | A paperclip when there are files attached |
+| Importance | A red mark for high importance, a grey arrow for low |
+| Account | The account the message is in |
+| Due Date | When a Microsoft 365 follow-up flag falls due, red once it has passed |
+| Date | When it arrived |
+
+Importance comes from the `X-Priority`, `Importance` and `Priority`
+headers, or from Microsoft 365. Mail already downloaded shows as normal
+until it is fetched again. Only Microsoft 365 has a due date, so Due Date
+takes room only in a list that holds Microsoft 365 mail. **Restore
+Defaults** goes back to star, sender, subject, tags, attachment and date.
+
 ### Text size
 
 **Settings → Appearance → Text size** makes Hylki's text smaller or larger
