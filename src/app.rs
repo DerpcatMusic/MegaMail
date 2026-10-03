@@ -1748,6 +1748,8 @@ pub enum AppMsg {
     /// An unflagged message turned out to carry attachments — give it one.
     HasAttachments { account_id: u32, path: String, message_id: u32 },
     Sent { account_id: u32 },
+    /// A message nothing could keep, back for a composer (#340).
+    Unsent { account_id: u32, message: Box<crate::worker::OutgoingMessage> },
     Status { account_id: u32, text: String },
     Error { account_id: u32, text: String, connectivity: bool },
     NotifyCount(usize),
@@ -8701,6 +8703,8 @@ impl SimpleComponent for AppModel {
                 self.reload_related(account_id);
             }
 
+            AppMsg::Unsent { account_id, message } => self.compose_unsent(account_id, *message, &sender),
+
             AppMsg::OpenAccounts => self.open_settings_window(&sender, true, false),
 
             AppMsg::AddFirstAccount => self.open_settings_window(&sender, true, true),
@@ -14762,6 +14766,56 @@ impl AppModel {
         // The Outbox stays the folder on screen: its list is still what's listed,
         // so its toolbar has to stay too. Leaving it would strand the user in a
         // reader offering Reply and Forward for a message that hasn't been sent.
+        self.open_compose(account_id, prefill, sender);
+    }
+
+    /// Open a message the worker could not send, queue or save (#340). Its
+    /// composer closed when Send was pressed, so without this the message is
+    /// gone. A file that can no longer be read, the usual reason, is left out:
+    /// the error just shown names it.
+    fn compose_unsent(
+        &mut self,
+        account_id: u32,
+        m: crate::worker::OutgoingMessage,
+        sender: &ComponentSender<Self>,
+    ) {
+        let body_html = if m.html.trim().is_empty() {
+            m.body
+                .split("\n\n")
+                .map(|p| format!("<p>{}</p>", gtk::glib::markup_escape_text(p).replace('\n', "<br>")))
+                .collect()
+        } else {
+            m.html
+        };
+        let attachments = m
+            .attachments
+            .iter()
+            .map(std::path::PathBuf::from)
+            .filter(|p| std::fs::File::open(p).is_ok())
+            .collect();
+        let prefill = ComposePrefill {
+            to: m.to,
+            cc: m.cc,
+            bcc: m.bcc,
+            subject: m.subject,
+            body_html,
+            attachments,
+            in_reply_to: m.in_reply_to,
+            references: m.references,
+            draft_origin: m.draft_origin,
+            encrypt: m.encrypt,
+            outbox_origin: m.outbox_origin,
+            reply_addressed_to: String::new(),
+            from_address: m
+                .from_alias
+                .as_deref()
+                .map(|f| crate::config::split_identity(f).1)
+                .unwrap_or_default(),
+            send_at: m.send_at,
+            cloud_uploads: Vec::new(),
+            inline_files: Vec::new(),
+            block_remote_images: false,
+        };
         self.open_compose(account_id, prefill, sender);
     }
 
@@ -21324,6 +21378,7 @@ fn map_event(account_id: u32, event: WorkerEvent) -> AppMsg {
             AppMsg::HasAttachments { account_id, path, message_id }
         }
         WorkerEvent::Sent => AppMsg::Sent { account_id },
+        WorkerEvent::Unsent(message) => AppMsg::Unsent { account_id, message },
         WorkerEvent::Outbox { items } => AppMsg::OutboxItems { account_id, items },
         WorkerEvent::Notice(text) => AppMsg::Notice(text),
         WorkerEvent::DraftSaved => AppMsg::DraftSaved,

@@ -310,6 +310,11 @@ levelbar block.quota-full {
 .attach-chip:hover {
   background: alpha(currentColor, 0.12);
 }
+/* A file moved or deleted since it was attached (#340). */
+.attach-chip.missing {
+  background: alpha(@error_color, 0.14);
+  color: @error_color;
+}
 /* The chips' grid cells stay out of sight: the chip is the target, and a
    cell's own hover square would show around its rounded ends. */
 flowbox.attach-flow > flowboxchild {

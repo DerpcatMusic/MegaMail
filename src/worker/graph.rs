@@ -992,6 +992,8 @@ pub(super) async fn run_graph(
                 emit(WorkerEvent::Status(String::new()));
                 if saved {
                     emit(WorkerEvent::DraftSaved);
+                } else {
+                    emit(WorkerEvent::Unsent(Box::new(message)));
                 }
             }
 

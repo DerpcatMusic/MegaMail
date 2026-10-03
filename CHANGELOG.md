@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Fixed: a message could be lost when an attachment had moved** (#340,
+  reported by 7system7). Attachments are read when the message is sent, and
+  the composer closed on Send. When a file had been moved or deleted, the
+  send failed, the Outbox could not hold the message either, and nothing was
+  kept. Send now refuses while an attached file is missing, and its chip
+  shows Not found. A message that can be neither sent, queued nor saved as
+  a draft opens in a composer again instead of being dropped.
+- **Fixed: folders named Inbox, Sent or Drafts inside other folders took
+  those roles** (#344, reported by bstegmaier75). An archive with an Inbox
+  and a Sent folder for every year moved them all up with the real Inbox,
+  and one of them could be watched for new mail and counted in All
+  Inboxes instead of it. Only the top-level INBOX is the inbox now, and the
+  other roles go by name only at the top level or directly under INBOX.
 - **Added: choosing the single-line list's columns** (#334, requested by
   erenoglu). Settings → Message List → Columns shows and hides columns and
   orders them by dragging. Besides the star, sender, subject, tags,

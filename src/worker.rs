@@ -674,6 +674,10 @@ pub enum WorkerEvent {
     /// UI should show the paperclip and offer the files.
     HasAttachments { path: String, message_id: u32 },
     Sent,
+    /// A message that could be neither sent, queued nor saved as a draft, handed
+    /// back so the app can open it in a composer again (#340): its composer
+    /// closed when Send or Save was pressed, so this is the only copy left.
+    Unsent(Box<OutgoingMessage>),
     /// Something worth telling the user that isn't a failure — a queued message
     /// going out on its own, say.
     Notice(String),
@@ -2661,6 +2665,7 @@ async fn run_imap(
                             Err(e) => {
                                 emit(WorkerEvent::Status(String::new()));
                                 emit(WorkerEvent::error(i18n_f("Could not save draft: {e}", &[("e", &(e).to_string())])));
+                                emit(WorkerEvent::Unsent(Box::new(message.clone())));
                                 lost = true;
                             }
                         }
@@ -2668,6 +2673,7 @@ async fn run_imap(
                     Err(e) => {
                         emit(WorkerEvent::Status(String::new()));
                         emit(WorkerEvent::error(i18n_f("Could not save draft: {e}", &[("e", &(e).to_string())])));
+                        emit(WorkerEvent::Unsent(Box::new(message)));
                     }
                 }
             }
@@ -3901,6 +3907,9 @@ fn send_failed(
     } else {
         i18n_f("Send failed: {e}", &[("e", error)])
     }));
+    if !queued {
+        emit(WorkerEvent::Unsent(Box::new(msg.clone())));
+    }
     emit_outbox(cache, account_id, emit);
 }
 
@@ -3929,7 +3938,8 @@ fn schedule_send(
             &[("subject", &msg.subject), ("when", &crate::datefmt::date_time(at))],
         )));
     } else {
-        emit(WorkerEvent::error(i18n("Could not schedule the message: there is no local store to keep it in.")));
+        emit(WorkerEvent::error(i18n("Could not schedule the message.")));
+        emit(WorkerEvent::Unsent(Box::new(msg.clone())));
     }
     emit_outbox(cache, account_id, emit);
 }

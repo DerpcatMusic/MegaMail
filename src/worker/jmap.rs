@@ -2160,6 +2160,8 @@ pub(super) async fn run_jmap(
                 emit(WorkerEvent::Status(String::new()));
                 if saved {
                     emit(WorkerEvent::DraftSaved);
+                } else {
+                    emit(WorkerEvent::Unsent(Box::new(message)));
                 }
             }
 
