@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Fixed: new mail sometimes did not appear until the folder was opened
+  again** (#336, reported by yioannides). Mail that arrived while the
+  connection was busy, marking a message read or fetching a body, was
+  reported only to the command that reopened the folder before the next
+  wait, and Hylki ignored it there. That command is now checked for new
+  mail. An unread count that arrives while a read mark or a move is still
+  on its way is set aside, as before, but the folder is now synced once
+  they are stored: the count could be the only sign of new mail.
 - **Fixed: Email… in GNOME Files could open no message** (#339, reported by
   frenchy82). When none of the files could be read, Hylki asked where zero
   files should go instead of opening a message; it now opens one, with the

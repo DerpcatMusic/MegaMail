@@ -3225,42 +3225,59 @@ async fn idle_wait(
     // Stale or wedged connection — drop it so the next request reconnects.
     // The timeout matters as much as the error: a dead-but-open connection
     // (silently dropped by a NAT during a long IDLE) answers nothing at all.
-    match tokio::time::timeout(IDLE_START_TIMEOUT, sel(&mut sess, path)).await {
-        Ok(Ok(_)) => {}
-        _ => return recv_one(rx).await,
-    }
-
-    tracing::debug!(target: "hylki::imap", "> IDLE");
-    let mut handle = sess.idle();
-    match tokio::time::timeout(IDLE_START_TIMEOUT, handle.init()).await {
-        Ok(Ok(())) => {}
-        Ok(Err(_)) => {
-            *session = idle_done(handle).await;
-            return recv_one(rx).await;
+    let missed = match tokio::time::timeout(IDLE_START_TIMEOUT, sel(&mut sess, path)).await {
+        Ok(Ok(mailbox)) => {
+            let missed = missed_new_mail(account_id, path, mailbox.uid_next);
+            // Taken as seen now: the sync below records it again, and one
+            // that fails must not send every later wait round this branch.
+            if missed {
+                note_synced_uid_next(account_id, path, mailbox.uid_next);
+            }
+            missed
         }
-        // No answer: the handle (and its connection) is dropped, not reused.
-        Err(_) => return recv_one(rx).await,
-    }
+        _ => return recv_one(rx).await,
+    };
 
     enum Wake {
         Idle(async_imap::error::Result<async_imap::extensions::idle::IdleResponse>),
         Request(Option<MailRequest>),
+        /// Mail arrived while the connection was busy; the SELECT just
+        /// made reported it, and an IDLE started now never would.
+        Missed,
     }
-    let wake = {
-        handle.as_mut().set_idle(true);
-        let (idle_fut, stop) = handle.wait_with_timeout(Duration::from_secs(timeout_secs));
-        tokio::select! {
-            r = idle_fut => Wake::Idle(r),
-            req = rx.recv() => { drop(stop); Wake::Request(req) }
+    let wake = if missed {
+        tracing::info!("idle: new mail in {path} arrived between commands, syncing");
+        *session = Some(sess);
+        Wake::Missed
+    } else {
+        tracing::debug!(target: "hylki::imap", "> IDLE");
+        let mut handle = sess.idle();
+        match tokio::time::timeout(IDLE_START_TIMEOUT, handle.init()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => {
+                *session = idle_done(handle).await;
+                return recv_one(rx).await;
+            }
+            // No answer: the handle (and its connection) is dropped, not reused.
+            Err(_) => return recv_one(rx).await,
         }
+        let wake = {
+            handle.as_mut().set_idle(true);
+            let (idle_fut, stop) = handle.wait_with_timeout(Duration::from_secs(timeout_secs));
+            tokio::select! {
+                r = idle_fut => Wake::Idle(r),
+                req = rx.recv() => { drop(stop); Wake::Request(req) }
+            }
+        };
+        *session = idle_done(handle).await;
+        wake
     };
-    *session = idle_done(handle).await;
 
     match wake {
         Wake::Request(Some(req)) => IdleOutcome::Request(req),
         Wake::Request(None) => IdleOutcome::Closed,
         // Only re-sync on actual new data; a plain timeout is Quiet.
-        Wake::Idle(Ok(async_imap::extensions::idle::IdleResponse::NewData(_))) => {
+        Wake::Missed | Wake::Idle(Ok(async_imap::extensions::idle::IdleResponse::NewData(_))) => {
             if session.is_some() {
                 if let Ok(messages) = load_messages_retry(
                     account_id, session, account, folder_id, path, use_envelope, cache,
@@ -6605,6 +6622,26 @@ async fn selected_unseen(session: &mut ImapSession) -> Option<u32> {
         .map(|uids| uids.len() as u32)
 }
 
+/// The UIDNEXT each folder had when its list was last loaded, by (account,
+/// path). Mail that lands while the connection is busy with something else
+/// is only told to the SELECT that comes before the next IDLE, never to the
+/// IDLE itself, so that SELECT has to be compared against this (#336).
+static SYNCED_UID_NEXT: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<(u32, String), u32>>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn note_synced_uid_next(account_id: u32, path: &str, uid_next: Option<u32>) {
+    if let Some(next) = uid_next {
+        SYNCED_UID_NEXT.lock().unwrap().insert((account_id, path.to_string()), next);
+    }
+}
+
+/// Whether a folder's UIDNEXT has moved past what its last loaded list saw:
+/// mail arrived that no sync has picked up.
+fn missed_new_mail(account_id: u32, path: &str, uid_next: Option<u32>) -> bool {
+    let seen = SYNCED_UID_NEXT.lock().unwrap().get(&(account_id, path.to_string())).copied();
+    matches!((seen, uid_next), (Some(seen), Some(now)) if now > seen)
+}
+
 /// Load a folder's message index for immediate display.
 ///
 /// Never-synced folder → fetch a fast [`FIRST_PAGE`] of the newest messages so
@@ -6621,6 +6658,7 @@ async fn load_messages(
     cache: Option<&Cache>,
 ) -> Result<Vec<Message>, async_imap::error::Error> {
     let mailbox = sel(session, path).await?;
+    note_synced_uid_next(account_id, path, mailbox.uid_next);
     let total = mailbox.exists;
     if total == 0 {
         // Folder emptied on the server — drop any cached copies so they don't linger.
@@ -10168,6 +10206,53 @@ NIL NIL NIL NIL NIL NIL NIL))\r\n";
     /// `IMAP_LIVE=host,port,user,password cargo test --bin hylki
     /// worker::tests::live_rename_moves_subscriptions -- --ignored`
     #[test]
+    /// #336 against a real server: mail appended while the connection is
+    /// busy is picked up by the next wait, not left until something else
+    /// happens to sync the folder.
+    #[test]
+    #[ignore]
+    fn live_idle_catches_mail_that_landed_between_commands() {
+        let Ok(spec) = std::env::var("IMAP_LIVE") else { return };
+        let p: Vec<&str> = spec.splitn(4, ',').collect();
+        let account = AccountConfig {
+            imap_host: p[0].into(),
+            imap_port: p[1].parse().expect("port"),
+            username: p[2].into(),
+            password: p[3].into(),
+            security: Some(crate::config::ServerSecurity {
+                imap_starttls: false,
+                imap_accept_invalid_certs: true,
+                ..Default::default()
+            }),
+            ..sample_account()
+        };
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let mut sess = connect(&account).await.expect("connect");
+            load_messages(7, &mut sess, 1, "INBOX", true, None).await.expect("load");
+            let subject = format!("hylki-336-{}", std::process::id());
+            let raw = format!(
+                "From: a@example.test\r\nTo: b@example.test\r\nSubject: {subject}\r\nMessage-ID: <{subject}@example.test>\r\n\r\nhello\r\n"
+            );
+            let mut other = connect(&account).await.expect("connect");
+            append_to_sent(&mut other, "INBOX", raw.as_bytes()).await.expect("append");
+            let (_tx, mut rx) = mpsc::unbounded_channel();
+            let mut session = Some(sess);
+            let events = std::cell::RefCell::new(Vec::new());
+            let outcome = idle_wait(
+                &mut session, &account, 7, 1, "INBOX", &mut rx, None, &mut true,
+                &mut Default::default(), &mut Default::default(), &Default::default(),
+                &|e| events.borrow_mut().push(e), 5,
+            )
+            .await;
+            assert!(matches!(outcome, IdleOutcome::Refreshed), "the wait went quiet");
+            let got = events.borrow().iter().any(|e| {
+                matches!(e, WorkerEvent::Messages { messages, .. } if messages.iter().any(|m| m.subject == subject))
+            });
+            assert!(got, "the new message was not listed");
+        });
+    }
+
     #[ignore]
     fn live_rename_moves_subscriptions() {
         let Ok(spec) = std::env::var("IMAP_LIVE") else { return };
@@ -10386,6 +10471,19 @@ NIL NIL NIL NIL NIL NIL NIL))\r\n";
             send_at: None,
             calendar: None,
         }
+    }
+
+    /// #336: mail that lands while the connection is busy shows only as a
+    /// moved UIDNEXT on the next SELECT.
+    #[test]
+    fn a_moved_uid_next_is_missed_mail() {
+        let path = "INBOX-336-test";
+        assert!(!missed_new_mail(99, path, Some(10)), "nothing loaded yet");
+        note_synced_uid_next(99, path, Some(10));
+        assert!(!missed_new_mail(99, path, Some(10)));
+        assert!(missed_new_mail(99, path, Some(12)));
+        assert!(!missed_new_mail(99, path, None));
+        assert!(!missed_new_mail(98, path, Some(12)), "another account");
     }
 
     /// #340: a send that fails on a file gone since it was attached cannot

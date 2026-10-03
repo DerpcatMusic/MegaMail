@@ -602,9 +602,11 @@ pub struct AppModel {
     /// ahead of the STORE still shows the old state; while an entry is
     /// young the app's own state for that message and folder wins over it.
     pending_seen: HashMap<(u32, String, u32), (bool, std::time::Instant)>,
-    /// Accounts whose server unread count arrived while a read mark was on
-    /// its way and was set aside: asked again once the marks are stored.
-    dropped_unread: std::collections::HashSet<u32>,
+    /// Folders (account, folder) whose server unread count arrived while a
+    /// read mark or a move was on its way and was set aside: synced again
+    /// once those are stored. The count may also have been the only word of
+    /// new mail, so a fresh count alone is not enough (#336).
+    dropped_unread: std::collections::HashSet<(u32, u32)>,
     /// Mail taken out of a folder whose move the worker has not reached
     /// yet, keyed by (account, folder path, uid) → when it was sent. A list
     /// the worker fetched ahead of the move still holds it, and putting it
@@ -9729,7 +9731,7 @@ impl SimpleComponent for AppModel {
                 // made) stands until the mark is stored, and the server is
                 // asked again once it is (#333).
                 if self.pending_seen_in_folder(account_id, folder_id) {
-                    self.dropped_unread.insert(account_id);
+                    self.dropped_unread.insert((account_id, folder_id));
                     return;
                 }
                 // Nothing unread left where the notification points: it is
@@ -9745,6 +9747,7 @@ impl SimpleComponent for AppModel {
                     .folder_path(account_id, folder_id)
                     .is_some_and(|p| self.pending_moves_in(account_id, &p))
                 {
+                    self.dropped_unread.insert((account_id, folder_id));
                     return;
                 }
                 let prev = self.folder_unread.insert((account_id, folder_id), unread);
@@ -9761,10 +9764,8 @@ impl SimpleComponent for AppModel {
                 // were set aside; with the last one stored, ask for fresh
                 // ones, or the badge keeps the app's guess until the next
                 // change (#333).
-                if !self.pending_seen.keys().any(|(a, _, _)| *a == account_id)
-                    && self.dropped_unread.remove(&account_id)
-                {
-                    self.send_to(account_id, MailRequest::RefreshUnread);
+                if !self.pending_seen.keys().any(|(a, _, _)| *a == account_id) {
+                    self.resync_dropped_unread(account_id);
                 }
             }
 
@@ -9793,16 +9794,13 @@ impl SimpleComponent for AppModel {
                     pending.remove(&(account_id, path.clone(), uid));
                 }
                 pending.retain(|_, at| at.elapsed() < PENDING_MOVE_MAX);
+                drop(pending);
+                if !self.pending_moves_in(account_id, &path) && !self.pending_seen_in(account_id, &path) {
+                    self.resync_dropped_unread(account_id);
+                }
             }
 
             AppMsg::FolderUnreadByPath { account_id, path, unread } => {
-                if self.pending_seen_in(account_id, &path) {
-                    self.dropped_unread.insert(account_id);
-                    return;
-                }
-                if self.pending_moves_in(account_id, &path) {
-                    return;
-                }
                 // Resolve against the current list; a path the app no longer
                 // knows (folder deleted/renamed under a live watcher) is
                 // dropped rather than guessed at.
@@ -9811,6 +9809,12 @@ impl SimpleComponent for AppModel {
                     .get(&account_id)
                     .and_then(|fs| fs.iter().find(|f| f.path == path))
                     .map(|f| f.id);
+                if self.pending_seen_in(account_id, &path) || self.pending_moves_in(account_id, &path) {
+                    if let Some(folder_id) = id {
+                        self.dropped_unread.insert((account_id, folder_id));
+                    }
+                    return;
+                }
                 if let Some(folder_id) = id {
                     if unread == 0 && crate::notify::posted_for(account_id).is_some_and(|(f, _)| f == folder_id) {
                         crate::notify::withdraw_mail(account_id);
@@ -19964,6 +19968,32 @@ impl AppModel {
     /// notification, since both read the list. Ask for a quiet resync so
     /// the list follows the count. An open inbox (alone or as All Inboxes)
     /// or an open folder is the IDLE folder, whose own resync covers it.
+    /// Counts set aside while marks or moves were on their way (#333, #336):
+    /// with those stored, sync each such folder that is clear now. A count
+    /// was dropped because it could be stale, but it may also have been the
+    /// only sign of new mail: the open folder's IDLE had already reported
+    /// and the watcher only speaks when the count moves again.
+    fn resync_dropped_unread(&mut self, account_id: u32) {
+        let ready: Vec<u32> = self
+            .dropped_unread
+            .iter()
+            .filter(|(a, _)| *a == account_id)
+            .map(|(_, f)| *f)
+            .filter(|f| {
+                !self.pending_seen_in_folder(account_id, *f)
+                    && !self.folder_path(account_id, *f).is_some_and(|p| self.pending_moves_in(account_id, &p))
+            })
+            .collect();
+        if ready.is_empty() {
+            return;
+        }
+        for folder_id in &ready {
+            self.dropped_unread.remove(&(account_id, *folder_id));
+            self.sync_background_folder(account_id, *folder_id);
+        }
+        self.send_to(account_id, MailRequest::RefreshUnread);
+    }
+
     fn sync_background_folder(&self, account_id: u32, folder_id: u32) {
         let Some(folder) =
             self.counted_folders(account_id).into_iter().find(|f| f.id == folder_id)
