@@ -6150,7 +6150,7 @@ async fn list_folders(
         if crate::models::folder_is_hidden(&path, name.delimiter(), hidden) {
             continue;
         }
-        let (kind, by_special_use) = classify_with_source(&path, name.attributes());
+        let (kind, by_special_use) = classify_with_source(&path, name.delimiter(), name.attributes());
         special_use.push(by_special_use);
         folders.push(Folder {
             id: 0, // assigned by order below
@@ -9249,7 +9249,7 @@ async fn run_mock(
 /// `list_folders` prefer the real special-use folder when a server also exposes a
 /// stray folder that merely *looks* like it fills the same role — e.g. Gmail's
 /// real `[Gmail]/Trash` (\Trash) next to a plain top-level `Trash` label.
-fn classify_with_source(path: &str, attrs: &[NameAttribute]) -> (FolderKind, bool) {
+fn classify_with_source(path: &str, delimiter: Option<&str>, attrs: &[NameAttribute]) -> (FolderKind, bool) {
     // Prefer RFC 6154 SPECIAL-USE attributes; fall back to name matching.
     for a in attrs {
         match a {
@@ -9263,9 +9263,28 @@ fn classify_with_source(path: &str, attrs: &[NameAttribute]) -> (FolderKind, boo
         }
     }
 
-    let leaf = path.rsplit(['/', '.']).next().unwrap_or(path).to_lowercase();
+    // INBOX is the one name RFC 3501 fixes, and only as the whole path: an
+    // `Archiv/2020/Inbox` is an ordinary folder (#344).
+    if path.eq_ignore_ascii_case("INBOX") {
+        return (FolderKind::Inbox, false);
+    }
+    // The other roles go by name only where a server keeps them: at the top,
+    // or one level down under INBOX (Dovecot, Courier) or a bracketed
+    // container ([Gmail]). A `Sent` deeper in an archive is the user's own.
+    let parts: Vec<&str> = match delimiter {
+        Some(d) if !d.is_empty() => path.split(d).collect(),
+        _ => path.split(['/', '.']).collect(),
+    };
+    let placed = match parts.as_slice() {
+        [_] => true,
+        [parent, _] => parent.eq_ignore_ascii_case("INBOX") || parent.starts_with('['),
+        _ => false,
+    };
+    if !placed {
+        return (FolderKind::Custom, false);
+    }
+    let leaf = parts.last().copied().unwrap_or(path).to_lowercase();
     let kind = match leaf.as_str() {
-        "inbox" => FolderKind::Inbox,
         "sent" | "sent items" | "sent mail" => FolderKind::Sent,
         "drafts" => FolderKind::Drafts,
         "trash" | "deleted" | "deleted items" | "bin" => FolderKind::Trash,
@@ -10004,6 +10023,25 @@ pub(super) fn sample_account() -> AccountConfig {
 mod tests {
 
     use super::*;
+
+    #[test]
+    fn only_the_top_level_inbox_is_the_inbox() {
+        // #344: an archive keeps per-year Inbox and Sent folders.
+        let kind = |p: &str, d: &str| classify_with_source(p, Some(d), &[]).0;
+        assert_eq!(kind("INBOX", "/"), FolderKind::Inbox);
+        assert_eq!(kind("Inbox", "/"), FolderKind::Inbox);
+        assert_eq!(kind("Archiv/2020/Inbox", "/"), FolderKind::Custom);
+        assert_eq!(kind("Archiv/2020/Sent", "/"), FolderKind::Custom);
+        assert_eq!(kind("INBOX.Archiv.Inbox", "."), FolderKind::Custom);
+        // Where servers keep their roles, names still count.
+        assert_eq!(kind("Sent", "/"), FolderKind::Sent);
+        assert_eq!(kind("INBOX.Sent", "."), FolderKind::Sent);
+        assert_eq!(kind("INBOX.Trash", "."), FolderKind::Trash);
+        assert_eq!(kind("[Gmail]/Spam", "/"), FolderKind::Junk);
+        assert_eq!(kind("Projects/Drafts", "/"), FolderKind::Custom);
+        // A dot in a name is not a level when the server's delimiter is /.
+        assert_eq!(kind("v1.0/Sent", "/"), FolderKind::Custom);
+    }
 
     #[test]
     fn envelope_names_lose_the_quotes_a_server_kept() {
