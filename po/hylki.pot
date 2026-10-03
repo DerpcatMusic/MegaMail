@@ -2576,6 +2576,14 @@ msgstr ""
 msgid "Could not translate"
 msgstr ""
 
+msgid "An attachment is missing"
+msgstr ""
+
+msgid ""
+"Hylki cannot read {names}. It was moved or deleted after it was attached. "
+"Remove it, or attach it again from where it is now."
+msgstr ""
+
 msgid "Cannot send with OpenPGP"
 msgstr ""
 
@@ -2625,6 +2633,12 @@ msgid "That time has passed"
 msgstr ""
 
 msgid "Choose a time later than now."
+msgstr ""
+
+msgid "The file was moved or deleted. Attach it again from where it is now."
+msgstr ""
+
+msgid "Not found"
 msgstr ""
 
 msgid "Contacts"
@@ -5391,7 +5405,7 @@ msgstr ""
 msgid "“{subject}” will be sent {when}"
 msgstr ""
 
-msgid "Could not schedule the message: there is no local store to keep it in."
+msgid "Could not schedule the message."
 msgstr ""
 
 msgid ""

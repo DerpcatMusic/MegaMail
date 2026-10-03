@@ -2881,6 +2881,15 @@ msgstr ""
 msgid "Could not translate"
 msgstr "Δεν ήταν δυνατή η προσθήκη ετικέτας στο μήνυμα: {e}"
 
+#, fuzzy
+msgid "An attachment is missing"
+msgstr "{n} συνημμένο"
+
+msgid ""
+"Hylki cannot read {names}. It was moved or deleted after it was attached. "
+"Remove it, or attach it again from where it is now."
+msgstr ""
+
 msgid "Cannot send with OpenPGP"
 msgstr "Δεν είναι δυνατή η αποστολή με OpenPGP"
 
@@ -2941,6 +2950,13 @@ msgstr "Αυτή η ώρα έχει παρέλθει"
 
 msgid "Choose a time later than now."
 msgstr "Επιλέξτε ώρα μεταγενέστερη από την τρέχουσα."
+
+msgid "The file was moved or deleted. Attach it again from where it is now."
+msgstr ""
+
+#, fuzzy
+msgid "Not found"
+msgstr "Δεν εμφανίζεται"
 
 msgid "Contacts"
 msgstr "Επαφές"
@@ -6109,10 +6125,9 @@ msgstr "Η αποστολή απέτυχε: {e}"
 msgid "“{subject}” will be sent {when}"
 msgstr "Το «{subject}» θα σταλεί {when}"
 
-msgid "Could not schedule the message: there is no local store to keep it in."
-msgstr ""
-"Δεν ήταν δυνατός ο προγραμματισμός του μηνύματος: δεν υπάρχει τοπικός χώρος "
-"αποθήκευσης για να διατηρηθεί."
+#, fuzzy
+msgid "Could not schedule the message."
+msgstr "Δεν ήταν δυνατή η διαγραφή του μηνύματος: {e}"
 
 msgid ""
 "no OpenPGP key of your own for {addr}; generate one under Settings, OpenPGP"
@@ -6279,6 +6294,12 @@ msgstr "Τα ενοποιημένα εισερχόμενα σε φωτεινή �
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid ""
+#~ "Could not schedule the message: there is no local store to keep it in."
+#~ msgstr ""
+#~ "Δεν ήταν δυνατός ο προγραμματισμός του μηνύματος: δεν υπάρχει τοπικός "
+#~ "χώρος αποθήκευσης για να διατηρηθεί."
 
 #~ msgid "Flagged first"
 #~ msgstr "Επισημασμένα πρώτα"

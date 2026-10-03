@@ -2870,6 +2870,15 @@ msgstr ""
 msgid "Could not translate"
 msgstr "Не удалось добавить тег к сообщению: {e}"
 
+#, fuzzy
+msgid "An attachment is missing"
+msgstr "{n} вложение"
+
+msgid ""
+"Hylki cannot read {names}. It was moved or deleted after it was attached. "
+"Remove it, or attach it again from where it is now."
+msgstr ""
+
 msgid "Cannot send with OpenPGP"
 msgstr "Невозможно отправить с помощью OpenPGP"
 
@@ -2927,6 +2936,13 @@ msgstr "Это время уже прошло"
 
 msgid "Choose a time later than now."
 msgstr "Выберите время позже текущего."
+
+msgid "The file was moved or deleted. Attach it again from where it is now."
+msgstr ""
+
+#, fuzzy
+msgid "Not found"
+msgstr "Скрыты"
 
 msgid "Contacts"
 msgstr "Контакты"
@@ -6073,9 +6089,9 @@ msgstr "Не удалось отправить: {e}"
 msgid "“{subject}” will be sent {when}"
 msgstr "Письмо «{subject}» будет отправлено {when}"
 
-msgid "Could not schedule the message: there is no local store to keep it in."
-msgstr ""
-"Не удалось отложить отправку сообщения: нет локального хранилища для него."
+#, fuzzy
+msgid "Could not schedule the message."
+msgstr "Не удалось удалить сообщение: {e}"
 
 msgid ""
 "no OpenPGP key of your own for {addr}; generate one under Settings, OpenPGP"
@@ -6209,6 +6225,11 @@ msgstr "Общие входящие в светлом режиме"
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid ""
+#~ "Could not schedule the message: there is no local store to keep it in."
+#~ msgstr ""
+#~ "Не удалось отложить отправку сообщения: нет локального хранилища для него."
 
 #~ msgid "Flagged first"
 #~ msgstr "Сначала отмеченные"

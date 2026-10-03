@@ -2885,6 +2885,15 @@ msgstr ""
 msgid "Could not translate"
 msgstr "Nie udało się oznaczyć wiadomości etykietą: {e}"
 
+#, fuzzy
+msgid "An attachment is missing"
+msgstr "{n} załącznik"
+
+msgid ""
+"Hylki cannot read {names}. It was moved or deleted after it was attached. "
+"Remove it, or attach it again from where it is now."
+msgstr ""
+
 msgid "Cannot send with OpenPGP"
 msgstr "Nie można wysłać wiadomości z użyciem OpenPGP"
 
@@ -2944,6 +2953,13 @@ msgstr "Ten czas już minął"
 
 msgid "Choose a time later than now."
 msgstr "Wybierz godzinę w przyszłości."
+
+msgid "The file was moved or deleted. Attach it again from where it is now."
+msgstr ""
+
+#, fuzzy
+msgid "Not found"
+msgstr "Niewyświetlane"
 
 msgid "Contacts"
 msgstr "Kontakty"
@@ -6107,10 +6123,9 @@ msgstr "Nie udało się wysłać: {e}"
 msgid "“{subject}” will be sent {when}"
 msgstr "Wiadomość „{subject}” zostanie wysłana {when}"
 
-msgid "Could not schedule the message: there is no local store to keep it in."
-msgstr ""
-"Nie udało się zaplanować wiadomości: brak lokalnego magazynu, w którym można "
-"ją przechowywać."
+#, fuzzy
+msgid "Could not schedule the message."
+msgstr "Nie udało się usunąć wiadomości: {e}"
 
 msgid ""
 "no OpenPGP key of your own for {addr}; generate one under Settings, OpenPGP"
@@ -6274,6 +6289,12 @@ msgstr "Zbiorcza skrzynka odbiorcza w jasnym motywie"
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid ""
+#~ "Could not schedule the message: there is no local store to keep it in."
+#~ msgstr ""
+#~ "Nie udało się zaplanować wiadomości: brak lokalnego magazynu, w którym "
+#~ "można ją przechowywać."
 
 #~ msgid "Flagged first"
 #~ msgstr "Najpierw oznaczone gwiazdką"

@@ -2884,6 +2884,15 @@ msgstr ""
 msgid "Could not translate"
 msgstr "Não foi possível atribuir uma etiqueta à mensagem: {e}"
 
+#, fuzzy
+msgid "An attachment is missing"
+msgstr "{n} anexo"
+
+msgid ""
+"Hylki cannot read {names}. It was moved or deleted after it was attached. "
+"Remove it, or attach it again from where it is now."
+msgstr ""
+
 msgid "Cannot send with OpenPGP"
 msgstr "Não é possível enviar com OpenPGP"
 
@@ -2943,6 +2952,13 @@ msgstr "Essa hora já passou"
 
 msgid "Choose a time later than now."
 msgstr "Escolha uma hora posterior à atual."
+
+msgid "The file was moved or deleted. Attach it again from where it is now."
+msgstr ""
+
+#, fuzzy
+msgid "Not found"
+msgstr "Não mostrado"
 
 msgid "Contacts"
 msgstr "Contactos"
@@ -6116,10 +6132,9 @@ msgstr "Falha ao enviar: {e}"
 msgid "“{subject}” will be sent {when}"
 msgstr "«{subject}» será enviada {when}"
 
-msgid "Could not schedule the message: there is no local store to keep it in."
-msgstr ""
-"Não foi possível agendar a mensagem: não existe armazenamento local onde a "
-"guardar."
+#, fuzzy
+msgid "Could not schedule the message."
+msgstr "Não foi possível eliminar a mensagem: {e}"
 
 msgid ""
 "no OpenPGP key of your own for {addr}; generate one under Settings, OpenPGP"
@@ -6278,6 +6293,12 @@ msgstr "A caixa de entrada unificada no modo claro"
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid ""
+#~ "Could not schedule the message: there is no local store to keep it in."
+#~ msgstr ""
+#~ "Não foi possível agendar a mensagem: não existe armazenamento local onde "
+#~ "a guardar."
 
 #~ msgid "Flagged first"
 #~ msgstr "Com estrela primeiro"
