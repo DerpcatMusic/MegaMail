@@ -1,6 +1,6 @@
 [package]
 name = "hylki"
-version = "1.42.0-beta.7"
+version = "1.42.0"
 edition = "2021"
 description = "A clean, fast GNOME-native email client"
 license = "AGPL-3.0-or-later"
@@ -89,11 +89,17 @@ css-inline = { version = "0.21.2", default-features = false }
 wayland-client = "0.31"
 wayland-backend = { version = "0.3", features = ["client_system"] }
 wayland-scanner = "0.31"
+# Message translation (#327): which language a message is in is found here,
+# offline, so a Translate offer sends nothing until it is clicked.
+whatlang = "0.18"
 
 [build-dependencies]
 # Compiles resources/veem.gresource.xml (the bundled symbolic icons) into a
 # .gresource blob embedded in the binary. See build.rs.
 glib-build-tools = "0.20"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 
 [profile.dev]
 opt-level = 1

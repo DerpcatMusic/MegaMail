@@ -361,6 +361,14 @@ msgstr "Externe Inhalte blockieren"
 msgid "Show Remote Content"
 msgstr "Externe Inhalte anzeigen"
 
+#, fuzzy
+msgid "Expand All Messages"
+msgstr "In Nachricht suchen"
+
+#, fuzzy
+msgid "Collapse All Messages"
+msgstr "Im Lesebereich einklappen"
+
 msgid "Delete {n} messages"
 msgstr "{n} Nachrichten löschen"
 
@@ -1118,6 +1126,11 @@ msgid_plural "A new message with {n} files attached is open in Hylki."
 msgstr[0] "Eine neue Nachricht mit {n}-Datei ist in Hylki geöffnet."
 msgstr[1] "Eine neue Nachricht mit {n} Dateien ist in Hylki geöffnet."
 
+msgid ""
+"{reason} If your organization manages your account, an administrator can "
+"approve Hylki for everyone at {link}"
+msgstr ""
+
 msgid "GnuPG (gpg) is not installed, so this message cannot be read."
 msgstr ""
 "GnuPG (gpg) ist nicht installiert, daher kann diese Nachricht nicht gelesen "
@@ -1188,6 +1201,50 @@ msgstr "gpg hat die Nachricht nicht unterschrieben."
 msgid "gpg did not encrypt the message."
 msgstr "gpg hat die Nachricht nicht verschlüsselt."
 
+msgid "Off"
+msgstr "Aus"
+
+msgid "Choose a translation service in Settings → Translation first."
+msgstr ""
+
+msgid "No key for {service}: add one in Settings → Translation."
+msgstr ""
+
+msgid "There is no text to translate."
+msgstr ""
+
+#, fuzzy
+msgid "This message is too long to send for translation."
+msgstr "Diese Nachricht enthält keine Kalenderdatei zum Öffnen."
+
+#, fuzzy
+msgid "The service's answer could not be read."
+msgstr "Die E-Mail-Adresse der Liste konnte nicht gelesen werden"
+
+#, fuzzy
+msgid "This is too long to send for translation."
+msgstr "Diese Nachricht enthält keine Kalenderdatei zum Öffnen."
+
+#, fuzzy
+msgid "The service could not be reached: {e}"
+msgstr "Die Datei konnte nicht geöffnet werden"
+
+#, fuzzy
+msgid "The service did not accept the key."
+msgstr "Das Verzeichnis hat das Passwort nicht akzeptiert."
+
+msgid "Too many requests: try again in a moment."
+msgstr ""
+
+msgid "This month's allowance is used up."
+msgstr ""
+
+msgid "The service refused the request (error {code})."
+msgstr ""
+
+msgid "Enter the LibreTranslate server's address in Settings → Translation."
+msgstr ""
+
 msgid "Open Hylki"
 msgstr "Hylki öffnen"
 
@@ -1219,9 +1276,6 @@ msgstr ""
 
 msgid "Sign in with your browser — no password needed."
 msgstr "Melden Sie sich mit Ihrem Browser an - kein Passwort erforderlich."
-
-msgid "Sign in through GNOME Online Accounts."
-msgstr "Melden Sie sich über GNOME Online Accounts an."
 
 msgid "Requires Proton Mail Bridge running locally."
 msgstr "Benötigt Proton Mail Bridge, die lokal läuft."
@@ -1699,9 +1753,6 @@ msgstr "Einstellungen folgen"
 
 msgid "On"
 msgstr "Ein"
-
-msgid "Off"
-msgstr "Aus"
 
 msgid "Choose a Picture"
 msgstr "Wählen Sie ein Bild"
@@ -2555,6 +2606,62 @@ msgstr ""
 msgid "Signed in as {who}. {terms}"
 msgstr "Angemeldet als {who}. {terms}"
 
+#, fuzzy
+msgid "Translation"
+msgstr "Übersetzt von"
+
+msgid ""
+"Translate messages with a service you have an account with, under your own "
+"key. The text of a message you translate is sent to that service, and "
+"nothing is sent until you ask."
+msgstr ""
+
+msgid "Server"
+msgstr "Server"
+
+msgid "Region (empty for a global resource)"
+msgstr ""
+
+#, fuzzy
+msgid "Check the settings"
+msgstr "Einstellungen durchsuchen"
+
+msgid "Translates a greeting, to see that the service answers."
+msgstr ""
+
+msgid "Check"
+msgstr ""
+
+#, fuzzy
+msgid "Messages"
+msgstr "Keine Nachrichten"
+
+#, fuzzy
+msgid "Hylki's language ({language})"
+msgstr "Systemsprache — {language}"
+
+#, fuzzy
+msgid "Translate into"
+msgstr "Übersetzt von"
+
+msgid "Offer to translate"
+msgstr ""
+
+msgid ""
+"Messages in another language show a Translate button. Which language a "
+"message is in is worked out on this computer."
+msgstr ""
+
+msgid "Key (if the server asks for one)"
+msgstr ""
+
+#, fuzzy
+msgid "Checking…"
+msgstr "Wird gesucht…"
+
+msgid "It works: “{sent}” came back as “{back}”."
+msgstr ""
+
 msgid "Rich text"
 msgstr "Formatierter Text"
 
@@ -2674,6 +2781,10 @@ msgstr "Vorschau"
 msgid "Show the message as it will be sent"
 msgstr "Zeigen Sie die Nachricht, wie sie gesendet wird"
 
+#, fuzzy
+msgid "Translate what you wrote"
+msgstr "Übersetzt von"
+
 msgid "More"
 msgstr "Mehr"
 
@@ -2707,6 +2818,34 @@ msgstr "{name} entfernen"
 
 msgid "Typing"
 msgstr "Eingabe"
+
+#, fuzzy
+msgid "{language} (the quoted message)"
+msgstr "Über der zitierten Nachricht"
+
+#, fuzzy
+msgid "Other Languages"
+msgstr "Sprache"
+
+#, fuzzy
+msgid "Not translated"
+msgstr "Übersetzt von"
+
+#, fuzzy
+msgid ""
+"This message is set to be encrypted, so its text is not sent for translation."
+msgstr "Diese Nachricht enthält keine Kalenderdatei zum Öffnen."
+
+#, fuzzy
+msgid "Nothing to translate yet"
+msgstr "Nichts zu exportieren."
+
+msgid "Write something first, or select the text to translate."
+msgstr ""
+
+#, fuzzy
+msgid "Could not translate"
+msgstr "Nachricht konnte nicht mit Tag versehen werden: {e}"
 
 msgid "Cannot send with OpenPGP"
 msgstr "Kann nicht mit OpenPGP senden"
@@ -2891,9 +3030,6 @@ msgstr "Verzeichnis hinzufügen"
 
 msgid "Look up recipients in this directory"
 msgstr "Empfänger in diesem Verzeichnis suchen"
-
-msgid "Server"
-msgstr "Server"
 
 msgid "Encryption"
 msgstr "Verschlüsselung"
@@ -3133,6 +3269,55 @@ msgstr "Abmelden…"
 msgid "Opens the list's unsubscribe page in your browser"
 msgstr "Öffnet die Abmeldeseite der Liste in Ihrem Browser"
 
+#, fuzzy
+msgid "Translating…"
+msgstr "Wird getestet…"
+
+#, fuzzy
+msgid "Could not translate: {why}"
+msgstr "Nachricht konnte nicht mit Tag versehen werden: {e}"
+
+msgid "Translated from {language} by {service}."
+msgstr ""
+
+#, fuzzy
+msgid "Translated by {service}."
+msgstr "Übersetzt von"
+
+#, fuzzy
+msgid "Show Original"
+msgstr "Empfänger anzeigen"
+
+#, fuzzy
+msgid "Showing the original."
+msgstr "Beim Darüberfahren sichtbar"
+
+#, fuzzy
+msgid "Show Translation"
+msgstr "Unterhaltung anzeigen"
+
+#, fuzzy
+msgid "This message is in {language}."
+msgstr "Diese Nachricht stammt aus einer Mailingliste."
+
+#, fuzzy
+msgid "Translate"
+msgstr "Übersetzt von"
+
+msgid "Starred"
+msgstr "Markiert"
+
+msgid "Received"
+msgstr ""
+
+#, fuzzy
+msgid "Has attachments"
+msgstr "Keine Anhänge"
+
+#, fuzzy
+msgid "Click to open this message"
+msgstr "Antwort auf diese Nachricht"
+
 msgid "Meeting"
 msgstr "Besprechung"
 
@@ -3315,6 +3500,13 @@ msgstr "Leseansicht"
 msgid "Loading…"
 msgstr "Wird geladen…"
 
+msgid "Encrypted messages are not sent for translation."
+msgstr ""
+
+#, fuzzy
+msgid "The message has not loaded yet."
+msgstr "Diese Nachricht wurde nicht überprüft."
+
 msgid "That key is no longer in your keyring."
 msgstr "Dieser Schlüssel ist nicht mehr in Ihrem Schlüsselring."
 
@@ -3380,6 +3572,10 @@ msgstr "Diese Nachricht löschen"
 msgid "View source"
 msgstr "Quelltext anzeigen"
 
+#, fuzzy
+msgid "Translate this message"
+msgstr "Diese Nachricht löschen"
+
 msgid "Back to my fonts and colors"
 msgstr "Eigene Schriftarten und Farben verwenden"
 
@@ -3402,6 +3598,16 @@ msgstr "Empfänger ausblenden"
 
 msgid "Show recipients"
 msgstr "Empfänger anzeigen"
+
+#. The fold's tooltips, in the user's language.
+#, fuzzy
+msgid "Show quoted text"
+msgstr "Externe Inhalte anzeigen"
+
+#. The fold's tooltips, in the user's language.
+#, fuzzy
+msgid "Hide quoted text"
+msgstr "Vorschautext ausblenden"
 
 msgid "Save Image"
 msgstr "Bild speichern"
@@ -4175,9 +4381,6 @@ msgstr ""
 "Ein einheitlicher Posteingang, der jedes Konto in der oberen Seitenleiste "
 "kombiniert und nur mit mehr als einem Konto angezeigt wird."
 
-msgid "Starred"
-msgstr "Markiert"
-
 msgid ""
 "Every account's starred folder as one list, opening to each account's own."
 msgstr ""
@@ -4309,6 +4512,15 @@ msgstr ""
 "Nachrichten, die Sie gesendet haben, tragen den Gravatar, das Bild oder das "
 "Emoji des Kontos, wie es der Kreis in der Seitenleiste tut."
 
+msgid "Layout"
+msgstr ""
+
+msgid ""
+"Each message on lines of its own, or on one line in columns. Automatic uses "
+"one line while the list is dragged wide and lines of their own when it is "
+"narrow."
+msgstr ""
+
 msgid "Preview lines"
 msgstr "Vorschauzeilen"
 
@@ -4423,6 +4635,15 @@ msgid ""
 msgstr ""
 "Zeigen Sie die letzte Nachricht eines Gesprächs am oberen Rand des "
 "Lesebereichs."
+
+#, fuzzy
+msgid "Fold earlier messages"
+msgstr "In Nachricht suchen"
+
+msgid ""
+"Which messages of a conversation open folded to one line. The newest always "
+"opens, and a click on a folded message opens it."
+msgstr ""
 
 msgid "Show your own replies in the message list"
 msgstr "Eigene Antworten in der Nachrichtenliste anzeigen"
@@ -5066,6 +5287,13 @@ msgstr "2 Zeilen"
 msgid "3 lines"
 msgstr "3 Zeilen"
 
+msgid "Cards"
+msgstr ""
+
+#, fuzzy
+msgid "Single line"
+msgstr "Unterstreichen"
+
 msgid ""
 "The launcher shows an icon set outside Hylki. Picking one here replaces it."
 msgstr ""
@@ -5077,6 +5305,13 @@ msgstr "Wenn angezeigt"
 
 msgid "After two seconds"
 msgstr "Nach zwei Sekunden"
+
+#, fuzzy
+msgid "Messages already read"
+msgstr "Nachricht bereit zum Versenden"
+
+msgid "All but the newest"
+msgstr ""
 
 msgid "Remember the last choice"
 msgstr "Letzte Auswahl merken"
@@ -5681,6 +5916,9 @@ msgstr "Der Anhang ist nicht mehr in der Nachricht auf dem Server vorhanden"
 msgid "Still could not send “{subject}”: {e}"
 msgstr "„{subject}“ konnte immer noch nicht gesendet werden: {e}"
 
+msgid "IMAP connection stopped making progress"
+msgstr ""
+
 msgid "Could not reach the JMAP server: {e}"
 msgstr "Konnte den JMAP-Server nicht erreichen: {e}"
 
@@ -5953,6 +6191,9 @@ msgstr "Der einheitliche Posteingang im Lichtmodus"
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid "Sign in through GNOME Online Accounts."
+#~ msgstr "Melden Sie sich über GNOME Online Accounts an."
 
 #~ msgid "Flag"
 #~ msgstr "Markieren"

@@ -55,6 +55,11 @@ const READER_MIN_WIDTH: i32 = 400;
 /// and read mail used to turn unread again in the meantime (#255).
 const PENDING_SEEN_MAX: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// How wide the list pane has to be dragged before Automatic lays the list
+/// out on one line, and how far back before it returns to cards (#334).
+const LIST_WIDE_ON: i32 = 600;
+const LIST_WIDE_OFF: i32 = 560;
+
 /// The same for mail taken out of a folder (moved, deleted, marked as
 /// spam): how long it stays off that folder's list without the worker's
 /// word that the move has run.
@@ -597,6 +602,9 @@ pub struct AppModel {
     /// ahead of the STORE still shows the old state; while an entry is
     /// young the app's own state for that message and folder wins over it.
     pending_seen: HashMap<(u32, String, u32), (bool, std::time::Instant)>,
+    /// Accounts whose server unread count arrived while a read mark was on
+    /// its way and was set aside: asked again once the marks are stored.
+    dropped_unread: std::collections::HashSet<u32>,
     /// Mail taken out of a folder whose move the worker has not reached
     /// yet, keyed by (account, folder path, uid) → when it was sent. A list
     /// the worker fetched ahead of the move still holds it, and putting it
@@ -744,6 +752,11 @@ pub struct AppModel {
     list_count: String,
     /// Lines of preview text per message-list row (1–3).
     preview_lines: u32,
+    /// The message list's layout setting (#334).
+    list_layout: config::ListLayout,
+    /// The list pane is wide enough for one line per message, which
+    /// Automatic follows.
+    list_wide: bool,
     /// The keyboard-shortcut reference, while it is open — so the shortcut that
     /// opens it closes it again.
     shortcuts_win: Option<adw::Window>,
@@ -811,6 +824,8 @@ pub struct AppModel {
     threads_expanded: bool,
     /// Reading pane shows conversations newest-message-first.
     thread_newest_first: bool,
+    /// Which messages of a conversation open folded (#326).
+    fold_messages: config::FoldMessages,
     /// Reader always shows the recipients line under the sender.
     always_show_recipients: bool,
     /// The OpenPGP chip says its verdict in words (#300).
@@ -1607,6 +1622,8 @@ pub enum AppMsg {
     DeferredMarkRead { message: Box<Message> },
     /// The list header's starred quick filter.
     SetStarredFilter(bool),
+    /// The list pane is this wide now (a drag of the divider, #334).
+    ListPaneWidth(i32),
     /// Write the exported log straight to `path`, no chooser: the
     /// HYLKI_SHOWCASE_MEMORY hook, for reading the memory section of a
     /// running instance.
@@ -1934,11 +1951,15 @@ impl SimpleComponent for AppModel {
                         // position-notify fires per pixel of a drag (and when the
                         // window squeezes the pane), one write once it settles.
                         connect_position_notify[
+                            sender,
                             pending = std::rc::Rc::new(std::cell::RefCell::new(
                                 None::<gtk::glib::SourceId>,
                             ))
                         ] => move |p| {
                             let pos = p.position();
+                            // Automatic layout follows the width as it is
+                            // dragged, not once the drag has settled (#334).
+                            sender.input(AppMsg::ListPaneWidth(pos));
                             if let Some(id) = pending.borrow_mut().take() {
                                 id.remove();
                             }
@@ -3122,6 +3143,7 @@ impl SimpleComponent for AppModel {
             related_ids: HashMap::new(),
             folder_unread: HashMap::new(),
             pending_seen: HashMap::new(),
+            dropped_unread: Default::default(),
             pending_moves: std::cell::RefCell::new(HashMap::new()),
             transfers: HashMap::new(),
             next_transfer: 0,
@@ -3200,6 +3222,8 @@ impl SimpleComponent for AppModel {
             last_settings_page: None,
             list_count: String::new(),
             preview_lines: config::load_preview_lines(),
+            list_layout: config::load_list_layout(),
+            list_wide: config::load_list_pane_width() >= LIST_WIDE_ON,
             shortcuts_win: None,
             run_in_background: std::rc::Rc::new(std::cell::Cell::new(
                 config::load_privacy().run_in_background,
@@ -3228,6 +3252,7 @@ impl SimpleComponent for AppModel {
             thread_key: None,
             threads_expanded: prefs.threads_expanded,
             thread_newest_first: prefs.thread_newest_first,
+            fold_messages: prefs.fold_messages,
             always_show_recipients: prefs.always_show_recipients,
             pgp_labels: prefs.pgp_labels,
             show_unified_pref: prefs.show_unified,
@@ -3348,6 +3373,12 @@ impl SimpleComponent for AppModel {
         model.refresh_own_faces();
         model.warm_own_gravatars(&sender);
         model.spawn_workers(&sender);
+        // GNOME keeps a notification after the app that posted it has quit,
+        // and a new instance knows nothing of what it pointed at, so it
+        // could only linger (#333). New mail since is notified afresh.
+        for a in &model.accounts {
+            crate::notify::withdraw_mail(a.id);
+        }
         if model.tray_enabled {
             model.start_tray(&sender);
         }
@@ -3435,6 +3466,7 @@ impl SimpleComponent for AppModel {
             subject: model.list_show_subject(),
             animate: false,
         });
+        model.push_single_line();
         model.sidebars_emit(SidebarInput::SetFocus {
             hide_accounts: model.focus.active(config::FocusPart::HideAccounts),
             fold_unified: model.focus.active(config::FocusPart::FoldUnified),
@@ -3469,6 +3501,7 @@ impl SimpleComponent for AppModel {
         model
             .message_view
             .emit(MessageViewInput::SetSingleMessageCard(model.single_message_card));
+        model.message_view.emit(MessageViewInput::SetFoldMessages(model.fold_messages));
         model.message_view.emit(MessageViewInput::SetReaderMode(model.effective_reader_mode()));
         model.message_view.emit(MessageViewInput::SetZoomDefault(model.zoom_default));
         model.message_view.emit(MessageViewInput::SetZoom(model.zoom));
@@ -4163,6 +4196,16 @@ impl SimpleComponent for AppModel {
                 {
                     s.input(AppMsg::CopyReaderSelection);
                     return gtk::glib::Propagation::Proceed;
+                }
+                // The keys other mail apps use (#328), with or without
+                // single-key shortcuts. A composer keeps them: Ctrl+U
+                // underlines there, and a reply should not start from the
+                // middle of another.
+                if ctrl && !state.contains(gtk::gdk::ModifierType::ALT_MASK) && !focus_in_compose(&window) {
+                    if let Some(msg) = ctrl_shortcut_for(keyval, shift) {
+                        s.input(msg);
+                        return gtk::glib::Propagation::Stop;
+                    }
                 }
                 if ctrl || state.contains(gtk::gdk::ModifierType::ALT_MASK) {
                     return gtk::glib::Propagation::Proceed;
@@ -7404,6 +7447,22 @@ impl SimpleComponent for AppModel {
 
             AppMsg::Shortcut(action) => self.run_shortcut(action, &sender),
 
+            AppMsg::Pref(PrefOutput::SetListLayout(layout)) => {
+                if pref!(self.list_layout = layout) {
+                    self.push_single_line();
+                }
+            }
+            AppMsg::ListPaneWidth(width) => {
+                // A margin each way, so a drag that rests near the line does
+                // not flick the rows back and forth.
+                let wide = if self.list_wide { width >= LIST_WIDE_OFF } else { width >= LIST_WIDE_ON };
+                if wide != self.list_wide {
+                    self.list_wide = wide;
+                    if self.list_layout == config::ListLayout::Automatic {
+                        self.push_single_line();
+                    }
+                }
+            }
             AppMsg::Pref(PrefOutput::SetPreviewLines(lines)) => {
                 if self.preview_lines != lines {
                     let was_off = self.preview_lines == 0;
@@ -7586,6 +7645,12 @@ impl SimpleComponent for AppModel {
                     if self.current_thread.len() > 1 {
                         self.show_thread();
                     }
+                }
+            }
+
+            AppMsg::Pref(PrefOutput::SetFoldMessages(fold)) => {
+                if pref!(self.fold_messages = fold) {
+                    self.message_view.emit(MessageViewInput::SetFoldMessages(fold));
                 }
             }
 
@@ -9613,9 +9678,16 @@ impl SimpleComponent for AppModel {
             AppMsg::FolderUnread { account_id, folder_id, unread } => {
                 // A count fetched ahead of a read mark still in the worker's
                 // queue: the app's own count (adjusted when the mark was
-                // made) stands until the mark is stored.
+                // made) stands until the mark is stored, and the server is
+                // asked again once it is (#333).
                 if self.pending_seen_in_folder(account_id, folder_id) {
+                    self.dropped_unread.insert(account_id);
                     return;
+                }
+                // Nothing unread left where the notification points: it is
+                // answered, wherever the mail was read (#333).
+                if unread == 0 && crate::notify::posted_for(account_id).is_some_and(|(f, _)| f == folder_id) {
+                    crate::notify::withdraw_mail(account_id);
                 }
                 // Likewise while mail is being taken out of the folder: each
                 // move changes the server's count before the app hears the
@@ -9637,6 +9709,15 @@ impl SimpleComponent for AppModel {
             AppMsg::SeenSettled { account_id, path, uid } => {
                 self.pending_seen.remove(&(account_id, path, uid));
                 self.pending_seen.retain(|_, (_, at)| at.elapsed() < PENDING_SEEN_MAX);
+                // Counts the server sent while the marks were on their way
+                // were set aside; with the last one stored, ask for fresh
+                // ones, or the badge keeps the app's guess until the next
+                // change (#333).
+                if !self.pending_seen.keys().any(|(a, _, _)| *a == account_id)
+                    && self.dropped_unread.remove(&account_id)
+                {
+                    self.send_to(account_id, MailRequest::RefreshUnread);
+                }
             }
 
             AppMsg::RawExported { token, raw } => {
@@ -9667,7 +9748,11 @@ impl SimpleComponent for AppModel {
             }
 
             AppMsg::FolderUnreadByPath { account_id, path, unread } => {
-                if self.pending_seen_in(account_id, &path) || self.pending_moves_in(account_id, &path) {
+                if self.pending_seen_in(account_id, &path) {
+                    self.dropped_unread.insert(account_id);
+                    return;
+                }
+                if self.pending_moves_in(account_id, &path) {
                     return;
                 }
                 // Resolve against the current list; a path the app no longer
@@ -9679,6 +9764,9 @@ impl SimpleComponent for AppModel {
                     .and_then(|fs| fs.iter().find(|f| f.path == path))
                     .map(|f| f.id);
                 if let Some(folder_id) = id {
+                    if unread == 0 && crate::notify::posted_for(account_id).is_some_and(|(f, _)| f == folder_id) {
+                        crate::notify::withdraw_mail(account_id);
+                    }
                     let prev = self.folder_unread.insert((account_id, folder_id), unread);
                     if prev != Some(unread) {
                         self.sync_background_folder(account_id, folder_id);
@@ -9844,6 +9932,13 @@ impl SimpleComponent for AppModel {
                 // rebuild of a large (or merged) list is not free, and it
                 // used to happen several times over per visit.
                 let unchanged = self.message_cache.get(&(account_id, folder_id)) == Some(&messages);
+                // The notified mail was read somewhere else, on the phone or
+                // in another client: the notification goes too (#333).
+                if let Some((f, mid)) = crate::notify::posted_for(account_id) {
+                    if f == folder_id && messages.iter().any(|m| m.id == mid && !m.unread) {
+                        crate::notify::withdraw_mail(account_id);
+                    }
+                }
                 self.message_cache
                     .insert((account_id, folder_id), messages.clone());
                 // A draft picker waiting on this folder's list (Send with
@@ -9865,7 +9960,7 @@ impl SimpleComponent for AppModel {
                     // conversations are; the badges have to be counted again
                     // rather than kept from before it (#222).
                     self.message_list
-                        .emit(MessageListInput::ForgetThreadSummaries(account_id));
+                        .emit(MessageListInput::RecheckThreadSummaries(account_id));
                 }
                 // After that sweep, not before it: a conversation carried over
                 // a move (#200) goes back under the id the message now has,
@@ -10170,7 +10265,7 @@ impl SimpleComponent for AppModel {
                 // badges counted it.
                 self.forget_threads(account_id);
                 self.message_list
-                    .emit(MessageListInput::ForgetThreadSummaries(account_id));
+                    .emit(MessageListInput::RecheckThreadSummaries(account_id));
                 if self.current_thread.len() != before {
                     if self.current_thread.len() > 1 {
                         self.queue_thread_render(&sender);
@@ -10253,8 +10348,11 @@ impl SimpleComponent for AppModel {
                         .insert((account_id, path.clone(), uid), (true, std::time::Instant::now()));
                     self.send_to(account_id, MailRequest::SetSeen { path, uid, seen: true });
                 }
-                self.message_list.emit(MessageListInput::MarkRead(id));
-                self.mark_cached_read(account_id, id);
+                // Reading the new mail inside its conversation answers the
+                // notification as opening it on its own does (#333).
+                crate::notify::withdraw_mail(account_id);
+                self.message_list.emit(MessageListInput::MarkRead((account_id, folder_id, id)));
+                self.mark_cached_read(account_id, folder_id, id);
                 // The card's dot clears in place as the viewport observer
                 // marks it (#100) — this path never told the view before.
                 self.message_view.emit(MessageViewInput::ClearDot { account_id, id });
@@ -10829,6 +10927,7 @@ impl AppModel {
             thread_expansion: self.thread_expansion,
             thread_row_newest: self.thread_row_newest,
             thread_newest_first: self.thread_newest_first,
+            fold_messages: self.fold_messages,
             always_show_recipients: self.always_show_recipients,
             pgp_labels: self.pgp_labels,
             single_message_card: self.single_message_card,
@@ -10876,6 +10975,7 @@ impl AppModel {
             single_card_default_applied: true,
             spellcheck_langs: self.spellcheck_langs.clone(),
             preview_lines: self.preview_lines,
+            list_layout: self.list_layout,
             single_key_shortcuts: self.single_key.get(),
             run_in_background: self.run_in_background.get(),
             autostart: self.autostart,
@@ -12289,8 +12389,8 @@ impl AppModel {
         }
         // Reading new mail clears that account's new-mail notification.
         crate::notify::withdraw_mail(account_id);
-        self.message_list.emit(MessageListInput::MarkRead(m.id));
-        self.mark_cached_read(account_id, m.id);
+        self.message_list.emit(MessageListInput::MarkRead((account_id, m.folder_id, m.id)));
+        self.mark_cached_read(account_id, m.folder_id, m.id);
         // Optimistically drop the badge by one; the next server count
         // reconciles any drift.
         if let Some(n) = self.folder_unread.get_mut(&(account_id, m.folder_id)) {
@@ -13382,6 +13482,17 @@ impl AppModel {
 
     /// Hand the list its look; `animate` slides the avatars away or back
     /// (a Focus Mode toggle) rather than rebuilding the rows outright.
+    /// Tell the list whether to lay messages out on one line (#334): the
+    /// Layout setting, or for Automatic, the width of the pane.
+    fn push_single_line(&self) {
+        let on = match self.list_layout {
+            config::ListLayout::Cards => false,
+            config::ListLayout::SingleLine => true,
+            config::ListLayout::Automatic => self.list_wide,
+        };
+        self.message_list.emit(MessageListInput::SetSingleLine(on));
+    }
+
     fn push_list_look(&self, animate: bool) {
         self.message_list.emit(MessageListInput::SetLook {
             avatars: self.list_avatars(),
@@ -13930,7 +14041,34 @@ impl AppModel {
             })
             .icon(format!("{icon}-symbolic"))]);
         }
-        sections.push(vec![item(RowAction::ViewSource, i18n("View Source"), "code")]);
+        // Expand All and Collapse All, for the whole conversation (#326).
+        if let Some((any_folded, any_open, reader)) = hit.folds.clone() {
+            let open = reader.clone();
+            sections.push(vec![
+                MenuEntry::new(i18n("Expand All Messages"), move || {
+                    open.emit(crate::ui::message_view::MessageViewInput::FoldAll(false));
+                })
+                .icon("pan-down-symbolic")
+                .enabled(any_folded),
+                MenuEntry::new(i18n("Collapse All Messages"), move || {
+                    reader.emit(crate::ui::message_view::MessageViewInput::FoldAll(true));
+                })
+                .icon("pan-up-symbolic")
+                .enabled(any_open),
+            ]);
+        }
+        let mut last = Vec::new();
+        if let Some(t) = hit.translate.clone() {
+            let (account_id, id) = (m.account_id, m.id);
+            last.push(
+                MenuEntry::new(t.label, move || {
+                    t.reader.emit(crate::ui::message_view::MessageViewInput::Translate { account_id, id });
+                })
+                .icon("translate-symbolic"),
+            );
+        }
+        last.push(item(RowAction::ViewSource, i18n("View Source"), "code"));
+        sections.push(last);
         show_context_menu(&parent, x, y, sections);
     }
 
@@ -14059,6 +14197,7 @@ impl AppModel {
             loading,
             primary: None, // a single message is its own primary
             folder_labels: HashMap::new(),
+            sent: Default::default(),
             // A single message is one small frame; it is never covered anyway.
             instant: true,
         });
@@ -14129,6 +14268,7 @@ impl AppModel {
             account_color: Some(self.account_color(account_id)),
             loading,
             folder_labels: self.thread_folder_labels(),
+            sent: self.thread_sent(),
             primary: Some(Box::new(primary)),
             // Nothing to wait for when the conversation was already assembled
             // and its bodies are in hand.
@@ -14140,6 +14280,15 @@ impl AppModel {
     /// Name the folder each conversation message came from, for the ones that
     /// aren't from the folder on screen. The message list only ever shows one
     /// folder, so anything else was pulled in from the cache (#21).
+    /// The open conversation's messages that are filed in a Sent folder.
+    fn thread_sent(&self) -> std::collections::HashSet<(u32, u32)> {
+        self.current_thread
+            .iter()
+            .filter(|m| self.folder_kind(m.account_id, m.folder_id) == Some(FolderKind::Sent))
+            .map(|m| (m.account_id, m.id))
+            .collect()
+    }
+
     fn thread_folder_labels(&self) -> HashMap<(u32, u32), String> {
         let shown_folder = self.current.as_ref().map(|m| m.folder_id);
         self.current_thread
@@ -17349,7 +17498,7 @@ impl AppModel {
         if let Some(cur) = self.current.as_mut().filter(|c| same(c)) {
             cur.keywords = keywords.clone();
         }
-        self.message_list.emit(MessageListInput::SetKeywords { id, keywords: keywords.clone() });
+        self.message_list.emit(MessageListInput::SetKeywords { slot: (aid, fid, id), keywords: keywords.clone() });
         self.message_view.emit(MessageViewInput::SetCardKeywords {
             account_id: aid,
             id,
@@ -17497,6 +17646,7 @@ impl AppModel {
             threading: self.threading,
             threads_expanded: self.threads_expanded,
             thread_newest_first: self.thread_newest_first,
+            fold_messages: self.fold_messages,
             always_show_recipients: self.always_show_recipients,
             pgp_labels: self.pgp_labels,
             single_message_card: self.single_message_card,
@@ -17566,6 +17716,7 @@ impl AppModel {
             text_scale: self.text_scale,
             theme: self.theme.clone(),
             preview_lines: self.preview_lines,
+            list_layout: self.list_layout,
             single_key_shortcuts: self.single_key.get(),
             run_in_background: self.run_in_background.get(),
             autostart: self.autostart,
@@ -18154,7 +18305,7 @@ impl AppModel {
         };
         self.send_to(m.account_id, MailRequest::SetFlagged { path, uid: m.uid, flagged: starred });
         self.message_list
-            .emit(MessageListInput::SetStarred { id: m.id, starred });
+            .emit(MessageListInput::SetStarred { slot: (m.account_id, m.folder_id, m.id), starred });
         for tm in self
             .current_thread
             .iter_mut()
@@ -18212,8 +18363,8 @@ impl AppModel {
             crate::notify::withdraw_mail(m.account_id);
         }
         self.message_list
-            .emit(MessageListInput::SetRead { id: m.id, read });
-        self.set_cached_unread(m.account_id, m.id, !read);
+            .emit(MessageListInput::SetRead { slot: (m.account_id, m.folder_id, m.id), read });
+        self.set_cached_unread(m.account_id, m.folder_id, m.id, !read);
         if let Some(n) = self.folder_unread.get_mut(&(m.account_id, m.folder_id)) {
             if read {
                 *n = n.saturating_sub(1);
@@ -19772,21 +19923,17 @@ impl AppModel {
 
     /// Mark a cached message read in every list that holds it, so unread badges
     /// update immediately without waiting for the next server sync.
-    fn mark_cached_read(&mut self, account_id: u32, message_id: u32) {
-        self.set_cached_unread(account_id, message_id, false);
+    fn mark_cached_read(&mut self, account_id: u32, folder_id: u32, message_id: u32) {
+        self.set_cached_unread(account_id, folder_id, message_id, false);
     }
 
-    /// Set a cached message's unread flag in every list that holds it.
-    fn set_cached_unread(&mut self, account_id: u32, message_id: u32, unread: bool) {
-        for ((aid, _), msgs) in self.message_cache.iter_mut() {
-            if *aid == account_id {
-                if let Some(m) = msgs.iter_mut().find(|m| m.id == message_id) {
-                    m.unread = unread;
-                }
-            }
-        }
-        for ((aid, _), msgs) in self.unified_slices.iter_mut() {
-            if *aid == account_id {
+    /// Set a cached message's unread flag in every list that holds it: its
+    /// own folder's, and the unified view's slice of it. Only that folder:
+    /// a UID names a different message in each folder, and marking every
+    /// folder's message with this UID read set the wrong mail read (#333).
+    fn set_cached_unread(&mut self, account_id: u32, folder_id: u32, message_id: u32, unread: bool) {
+        for cache in [&mut self.message_cache, &mut self.unified_slices] {
+            if let Some(msgs) = cache.get_mut(&(account_id, folder_id)) {
                 if let Some(m) = msgs.iter_mut().find(|m| m.id == message_id) {
                     m.unread = unread;
                 }
@@ -20144,6 +20291,18 @@ fn shortcut_for(key: gtk::gdk::Key, shift: bool) -> Option<Shortcut> {
     Some(action)
 }
 
+/// The Ctrl shortcuts that work whether or not single-key ones are on (#328).
+fn ctrl_shortcut_for(key: gtk::gdk::Key, shift: bool) -> Option<AppMsg> {
+    use gtk::gdk::Key;
+    match key {
+        Key::n | Key::N if !shift => Some(AppMsg::Shortcut(Shortcut::Compose)),
+        Key::r | Key::R if !shift => Some(AppMsg::Shortcut(Shortcut::Reply)),
+        Key::r | Key::R => Some(AppMsg::Shortcut(Shortcut::ReplyAll)),
+        Key::u | Key::U if !shift => Some(AppMsg::ViewSource),
+        _ => None,
+    }
+}
+
 /// Every shortcut with its key and description, for the reference window.
 const SHORTCUT_HELP: &[(&str, &[(&str, &str)])] = &[
     (
@@ -20161,8 +20320,8 @@ const SHORTCUT_HELP: &[(&str, &[(&str, &str)])] = &[
     (
         i18n_noop("Act on a message"),
         &[
-            ("r", i18n_noop("Reply")),
-            ("R", i18n_noop("Reply to all")),
+            ("r  or  Ctrl+R", i18n_noop("Reply")),
+            ("R  or  Ctrl+Shift+R", i18n_noop("Reply to all")),
             ("f", i18n_noop("Forward")),
             ("a", i18n_noop("Archive")),
             ("d", i18n_noop("Delete")),
@@ -20177,7 +20336,8 @@ const SHORTCUT_HELP: &[(&str, &[(&str, &str)])] = &[
     (
         i18n_noop("Everything else"),
         &[
-            ("c", i18n_noop("Compose")),
+            ("c  or  Ctrl+N", i18n_noop("Compose")),
+            ("Ctrl+U", i18n_noop("View Source")),
             ("Ctrl+Enter", i18n_noop("Send the message you are writing")),
             ("Esc", i18n_noop("Back out of a reply and return to the list")),
             ("Ctrl+Z", i18n_noop("Undo the last action, or the last edit while you are writing")),
@@ -22436,6 +22596,21 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_shortcuts_follow_other_mail_apps() {
+        use gtk::gdk::Key;
+        // #328. Shift arrives as the capital, and Caps Lock alone as well.
+        assert!(matches!(ctrl_shortcut_for(Key::n, false), Some(AppMsg::Shortcut(Shortcut::Compose))));
+        assert!(matches!(ctrl_shortcut_for(Key::r, false), Some(AppMsg::Shortcut(Shortcut::Reply))));
+        assert!(matches!(ctrl_shortcut_for(Key::R, false), Some(AppMsg::Shortcut(Shortcut::Reply))));
+        assert!(matches!(ctrl_shortcut_for(Key::R, true), Some(AppMsg::Shortcut(Shortcut::ReplyAll))));
+        assert!(matches!(ctrl_shortcut_for(Key::u, false), Some(AppMsg::ViewSource)));
+        // Taken elsewhere, or not ours.
+        assert!(ctrl_shortcut_for(Key::N, true).is_none());
+        assert!(ctrl_shortcut_for(Key::U, true).is_none());
+        assert!(ctrl_shortcut_for(Key::f, false).is_none());
+    }
+
+    #[test]
     fn every_shortcut_is_documented() {
         // The reference window is the only place the keys are written down, so a
         // new shortcut without a line there would be invisible.
@@ -22443,7 +22618,10 @@ mod tests {
             .iter()
             .flat_map(|(_, keys)| keys.iter().map(|(key, _)| *key))
             .collect();
-        for key in ["j  or  ↓", "r", "a", "d", "w", "b", "x", "?", "1 … 9", "0"] {
+        for key in [
+            "j  or  ↓", "r  or  Ctrl+R", "R  or  Ctrl+Shift+R", "c  or  Ctrl+N", "Ctrl+U", "a", "d", "w", "b",
+            "x", "?", "1 … 9", "0",
+        ] {
             assert!(documented.contains(&key), "{key} is not in the reference");
         }
         // Every documented line has a description.

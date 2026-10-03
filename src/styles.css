@@ -775,6 +775,28 @@ flowbox.attach-flow > flowboxchild {
   min-height: 54px;
 }
 
+/* One line per message (#334): a short pill, everything centred on the
+   line, the columns kept by the row's fixed widths. After the no-avatar
+   rules, which it overrides. */
+.message-row.single-line {
+  margin: 1px 6px;
+  padding: 5px 10px 5px 8px;
+}
+
+.message-row.single-line .unread-dot {
+  margin: 0;
+}
+
+/* On one line the sender reads in the subject's weight, so bold says one
+   thing only: unread. */
+.message-row.single-line .message-sender {
+  font-weight: 400;
+}
+
+.message-row.single-line .message-sender.unread {
+  font-weight: 700;
+}
+
 /* Conversation threading: count chip + compact expand/collapse chevron on the
    thread head, and an indented, accent-edged look for nested replies. */
 /* Thread heads: the conversation's message count and its expand/collapse
@@ -861,6 +883,13 @@ flowbox.attach-flow > flowboxchild {
   margin: 2px 6px 2px 10px;
   border-radius: 12px;
   padding: 13px 8px 13px 10px;
+}
+
+/* A reply on one line (#334) keeps the single-line pill's height, indented
+   onto the rail like any reply. */
+.message-item.thread-child .message-row.single-line {
+  margin: 1px 6px 1px 10px;
+  padding: 5px 10px 5px 8px;
 }
 
 /* Node dot where each member meets the rail: an 8px circle whose negative

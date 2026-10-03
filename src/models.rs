@@ -1145,6 +1145,24 @@ impl Message {
 
 }
 
+/// A short date for a single line: the time for today, the day and month
+/// this year, the year too before that. Used where the full list date would
+/// crowd out the text: a folded card (#326), a one-line list row (#334).
+pub fn date_short(timestamp: i64, date: &str) -> String {
+    use crate::datefmt as d;
+    if timestamp <= 0 {
+        return date.to_string();
+    }
+    let now = d::now();
+    if d::day_key(timestamp) == d::day_key(now) {
+        d::time(timestamp)
+    } else if d::year(timestamp) == d::year(now) {
+        d::day_month(timestamp)
+    } else {
+        d::day_month_year(timestamp)
+    }
+}
+
 /// [`Message::datetime_list`] for a time the app holds without a message:
 /// the newest member of a conversation that lives in another folder (#236),
 /// which the cache answers with as a timestamp and the header it was sent

@@ -40,10 +40,17 @@ const GOOGLE_CLIENT_SECRET: &str = match option_env!("HYLKI_GOOGLE_CLIENT_SECRET
     Some(v) => v,
     None => "",
 };
-// Microsoft: no built-in client. The old embedded (Thunderbird) client is gone —
-// Microsoft accounts authenticate through GNOME Online Accounts and the Graph
-// API (issue #36); a user-supplied client via env/oauth.toml still works.
-const MICROSOFT_CLIENT_ID: &str = "";
+// Microsoft: Hylki's own app registration in Microsoft Entra (#329), a public
+// client (PKCE, no secret) for personal and work accounts alike, verified
+// against hylki.app. Mail runs over Graph, as it does for accounts imported
+// from GNOME Online Accounts (#36), which some systems cannot add (GNOME 46's
+// GOA fails on personal accounts) and some tenants refuse. A build can name
+// another client via `HYLKI_MICROSOFT_CLIENT_ID`, and oauth.toml or the
+// environment still override it at run time.
+const MICROSOFT_CLIENT_ID: &str = match option_env!("HYLKI_MICROSOFT_CLIENT_ID") {
+    Some(v) => v,
+    None => "01cdc012-c8d8-4d03-822c-76696a01c14e",
+};
 const MICROSOFT_CLIENT_SECRET: &str = "";
 // Dropbox (cloud attachments, #144): a public client with PKCE, so an app
 // key alone is enough. A build can bundle one via `HYLKI_DROPBOX_CLIENT_ID`;
@@ -193,8 +200,13 @@ pub fn preset(provider: &str) -> Option<Preset> {
         "microsoft" => Some(Preset {
             auth_url: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
             token_url: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
-            scopes: "https://outlook.office.com/IMAP.AccessAsUser.All \
-                     https://outlook.office.com/SMTP.Send offline_access",
+            // Graph, not IMAP: many work tenants turn IMAP off, and Graph is
+            // what Microsoft accounts from GNOME Online Accounts use. The
+            // mailbox settings carry the categories tags map to (#71).
+            scopes: "https://graph.microsoft.com/Mail.ReadWrite \
+                     https://graph.microsoft.com/Mail.Send \
+                     https://graph.microsoft.com/MailboxSettings.ReadWrite \
+                     https://graph.microsoft.com/User.Read offline_access",
             imap_host: "outlook.office365.com",
             imap_port: 993,
             smtp_host: "smtp.office365.com",
@@ -295,6 +307,20 @@ struct TokenResponse {
     access_token: String,
     #[serde(default)]
     refresh_token: String,
+    #[serde(default)]
+    expires_in: Option<u64>,
+}
+
+/// What a refresh gives back.
+pub struct Refreshed {
+    pub access_token: String,
+    /// A replacement for the refresh token that was spent, when the provider
+    /// rotates them (Microsoft does, on every refresh). Keeping the old one
+    /// works only until it expires, about 90 days on, and then the account
+    /// has to sign in again.
+    pub refresh_token: Option<String>,
+    /// Seconds the access token is good for, when the provider says.
+    pub expires_in: Option<u64>,
 }
 
 /// Result of a completed sign-in (the refresh token to persist).
@@ -346,15 +372,24 @@ pub fn run_flow(settings: &OAuthSettings) -> Result<FlowResult, String> {
     // redirects — a random-port 127.0.0.1 URI would need the exact port registered,
     // which we can't do. Google (and others) accept the 127.0.0.1 literal. The
     // listener is on 127.0.0.1 either way; browsers resolve localhost to it.
-    let host = if settings.token_url.contains("microsoftonline") || dropbox {
-        "localhost"
+    let microsoft = settings.token_url.contains("microsoftonline");
+    let host = if microsoft || dropbox { "localhost" } else { "127.0.0.1" };
+    // Microsoft compares the redirect with the registered `http://localhost`
+    // to the letter, the port aside, so it gets no trailing slash.
+    let redirect = if microsoft {
+        format!("http://{host}:{port}")
     } else {
-        "127.0.0.1"
+        format!("http://{host}:{port}/")
     };
-    let redirect = format!("http://{host}:{port}/");
-    // What asks for a refresh token: Dropbox has its own parameter for it.
+    // What asks for a refresh token: Dropbox has its own parameter for it,
+    // and Microsoft's `offline_access` scope is the request. Microsoft gets
+    // its account picker rather than a forced consent screen: in a tenant
+    // where users may not consent, `prompt=consent` asks an admin every time
+    // even after the app was approved.
     let offline = if dropbox {
         "&token_access_type=offline"
+    } else if microsoft {
+        "&prompt=select_account"
     } else {
         "&access_type=offline&prompt=consent"
     };
@@ -383,7 +418,13 @@ pub fn run_flow(settings: &OAuthSettings) -> Result<FlowResult, String> {
     open_uri(&auth_url);
 
     // Wait for the redirect (with a timeout so a cancelled sign-in doesn't hang).
-    let code = wait_for_code(&listener, &state)?;
+    let code = wait_for_code(&listener, &state).map_err(|e| {
+        if microsoft {
+            explain_microsoft_refusal(settings, e)
+        } else {
+            e
+        }
+    })?;
 
     // Exchange the code for tokens.
     let mut form: Vec<(&str, &str)> = vec![
@@ -410,8 +451,30 @@ pub fn run_flow(settings: &OAuthSettings) -> Result<FlowResult, String> {
     })
 }
 
+/// Who signed in to a Microsoft account (blocking): the display name and
+/// address Graph reports, and the refresh token to keep, rotated by the
+/// refresh this takes. Fills the account in after a sign-in, so it is named
+/// by the mailbox actually reached rather than by what was typed.
+pub fn microsoft_whoami(settings: &OAuthSettings, refresh: &str) -> Result<(String, String, String), String> {
+    let fresh = refresh_access_token(settings, refresh)?;
+    let me: serde_json::Value = ureq::get("https://graph.microsoft.com/v1.0/me?$select=displayName,mail,userPrincipalName")
+        .set("Authorization", &format!("Bearer {}", fresh.access_token))
+        .call()
+        .map_err(|e| e.to_string())?
+        .into_json()
+        .map_err(|e| e.to_string())?;
+    let name = me["displayName"].as_str().unwrap_or_default().to_string();
+    let address = me["mail"]
+        .as_str()
+        .filter(|m| !m.is_empty())
+        .or_else(|| me["userPrincipalName"].as_str())
+        .unwrap_or_default()
+        .to_string();
+    Ok((name, address, fresh.refresh_token.unwrap_or_else(|| refresh.to_string())))
+}
+
 /// Mint a fresh access token from a stored refresh token (blocking).
-pub fn refresh_access_token(settings: &OAuthSettings, refresh_token: &str) -> Result<String, String> {
+pub fn refresh_access_token(settings: &OAuthSettings, refresh_token: &str) -> Result<Refreshed, String> {
     let mut form: Vec<(&str, &str)> = vec![
         ("grant_type", "refresh_token"),
         ("refresh_token", refresh_token),
@@ -428,7 +491,12 @@ pub fn refresh_access_token(settings: &OAuthSettings, refresh_token: &str) -> Re
     if token.access_token.is_empty() {
         return Err("no access token in refresh response".into());
     }
-    Ok(token.access_token)
+    let rotated = Some(token.refresh_token).filter(|t| !t.is_empty() && t != refresh_token);
+    Ok(Refreshed {
+        access_token: token.access_token,
+        refresh_token: rotated,
+        expires_in: token.expires_in,
+    })
 }
 
 /// Listen on a fixed loopback port. An earlier sign-in of ours still
@@ -479,6 +547,27 @@ fn wait_for_code(listener: &TcpListener, expected_state: &str) -> Result<String,
                     return Err("this sign-in was replaced by a newer one".into());
                 }
                 let (code, state) = parse_redirect(line);
+                // The provider came back with an error instead of a code: the
+                // user declined, or the account's organisation does not let
+                // them approve the app (#329). Say so, in the browser too.
+                if code.is_none() {
+                    if let Some((error, description)) = redirect_error(line) {
+                        let body = "<!doctype html><meta charset=utf-8><title>Hylki</title>\
+                                    <p style=\"font:16px system-ui;margin:3em\">The sign-in did not finish. \
+                                    You can close this tab and return to Hylki.</p>";
+                        let _ = stream.write_all(
+                            format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\
+                                 Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                body.len(),
+                                body
+                            )
+                            .as_bytes(),
+                        );
+                        let first = description.lines().next().unwrap_or("").trim().to_string();
+                        return Err(if first.is_empty() { error } else { first });
+                    }
+                }
 
                 let body = success_page();
                 let _ = stream.write_all(
@@ -505,6 +594,45 @@ fn wait_for_code(listener: &TcpListener, expected_state: &str) -> Result<String,
             Err(e) => return Err(e.to_string()),
         }
     }
+}
+
+/// `error` and `error_description` from a redirect that carries no code.
+fn redirect_error(request_line: &str) -> Option<(String, String)> {
+    let target = request_line.split_whitespace().nth(1).unwrap_or("");
+    let query = target.split_once('?').map(|(_, q)| q).unwrap_or("");
+    let mut error = None;
+    let mut description = String::new();
+    for pair in query.split('&') {
+        if let Some((k, v)) = pair.split_once('=') {
+            match k {
+                "error" => error = Some(crate::percent::decode(v, true)),
+                "error_description" => description = crate::percent::decode(v, true),
+                _ => {}
+            }
+        }
+    }
+    error.map(|e| (e, description))
+}
+
+/// A Microsoft sign-in that failed for want of consent, with where an
+/// organisation's administrator approves Hylki for all its users. Users of
+/// work and school accounts elsewhere cannot approve an app from a publisher
+/// Microsoft has not verified themselves (#329).
+fn explain_microsoft_refusal(settings: &OAuthSettings, reason: String) -> String {
+    let consent = ["AADSTS65001", "AADSTS65004", "AADSTS90094", "AADSTS90095", "consent_required", "access_denied"]
+        .iter()
+        .any(|c| reason.contains(c));
+    if !consent {
+        return reason;
+    }
+    let link = format!(
+        "https://login.microsoftonline.com/organizations/adminconsent?client_id={}",
+        settings.client_id
+    );
+    crate::i18n::i18n_f(
+        "{reason} If your organization manages your account, an administrator can approve Hylki for everyone at {link}",
+        &[("reason", &reason), ("link", &link)],
+    )
 }
 
 /// Pull `code` and `state` out of an HTTP request line ("GET /?code=…&state=… HTTP/1.1").
@@ -538,6 +666,20 @@ fn pkce_challenge(verifier: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_refused_redirect_says_why() {
+        let line = "GET /?error=access_denied&error_description=AADSTS65004%3a+User+declined+to+consent.%0d%0aTrace+ID%3a+x&state=s HTTP/1.1";
+        let (error, description) = redirect_error(line).expect("an error");
+        assert_eq!(error, "access_denied");
+        assert!(description.starts_with("AADSTS65004: User declined to consent."));
+        assert_eq!(parse_redirect(line).0, None);
+        let settings = OAuthSettings { client_id: "abc".into(), ..Default::default() };
+        let told = explain_microsoft_refusal(&settings, "AADSTS65004: User declined to consent.".into());
+        assert!(told.contains("adminconsent?client_id=abc"), "{told}");
+        assert_eq!(explain_microsoft_refusal(&settings, "sign-in timed out".into()), "sign-in timed out");
+    }
+
     use super::*;
 
     #[test]

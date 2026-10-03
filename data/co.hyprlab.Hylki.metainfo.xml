@@ -74,6 +74,11 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="1.42.0" date="2026-10-01">
+      <description>
+        <p>Recipients from LDAP directories, replies and forwards that quote the message as it looks, files dragged onto the window, a sound for new mail, and folders in your own order. The message list stays fast in large folders, new mail arrives promptly after the computer wakes, and messages no longer get stuck on "Loading…". New Polish translation.</p>
+      </description>
+    </release>
     <release version="1.41.1" date="2026-09-23">
       <description>
         <p>A text size setting, accounts that stay out of All Inboxes or sign their mail by default, and the unread count on the dock icon. The message list keeps the keyboard, an idle window no longer uses CPU, and the symbolic tray icon shows on Cinnamon.</p>

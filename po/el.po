@@ -363,6 +363,14 @@ msgstr "Αποκλεισμός απομακρυσμένου περιεχομέν
 msgid "Show Remote Content"
 msgstr "Εμφάνιση απομακρυσμένου περιεχομένου"
 
+#, fuzzy
+msgid "Expand All Messages"
+msgstr "Εύρεση στο μήνυμα"
+
+#, fuzzy
+msgid "Collapse All Messages"
+msgstr "Σύμπτυξη στην προβολή ανάγνωσης"
+
 msgid "Delete {n} messages"
 msgstr "Διαγραφή {n} μηνυμάτων"
 
@@ -1112,6 +1120,11 @@ msgid_plural "A new message with {n} files attached is open in Hylki."
 msgstr[0] "Ένα νέο μήνυμα με {n} συνημμένο αρχείο είναι ανοικτό στο Hylki."
 msgstr[1] "Ένα νέο μήνυμα με {n} συνημμένα αρχεία είναι ανοικτό στο Hylki."
 
+msgid ""
+"{reason} If your organization manages your account, an administrator can "
+"approve Hylki for everyone at {link}"
+msgstr ""
+
 msgid "GnuPG (gpg) is not installed, so this message cannot be read."
 msgstr ""
 "Το GnuPG (gpg) δεν είναι εγκατεστημένο, επομένως αυτό το μήνυμα δεν μπορεί "
@@ -1175,6 +1188,50 @@ msgstr "Το gpg δεν υπέγραψε το μήνυμα."
 msgid "gpg did not encrypt the message."
 msgstr "Το gpg δεν κρυπτογράφησε το μήνυμα."
 
+msgid "Off"
+msgstr "Ανενεργό"
+
+msgid "Choose a translation service in Settings → Translation first."
+msgstr ""
+
+msgid "No key for {service}: add one in Settings → Translation."
+msgstr ""
+
+msgid "There is no text to translate."
+msgstr ""
+
+#, fuzzy
+msgid "This message is too long to send for translation."
+msgstr "Αυτό το μήνυμα δεν περιέχει αρχείο ημερολογίου για άνοιγμα."
+
+#, fuzzy
+msgid "The service's answer could not be read."
+msgstr "δεν ήταν δυνατή η ανάγνωση της διεύθυνσης αλληλογραφίας της λίστας"
+
+#, fuzzy
+msgid "This is too long to send for translation."
+msgstr "Αυτό το μήνυμα δεν περιέχει αρχείο ημερολογίου για άνοιγμα."
+
+#, fuzzy
+msgid "The service could not be reached: {e}"
+msgstr "Δεν ήταν δυνατό το άνοιγμα του αρχείου"
+
+#, fuzzy
+msgid "The service did not accept the key."
+msgstr "Το gpg δεν δημιούργησε το κλειδί."
+
+msgid "Too many requests: try again in a moment."
+msgstr ""
+
+msgid "This month's allowance is used up."
+msgstr ""
+
+msgid "The service refused the request (error {code})."
+msgstr ""
+
+msgid "Enter the LibreTranslate server's address in Settings → Translation."
+msgstr ""
+
 msgid "Open Hylki"
 msgstr "Άνοιγμα Hylki"
 
@@ -1208,9 +1265,6 @@ msgid "Sign in with your browser — no password needed."
 msgstr ""
 "Συνδεθείτε μέσω του προγράμματος περιήγησής σας — δεν απαιτείται κωδικός "
 "πρόσβασης."
-
-msgid "Sign in through GNOME Online Accounts."
-msgstr "Συνδεθείτε μέσω των Διαδικτυακών λογαριασμών GNOME."
 
 msgid "Requires Proton Mail Bridge running locally."
 msgstr "Απαιτεί το Proton Mail Bridge να εκτελείται τοπικά."
@@ -1694,9 +1748,6 @@ msgstr "Ακολούθηση ρυθμίσεων"
 
 msgid "On"
 msgstr "Ενεργό"
-
-msgid "Off"
-msgstr "Ανενεργό"
 
 msgid "Choose a Picture"
 msgstr "Επιλογή εικόνας"
@@ -2563,6 +2614,62 @@ msgstr ""
 msgid "Signed in as {who}. {terms}"
 msgstr "Συνδεθήκατε ως {who}. {terms}"
 
+#, fuzzy
+msgid "Translation"
+msgstr "Μετάφραση από"
+
+msgid ""
+"Translate messages with a service you have an account with, under your own "
+"key. The text of a message you translate is sent to that service, and "
+"nothing is sent until you ask."
+msgstr ""
+
+msgid "Server"
+msgstr ""
+
+msgid "Region (empty for a global resource)"
+msgstr ""
+
+#, fuzzy
+msgid "Check the settings"
+msgstr "Αναζήτηση ρυθμίσεων"
+
+msgid "Translates a greeting, to see that the service answers."
+msgstr ""
+
+msgid "Check"
+msgstr ""
+
+#, fuzzy
+msgid "Messages"
+msgstr "Δεν υπάρχουν μηνύματα"
+
+#, fuzzy
+msgid "Hylki's language ({language})"
+msgstr "Γλώσσα συστήματος — {language}"
+
+#, fuzzy
+msgid "Translate into"
+msgstr "Μετάφραση από"
+
+msgid "Offer to translate"
+msgstr ""
+
+msgid ""
+"Messages in another language show a Translate button. Which language a "
+"message is in is worked out on this computer."
+msgstr ""
+
+msgid "Key (if the server asks for one)"
+msgstr ""
+
+#, fuzzy
+msgid "Checking…"
+msgstr "Αναζήτηση…"
+
+msgid "It works: “{sent}” came back as “{back}”."
+msgstr ""
+
 msgid "Rich text"
 msgstr "Εμπλουτισμένο κείμενο"
 
@@ -2682,6 +2789,10 @@ msgstr "Προεπισκόπηση"
 msgid "Show the message as it will be sent"
 msgstr "Εμφάνιση του μηνύματος όπως θα σταλεί"
 
+#, fuzzy
+msgid "Translate what you wrote"
+msgstr "Μετάφραση από"
+
 msgid "More"
 msgstr "Περισσότερα"
 
@@ -2715,6 +2826,34 @@ msgstr "Αφαίρεση του {name}"
 
 msgid "Typing"
 msgstr "Πληκτρολόγηση"
+
+#, fuzzy
+msgid "{language} (the quoted message)"
+msgstr "Πάνω από το παρατιθέμενο μήνυμα"
+
+#, fuzzy
+msgid "Other Languages"
+msgstr "Γλώσσα"
+
+#, fuzzy
+msgid "Not translated"
+msgstr "Μετάφραση από"
+
+#, fuzzy
+msgid ""
+"This message is set to be encrypted, so its text is not sent for translation."
+msgstr "Αυτό το μήνυμα δεν περιέχει αρχείο ημερολογίου για άνοιγμα."
+
+#, fuzzy
+msgid "Nothing to translate yet"
+msgstr "Δεν υπάρχει τίποτα για εξαγωγή."
+
+msgid "Write something first, or select the text to translate."
+msgstr ""
+
+#, fuzzy
+msgid "Could not translate"
+msgstr "Δεν ήταν δυνατή η προσθήκη ετικέτας στο μήνυμα: {e}"
 
 msgid "Cannot send with OpenPGP"
 msgstr "Δεν είναι δυνατή η αποστολή με OpenPGP"
@@ -2890,9 +3029,6 @@ msgid "Add Directory"
 msgstr ""
 
 msgid "Look up recipients in this directory"
-msgstr ""
-
-msgid "Server"
 msgstr ""
 
 msgid "Encryption"
@@ -3130,6 +3266,55 @@ msgstr "Κατάργηση εγγραφής…"
 msgid "Opens the list's unsubscribe page in your browser"
 msgstr "Ανοίγει τη σελίδα διαγραφής από τη λίστα στο πρόγραμμα περιήγησής σας"
 
+#, fuzzy
+msgid "Translating…"
+msgstr "Δοκιμή…"
+
+#, fuzzy
+msgid "Could not translate: {why}"
+msgstr "Δεν ήταν δυνατή η προσθήκη ετικέτας στο μήνυμα: {e}"
+
+msgid "Translated from {language} by {service}."
+msgstr ""
+
+#, fuzzy
+msgid "Translated by {service}."
+msgstr "Μετάφραση από"
+
+#, fuzzy
+msgid "Show Original"
+msgstr "Εμφάνιση παραληπτών"
+
+#, fuzzy
+msgid "Showing the original."
+msgstr "Εμφάνιση κατά την αιώρηση"
+
+#, fuzzy
+msgid "Show Translation"
+msgstr "Εμφάνιση συζήτησης"
+
+#, fuzzy
+msgid "This message is in {language}."
+msgstr "Αυτό το μήνυμα προέρχεται από λίστα αλληλογραφίας."
+
+#, fuzzy
+msgid "Translate"
+msgstr "Μετάφραση από"
+
+msgid "Starred"
+msgstr "Με αστέρι"
+
+msgid "Received"
+msgstr ""
+
+#, fuzzy
+msgid "Has attachments"
+msgstr "Δεν υπάρχουν συνημμένα"
+
+#, fuzzy
+msgid "Click to open this message"
+msgstr "Απάντηση σε αυτό το μήνυμα"
+
 msgid "Meeting"
 msgstr "Συνάντηση"
 
@@ -3312,6 +3497,13 @@ msgstr "Προβολή ανάγνωσης"
 msgid "Loading…"
 msgstr "Φόρτωση…"
 
+msgid "Encrypted messages are not sent for translation."
+msgstr ""
+
+#, fuzzy
+msgid "The message has not loaded yet."
+msgstr "Αυτό το μήνυμα δεν έχει ελεγχθεί."
+
 msgid "That key is no longer in your keyring."
 msgstr "Αυτό το κλειδί δεν βρίσκεται πλέον στην κλειδοθήκη σας."
 
@@ -3376,6 +3568,10 @@ msgstr "Διαγραφή αυτού του μηνύματος"
 msgid "View source"
 msgstr "Προβολή πηγαίου κώδικα"
 
+#, fuzzy
+msgid "Translate this message"
+msgstr "Διαγραφή αυτού του μηνύματος"
+
 msgid "Back to my fonts and colors"
 msgstr "Επιστροφή στις γραμματοσειρές και τα χρώματά μου"
 
@@ -3398,6 +3594,16 @@ msgstr "Απόκρυψη παραληπτών"
 
 msgid "Show recipients"
 msgstr "Εμφάνιση παραληπτών"
+
+#. The fold's tooltips, in the user's language.
+#, fuzzy
+msgid "Show quoted text"
+msgstr "Εμφάνιση απομακρυσμένου περιεχομένου"
+
+#. The fold's tooltips, in the user's language.
+#, fuzzy
+msgid "Hide quoted text"
+msgstr "Απόκρυψη του κειμένου προεπισκόπησης"
 
 msgid "Save Image"
 msgstr "Αποθήκευση εικόνας"
@@ -4172,9 +4378,6 @@ msgstr ""
 "της πλευρικής στήλης. Εμφανίζονται μόνο με περισσότερους από έναν "
 "λογαριασμούς."
 
-msgid "Starred"
-msgstr "Με αστέρι"
-
 msgid ""
 "Every account's starred folder as one list, opening to each account's own."
 msgstr ""
@@ -4312,6 +4515,15 @@ msgstr ""
 "Τα μηνύματα που στείλατε εμφανίζουν το Gravatar, την εικόνα ή το emoji του "
 "λογαριασμού, όπως ο κύκλος του στην πλευρική στήλη."
 
+msgid "Layout"
+msgstr ""
+
+msgid ""
+"Each message on lines of its own, or on one line in columns. Automatic uses "
+"one line while the list is dragged wide and lines of their own when it is "
+"narrow."
+msgstr ""
+
 msgid "Preview lines"
 msgstr "Γραμμές προεπισκόπησης"
 
@@ -4426,6 +4638,15 @@ msgstr ""
 "Εμφάνιση του τελευταίου μηνύματος μιας συζήτησης στην κορυφή του παραθύρου "
 "ανάγνωσης. Όταν είναι ανενεργό, η ανάγνωση γίνεται προς τα κάτω από το "
 "παλαιότερο στο νεότερο."
+
+#, fuzzy
+msgid "Fold earlier messages"
+msgstr "Εύρεση στο μήνυμα"
+
+msgid ""
+"Which messages of a conversation open folded to one line. The newest always "
+"opens, and a click on a folded message opens it."
+msgstr ""
 
 msgid "Show your own replies in the message list"
 msgstr "Εμφάνιση των δικών σας απαντήσεων στη λίστα μηνυμάτων"
@@ -5070,6 +5291,13 @@ msgstr "2 γραμμές"
 msgid "3 lines"
 msgstr "3 γραμμές"
 
+msgid "Cards"
+msgstr ""
+
+#, fuzzy
+msgid "Single line"
+msgstr "Υπογράμμιση"
+
 msgid ""
 "The launcher shows an icon set outside Hylki. Picking one here replaces it."
 msgstr ""
@@ -5081,6 +5309,13 @@ msgstr "Κατά την εμφάνιση"
 
 msgid "After two seconds"
 msgstr "Μετά από δύο δευτερόλεπτα"
+
+#, fuzzy
+msgid "Messages already read"
+msgstr "Το μήνυμα είναι έτοιμο για αποστολή"
+
+msgid "All but the newest"
+msgstr ""
 
 msgid "Remember the last choice"
 msgstr "Απομνημόνευση της τελευταίας επιλογής"
@@ -5695,6 +5930,9 @@ msgstr "Το συνημμένο δεν υπάρχει πλέον στο μήνυ
 msgid "Still could not send “{subject}”: {e}"
 msgstr "Εξακολουθεί να μην είναι δυνατή η αποστολή του «{subject}»: {e}"
 
+msgid "IMAP connection stopped making progress"
+msgstr ""
+
 msgid "Could not reach the JMAP server: {e}"
 msgstr "Δεν ήταν δυνατή η επικοινωνία με τον διακομιστή JMAP: {e}"
 
@@ -5969,6 +6207,9 @@ msgstr "Τα ενοποιημένα εισερχόμενα σε φωτεινή �
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid "Sign in through GNOME Online Accounts."
+#~ msgstr "Συνδεθείτε μέσω των Διαδικτυακών λογαριασμών GNOME."
 
 #~ msgid "Flag"
 #~ msgstr "Επισήμανση"

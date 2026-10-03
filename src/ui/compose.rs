@@ -29,6 +29,20 @@ fn sig_html(sig: &str, dashes: bool) -> String {
     format!("<div class=\"vireo-sig\"><br>{dashes}{body}</div>")
 }
 
+/// A body as Markdown, keeping the empty line a reply opens with above its
+/// quote and signature. The conversion drops leading blank lines, which
+/// left the caret at the start of the "On … wrote:" line, so whatever was
+/// typed joined it.
+fn markdown_body(html: &str) -> String {
+    let md = crate::markdown::from_html(html);
+    let top = html.trim_start();
+    if !md.is_empty() && (top.starts_with("<p><br></p>") || top.starts_with("<div><br></div>")) {
+        format!("\n\n{md}")
+    } else {
+        md
+    }
+}
+
 /// The signature as it reads in a source-mode body: Markdown (under its
 /// `-- ` line when `dashes` is set), or the same HTML block the rich
 /// editor holds.
@@ -330,6 +344,11 @@ pub struct Compose {
     /// The format chooser and preview toggle, which live at the end of the
     /// editor's formatting row rather than in the header.
     format_btn: gtk::Button,
+    /// Translate what is being written (#327), beside the format chooser;
+    /// shown only with a translation service set up.
+    translate_btn: gtk::Button,
+    /// A translation is out: the button waits and the body is locked.
+    translating: bool,
     preview_btn: gtk::ToggleButton,
     /// The preview toggle's icon-and-label insides, kept only so the label
     /// can be dropped in a pane too narrow to carry it.
@@ -429,6 +448,17 @@ pub enum ComposeInput {
     SetFormat(ComposeFormat),
     /// The header's format button: the four formats as a menu.
     FormatMenu,
+    /// The Translate button (#327): read the quoted message's language
+    /// first, so the menu can offer it.
+    TranslateMenu,
+    /// The quoted message's text came back: show the languages.
+    ShowTranslateMenu(String),
+    /// Translate what was written (or the selection) into this language.
+    TranslateTo(String),
+    /// The editor handed over what is to be translated.
+    TranslateBegun { found: String, target: String },
+    /// The translation came back, or failed.
+    Translated { result: Result<Vec<String>, String>, how: TranslateHow },
     /// The body came back for a format change; put it in the new one.
     LoadAs { from: ComposeFormat, to: ComposeFormat, body: String },
     /// Show or hide the rendered preview of a source message.
@@ -943,9 +973,7 @@ impl Component for Compose {
         // source: a reply's quoted original becomes `> ` lines in Markdown,
         // or the HTML it already was.
         match format {
-            ComposeFormat::Markdown => {
-                editor.set_source(SourceKind::Markdown, &crate::markdown::from_html(&content))
-            }
+            ComposeFormat::Markdown => editor.set_source(SourceKind::Markdown, &markdown_body(&content)),
             ComposeFormat::Html => {
                 editor.set_source(SourceKind::Html, &crate::markdown::pretty_html(&content))
             }
@@ -990,6 +1018,20 @@ impl Component for Compose {
         // end of the row: it is there in every format, so it is the one
         // that must not move. Preview comes and goes beside it, to its
         // left, where an appearing button pushes nothing around.
+        // Translate (#327) goes before both: it is there in every format, but
+        // only once a translation service is set up.
+        let translate_btn = gtk::Button::from_icon_name("translate-symbolic");
+        translate_btn.set_tooltip_text(Some(i18n("Translate what you wrote").as_str()));
+        translate_btn.add_css_class("flat");
+        translate_btn.set_can_focus(false);
+        translate_btn.set_visible(crate::translate::load().enabled());
+        {
+            let s = sender.input_sender().clone();
+            translate_btn.connect_clicked(move |_| {
+                let _ = s.send(ComposeInput::TranslateMenu);
+            });
+        }
+        editor.toolbar_end().append(&translate_btn);
         editor.toolbar_end().append(&preview_btn);
         editor.toolbar_end().append(&format_btn);
 
@@ -1049,6 +1091,8 @@ impl Component for Compose {
             sign_expected: None,
             format,
             format_btn,
+            translate_btn,
+            translating: false,
             preview_btn,
             preview_content,
             encrypt: false,
@@ -2076,6 +2120,155 @@ impl Component for Compose {
                 );
             }
 
+            ComposeInput::TranslateMenu => {
+                if self.translating {
+                    break 'handle;
+                }
+                let s = sender.input_sender().clone();
+                self.editor.eval(TR_QUOTE_TEXT, move |text| {
+                    let _ = s.send(ComposeInput::ShowTranslateMenu(text));
+                });
+            }
+
+            ComposeInput::ShowTranslateMenu(quoted) => {
+                let entry = |code: String, label: String| {
+                    let s = sender.clone();
+                    MenuEntry::new(label, move || s.input(ComposeInput::TranslateTo(code.clone())))
+                };
+                // First what the conversation suggests: the language of the
+                // message being answered, then the one last used.
+                let mut first = Vec::new();
+                let quoted = crate::translate::detect(&quoted);
+                if let Some(lang) = &quoted {
+                    first.push(
+                        entry(
+                            lang.clone(),
+                            i18n_f(
+                                "{language} (the quoted message)",
+                                &[("language", &crate::translate::language_name(lang))],
+                            ),
+                        )
+                        .icon("mail-reply-sender-symbolic"),
+                    );
+                }
+                if let Some(last) = crate::translate::last_compose_target() {
+                    if quoted.as_deref().map(crate::translate::base) != Some(crate::translate::base(&last)) {
+                        first.push(entry(last.clone(), crate::translate::language_name(&last)).icon("translate-symbolic"));
+                    }
+                }
+                let all: Vec<MenuEntry> = crate::translate::LANGUAGES
+                    .iter()
+                    .map(|code| entry(code.to_string(), crate::translate::language_name(code)))
+                    .collect();
+                let sections = if first.is_empty() {
+                    vec![all]
+                } else {
+                    vec![first, vec![MenuEntry::submenu(i18n("Other Languages"), vec![all])]]
+                };
+                let btn = &self.translate_btn;
+                crate::ui::context_menu::show_context_menu_with_header(
+                    btn,
+                    (btn.width() / 2) as f64,
+                    btn.height() as f64,
+                    Some(&i18n("Translate into")),
+                    sections,
+                );
+            }
+
+            ComposeInput::TranslateTo(target) => {
+                if self.translating {
+                    break 'handle;
+                }
+                // A message going out encrypted must not have its text
+                // handed to a third party on the way.
+                if self.encrypt {
+                    let parent = root.root().and_downcast::<gtk::Window>();
+                    let d = adw::MessageDialog::new(
+                        parent.as_ref(),
+                        Some(&i18n("Not translated")),
+                        Some(&i18n("This message is set to be encrypted, so its text is not sent for translation.")),
+                    );
+                    d.add_response("ok", &i18n("OK"));
+                    d.present();
+                    break 'handle;
+                }
+                self.translating = true;
+                self.translate_btn.set_sensitive(false);
+                let js = match self.format {
+                    ComposeFormat::Html => TR_SOURCE_BEGIN.replace("HTMLFLAG", "true"),
+                    ComposeFormat::Markdown => TR_SOURCE_BEGIN.replace("HTMLFLAG", "false"),
+                    _ => TR_RICH_BEGIN.to_string(),
+                };
+                let s = sender.input_sender().clone();
+                self.editor.eval(&js, move |found| {
+                    let _ = s.send(ComposeInput::TranslateBegun { found, target });
+                });
+            }
+
+            ComposeInput::TranslateBegun { found, target } => {
+                let v: serde_json::Value = serde_json::from_str(&found).unwrap_or_default();
+                let how = match self.format {
+                    ComposeFormat::Html => TranslateHow::Html,
+                    ComposeFormat::Markdown => TranslateHow::Markdown,
+                    _ => TranslateHow::Rich,
+                };
+                let parts: Vec<String> = match (&how, v["text"].as_str()) {
+                    (TranslateHow::Html, Some(text)) => vec![text.to_string()],
+                    (TranslateHow::Markdown, Some(text)) => crate::translate::text_to_parts(text),
+                    _ => v["parts"]
+                        .as_array()
+                        .map(|a| a.iter().filter_map(|p| p.as_str().map(str::to_string)).collect())
+                        .unwrap_or_default(),
+                };
+                if parts.is_empty() {
+                    self.translating = false;
+                    self.translate_btn.set_sensitive(true);
+                    self.editor.run_js(TR_CANCEL);
+                    if v["empty"].as_bool() == Some(true) {
+                        let parent = root.root().and_downcast::<gtk::Window>();
+                        let d = adw::MessageDialog::new(
+                            parent.as_ref(),
+                            Some(&i18n("Nothing to translate yet")),
+                            Some(&i18n("Write something first, or select the text to translate.")),
+                        );
+                        d.add_response("ok", &i18n("OK"));
+                        d.present();
+                    }
+                    break 'handle;
+                }
+                let s = sender.input_sender().clone();
+                std::thread::spawn(move || {
+                    let settings = crate::translate::load();
+                    let key = crate::translate::load_key(settings.service).unwrap_or_default();
+                    let result = crate::translate::translate_parts(&settings, &key, &parts, &target);
+                    let _ = s.send(ComposeInput::Translated { result, how });
+                });
+            }
+
+            ComposeInput::Translated { result, how } => {
+                self.translating = false;
+                self.translate_btn.set_sensitive(true);
+                match result {
+                    // One edit, so Ctrl+Z gives back what was written.
+                    Ok(parts) => {
+                        let (end, text) = match how {
+                            TranslateHow::Rich => (TR_RICH_END, parts.concat()),
+                            TranslateHow::Html => (TR_SOURCE_END, parts.concat()),
+                            TranslateHow::Markdown => (TR_SOURCE_END, crate::translate::parts_to_text(&parts)),
+                        };
+                        let arg = serde_json::to_string(&text).unwrap_or_else(|_| "''".into());
+                        self.editor.run_js(&end.replace("ARG", &arg));
+                    }
+                    Err(why) => {
+                        self.editor.run_js(TR_CANCEL);
+                        let parent = root.root().and_downcast::<gtk::Window>();
+                        let d = adw::MessageDialog::new(parent.as_ref(), Some(&i18n("Could not translate")), Some(&why));
+                        d.add_response("ok", &i18n("OK"));
+                        d.present();
+                    }
+                }
+            }
+
             ComposeInput::SetFormat(to) => {
                 let from = self.format;
                 if to == from {
@@ -2110,9 +2303,7 @@ impl Component for Compose {
                     _ => body,
                 };
                 match to {
-                    ComposeFormat::Markdown => self
-                        .editor
-                        .set_source(SourceKind::Markdown, &crate::markdown::from_html(&html)),
+                    ComposeFormat::Markdown => self.editor.set_source(SourceKind::Markdown, &markdown_body(&html)),
                     ComposeFormat::Html => self
                         .editor
                         .set_source(SourceKind::Html, &crate::markdown::pretty_html(&html)),
@@ -3403,8 +3594,104 @@ fn attachment_label(template: &str, path: &std::path::Path, count: usize) -> Str
     i18n_f(template, &[("name", &name)])
 }
 
+/// Which editor a translation (#327) was taken from, and so how it goes
+/// back: as HTML into the rich document, or as text into the source field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TranslateHow {
+    Rich,
+    Markdown,
+    Html,
+}
+
+/// The quoted message's text, for telling which language to offer first:
+/// the reply's quote in the rich document, or the quoted lines of a
+/// Markdown or HTML source.
+const TR_QUOTE_TEXT: &str = r#"(function(){var t=document.getElementById('src');
+if(t){var v=t.value;var i=v.search(/<blockquote/i);
+if(i>=0)return v.slice(i).replace(/<[^>]*>/g,' ').slice(0,4000);
+return v.split('\n').filter(function(l){return /^\s*>/.test(l);}).map(function(l){return l.replace(/^\s*>+\s?/,'');}).join('\n').slice(0,4000);}
+var q=document.querySelector('blockquote.vireo-quote-mail')||document.querySelector('blockquote');
+return q?q.innerText.slice(0,4000):'';})()"#;
+
+/// What the rich document asks to have translated: the selection, else
+/// what was written above the quote and signature. The range is kept for
+/// the answer, and the body is locked until it comes. Block elements go as
+/// pieces of their own; runs of inline content go together. The range
+/// starts and ends inside the first and last blocks, not around them: an
+/// insert over whole blocks runs its last paragraph into the quote's
+/// "wrote:" line.
+const TR_RICH_BEGIN: &str = r#"(function(){var b=document.body;if(!b)return '';
+var s=getSelection(),r=null,sel=false;
+if(s.rangeCount&&!s.isCollapsed&&b.contains(s.anchorNode)){r=s.getRangeAt(0).cloneRange();sel=true;}
+else{var first=null,c=b.querySelectorAll('.vireo-sig,.vireo-quote-attr,blockquote');
+for(var i=0;i<c.length;i++){var t=c[i];while(t.parentNode&&t.parentNode!==b)t=t.parentNode;
+if(t.parentNode===b&&(!first||(t.compareDocumentPosition(first)&Node.DOCUMENT_POSITION_FOLLOWING)))first=t;}
+var kids=[];for(var n=b.firstChild;n&&n!==first;n=n.nextSibling)kids.push(n);
+var full=function(n){return !!(n.textContent.trim()||(n.nodeType===1&&(n.tagName==='IMG'||n.querySelector('img'))));};
+var a=0,e=kids.length;while(a<e&&!full(kids[a]))a++;while(e>a&&!full(kids[e-1]))e--;
+if(a>=e)return JSON.stringify({empty:true,sel:false});
+r=document.createRange();
+var A=kids[a],E=kids[e-1];
+if(A.nodeType===1)r.setStart(A,0);else r.setStartBefore(A);
+if(E.nodeType===1)r.setEnd(E,E.childNodes.length);else r.setEndAfter(E);}
+var f=r.cloneContents();if(!f.textContent.trim())return JSON.stringify({empty:true,sel:sel});
+var p=[];
+if(sel){var w=document.createElement('div');w.appendChild(f);p.push(w.innerHTML);}
+else{var BLOCK=/^(P|DIV|UL|OL|LI|H[1-6]|PRE|TABLE|BLOCKQUOTE|HR)$/,run='';
+var flush=function(){if(run.trim())p.push(run);run='';};
+for(var n=f.firstChild;n;n=n.nextSibling){
+if(n.nodeType===1&&BLOCK.test(n.tagName)){flush();p.push(n.outerHTML);}
+else if(n.nodeType===1){run+=n.outerHTML;}
+else if(n.nodeType===3){var d=document.createElement('div');d.textContent=n.textContent;run+=d.innerHTML;}}
+flush();}
+window.__hylkiTr=r;b.setAttribute('contenteditable','false');
+return JSON.stringify({parts:p,sel:sel});})()"#;
+
+/// The translation in place of what was taken, as one edit the editor's
+/// undo can take back.
+const TR_RICH_END: &str = r#"(function(h){var b=document.body;if(!b)return;b.setAttribute('contenteditable','true');
+var r=window.__hylkiTr;window.__hylkiTr=null;if(!r)return;b.focus();
+var s=getSelection();s.removeAllRanges();s.addRange(r);
+document.execCommand('insertHTML',false,h);window.__hylkiDirty=true;})(ARG)"#;
+
+/// The source field's version of [`TR_RICH_BEGIN`]: the selection, else
+/// the text above the quote (and, in Markdown, its "wrote:" line) and the
+/// signature. HTMLFLAG says whether the source is HTML.
+const TR_SOURCE_BEGIN: &str = r#"(function(H){var t=document.getElementById('src');if(!t)return '';
+var v=t.value,a=t.selectionStart,e=t.selectionEnd,sel=e>a;
+if(!sel){a=0;e=v.length;
+var sig=H?v.search(/<div class="vireo-sig"/):v.indexOf('\n-- \n');if(sig>=0)e=Math.min(e,sig);
+var q=H?v.search(/<p class="vireo-quote-attr"|<blockquote/i):v.search(/(^|\n)[ \t]*>/);
+if(q>=0){if(!H){var pre=v.slice(0,q).replace(/\s+$/,'');var ls=pre.lastIndexOf('\n');
+if(/(wrote|schrieb|a écrit|escribió|Forwarded message)/i.test(pre.slice(ls+1)))q=ls+1;}
+e=Math.min(e,q);}}
+while(e>a&&/\s/.test(v.charAt(e-1)))e--;while(a<e&&/\s/.test(v.charAt(a)))a++;
+var x=v.slice(a,e);if(!x.trim())return JSON.stringify({empty:true,sel:sel});
+window.__hylkiTr={a:a,e:e};t.readOnly=true;return JSON.stringify({text:x,sel:sel});})(HTMLFLAG)"#;
+
+/// [`TR_RICH_END`] for the source field.
+const TR_SOURCE_END: &str = r#"(function(x){var t=document.getElementById('src');if(!t)return;t.readOnly=false;
+var r=window.__hylkiTr;window.__hylkiTr=null;if(!r)return;t.focus();t.setSelectionRange(r.a,r.e);
+if(!document.execCommand('insertText',false,x))t.setRangeText(x,r.a,r.e,'end');
+window.__hylkiDirty=true;t.dispatchEvent(new Event('input'));})(ARG)"#;
+
+/// A translation that will not come: unlock the body as it was.
+const TR_CANCEL: &str = r#"(function(){var b=document.body;if(b&&!document.getElementById('src'))b.setAttribute('contenteditable','true');
+var t=document.getElementById('src');if(t)t.readOnly=false;window.__hylkiTr=null;})()"#;
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_markdown_reply_has_a_line_to_write_on_above_the_quote() {
+        let reply = "<p><br></p><p class=\"vireo-quote-attr\">On Monday, Ann wrote:</p><blockquote><p>Hi</p></blockquote>";
+        let md = super::markdown_body(reply);
+        assert!(md.starts_with("\n\nOn Monday, Ann wrote:"), "{md:?}");
+        // A new message stays empty, and written text is left as it is.
+        assert_eq!(super::markdown_body("<p><br></p>"), "");
+        assert!(super::markdown_body("<p>Hello</p>").starts_with("Hello"));
+    }
+
     use super::{sig_html, sig_source};
     use crate::ui::rich_editor::SourceKind;
 

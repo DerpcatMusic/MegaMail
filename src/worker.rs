@@ -30,8 +30,10 @@ use crate::i18n::{i18n, i18n_f, ni18n_f};
 
 /// The JMAP path (#245), a child module so it shares this file's helpers.
 mod graph;
+mod imap_io;
 mod jmap;
 use graph::*;
+use imap_io::ImapIo;
 mod strip;
 
 /// Number of most-recent messages to fetch attachment info (BODYSTRUCTURE) for;
@@ -698,7 +700,7 @@ impl WorkerEvent {
     }
 }
 
-type ImapSession = Session<TlsStream<TcpStream>>;
+type ImapSession = Session<ImapIo<TlsStream<TcpStream>>>;
 
 /// Run blocking work (an HTTP request, a cache query) off the async
 /// threads; a task that panicked reads as an error.
@@ -3181,8 +3183,9 @@ async fn recv_one(rx: &mut mpsc::UnboundedReceiver<MailRequest>) -> IdleOutcome 
 /// next request reconnects (#91: an unbounded await here swallowed the very
 /// request that interrupted the IDLE).
 async fn idle_done(
-    handle: async_imap::extensions::idle::Handle<TlsStream<TcpStream>>,
+    mut handle: async_imap::extensions::idle::Handle<ImapIo<TlsStream<TcpStream>>>,
 ) -> Option<ImapSession> {
+    handle.as_mut().set_idle(false);
     match tokio::time::timeout(IDLE_DONE_TIMEOUT, handle.done()).await {
         Ok(res) => res.ok(),
         Err(_) => {
@@ -3235,6 +3238,7 @@ async fn idle_wait(
         Request(Option<MailRequest>),
     }
     let wake = {
+        handle.as_mut().set_idle(true);
         let (idle_fut, stop) = handle.wait_with_timeout(Duration::from_secs(timeout_secs));
         tokio::select! {
             r = idle_fut => Wake::Idle(r),
@@ -3466,6 +3470,7 @@ async fn watch_folder(
                 _ => break, // error or wedged; drop the connection and redial
             }
             let woke = {
+                handle.as_mut().set_idle(true);
                 let (idle_fut, _stop) = handle.wait_with_timeout(Duration::from_secs(timeout));
                 matches!(
                     idle_fut.await,
@@ -4956,10 +4961,81 @@ async fn fetch_oauth_token(account: &AccountConfig) -> Option<String> {
     // re-adding the account (a fresh sign-in), not swapping creds here.
     let settings = account.oauth_settings.clone()?;
     let refresh = crate::config::load_oauth_refresh(&account.email)?;
-    tokio::task::spawn_blocking(move || crate::oauth::refresh_access_token(&settings, &refresh).ok())
-        .await
-        .ok()
-        .flatten()
+    if let Some(token) = cached_access_token(&refresh) {
+        return Some(token);
+    }
+    let email = account.email.clone();
+    tokio::task::spawn_blocking(move || {
+        let fresh = crate::oauth::refresh_access_token(&settings, &refresh)
+            .map_err(|e| tracing::warn!("OAuth token refresh for {email} failed: {e}"))
+            .ok()?;
+        // The provider spent the old refresh token and handed out another:
+        // that one is what works from now on.
+        let refresh = match fresh.refresh_token {
+            Some(rotated) => match crate::config::store_oauth_refresh(&email, &rotated) {
+                Ok(()) => rotated,
+                Err(e) => {
+                    tracing::warn!("could not keep the new OAuth refresh token for {email}: {e}");
+                    refresh
+                }
+            },
+            None => refresh,
+        };
+        if let Some(secs) = fresh.expires_in {
+            remember_access_token(&refresh, &fresh.access_token, secs);
+        }
+        Some(fresh.access_token)
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// Access tokens minted for natively-added OAuth accounts, by the refresh
+/// token they came from, with when to stop using them. Every IMAP
+/// connection, SMTP send and Graph request asked the provider for a new one
+/// before; a token is good for an hour. Keyed by refresh token, so a fresh
+/// sign-in never picks up the old account's token.
+static ACCESS_TOKENS: std::sync::Mutex<Option<std::collections::HashMap<String, (String, std::time::Instant)>>> =
+    std::sync::Mutex::new(None);
+
+/// How long before its stated expiry a token is no longer handed out, so a
+/// long sync that starts with it does not run past the end.
+const ACCESS_TOKEN_MARGIN: u64 = 5 * 60;
+
+fn cached_access_token(refresh: &str) -> Option<String> {
+    let mut g = ACCESS_TOKENS.lock().ok()?;
+    let map = g.get_or_insert_with(Default::default);
+    match map.get(refresh) {
+        Some((token, until)) if std::time::Instant::now() < *until => Some(token.clone()),
+        Some(_) => {
+            map.remove(refresh);
+            None
+        }
+        None => None,
+    }
+}
+
+fn remember_access_token(refresh: &str, token: &str, expires_in: u64) {
+    let Some(secs) = expires_in.checked_sub(ACCESS_TOKEN_MARGIN).filter(|s| *s > 0) else { return };
+    if let Ok(mut g) = ACCESS_TOKENS.lock() {
+        let until = std::time::Instant::now() + Duration::from_secs(secs);
+        g.get_or_insert_with(Default::default).insert(refresh.to_string(), (token.to_string(), until));
+    }
+}
+
+/// Stop handing out this account's remembered access token: the server
+/// turned it down, so the next sign-in asks the provider for a new one.
+fn forget_access_token(account: &AccountConfig) {
+    if account.goa_id.is_some() || account.oauth_settings.is_none() {
+        return;
+    }
+    let Some(refresh) = crate::config::load_oauth_refresh(&account.email) else { return };
+    if let Ok(mut g) = ACCESS_TOKENS.lock() {
+        if let Some(map) = g.as_mut() {
+            map.remove(&refresh);
+        }
+    }
 }
 
 /// XOAUTH2 SASL authenticator for async-imap.
@@ -5834,10 +5910,10 @@ async fn connect_inner(account: &AccountConfig) -> Result<ImapSession, Box<dyn s
         plain.run_command_and_check_ok("STARTTLS", None).await?;
         let stream = tls.connect(account.imap_host.as_str(), plain.into_inner()).await?;
         // A server that accepted STARTTLS does not send a second greeting.
-        async_imap::Client::new(stream)
+        async_imap::Client::new(ImapIo::new(stream))
     } else {
         let stream = tls.connect(account.imap_host.as_str(), tcp).await?;
-        let mut client = async_imap::Client::new(stream);
+        let mut client = async_imap::Client::new(ImapIo::new(stream));
         // Consume the server greeting before issuing commands. LOGIN tolerates an
         // unread greeting, but the AUTHENTICATE handshake reads it as the command
         // reply and deadlocks — so read it explicitly here.
@@ -5859,7 +5935,10 @@ async fn connect_inner(account: &AccountConfig) -> Result<ImapSession, Box<dyn s
         let r = client.authenticate("XOAUTH2", auth).await.map_err(|(e, _client)| e);
         match &r {
             Ok(_) => tracing::debug!(target: "hylki::imap", "< OK (AUTHENTICATE XOAUTH2)"),
-            Err(e) => tracing::warn!(target: "hylki::imap", "< {e} (AUTHENTICATE XOAUTH2)"),
+            Err(e) => {
+                tracing::warn!(target: "hylki::imap", "< {e} (AUTHENTICATE XOAUTH2)");
+                forget_access_token(account);
+            }
         }
         r?
     } else {
@@ -7489,10 +7568,20 @@ fn mp_thread_ids(parsed: Option<&mail_parser::Message>) -> (String, String) {
 /// replace their cached versions (updated flags / new mail), the rest are kept.
 /// No size cap — the whole folder is searchable once the background backfill has
 /// indexed it.
+///
+/// A recent row that came back without a preview keeps the cached one, as
+/// [`Cache::upsert_messages`] does. Otherwise the list this returns never
+/// matched the one served from the cache a moment earlier, and every quiet
+/// sync looked to the app like new mail (#330).
 fn merge_index(cached: Vec<Message>, recent: Vec<Message>) -> Vec<Message> {
     let mut map: std::collections::HashMap<u32, Message> =
         cached.into_iter().map(|m| (m.uid, m)).collect();
-    for m in recent {
+    for mut m in recent {
+        if m.preview.is_empty() {
+            if let Some(old) = map.get_mut(&m.uid) {
+                m.preview = std::mem::take(&mut old.preview);
+            }
+        }
         map.insert(m.uid, m);
     }
     let mut out: Vec<Message> = map.into_values().collect();
@@ -10139,6 +10228,24 @@ NIL NIL NIL NIL NIL NIL NIL))\r\n";
             message_id: String::new(),
             references: String::new(),
         }
+    }
+
+    /// A sync whose recent window came back without some previews must give
+    /// the same list the cache served, or every quiet poll redraws the list
+    /// (#330).
+    #[test]
+    fn merging_a_recent_window_keeps_the_cached_previews() {
+        let cached: Vec<Message> = (1..=3)
+            .map(|uid| Message { preview: format!("text {uid}"), ..flagged_message(uid) })
+            .collect();
+        let recent = vec![
+            Message { unread: false, ..flagged_message(3) },
+            Message { preview: "new text".into(), ..flagged_message(2) },
+        ];
+        let merged = merge_index(cached, recent);
+        let previews: Vec<&str> = merged.iter().map(|m| m.preview.as_str()).collect();
+        assert_eq!(previews, ["text 3", "new text", "text 1"]);
+        assert!(!merged[0].unread, "the server's flags still win");
     }
 
     /// The loop behind the 2.6 GB report: a message the attachment prefetch

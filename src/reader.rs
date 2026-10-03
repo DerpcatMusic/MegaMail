@@ -40,15 +40,26 @@ pub fn extract(body: &str) -> String {
     if !body.contains('<') {
         return format!("<div class=\"vireo-plain\">{}</div>", escape_text(body.trim_matches('\n')));
     }
+    extract_blocks(body).concat()
+}
+
+/// [`extract`]'s fragment as its top-level blocks, in order: what a
+/// translation (#327) splits a long message at.
+pub fn extract_blocks(body: &str) -> Vec<String> {
+    if !body.contains('<') {
+        return vec![format!("<div class=\"vireo-plain\">{}</div>", escape_text(body.trim_matches('\n')))];
+    }
     let dom = html5ever::parse_document(RcDom::default(), Default::default()).one(body);
     let mut out = Vec::new();
     walk(&dom.document, &mut out, false, false);
     let out = tidy(out, true);
-    let mut html = String::with_capacity(body.len() / 2);
-    for node in &out {
-        node.write(&mut html);
-    }
-    html
+    out.iter()
+        .map(|node| {
+            let mut html = String::new();
+            node.write(&mut html);
+            html
+        })
+        .collect()
 }
 
 /// The reader's own sheet: one measure, one type scale, theme colors.
@@ -225,8 +236,8 @@ fn escape_text(s: &str) -> String {
 /// The class and id markers kept on an element: what the wrapper's quote
 /// fold and the plain-text sheet look for. Nothing else of the sender's
 /// classes survives.
-const KEPT_CLASSES: [&str; 5] =
-    ["gmail_quote", "gmail_signature", "moz-signature", "vireo-quote-attr", "vireo-plain"];
+const KEPT_CLASSES: [&str; 6] =
+    ["gmail_quote", "gmail_signature", "moz-signature", "vireo-quote-attr", "vireo-plain", "yahoo_quoted"];
 const KEPT_IDS: [&str; 2] = ["divRplyFwdMsg", "Signature"];
 
 fn attr<'a>(attrs: &'a [html5ever::Attribute], name: &str) -> Option<&'a str> {

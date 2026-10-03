@@ -189,6 +189,21 @@ pub struct MessageView {
     unsubscribed: std::collections::HashMap<String, i64>,
     /// Cards whose unsubscribe request is under way or has just failed.
     unsub_state: std::collections::HashMap<(u32, u32), UnsubState>,
+    /// Which messages of a conversation open folded (#326).
+    fold_messages: crate::config::FoldMessages,
+    /// A document was loaded while the view was not on screen (#332).
+    painted_hidden: bool,
+    /// The conversation's messages filed in Sent, for the folded bar.
+    sent: std::collections::HashSet<(u32, u32)>,
+    /// Cards opened or folded by hand: these win over the default for as
+    /// long as they stay in the conversation on screen.
+    folds: std::collections::HashMap<(u32, u32), bool>,
+    /// Translations (#327), per card: under way, shown, set aside for the
+    /// original, or failed.
+    translations: std::collections::HashMap<(u32, u32), TrState>,
+    /// Which language each card's message is in, for the Translate offer,
+    /// worked out once per body (by its length) rather than on every paint.
+    detected: std::cell::RefCell<std::collections::HashMap<(u32, u32), (usize, Option<String>)>>,
     /// The addresses each account answers to (its own and its aliases), so
     /// an invitation's attendee list can be searched for the reader (#223).
     identities: std::collections::HashMap<u32, Vec<String>>,
@@ -320,6 +335,184 @@ impl MessageView {
             .evaluate_javascript(&js, None, None, None::<&gtk::gio::Cancellable>, |_| {});
     }
 
+
+    /// What a card's translation banner holds right now (#327): where a
+    /// translation stands, or, with the offer switched on, a Translate
+    /// button on a message in another language. Nothing otherwise.
+    fn translate_inner_html(&self, m: &Message, settings: &crate::translate::Settings) -> String {
+        let key = (m.account_id, m.id);
+        let button = |label: &str| {
+            format!(
+                "<button type=\"button\" class=\"vireo-tr-btn\" data-key=\"{}:{}\">{}</button>",
+                key.0,
+                key.1,
+                escape_text(label),
+            )
+        };
+        let line = |text: &str, btn: String| format!("<span class=\"vireo-tr-text\">{}</span>{btn}", escape_text(text));
+        let name = crate::translate::language_name;
+        match self.translations.get(&key) {
+            Some(TrState::Working) => line(&i18n("Translating…"), String::new()),
+            Some(TrState::Failed(why)) => line(
+                &i18n_f("Could not translate: {why}", &[("why", why)]),
+                button(&i18n("Try Again")),
+            ),
+            Some(TrState::Shown(t)) => {
+                let text = match &t.from {
+                    Some(from) => i18n_f(
+                        "Translated from {language} by {service}.",
+                        &[("language", &name(from)), ("service", &t.service.name())],
+                    ),
+                    None => i18n_f("Translated by {service}.", &[("service", &t.service.name())]),
+                };
+                line(&text, button(&i18n("Show Original")))
+            }
+            Some(TrState::Original(_)) => line(&i18n("Showing the original."), button(&i18n("Show Translation"))),
+            None => {
+                if !(settings.enabled() && settings.offer) || self.encrypted(key) || m.body.trim().is_empty() {
+                    return String::new();
+                }
+                match self.detected_language(m) {
+                    Some(lang) if crate::translate::differs(&lang, &settings.target_language()) => line(
+                        &i18n_f("This message is in {language}.", &[("language", &name(&lang))]),
+                        button(&i18n("Translate")),
+                    ),
+                    _ => String::new(),
+                }
+            }
+        }
+    }
+
+    /// The cards of the conversation on screen that show folded (#326):
+    /// those folded by hand, and the ones Settings folds: the read
+    /// messages, or every message, but the newest either way. Opening a conversation makes its first message the
+    /// current one, so "the one opened" would have kept the oldest open; a
+    /// message stepped to inside the conversation is opened by hand instead
+    /// (see `Show`).
+    fn folded_cards(&self) -> std::collections::HashSet<(u32, u32)> {
+        if self.thread.len() <= 1 {
+            return Default::default();
+        }
+        let newest = self.thread.iter().max_by_key(|m| (m.timestamp, m.id)).map(|m| (m.account_id, m.id));
+        self.thread
+            .iter()
+            .map(|m| (m.account_id, m.id, m.unread))
+            .filter(|&(aid, id, unread)| match self.folds.get(&(aid, id)) {
+                Some(folded) => *folded,
+                None => {
+                    Some((aid, id)) != newest
+                        && match self.fold_messages {
+                            crate::config::FoldMessages::Never => false,
+                            crate::config::FoldMessages::Read => !unread,
+                            crate::config::FoldMessages::AllButNewest => true,
+                        }
+                }
+            })
+            .map(|(aid, id, _)| (aid, id))
+            .collect()
+    }
+
+    /// A folded card's one line, as Proton Mail draws it: who it is from,
+    /// then whether it is starred, whether it was sent or received, whether
+    /// it carries files, and the day. A click on it opens the card.
+    fn fold_bar_html(&self, m: &Message) -> String {
+        let key = (m.account_id, m.id);
+        let from = if m.from_name.trim().is_empty() { &m.from_addr } else { &m.from_name };
+        let icon = |name: &str, title: &str| {
+            format!(
+                "<span class=\"vireo-fbar-ico\" title=\"{}\">{}</span>",
+                attr_escape(title),
+                inline_icon_svg(name)
+            )
+        };
+        let star = if m.starred {
+            icon("starred-symbolic", &i18n("Starred"))
+        } else {
+            icon("hylki-non-starred-symbolic", "")
+        };
+        let place = if self.sent.contains(&key) {
+            icon("mail-send-symbolic", &i18n("Sent"))
+        } else {
+            icon("mail-inbox-symbolic", &i18n("Received"))
+        };
+        // An empty slot when there are no files, so the icons of every bar
+        // stand in the same columns.
+        let clip = if m.has_attachment {
+            icon("mail-attachment-symbolic", &i18n("Has attachments"))
+        } else {
+            "<span class=\"vireo-fbar-ico vireo-fbar-none\"></span>".to_string()
+        };
+        format!(
+            "<div class=\"vireo-fbar\" data-key=\"{}:{}\" title=\"{}\">\
+             {FOLD_BAR_FACE}<span class=\"vireo-fbar-from\">{}</span>{star}{place}{clip}\
+             <span class=\"vireo-fbar-date\">{}</span></div>",
+            key.0,
+            key.1,
+            attr_escape(&i18n("Click to open this message")),
+            escape_text(from),
+            escape_text(&fold_bar_date(m)),
+        )
+    }
+
+    /// Fold and open the cards of the live document to match
+    /// [`MessageView::folded_cards`], without building it again.
+    fn patch_folds(&self) {
+        if !self.webview_ready || self.thread.len() <= 1 {
+            return;
+        }
+        let keys: Vec<String> = self.folded_cards().iter().map(|(a, i)| format!("{a}:{i}")).collect();
+        let js = format!(
+            "(function(k){{var ms=document.querySelectorAll('.vireo-msg');\
+             for(var i=0;i<ms.length;i++){{var on=k.indexOf(ms[i].dataset.key)>=0;\
+             if(ms[i].classList.contains('vireo-folded')===on)continue;\
+             ms[i].classList.toggle('vireo-folded',on);\
+             if(!on){{var f=ms[i].querySelector('iframe.vireo-frame');if(f){{f._h=0;s(f);}}}}}}}})({})",
+            serde_json::to_string(&keys).unwrap_or_else(|_| "[]".into()),
+        );
+        self.webview.evaluate_javascript(&js, None, None, None::<&gtk::gio::Cancellable>, |_| {});
+    }
+
+    /// Which language a card's message is in, remembered per body.
+    fn detected_language(&self, m: &Message) -> Option<String> {
+        let key = (m.account_id, m.id);
+        if let Some((len, lang)) = self.detected.borrow().get(&key) {
+            if *len == m.body.len() {
+                return lang.clone();
+            }
+        }
+        let lang = crate::translate::detect(&crate::reader::extract(&m.body));
+        self.detected.borrow_mut().insert(key, (m.body.len(), lang.clone()));
+        lang
+    }
+
+    /// Whether a card's message came encrypted: its text is never sent to
+    /// a translation service.
+    fn encrypted(&self, key: (u32, u32)) -> bool {
+        self.member_checks.get(&key).and_then(|c| c.pgp.as_ref()).is_some_and(|p| p.encrypted)
+            || self
+                .thread
+                .iter()
+                .find(|m| (m.account_id, m.id) == key)
+                .is_some_and(|m| crate::models::preview_is_encrypted(&m.preview))
+    }
+
+    /// Redraw one card's translation banner in the live document.
+    fn patch_translate(&self, account_id: u32, id: u32) {
+        if !self.webview_ready || self.current.is_none() {
+            return;
+        }
+        let Some(m) = self.thread.iter().find(|m| m.account_id == account_id && m.id == id) else {
+            return;
+        };
+        let html = self.translate_inner_html(m, &crate::translate::load());
+        let js = format!(
+            "(function(){{var d=document.querySelector('.vireo-tr[data-key=\"{account_id}:{id}\"]');\
+             if(d)d.innerHTML={};}})()",
+            serde_json::to_string(&html).unwrap_or_else(|_| "''".into()),
+        );
+        self.webview
+            .evaluate_javascript(&js, None, None, None::<&gtk::gio::Cancellable>, |_| {});
+    }
 
     /// What a card's invitation banner holds right now (#223): nothing for
     /// an ordinary message; otherwise the meeting — what, when, where and
@@ -703,6 +896,15 @@ pub enum MessageViewInput {
     SetAlwaysShowRecipients(bool),
     /// The "single messages as cards" preference changed (re-render follows).
     SetSingleMessageCard(bool),
+    /// Which messages of a conversation open folded (#326).
+    SetFoldMessages(crate::config::FoldMessages),
+    /// A card's header folded or opened it (#326).
+    Folded { account_id: u32, id: u32, folded: bool },
+    /// Expand All (false) or Collapse All (true) from the reading pane's
+    /// menu (#326).
+    FoldAll(bool),
+    /// The view came on screen (#332).
+    Mapped,
     /// The OpenPGP chip's words on or off (#300), applied to the open
     /// document at once.
     SetPgpLabels(bool),
@@ -743,6 +945,9 @@ pub enum MessageViewInput {
         /// (account, message id) — "Sent" beside a reply of yours read from the
         /// Inbox. Messages from the folder on screen aren't in here.
         folder_labels: std::collections::HashMap<(u32, u32), String>,
+        /// The conversation's messages filed in a Sent folder: a folded card
+        /// shows a paper plane for those, an inbox for the rest (#326).
+        sent: std::collections::HashSet<(u32, u32)>,
     },
     LoadRemoteOnce,
     AllowSenderAlways,
@@ -798,6 +1003,11 @@ pub enum MessageViewInput {
     SetUnsubscribed(std::collections::HashMap<String, i64>),
     /// A card's Unsubscribe button was clicked.
     Unsubscribe { account_id: u32, id: u32 },
+    /// A card's Translate button or its translation banner (#327): start a
+    /// translation, or switch between it and the original.
+    Translate { account_id: u32, id: u32 },
+    /// A translation came back, or failed.
+    Translated { account_id: u32, id: u32, result: Result<crate::translate::Translated, String> },
     /// The app reports where a card's unsubscribe request stands: under way,
     /// failed, or over (`None` — the banner goes back to its resting state,
     /// which says "unsubscribed" once `SetUnsubscribed` carries the list).
@@ -996,6 +1206,19 @@ pub enum UnsubState {
     Failed(String),
 }
 
+/// Where a card's translation stands (#327).
+#[derive(Debug, Clone, PartialEq)]
+pub enum TrState {
+    /// The service has been asked.
+    Working,
+    /// The card shows the translation.
+    Shown(crate::translate::Translated),
+    /// Translated, but the card is back on the original.
+    Original(crate::translate::Translated),
+    /// It failed, and this is why.
+    Failed(String),
+}
+
 
 /// What a card's invitation banner can be asked to do (#223).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1045,6 +1268,16 @@ impl MessageView {
 /// A card's Unsubscribe banner: the container, always emitted so a verdict
 /// arriving later can be patched into it (empty, it is hidden by the
 /// stylesheet). `inner` is what [`MessageView::unsub_inner_html`] rendered.
+/// Where a folded card's bar takes the sender's circle, which the document
+/// builder fills in with the one the card's header wears.
+const FOLD_BAR_FACE: &str = "\u{1}face\u{1}";
+
+/// The day on a folded card's bar, short as Proton has it: the time for
+/// today, the day and month this year, the year too before that.
+fn fold_bar_date(m: &Message) -> String {
+    crate::models::date_short(m.timestamp, &m.date)
+}
+
 fn unsub_row_html(key: (u32, u32), inner: &str) -> String {
     format!("<div class=\"vireo-unsub\" data-key=\"{}:{}\">{inner}</div>", key.0, key.1)
 }
@@ -1763,6 +1996,12 @@ impl Component for MessageView {
             member_checks: std::collections::HashMap::new(),
             unsubscribed: std::collections::HashMap::new(),
             unsub_state: std::collections::HashMap::new(),
+            fold_messages: crate::config::FoldMessages::Never,
+            painted_hidden: false,
+            sent: std::collections::HashSet::new(),
+            folds: std::collections::HashMap::new(),
+            translations: std::collections::HashMap::new(),
+            detected: std::cell::RefCell::new(std::collections::HashMap::new()),
             identities: std::collections::HashMap::new(),
             invite_answers: std::collections::HashMap::new(),
             link_preview: link_preview.clone(),
@@ -1851,6 +2090,8 @@ impl Component for MessageView {
                         .filter(|u| is_launchable_uri(u)),
                     image: hit.context_is_image().then(|| hit.image_uri()).flatten().map(|u| u.to_string()),
                     selection: None,
+                    translate: None,
+                    folds: None,
                 };
                 let selected = hit.context_is_selection();
                 let (x, y) = point.get();
@@ -2086,6 +2327,14 @@ impl Component for MessageView {
                         account_id,
                         id,
                     }),
+                    // Translate on a card, or its banner's button (#327).
+                    "translate" | "tr" => open_sender.input(MessageViewInput::Translate { account_id, id }),
+                    // A header folded or opened its card (#326).
+                    "fold" => open_sender.input(MessageViewInput::Folded {
+                        account_id,
+                        id,
+                        folded: extra == Some("1"),
+                    }),
                     "viewsource" => open_sender.input(MessageViewInput::CardAction {
                         action: RowAction::ViewSource,
                         account_id,
@@ -2116,6 +2365,12 @@ impl Component for MessageView {
         // content tracks the theme live.
         let style_manager = adw::StyleManager::default();
         let theme_sender = sender.clone();
+        {
+            let s = sender.input_sender().clone();
+            model.webview.connect_map(move |_| {
+                let _ = s.send(MessageViewInput::Mapped);
+            });
+        }
         style_manager.connect_dark_notify(move |_| {
             theme_sender.input(MessageViewInput::ThemeChanged);
         });
@@ -2164,6 +2419,7 @@ impl Component for MessageView {
                 primary,
                 folder_labels,
                 instant,
+                sent,
             } => {
                 let shown = primary.map(|p| *p).or_else(|| thread.first().cloned());
                 // A new message: the previous message's verdict must not linger
@@ -2175,6 +2431,19 @@ impl Component for MessageView {
                     self.sender_check = None;
                     self.member_checks.clear();
                     self.unsub_state.clear();
+                }
+                // What was done to a card (translated, folded) holds while it
+                // stays in the conversation on screen: stepping to another of
+                // its messages must not undo it. The message stepped to opens.
+                let stays = |k: &(u32, u32)| thread.iter().any(|m| (m.account_id, m.id) == *k);
+                self.translations.retain(|k, _| stays(k));
+                self.folds.retain(|k, _| stays(k));
+                if !same_message {
+                    if let Some(key) = shown.as_ref().map(|s| (s.account_id, s.id)) {
+                        if self.thread.iter().any(|m| (m.account_id, m.id) == key) {
+                            self.folds.insert(key, false);
+                        }
+                    }
                 }
                 self.link_preview.set_visible(false);
                 self.current = shown;
@@ -2194,6 +2463,7 @@ impl Component for MessageView {
                 }
                 self.thread = thread;
                 self.folder_labels = folder_labels;
+                self.sent = sent;
                 self.account_name = account_name;
                 self.loading = loading;
                 self.instant = instant;
@@ -2224,6 +2494,9 @@ impl Component for MessageView {
                 // body would just flash blank, so wait for the real body.
                 if !self.loading {
                     self.render();
+                    // Stepping to another message of the same conversation
+                    // repaints nothing, but that message must open (#326).
+                    self.patch_folds();
                 }
             }
             MessageViewInput::LoadRemoteOnce => {
@@ -2297,6 +2570,28 @@ impl Component for MessageView {
             }
             MessageViewInput::SetAlwaysShowRecipients(on) => {
                 self.always_show_recipients = on;
+            }
+            MessageViewInput::SetFoldMessages(fold) => {
+                if self.fold_messages != fold {
+                    self.fold_messages = fold;
+                    self.folds.clear();
+                    self.render();
+                }
+            }
+            MessageViewInput::Folded { account_id, id, folded } => {
+                self.folds.insert((account_id, id), folded);
+            }
+            MessageViewInput::Mapped => {
+                if std::mem::take(&mut self.painted_hidden) && self.current.is_some() && !self.loading {
+                    self.shown_fingerprint = None;
+                    self.render();
+                }
+            }
+            MessageViewInput::FoldAll(folded) => {
+                for m in &self.thread {
+                    self.folds.insert((m.account_id, m.id), folded);
+                }
+                self.patch_folds();
             }
             MessageViewInput::SetSingleMessageCard(on) => {
                 self.single_message_card = on;
@@ -2435,6 +2730,77 @@ impl Component for MessageView {
                 let keys: Vec<(u32, u32)> = self.thread.iter().map(|m| (m.account_id, m.id)).collect();
                 for (account_id, id) in keys {
                     self.patch_unsub(account_id, id);
+                }
+            }
+            MessageViewInput::Translate { account_id, id } => {
+                let key = (account_id, id);
+                match self.translations.get(&key).cloned() {
+                    Some(TrState::Working) => {}
+                    Some(TrState::Shown(t)) => {
+                        self.translations.insert(key, TrState::Original(t));
+                        self.render();
+                    }
+                    Some(TrState::Original(t)) => {
+                        self.translations.insert(key, TrState::Shown(t));
+                        self.render();
+                    }
+                    None | Some(TrState::Failed(_)) => {
+                        let Some(m) = self.thread.iter().find(|m| (m.account_id, m.id) == key).cloned() else {
+                            return;
+                        };
+                        let settings = crate::translate::load();
+                        let refused = if self.encrypted(key) {
+                            Some(i18n("Encrypted messages are not sent for translation."))
+                        } else if !settings.enabled() {
+                            Some(i18n("Choose a translation service in Settings → Translation first."))
+                        } else if m.body.trim().is_empty() {
+                            Some(i18n("The message has not loaded yet."))
+                        } else {
+                            None
+                        };
+                        if let Some(why) = refused {
+                            self.translations.insert(key, TrState::Failed(why));
+                            self.patch_translate(account_id, id);
+                            return;
+                        }
+                        let cache = crate::translate::cache_key(
+                            account_id,
+                            if m.message_id.is_empty() { &m.body } else { &m.message_id },
+                            &settings,
+                        );
+                        // Already translated this session: no second request.
+                        if let Some(t) = crate::translate::cached(&cache) {
+                            self.translations.insert(key, TrState::Shown(t));
+                            self.render();
+                            return;
+                        }
+                        self.translations.insert(key, TrState::Working);
+                        self.patch_translate(account_id, id);
+                        let input = sender.input_sender().clone();
+                        std::thread::spawn(move || {
+                            let api_key = crate::translate::load_key(settings.service).unwrap_or_default();
+                            let result = crate::translate::translate(&settings, &api_key, &m.body, &cache);
+                            input.emit(MessageViewInput::Translated { account_id, id, result });
+                        });
+                    }
+                }
+            }
+            MessageViewInput::Translated { account_id, id, result } => {
+                let key = (account_id, id);
+                // The reader moved on to another message meanwhile.
+                if self.translations.get(&key) != Some(&TrState::Working) {
+                    return;
+                }
+                match result {
+                    Ok(t) => {
+                        self.translations.insert(key, TrState::Shown(t));
+                        self.render();
+                    }
+                    Err(why) => {
+                        tracing::warn!("translation failed: {why}");
+                        self.translations.insert(key, TrState::Failed(why));
+                        self.patch_translate(account_id, id);
+                    }
                 }
             }
             MessageViewInput::Unsubscribe { account_id, id } => {
@@ -2776,6 +3142,20 @@ impl Component for MessageView {
                     .and_then(|(a, i)| self.thread.iter().find(|m| m.account_id == a && m.id == i))
                     .or_else(|| self.thread.first());
                 let Some(m) = m.cloned() else { return };
+                let mut hit = hit;
+                let key = (m.account_id, m.id);
+                if crate::translate::load().enabled() && !self.encrypted(key) {
+                    let label = match self.translations.get(&key) {
+                        Some(TrState::Shown(_)) => i18n("Show Original"),
+                        Some(TrState::Original(_)) => i18n("Show Translation"),
+                        _ => i18n("Translate"),
+                    };
+                    hit.translate = Some(TranslateEntry { label, reader: sender.input_sender().clone() });
+                }
+                if self.thread.len() > 1 {
+                    let folded = self.folded_cards();
+                    hit.folds = Some((!folded.is_empty(), folded.len() < self.thread.len(), sender.input_sender().clone()));
+                }
                 let point = self.webview.root().and_then(|root| {
                     let root: gtk::Widget = root.upcast();
                     self.webview
@@ -3157,6 +3537,12 @@ impl MessageView {
             return;
         }
         self.shown_fingerprint = Some(fingerprint);
+        // A page handed over while the window is hidden (running in the
+        // background, a notification about to bring it back) may never be
+        // painted: it is loaded again once the view is on screen (#332).
+        if !self.webview.is_mapped() {
+            self.painted_hidden = true;
+        }
         // A conversation is covered until its new document has painted: the
         // spinner is already up from the moment the thread was opened, so it
         // simply stays until there is something to replace it — one transition,
@@ -3359,6 +3745,20 @@ impl MessageView {
         self.remote_allowed.hash(&mut h);
         self.reader_style.hash(&mut h);
         self.reader_mode.hash(&mut h);
+        // Translations (#327): which cards show one, and whether cards
+        // offer Translate at all.
+        crate::translate::generation().hash(&mut h);
+        self.fold_messages.hash(&mut h);
+        let mut shown: Vec<(u32, u32, usize)> = self
+            .translations
+            .iter()
+            .filter_map(|(k, t)| match t {
+                TrState::Shown(t) => Some((k.0, k.1, t.html.len())),
+                _ => None,
+            })
+            .collect();
+        shown.sort_unstable();
+        shown.hash(&mut h);
         self.card_actions_hover.hash(&mut h);
         self.card_actions_auto.hash(&mut h);
         self.palette_collapse_secs.hash(&mut h);
@@ -3408,6 +3808,30 @@ impl MessageView {
                 .thread
                 .iter()
                 .map(|m| ((m.account_id, m.id), self.invite_inner_html(m)))
+                .collect()
+        });
+        LIVE_FOLDED.with(|f| *f.borrow_mut() = self.folded_cards());
+        LIVE_FOLDBAR.with(|b| {
+            *b.borrow_mut() = if self.thread.len() > 1 {
+                self.thread.iter().map(|m| ((m.account_id, m.id), self.fold_bar_html(m))).collect()
+            } else {
+                Default::default()
+            }
+        });
+        let translation = crate::translate::load();
+        LIVE_TRANSLATE_ON.with(|on| on.set(translation.enabled()));
+        LIVE_TRANSLATE.with(|t| {
+            *t.borrow_mut() = self
+                .thread
+                .iter()
+                .map(|m| {
+                    let key = (m.account_id, m.id);
+                    let shown = match self.translations.get(&key) {
+                        Some(TrState::Shown(t)) => Some(t.html.clone()),
+                        _ => None,
+                    };
+                    (key, (self.translate_inner_html(m, &translation), shown))
+                })
                 .collect()
         });
         Self::conversation_document(
@@ -3466,11 +3890,15 @@ impl MessageView {
         let mark_selection = thread.len() > 1;
         let mut sections = String::new();
         for m in thread {
-            let body = if m.body.trim().is_empty() {
+            // A card showing its translation (#327) shows it as Reader View
+            // does, which is what was sent.
+            let translated =
+                LIVE_TRANSLATE.with(|t| t.borrow().get(&(m.account_id, m.id)).and_then(|(_, html)| html.clone()));
+            let body = if m.body.trim().is_empty() && translated.is_none() {
                 "<div class=\"vireo-loading\">Loading…</div>".to_string()
             } else {
                 message_frame(
-                    &m.body,
+                    translated.as_deref().unwrap_or(&m.body),
                     restrict,
                     dark,
                     (m.account_id, m.id),
@@ -3482,13 +3910,80 @@ impl MessageView {
                         style
                     },
                     accent,
-                    reader,
+                    reader || translated.is_some(),
                     zoom,
                 )
             };
             if conversation {
+                let ava_html = {
+                    // One of your own mailboxes wrote this card (#189):
+                    // show what its account chose — the sidebar's picture,
+                    // or its emoji on the account color — so your own
+                    // replies in a conversation wear the face you gave
+                    // that mailbox rather than plain initials.
+                    let own = crate::avatar::own_face(&m.from_addr).and_then(|face| {
+                        // The account's own Gravatar leads when it asked
+                        // for one and the address has one; the picture and
+                        // the emoji are what it falls back to.
+                        let gravatar = face
+                            .gravatar
+                            .then(|| crate::avatar::own_gravatar_data_uri(&m.from_addr, 26))
+                            .flatten();
+                        if let Some(uri) = gravatar {
+                            return Some(format!("<img class=\"vireo-ava\" src=\"{uri}\" alt=\"\">"));
+                        }
+                        match (&face.picture, &face.emoji) {
+                            (Some(path), _) => crate::ui::initials::picture_data_uri(path, 26)
+                                .map(|uri| format!("<img class=\"vireo-ava\" src=\"{uri}\" alt=\"\">")),
+                            (None, Some(emoji)) => {
+                                let png = gtk::gdk::RGBA::parse(&face.color)
+                                    .ok()
+                                    .and_then(|bg| crate::ui::initials::png_data_uri(emoji, bg, 26));
+                                Some(match png {
+                                    Some(uri) => {
+                                        format!("<img class=\"vireo-ava\" src=\"{uri}\" alt=\"\">")
+                                    }
+                                    None => format!(
+                                        "<span class=\"vireo-ava\" style=\"background:{bg}\">{glyph}</span>",
+                                        bg = attr_escape(&face.color),
+                                        glyph = escape_text(emoji),
+                                    ),
+                                })
+                            }
+                            (None, None) => None,
+                        }
+                    });
+                    own.unwrap_or_else(|| {
+                        let initial = m
+                            .from_name
+                            .trim()
+                            .chars()
+                            .next()
+                            .or_else(|| m.from_addr.trim().chars().next())
+                            .map(|c| c.to_uppercase().to_string())
+                            .unwrap_or_else(|| "?".to_string());
+                        let hue = m
+                            .from_addr
+                            .to_ascii_lowercase()
+                            .bytes()
+                            .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32))
+                            % 360;
+                        let l = if dark { 38 } else { 45 };
+                        // Drawn ink-centred by ui::initials and embedded as
+                        // a PNG (the same tint); the markup span stands in
+                        // only before a window exists to render with.
+                        let bg = crate::ui::initials::hsl(f64::from(hue), 0.52, f64::from(l) / 100.0);
+                        match crate::ui::initials::png_data_uri(&initial, bg, 26) {
+                            Some(uri) => format!("<img class=\"vireo-ava\" src=\"{uri}\" alt=\"\">"),
+                            None => format!(
+                                "<span class=\"vireo-ava\" style=\"background:hsl({hue},52%,{l}%)\">{}</span>",
+                                escape_text(&initial),
+                            ),
+                        }
+                    })
+                };
                 sections.push_str(&format!(
-                    "<section class=\"vireo-msg{sel}{unread_cls}\" data-key=\"{aid}:{id}\">\
+                    "<section class=\"vireo-msg{sel}{unread_cls}{folded_cls}\" data-key=\"{aid}:{id}\">{fbar}\
                        <header class=\"vireo-msg-hdr\" data-key=\"{aid}:{id}\" \
                          title=\"{hdr_title}\">\
                          <div class=\"vireo-hdr-line\">\
@@ -3498,7 +3993,7 @@ impl MessageView {
                              <span class=\"vireo-date\">{date}</span></span>\
                            {acts_toggle}{acts}\
                          </div>{rcpt}\
-                       </header>{invite}{unsub}{body}{atts}</section>",
+                       </header>{invite}{unsub}{tr}{body}{atts}</section>",
                     aid = m.account_id,
                     id = m.id,
                     // The message's own attachments beneath its body (#213).
@@ -3523,6 +4018,15 @@ impl MessageView {
                     // container is always there, empty (hidden) for a
                     // message from no list, so a verdict arriving after the
                     // paint is patched in without a re-render.
+                    // The translation banner (#327), on the same terms.
+                    tr = LIVE_TRANSLATE.with(|t| {
+                        format!(
+                            "<div class=\"vireo-tr\" data-key=\"{}:{}\">{}</div>",
+                            m.account_id,
+                            m.id,
+                            t.borrow().get(&(m.account_id, m.id)).map(|(b, _)| b.as_str()).unwrap_or("")
+                        )
+                    }),
                     unsub = LIVE_UNSUB.with(|u| {
                         unsub_row_html(
                             (m.account_id, m.id),
@@ -3594,7 +4098,15 @@ impl MessageView {
                             card_action_button(key, "delete", "user-trash-symbolic", &i18n("Delete this message")),
                             card_action_button(key, "spam", "mail-mark-junk-symbolic", &i18n("Mark as Spam")),
                             card_action_button(key, "contact", "contact-new-symbolic", &i18n("Add sender to Contacts")),
-                            card_action_button(key, "viewsource", "code-symbolic", &i18n("View source")),
+                            format!(
+                                "{}{}",
+                                card_action_button(key, "viewsource", "code-symbolic", &i18n("View source")),
+                                if LIVE_TRANSLATE_ON.with(|on| on.get()) {
+                                    card_action_button(key, "translate", "translate-symbolic", &i18n("Translate this message"))
+                                } else {
+                                    String::new()
+                                },
+                            ),
                             // The escape from the reader's own fonts and
                             // colors (#56): only offered while an override
                             // is on, lit while this card shows the sender's.
@@ -3649,6 +4161,19 @@ impl MessageView {
                         ""
                     },
                     unread_cls = if m.unread { " unread" } else { "" },
+                    // Folded (#326): the header and a line of preview.
+                    folded_cls = if LIVE_FOLDED.with(|f| f.borrow().contains(&(m.account_id, m.id))) {
+                        " vireo-folded"
+                    } else {
+                        ""
+                    },
+                    // What a folded card shows instead of all of it (#326).
+                    fbar = LIVE_FOLDBAR.with(|b| {
+                        b.borrow()
+                            .get(&(m.account_id, m.id))
+                            .map(|bar| bar.replace(FOLD_BAR_FACE, &ava_html))
+                            .unwrap_or_default()
+                    }),
                     // `escape_text`, not `attr_escape`: these land in element
                     // text content, where `<` and `>` are structural. A `From:`
                     // display name is attacker-controlled (and RFC 2047-decoded,
@@ -3679,73 +4204,7 @@ impl MessageView {
                     // arrives as an embedded PNG, never a path the document
                     // could reach for, and the initial is escaped like every
                     // other header field.
-                    ava = {
-                        // One of your own mailboxes wrote this card (#189):
-                        // show what its account chose — the sidebar's picture,
-                        // or its emoji on the account color — so your own
-                        // replies in a conversation wear the face you gave
-                        // that mailbox rather than plain initials.
-                        let own = crate::avatar::own_face(&m.from_addr).and_then(|face| {
-                            // The account's own Gravatar leads when it asked
-                            // for one and the address has one; the picture and
-                            // the emoji are what it falls back to.
-                            let gravatar = face
-                                .gravatar
-                                .then(|| crate::avatar::own_gravatar_data_uri(&m.from_addr, 26))
-                                .flatten();
-                            if let Some(uri) = gravatar {
-                                return Some(format!("<img class=\"vireo-ava\" src=\"{uri}\" alt=\"\">"));
-                            }
-                            match (&face.picture, &face.emoji) {
-                                (Some(path), _) => crate::ui::initials::picture_data_uri(path, 26)
-                                    .map(|uri| format!("<img class=\"vireo-ava\" src=\"{uri}\" alt=\"\">")),
-                                (None, Some(emoji)) => {
-                                    let png = gtk::gdk::RGBA::parse(&face.color)
-                                        .ok()
-                                        .and_then(|bg| crate::ui::initials::png_data_uri(emoji, bg, 26));
-                                    Some(match png {
-                                        Some(uri) => {
-                                            format!("<img class=\"vireo-ava\" src=\"{uri}\" alt=\"\">")
-                                        }
-                                        None => format!(
-                                            "<span class=\"vireo-ava\" style=\"background:{bg}\">{glyph}</span>",
-                                            bg = attr_escape(&face.color),
-                                            glyph = escape_text(emoji),
-                                        ),
-                                    })
-                                }
-                                (None, None) => None,
-                            }
-                        });
-                        own.unwrap_or_else(|| {
-                            let initial = m
-                                .from_name
-                                .trim()
-                                .chars()
-                                .next()
-                                .or_else(|| m.from_addr.trim().chars().next())
-                                .map(|c| c.to_uppercase().to_string())
-                                .unwrap_or_else(|| "?".to_string());
-                            let hue = m
-                                .from_addr
-                                .to_ascii_lowercase()
-                                .bytes()
-                                .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32))
-                                % 360;
-                            let l = if dark { 38 } else { 45 };
-                            // Drawn ink-centred by ui::initials and embedded as
-                            // a PNG (the same tint); the markup span stands in
-                            // only before a window exists to render with.
-                            let bg = crate::ui::initials::hsl(f64::from(hue), 0.52, f64::from(l) / 100.0);
-                            match crate::ui::initials::png_data_uri(&initial, bg, 26) {
-                                Some(uri) => format!("<img class=\"vireo-ava\" src=\"{uri}\" alt=\"\">"),
-                                None => format!(
-                                    "<span class=\"vireo-ava\" style=\"background:hsl({hue},52%,{l}%)\">{}</span>",
-                                    escape_text(&initial),
-                                ),
-                            }
-                        })
-                    },
+                    ava = ava_html.clone(),
                     addr = if m.from_addr.is_empty() {
                         String::new()
                     } else {
@@ -3864,7 +4323,13 @@ impl MessageView {
                 .to_string(),
         };
         let sizer = match &nonce {
-            Some(n) => format!("<script nonce=\"{n}\">{SIZE_SCRIPT}</script>"),
+            Some(n) => {
+                // The fold's tooltips, in the user's language.
+                let qt = serde_json::to_string(&[i18n("Show quoted text"), i18n("Hide quoted text")])
+                    .unwrap_or_default()
+                    .replace("</", "<\\/");
+                format!("<script nonce=\"{n}\">var vireoQT={qt};{SIZE_SCRIPT}</script>")
+            }
             None => String::new(),
         };
         // A single message that paints no background of its own (plain mail,
@@ -3894,7 +4359,7 @@ impl MessageView {
                iframe.vireo-frame{{width:100%;border:0;display:block;background:{bg};\
                  visibility:hidden;}}\
                iframe.vireo-frame.vireo-live{{visibility:visible;}}\
-               .vireo-pan{{overflow-x:auto;}}\
+               .vireo-pan{{overflow-x:auto;position:relative;}}\
                iframe.vireo-frame.anim{{transition:height 240ms cubic-bezier(0.4,0,0.2,1);}}\
                @media (prefers-reduced-motion:reduce){{iframe.vireo-frame.anim{{transition:none;}}}}\
                .vireo-msg{{background:{bg};\
@@ -3903,6 +4368,23 @@ impl MessageView {
                .vireo-msg{{user-select:none;}}\
                body:not(.vireo-conv) .vireo-msg{{border-radius:0;margin:0;}}\
                .vireo-msg.selected{{box-shadow:0 0 0 2px {accent};}}\
+               .vireo-fbar{{display:none;}}\
+               .vireo-msg.vireo-folded{{background-image:linear-gradient(rgba(128,128,128,0.07),rgba(128,128,128,0.07));}}\
+               .vireo-msg.vireo-folded>.vireo-fbar{{display:flex;align-items:center;gap:12px;\
+                 padding:14px 18px;cursor:pointer;user-select:none;}}\
+               .vireo-fbar-from{{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;\
+                 white-space:nowrap;opacity:0.85;}}\
+               .vireo-msg.unread .vireo-fbar-from{{font-weight:700;opacity:1;}}\
+               .vireo-fbar-ico{{flex:none;display:inline-flex;opacity:0.55;line-height:0;}}\
+               .vireo-fbar-ico svg{{width:16px;height:16px;}}\
+               .vireo-fbar-none{{width:16px;height:16px;}}\
+               .vireo-fbar-ico svg,.vireo-fbar-ico svg *{{fill:currentColor;}}\
+               .vireo-fbar-date{{flex:none;min-width:6.5em;text-align:right;opacity:0.7;\
+                 font-size:0.92em;white-space:nowrap;}}\
+               .vireo-msg.vireo-folded>:not(.vireo-fbar){{display:none;}}\
+               body.vireo-folds .vireo-msg-hdr{{cursor:pointer;}}\
+               @media print{{.vireo-msg.vireo-folded>:not(.vireo-fbar){{display:revert !important;}}\
+                 .vireo-msg.vireo-folded>.vireo-fbar{{display:none !important;}}}}\
                .vireo-msg-hdr{{cursor:pointer;}}\
                .vireo-msg-hdr{{padding:12px 16px;cursor:default;user-select:none;\
                  position:sticky;top:0;z-index:1;background-color:{bg};}}\
@@ -3951,6 +4433,14 @@ impl MessageView {
                .vireo-atts:empty{{display:none;}}\
                /* The Unsubscribe banner between a list message's header and\
                   body: a line of text and one button. */\
+               .vireo-tr{{display:flex;align-items:center;gap:10px;padding:8px 14px 9px;\
+                 font-size:0.9em;border-bottom:1px solid rgba(128,128,128,0.25);}}\
+               .vireo-tr:empty{{display:none;}}\
+               .vireo-tr-text{{flex:1 1 auto;min-width:0;opacity:0.8;}}\
+               .vireo-tr-btn{{flex:none;border:1px solid rgba(128,128,128,0.4);border-radius:6px;\
+                 padding:3px 12px;background:rgba(128,128,128,0.1);color:inherit;font:inherit;\
+                 font-size:0.95em;font-weight:600;cursor:pointer;}}\
+               .vireo-tr-btn:hover{{background:rgba(128,128,128,0.22);}}\
                .vireo-unsub{{display:flex;align-items:center;gap:10px;padding:8px 14px 9px;\
                  font-size:0.9em;border-bottom:1px solid rgba(128,128,128,0.25);}}\
                .vireo-unsub:empty{{display:none;}}\
@@ -4105,7 +4595,7 @@ impl MessageView {
                  color:inherit;opacity:0.6;background:rgba(128,128,128,0.16);\
                  border:0;border-radius:999px;cursor:pointer;}}\
                .vireo-quote:hover{{opacity:0.95;background:rgba(128,128,128,0.28);}}\
-               .vireo-quote.open{{opacity:0.95;}}\
+               .vireo-quote.open{{opacity:0.95;position:absolute;left:0;z-index:2;}}\
                .vireo-acts{{display:flex;gap:2px;flex:none;align-self:center;margin-left:4px;}}\
                /* Read-toggle: the icon showing is the ACTION (read envelope\
                   means mark-as-read); the section's unread class decides. */\
@@ -5023,6 +5513,26 @@ pub struct MenuHit {
     pub image: Option<String>,
     /// The selected text, when the click was on it.
     pub selection: Option<String>,
+    /// The message's translation entry (#327), when a service is set up:
+    /// what it says, and the reader to tell.
+    pub translate: Option<TranslateEntry>,
+    /// Expand All and Collapse All (#326), in a conversation: whether any
+    /// message is folded, whether any is open, and the reader to tell.
+    pub folds: Option<(bool, bool, relm4::Sender<MessageViewInput>)>,
+}
+
+/// Translate, Show Original or Show Translation in a message's menu, sent
+/// back to the reader that showed the menu (the main one or a pop-out's).
+#[derive(Clone)]
+pub struct TranslateEntry {
+    pub label: String,
+    pub reader: relm4::Sender<MessageViewInput>,
+}
+
+impl std::fmt::Debug for TranslateEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TranslateEntry").field("label", &self.label).finish()
+    }
 }
 
 /// The entries a right-click's `hit` puts at the top of the message's menu:
@@ -6059,6 +6569,18 @@ thread_local! {
     /// And each card's invitation banner (#223), the same way again.
     static LIVE_INVITE: std::cell::RefCell<std::collections::HashMap<(u32, u32), String>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Each card's translation banner (#327), and the translation the card
+    /// shows instead of its message, if it shows one. Empty in tests.
+    static LIVE_TRANSLATE: std::cell::RefCell<std::collections::HashMap<(u32, u32), (String, Option<String>)>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Each card's folded bar (#326), already rendered. Empty in tests.
+    static LIVE_FOLDBAR: std::cell::RefCell<std::collections::HashMap<(u32, u32), String>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    /// The cards that open folded (#326). Empty in tests.
+    static LIVE_FOLDED: std::cell::RefCell<std::collections::HashSet<(u32, u32)>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+    /// Whether a translation service is set up, so cards offer Translate.
+    static LIVE_TRANSLATE_ON: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// That ground as a color the WebView itself can be painted with.
@@ -6090,7 +6612,7 @@ if(f.dataset.key&&f._h!==h){f._h=h;\
 try{window.webkit.messageHandlers.hylki.postMessage('size:'+f.dataset.key+':'+h);}catch(_){}}}\
 else{f.style.height=prev;h=old;}\
 if(sy>0)window.scrollTo(0,above?sy+(h-old):sy);\
-chase();pin();\
+if(f._qp)f._qp();chase();pin();\
 }catch(_){}finally{f._s=0;}}\
 function pick(k,e){reportPos();\
 var mo=e.shiftKey?'r':((e.ctrlKey||e.metaKey)?'t':'p');\
@@ -6099,12 +6621,17 @@ var g=(e.view&&e.view.getSelection)?e.view.getSelection():null;if(g)g.removeAllR
 else{try{var t=(e.view&&e.view.getSelection)?e.view.getSelection():null;\
 if(t&&String(t).length)return;}catch(_){}}\
 try{window.webkit.messageHandlers.hylki.postMessage('sel:'+k+':'+mo);}catch(_){}}\
-var QS='.vireo-quote-attr,.gmail_quote,blockquote,#divRplyFwdMsg';\
+var QS='.vireo-quote-attr,.gmail_quote,blockquote,#divRplyFwdMsg,.yahoo_quoted';\
 var SIG='.moz-signature,#Signature,.gmail_signature,[class*=\"signature\"]';\
+var QT=window.vireoQT||['Show quoted text','Hide quoted text'];\
+var WROTE=/(wrote|writes|schrieb|a écrit|escribió|escreveu|scrisse|schreef|skrev|kirjoitti|napisał|napsal|írta|написал|написала|έγραψε)\\s*:?$/i;\
+var DIV=/^\\s*-{4,}[^-]{3,40}-{4,}\\s*$/;\
 function isq(n){return n.nodeType===1&&(n.matches(QS)||!!n.querySelector(QS));}\
-function blank(n){return n.nodeType===3?!n.textContent.trim():(n.nodeType!==1||!n.textContent.trim());}\
-function trailer(top,q){\
-if(q.matches('.vireo-quote-attr,#divRplyFwdMsg'))return true;\
+function blank(n){if(n.nodeType===1&&/^(STYLE|SCRIPT|META|LINK|TITLE)$/.test(n.tagName))return true;\
+return n.nodeType===3?!n.textContent.trim():(n.nodeType!==1||!n.textContent.trim());}\
+function kids(r){var a=[];for(var n=r.firstChild;n;n=n.nextSibling)if(!blank(n))a.push(n);return a;}\
+function trailer(top,hd){\
+if(hd)return true;\
 var n=top.nextSibling;\
 while(n&&(isq(n)||blank(n)))n=n.nextSibling;\
 var t='';\
@@ -6118,41 +6645,85 @@ for(var j=0;j<br.length;j++)br[j].parentNode.replaceChild(c.ownerDocument.create
 t+='\\n'+c.textContent;}}\
 t=t.replace(/\\u00a0/g,' ').trim();\
 return !t||/^[-_]{2,}[ \\t]*(\\n|$)/.test(t);}\
+function findq(d){\
+var sel=['.vireo-quote-attr','.gmail_quote','blockquote[type=\"cite\"]','#divRplyFwdMsg','.yahoo_quoted'];\
+for(var i=0;i<sel.length;i++){var q=d.querySelector(sel[i]);if(q)return [q,i===0||i===3];}\
+var bs=d.querySelectorAll('div[style*=\"border-top\"]');\
+for(var j=0;j<bs.length;j++){var lb=bs[j].querySelectorAll('b,strong'),c=0;\
+for(var k=0;k<lb.length;k++)if(/:\\s*$/.test(lb[k].textContent))c++;\
+if(c>=3)return [bs[j],true];}\
+var w=d.createTreeWalker(d.body,4),n;\
+while((n=w.nextNode())){if(DIV.test(n.textContent)){var pe=n.parentNode;\
+return [pe!==d.body&&pe.textContent.trim()===n.textContent.trim()?pe:n,true];}}\
+q=d.querySelector('blockquote');return q?[q,false]:null;}\
+function plain(d){var ps=d.querySelectorAll('.vireo-plain');if(!ps.length)return null;\
+var p=ps[ps.length-1],L=p.textContent.split('\\n'),i=L.length-1,qs=0,st=-1;\
+for(var j=0;j<L.length;j++)if(DIV.test(L[j])){st=j;break;}\
+if(st<0){while(i>=0&&(/^\\s*>/.test(L[i])||!L[i].trim())){if(L[i].trim())qs++;i--;}\
+if(!qs||i<0)return null;st=i+1;\
+if(WROTE.test(L[i].trim())){st=i;\
+if(i>0&&/^(On|Am|Le|El|Em|Il|Op|Den|Dne|W dniu)\\s/.test(L[i-1].trim())&&!/[.!?:]\\s*$/.test(L[i-1]))st=i-1;}}\
+var bf=false;for(var k=0;k<st;k++)if(L[k].trim()){bf=true;break;}\
+if(!bf)return null;\
+var e=st-1;while(e>=0&&!L[e].trim())e--;\
+var off=-1;for(k=0;k<=e;k++)off+=L[k].length+1;\
+var w=d.createTreeWalker(p,4),n,acc=0;\
+while((n=w.nextNode())){var l=n.textContent.length;if(acc+l>=off)break;acc+=l;}\
+if(!n)return null;\
+var r=d.createRange();r.setStart(n,off-acc);r.setEnd(p,p.childNodes.length);\
+var box=d.createElement('span');box.appendChild(r.extractContents());p.appendChild(box);\
+return box;}\
 function quote(f){try{var d=f.contentDocument;if(!d||!d.body||f._q)return;\
-var sel=['.vireo-quote-attr','.gmail_quote','blockquote[type=\"cite\"]','#divRplyFwdMsg','blockquote'];\
-var q=null;for(var i=0;i<sel.length&&!q;i++)q=d.querySelector(sel[i]);\
-if(!q)return;\
-var top=q;while(top.parentNode&&top.parentNode!==d.body)top=top.parentNode;\
+var h=findq(d);\
+if(!h){var pb=plain(d);if(pb)fold(f,d,pb);return;}\
+var q=h[0],hd=h[1];\
+var root=d.body;\
+for(;;){var ks=kids(root);if(ks.length===1&&ks[0].nodeType===1&&ks[0]!==q&&ks[0].contains(q))root=ks[0];else break;}\
+var top=q;while(top.parentNode&&top.parentNode!==root)top=top.parentNode;\
 if(!top.parentNode)return;\
+var start=top,pv=top.previousSibling;\
+while(pv&&(blank(pv)||pv.nodeName==='BR'))pv=pv.previousSibling;\
+if(pv&&!hd&&pv.textContent.length<400&&WROTE.test(pv.textContent.trim()))start=pv;\
 var before=false;\
-for(var n=d.body.firstChild;n&&n!==top;n=n.nextSibling){\
-if(n.nodeType===1||(n.nodeType===3&&n.textContent.trim()))before=true;}\
+for(var n=root.firstChild;n&&n!==start;n=n.nextSibling){\
+if(!blank(n)||n.nodeName==='IMG'||(n.nodeType===1&&!!n.querySelector('img')))before=true;}\
 if(!before)return;\
-if(!trailer(top,q))return;\
-f._q=1;\
-var box=d.createElement('div');top.parentNode.insertBefore(box,top);\
+if(!trailer(top,hd))return;\
+var box=d.createElement('div');root.insertBefore(box,start);\
 while(box.nextSibling)box.appendChild(box.nextSibling);\
-box.style.display='none';\
+fold(f,d,box);}catch(_){}}\
+function fold(f,d,box){try{f._q=1;\
+var sp=d.createElement('div');sp.style.cssText='display:none;height:28px;';\
+box.parentNode.insertBefore(sp,box);box.style.display='none';\
 if(!f.parentNode)return;\
 var b=document.createElement('button');b.className='vireo-quote';\
 b.type='button';b.textContent='\u{2022}\u{2022}\u{2022}';\
-b.setAttribute('title','Show quoted text');\
+b.setAttribute('title',QT[0]);\
 f.parentNode.insertBefore(b,f.nextSibling);\
+f._qp=function(){if(!b.classList.contains('open')){b.style.top='';return;}\
+var r=sp.getBoundingClientRect();b.style.top=Math.round(f.offsetTop+r.top+(r.height-b.offsetHeight)/2)+'px';};\
 b.addEventListener('click',function(e){e.stopPropagation();e.preventDefault();\
-var on=box.style.display==='none';\
+var on=box.style.display==='none',sy=window.scrollY;\
 var from=f.getBoundingClientRect().height;\
-box.style.display=on?'':'none';\
+box.style.display=on?'':'none';sp.style.display=on?'block':'none';\
 b.classList.toggle('open',on);\
-b.setAttribute('title',on?'Hide quoted text':'Show quoted text');\
+b.setAttribute('title',on?QT[1]:QT[0]);f._qp();\
 var to=0;try{var dd=f.contentDocument,bb=dd.body,ee=dd.documentElement;\
 var prev=f.style.height;f.style.height='0px';void f.offsetHeight;\
 to=Math.max(bb?bb.scrollHeight:0,ee?ee.scrollHeight:0,bb?bb.offsetHeight:0);\
 f.style.height=prev;void f.offsetHeight;}catch(_){}\
-if(!to){s(f);return;}\
+if(!to){s(f);window.scrollTo(0,sy);return;}\
 f.style.height=from+'px';f.classList.add('anim');\
 void f.offsetHeight;\
 f.style.height=to+'px';\
-setTimeout(function(){f.classList.remove('anim');s(f);},280);});}catch(_){}}\
+window.scrollTo(0,sy);\
+setTimeout(function(){f.classList.remove('anim');s(f);\
+if(on){var br=b.getBoundingClientRect();\
+if(br.top>innerHeight*0.6)window.scrollBy({top:Math.min(br.top-innerHeight*0.3,to-from),behavior:'smooth'});}},280);});}catch(_){}}\
+function foldCard(sec){if(!sec)return;var on=!sec.classList.contains('vireo-folded');\
+sec.classList.toggle('vireo-folded',on);\
+try{window.webkit.messageHandlers.hylki.postMessage('fold:'+sec.dataset.key+':'+(on?1:0));}catch(_){}\
+if(!on){var f=sec.querySelector('iframe.vireo-frame');if(f){f._h=0;s(f);setTimeout(function(){s(f);},80);}}}\
 function init(f){quote(f);s(f);try{var d=f.contentDocument;if(d){if(window.ResizeObserver&&d.body){new ResizeObserver(function(){s(f);}).observe(d.body);}\
 if(f.dataset.key&&!f._c){f._c=1;d.addEventListener('click',function(e){\
 if(e.target&&e.target.closest&&e.target.closest('a'))return;pick(f.dataset.key,e);});}\
@@ -6189,6 +6760,15 @@ setTimeout(ready,450);\
 var hs=document.querySelectorAll('.vireo-msg-hdr');\
 for(var j=0;j<hs.length;j++){hs[j].addEventListener('dblclick',function(){\
 try{window.webkit.messageHandlers.hylki.postMessage('open:'+this.dataset.key);}catch(_){}});}\
+if(document.querySelectorAll('.vireo-msg').length>1){document.body.classList.add('vireo-folds');\
+for(var j=0;j<hs.length;j++){(function(h){var tm=null;\
+h.addEventListener('click',function(e){\
+if(e.ctrlKey||e.metaKey||e.shiftKey||e.altKey)return;\
+if(e.target.closest&&e.target.closest('button,a,.vireo-addr,.vireo-acts,.vireo-tags,.vireo-verify,.vireo-rcpt'))return;\
+if(tm){clearTimeout(tm);tm=null;return;}\
+tm=setTimeout(function(){tm=null;foldCard(h.closest('.vireo-msg'));},260);});})(hs[j]);}\
+var fb=document.querySelectorAll('.vireo-fbar');\
+for(var j=0;j<fb.length;j++){fb[j].addEventListener('click',function(){foldCard(this.closest('.vireo-msg'));});}}\
 var rbd=document.body.dataset;\
 if(rbd.vireoReadmark&&document.body.classList.contains('vireo-conv')){\
 var rdel=parseInt(rbd.vireoReadmark,10)||250;var rt={};\
@@ -6304,6 +6884,9 @@ as[k].addEventListener('dblclick',function(e){e.stopPropagation();});}\
 document.addEventListener('click',function(e){var b=e.target&&e.target.closest?e.target.closest('.vireo-unsub-btn'):null;\
 if(!b)return;e.stopPropagation();e.preventDefault();\
 try{window.webkit.messageHandlers.hylki.postMessage('unsub:'+b.dataset.key);}catch(_){}});\
+document.addEventListener('click',function(e){var b=e.target&&e.target.closest?e.target.closest('.vireo-tr-btn'):null;\
+if(!b)return;e.stopPropagation();e.preventDefault();\
+try{window.webkit.messageHandlers.hylki.postMessage('tr:'+b.dataset.key);}catch(_){}});\
 document.addEventListener('click',function(e){var b=e.target&&e.target.closest?e.target.closest('.vireo-inv-btn'):null;\
 if(!b)return;e.stopPropagation();e.preventDefault();\
 try{window.webkit.messageHandlers.hylki.postMessage('invite:'+b.dataset.key+':'+b.dataset.inv);}catch(_){}});\

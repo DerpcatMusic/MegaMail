@@ -8,8 +8,9 @@ The full list. The [README](../README.md) carries a shorter one.
   worker, with a unified *Inboxes* view across all of them.
 - **JMAP:** a Stalwart or Fastmail mailbox over the JSON mail protocol,
   including push. See [Configuration](DOCUMENTATION.md#jmap-stalwart-fastmail).
-- **OAuth 2.0 sign-in:** Google, Microsoft and custom providers over
-  XOAUTH2. See [Configuration](DOCUMENTATION.md#oauth-google--microsoft).
+- **OAuth 2.0 sign-in:** Microsoft with Hylki's own app (no GNOME Online
+  Accounts needed), Google through GNOME Online Accounts, and custom
+  providers over XOAUTH2. See [Configuration](DOCUMENTATION.md#oauth-google--microsoft).
 - **GNOME Online Accounts:** import an account already set up in GNOME
   Settings, IMAP and SMTP accounts and Microsoft 365 over Graph included.
   See [Configuration](DOCUMENTATION.md#gnome-online-accounts). Pausing an account's Mail
@@ -105,6 +106,15 @@ The full list. The [README](../README.md) carries a shorter one.
 - **Meeting invitations:** what the meeting is, when it runs in your own
   clock and time zone, where it is and who organised it, with Accept, Maybe,
   Decline and Add to Calendar.
+- **Folding conversations:** a click on a message's header folds it to a
+  single line, and earlier messages can start folded, so a long
+  conversation opens on what is new.
+- **Translation:** with a DeepL, Google, Microsoft or LibreTranslate key of
+  your own, a message is translated in place, and switched back to the
+  original with a click. A message in another language can offer it; the
+  language is recognised offline. In the composer, what you write goes into
+  the language of the message you are answering. See
+  [Translating messages](DOCUMENTATION.md#translating-messages).
 - **One-click unsubscribe:** a banner on list mail that leaves the list for
   you, by request or by email, without a browser where the list allows it.
 - **OpenPGP:** read encrypted and signed mail, sign and encrypt what you
@@ -127,6 +137,9 @@ The full list. The [README](../README.md) carries a shorter one.
   what you are reading, and puts it back afterwards.
 - **A customizable reader toolbar:** reorder its buttons, or drag them in and
   out, in Settings → Appearance.
+- **A single-line message list:** sender, subject and the start of the
+  text on one line per message, always, or whenever the list pane is
+  dragged wide.
 - **Swipe actions** on message rows, with an adjustable sensitivity.
 - **Single-key shortcuts:** Gmail-style `j`/`k`, `r`, `a`, `d` and friends,
   without a modifier. See [Keyboard shortcuts](KEYBOARD_SHORTCUTS.md).

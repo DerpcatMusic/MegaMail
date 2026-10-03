@@ -12,6 +12,7 @@ keyboard.
 - [OAuth (Google / Microsoft)](#oauth-google--microsoft)
 - [Cloud attachments (Nextcloud, OneDrive, Dropbox, Seafile)](#cloud-attachments-nextcloud-onedrive-dropbox-seafile)
 - [LDAP directories](#ldap-directories)
+- [Translating messages](#translating-messages)
 - [Writing in Markdown or HTML](#writing-in-markdown-or-html)
 - [OpenPGP (encrypted and signed mail)](#openpgp-encrypted-and-signed-mail)
 - [Send with Hylki from GNOME Files](#send-with-hylki-from-gnome-files)
@@ -232,8 +233,18 @@ It is refused where it would not save space or would break the message:
 
 ### OAuth (Google / Microsoft)
 
-**Microsoft** works out of the box: pick *Microsoft* in the account editor and
-sign in.
+**Microsoft** signs in with Hylki's own app, with or without GNOME Online
+Accounts: pick *Microsoft 365 / Outlook* in the first-run wizard or in
+Settings → Mail Accounts, and sign in in the browser. The account's name and
+address are filled in from the sign-in, and its mail is read and sent through
+Microsoft Graph. This also works where GNOME Online Accounts cannot add the
+account, as with personal accounts on GNOME 46 (Ubuntu 24.04, Linux Mint 22).
+
+Personal accounts (outlook.com, hotmail.com, live.com) approve Hylki
+themselves the first time. A work or school account may need its
+organization's administrator to approve Hylki once for everyone, at
+`https://login.microsoftonline.com/organizations/adminconsent?client_id=01cdc012-c8d8-4d03-822c-76696a01c14e`;
+Hylki shows that link when Microsoft refuses a sign-in for want of approval.
 
 **Google** signs in through **GNOME Online Accounts**. Add your Google account in
 *GNOME Settings → Online Accounts*, then import it in Hylki. Official builds don't
@@ -366,6 +377,47 @@ Saving checks the connection and says whether the directory answered, or
 why not (a password it refused, a server it could not reach). The Flatpak
 reaches the desktop's Evolution Data Server, which has to be installed on
 the system, as it is with GNOME.
+
+### Translating messages
+
+Settings → Translation sets up a translation service you have an account
+with, under your own key:
+
+| Service | What it needs | Notes |
+| --- | --- | --- |
+| DeepL | an API key | A free key (ending in `:fx`) covers 500,000 characters a month. |
+| Google Cloud Translation | an API key | The Basic (v2) API; the project needs billing turned on, even for the free allowance. |
+| Microsoft Translator | a key, and the resource's region | Leave the region empty for a global resource. |
+| LibreTranslate | the server's address, and a key if it asks for one | Can run on your own computer or network, so messages never leave it. |
+
+**Check the settings** translates a greeting to show that the service
+answers. **Translate into** is Hylki's own language unless another is chosen.
+
+A message is translated from the A文 button in its card's actions, or from
+Translate in its right-click menu. The card then shows the translation, with a banner naming the service and the language
+it came from, and **Show Original** in the banner or the menu switches back. A translation is kept for
+the rest of the session, so opening the message again costs nothing more.
+
+What is sent is the message as Reader View shows it: its text, paragraphs,
+lists, links and quotes, without the sender's styling, images or tracking.
+Long messages go in pieces, and one over about 120,000 characters is not sent.
+Messages that arrived encrypted are never sent.
+
+With **Offer to translate** on, a message in a language other than the one
+translations go into shows a Translate button above it. Which language a
+message is in is worked out on this computer; nothing is sent until the
+button is pressed.
+
+In the composer, the A文 button beside the format chooser translates what
+you are writing: the selection if there is one, otherwise everything you
+wrote above the quote and signature, which are left as they are. It offers
+the language of the message you are answering first, recognised offline,
+then the one you used last, then every other. The translation replaces your
+text as one edit, so Ctrl+Z gives back what you wrote. It works in rich
+text, plain text, Markdown and HTML. A message set to be encrypted is never
+sent for translation.
+
+The settings are in `translation.toml`; the key is in the keyring.
 
 ### Where the signature goes
 
@@ -649,6 +701,44 @@ System → GNOME Files** holds the same choices, so the questions can be
 skipped: what the files go into, what happens over the limit, and the limit
 itself.
 
+### Quoted text
+
+When a reply ends with the message it answers, the reader folds that part
+away behind a ••• button. It recognises the quotes Gmail, Outlook (web and
+desktop), Apple Mail, Thunderbird, Yahoo and Hylki write, an "On … wrote:"
+line before them, an "Original Message" divider, and the `>` lines of
+plain-text mail. Once opened, the button sits where the quote begins and
+folds it again. Nothing is folded when your reply comes after or between
+quoted lines, so an answer written inline always shows in full.
+
+### Folding messages in a conversation
+
+A click on a message's header in a conversation folds it to one line: the
+sender's circle and name, then a star, a paper plane or an inbox for sent
+or received, a paperclip when it has files, and the day. A click on that
+line opens it again; a double-click on the header still opens the message in
+a window of its own.
+
+**Settings → Conversations → Fold earlier messages** decides how a
+conversation opens: **Never** shows every message, **Messages already read**
+folds what you have read, and **All but the newest** folds every message
+except the newest, read or not. The newest always opens, and so does a
+message you move to with `w` or `b`. Right-clicking anywhere in a
+conversation offers **Expand All Messages** and **Collapse All Messages**.
+What you fold or open stays that way while the conversation is on screen.
+Printing shows every message in full.
+
+### Message list layout
+
+**Settings → Message List → Layout** sets how the list shows a message.
+**Cards** gives the sender, the subject and the start of the text lines of
+their own. **Single line** puts them on one line in columns: the sender's
+circle and name, the subject with the text dimmed after it, then tags, a
+paperclip, the conversation's size and a short date. **Automatic** uses one
+line while the list pane is dragged wider than about 600 pixels and cards
+when it is narrower. On one line the actions palette is not shown; the
+right-click menu, swipes and keyboard shortcuts do the same things.
+
 ### Text size
 
 **Settings → Appearance → Text size** makes Hylki's text smaller or larger
@@ -714,3 +804,8 @@ mail index and cached messages in `~/.cache/hylki/`, and account avatars in
 
 Passwords and tokens are never in those files: they go to the system keyring
 through the Secret Service. Decrypted OpenPGP messages are never cached at all.
+
+**Translation** is off until a service is chosen in Settings → Translation.
+After that, a message's text goes to that service only when you press
+Translate on it, and encrypted messages never do. See
+[Translating messages](#translating-messages).

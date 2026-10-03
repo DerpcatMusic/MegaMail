@@ -35,6 +35,8 @@ pub struct PrefInit {
     pub threads_expanded: bool,
     /// Reading pane shows conversations newest-message-first.
     pub thread_newest_first: bool,
+    /// Which messages of a conversation open folded (#326).
+    pub fold_messages: crate::config::FoldMessages,
     /// Reader always shows the recipients line under the sender.
     pub always_show_recipients: bool,
     /// The OpenPGP chip says its verdict in words (#300).
@@ -143,6 +145,7 @@ pub struct PrefInit {
     /// Focus Mode: the master switch and the parts it strips.
     pub focus: crate::config::FocusMode,
     pub preview_lines: u32,
+    pub list_layout: crate::config::ListLayout,
     pub single_key_shortcuts: bool,
     pub run_in_background: bool,
     pub autostart: bool,
@@ -665,6 +668,7 @@ const SIDE_PAGES: &[(&str, &[SidePage])] = &[
             SidePage { id: "senders", title: i18n_noop("Senders"), icon: "contact-new-symbolic", accounts: true },
             SidePage { id: "openpgp", title: i18n_noop("OpenPGP"), icon: "channel-secure-symbolic", accounts: false },
             SidePage { id: "cloud", title: i18n_noop("Cloud Storage"), icon: "cloud-symbolic", accounts: false },
+            SidePage { id: "translation", title: i18n_noop("Translation"), icon: "translate-symbolic", accounts: false },
             SidePage { id: "directories", title: i18n_noop("LDAP Directories"), icon: "x-office-address-book-symbolic", accounts: false },
         ],
     ),
@@ -877,6 +881,7 @@ pub enum PrefInput {
     ToggleRailFoldFiltered(bool),
     ToggleRailFoldTags(bool),
     ChangePreviewLines(u32),
+    ChangeListLayout(u32),
     ChangeReadMark(u32),
     ExportSettings,
     ExportLog,
@@ -885,6 +890,7 @@ pub enum PrefInput {
     ChangeMessageTheme(u32),
     ChangeComposeFormat(u32),
     ChangeReplyPosition(u32),
+    ChangeFoldMessages(u32),
     ChangeSignaturePosition(u32),
     ChangeAppTheme(u32),
     ChangeTextScale(u32),
@@ -940,6 +946,7 @@ pub enum PrefOutput {
     SetThreading(bool),
     SetThreadsExpanded(bool),
     SetThreadNewestFirst(bool),
+    SetFoldMessages(crate::config::FoldMessages),
     SetAlwaysShowRecipients(bool),
     SetPgpLabels(bool),
     SetSingleMessageCard(bool),
@@ -1007,6 +1014,7 @@ pub enum PrefOutput {
     /// The "this window opens to" choice changed (true = Accounts).
     SetSettingsOpenAccounts(bool),
     SetPreviewLines(u32),
+    SetListLayout(crate::config::ListLayout),
     SetSingleKey(bool),
     SetRunInBackground(bool),
     SetAutostart(bool),
@@ -1609,6 +1617,10 @@ impl Component for Preferences {
                             // Cloud attachment accounts (#144), its own component.
                             #[name = "cloud_slot"]
                             add_named[Some("cloud")] = &adw::Bin {},
+
+                            // Message translation (#327), built by its own module.
+                            #[name = "translation_slot"]
+                            add_named[Some("translation")] = &adw::Bin {},
 
                             // LDAP directories (#307), their own component.
                             #[name = "directories_slot"]
@@ -2385,6 +2397,18 @@ impl Component for Preferences {
                                         },
                                     },
 
+                                    #[name = "list_layout_row"]
+                                    adw::ComboRow {
+                                        set_title: &i18n("Layout"),
+                                        set_subtitle: &i18n("Each message on lines of its own, or on one line \
+                                                       in columns. Automatic uses one line while the list \
+                                                       is dragged wide and lines of their own when it is \
+                                                       narrow."),
+                                        connect_selected_notify[sender] => move |row| {
+                                            sender.input(PrefInput::ChangeListLayout(row.selected()));
+                                        },
+                                    },
+
                                     #[name = "preview_lines_row"]
                                     adw::ComboRow {
                                         set_title: &i18n("Preview lines"),
@@ -2517,6 +2541,17 @@ impl Component for Preferences {
                                                        downward."),
                                         connect_active_notify[sender] => move |row| {
                                             let _ = sender.output(PrefOutput::SetThreadNewestFirst(row.is_active()));
+                                        },
+                                    },
+
+                                    #[name = "fold_messages_row"]
+                                    adw::ComboRow {
+                                        set_title: &i18n("Fold earlier messages"),
+                                        set_subtitle: &i18n("Which messages of a conversation open folded to one \
+                                                       line. The newest always opens, and a click on a folded \
+                                                       message opens it."),
+                                        connect_selected_notify[sender] => move |row| {
+                                            sender.input(PrefInput::ChangeFoldMessages(row.selected()));
                                         },
                                     },
 
@@ -3516,6 +3551,17 @@ impl Component for Preferences {
             .preview_lines_row
             .set_model(Some(&gtk::StringList::new(&preview_labels)));
         widgets.preview_lines_row.set_selected(init.preview_lines.min(3));
+        widgets.list_layout_row.set_model(Some(&gtk::StringList::new(&[
+            &i18n("Cards"),
+            &i18n("Single line"),
+            &i18n("Automatic"),
+        ])));
+        no_truncate(&widgets.list_layout_row);
+        widgets.list_layout_row.set_selected(match init.list_layout {
+            crate::config::ListLayout::Cards => 0,
+            crate::config::ListLayout::SingleLine => 1,
+            crate::config::ListLayout::Automatic => 2,
+        });
 
         widgets.background_row.set_active(init.run_in_background);
         widgets.autostart_row.set_active(init.autostart);
@@ -3641,6 +3687,17 @@ impl Component for Preferences {
         widgets.threading_row.set_active(init.threading);
         widgets.threads_expanded_row.set_active(init.threads_expanded);
         widgets.thread_newest_first_row.set_active(init.thread_newest_first);
+        widgets.fold_messages_row.set_model(Some(&gtk::StringList::new(&[
+            &i18n("Never"),
+            &i18n("Messages already read"),
+            &i18n("All but the newest"),
+        ])));
+        no_truncate(&widgets.fold_messages_row);
+        widgets.fold_messages_row.set_selected(match init.fold_messages {
+            crate::config::FoldMessages::Never => 0,
+            crate::config::FoldMessages::Read => 1,
+            crate::config::FoldMessages::AllButNewest => 2,
+        });
         widgets.always_show_recipients_row.set_active(init.always_show_recipients);
         widgets.pgp_labels_row.set_active(init.pgp_labels);
         widgets.single_message_card_row.set_active(init.single_message_card);
@@ -4006,6 +4063,7 @@ impl Component for Preferences {
                 crate::ui::cloud_accounts::CloudAccountsOutput::EditorOpen(open) => PrefInput::CloudEditorOpen(open),
             });
         widgets.cloud_slot.set_child(Some(cloud.widget()));
+        widgets.translation_slot.set_child(Some(&crate::ui::translation_page::build()));
         model.cloud = Some(cloud);
         let directories = crate::ui::directories::Directories::builder()
             .launch(())
@@ -4544,6 +4602,14 @@ impl Component for Preferences {
                     .unwrap_or_default();
                 let _ = sender.output(PrefOutput::SetTrayIcon(icon));
             }
+            PrefInput::ChangeListLayout(index) => {
+                let layout = match index {
+                    1 => crate::config::ListLayout::SingleLine,
+                    2 => crate::config::ListLayout::Automatic,
+                    _ => crate::config::ListLayout::Cards,
+                };
+                let _ = sender.output(PrefOutput::SetListLayout(layout));
+            }
             PrefInput::ChangePreviewLines(index) => {
                 // The combo lists Off, then 1, 2 and 3 lines — so the row index is
                 // the number of lines.
@@ -4636,6 +4702,14 @@ impl Component for Preferences {
                     _ => crate::config::ComposeFormat::Rich,
                 };
                 let _ = sender.output(PrefOutput::SetComposeFormat(format));
+            }
+            PrefInput::ChangeFoldMessages(idx) => {
+                let fold = match idx {
+                    1 => crate::config::FoldMessages::Read,
+                    2 => crate::config::FoldMessages::AllButNewest,
+                    _ => crate::config::FoldMessages::Never,
+                };
+                let _ = sender.output(PrefOutput::SetFoldMessages(fold));
             }
             PrefInput::ChangeReplyPosition(idx) => {
                 let position = match idx {
