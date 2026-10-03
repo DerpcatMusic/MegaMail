@@ -1107,6 +1107,11 @@ msgid_plural "A new message with {n} files attached is open in Hylki."
 msgstr[0] "{n} csatolt fájlt tartalmazó új üzenet megnyitva a Hylkiben."
 msgstr[1] "{n} csatolt fájlt tartalmazó új üzenet megnyitva a Hylkiben."
 
+msgid ""
+"{reason} If your organization manages your account, an administrator can "
+"approve Hylki for everyone at {link}"
+msgstr ""
+
 msgid "GnuPG (gpg) is not installed, so this message cannot be read."
 msgstr "A GnuPG (gpg) nincs telepítve, ezért ez az üzenet nem olvasható."
 
@@ -1240,9 +1245,6 @@ msgstr "Adja meg a szolgáltató OAuth végpontjait, majd jelentkezzen be."
 
 msgid "Sign in with your browser — no password needed."
 msgstr "Jelentkezzen be a böngészőben — nincs szükség jelszóra."
-
-msgid "Sign in through GNOME Online Accounts."
-msgstr "Bejelentkezés a GNOME Internetes Fiókok keresztül."
 
 msgid "Requires Proton Mail Bridge running locally."
 msgstr "A Proton Mail Bridge helyi futtatása szükséges."
@@ -6178,6 +6180,9 @@ msgstr "Az egységes beérkező levelek mappa világos üzemmódban"
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid "Sign in through GNOME Online Accounts."
+#~ msgstr "Bejelentkezés a GNOME Internetes Fiókok keresztül."
 
 #~ msgid "Flag"
 #~ msgstr "Megjelölés"

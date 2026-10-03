@@ -1047,6 +1047,11 @@ msgid_plural "A new message with {n} files attached is open in Hylki."
 msgstr[0] ""
 msgstr[1] ""
 
+msgid ""
+"{reason} If your organization manages your account, an administrator can "
+"approve Hylki for everyone at {link}"
+msgstr ""
+
 msgid "GnuPG (gpg) is not installed, so this message cannot be read."
 msgstr ""
 
@@ -1169,9 +1174,6 @@ msgid "Enter your provider's OAuth endpoints, then sign in."
 msgstr ""
 
 msgid "Sign in with your browser — no password needed."
-msgstr ""
-
-msgid "Sign in through GNOME Online Accounts."
 msgstr ""
 
 msgid "Requires Proton Mail Bridge running locally."

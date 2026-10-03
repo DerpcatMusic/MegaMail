@@ -1142,6 +1142,11 @@ msgstr[0] "W aplikacji Hylki otwarto nową wiadomość z {n} załączonym plikie
 msgstr[1] "W aplikacji Hylki otwarto nową wiadomość z {n} załączonymi plikami."
 msgstr[2] "W aplikacji Hylki otwarto nową wiadomość z {n} załączonymi plikami."
 
+msgid ""
+"{reason} If your organization manages your account, an administrator can "
+"approve Hylki for everyone at {link}"
+msgstr ""
+
 msgid "GnuPG (gpg) is not installed, so this message cannot be read."
 msgstr ""
 "Program GnuPG (gpg) nie jest zainstalowany, dlatego nie można odczytać tej "
@@ -1275,9 +1280,6 @@ msgstr "Wprowadź punkty końcowe OAuth dostawcy, a następnie zaloguj się."
 
 msgid "Sign in with your browser — no password needed."
 msgstr "Zaloguj się w przeglądarce – hasło nie jest potrzebne."
-
-msgid "Sign in through GNOME Online Accounts."
-msgstr "Zaloguj się za pomocą kont online GNOME."
 
 msgid "Requires Proton Mail Bridge running locally."
 msgstr "Wymaga lokalnie uruchomionego programu Proton Mail Bridge."
@@ -6200,6 +6202,9 @@ msgstr "Zbiorcza skrzynka odbiorcza w jasnym motywie"
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid "Sign in through GNOME Online Accounts."
+#~ msgstr "Zaloguj się za pomocą kont online GNOME."
 
 #~ msgid "Flag"
 #~ msgstr "Oznacz gwiazdką"

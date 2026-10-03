@@ -1156,6 +1156,11 @@ msgstr[0] "Новое письмо с {n} прикрёпленным файло�
 msgstr[1] "Новое письмо с {n} прикрёпленными файлами открыто в Hylki."
 msgstr[2] "Новое письмо с {n} прикрёпленными файлами открыто в Hylki."
 
+msgid ""
+"{reason} If your organization manages your account, an administrator can "
+"approve Hylki for everyone at {link}"
+msgstr ""
+
 msgid "GnuPG (gpg) is not installed, so this message cannot be read."
 msgstr "GnuPG (gpg) не установлен, поэтому это сообщение нельзя прочитать."
 
@@ -1287,9 +1292,6 @@ msgstr "Укажите конечные точки OAuth вашего прова
 
 msgid "Sign in with your browser — no password needed."
 msgstr "Войдите через браузер — пароль не требуется."
-
-msgid "Sign in through GNOME Online Accounts."
-msgstr "Войдите через «Сетевые учётные записи GNOME»."
 
 msgid "Requires Proton Mail Bridge running locally."
 msgstr "Требуется локально запущенный Proton Mail Bridge."
@@ -6136,6 +6138,9 @@ msgstr "Общие входящие в светлом режиме"
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid "Sign in through GNOME Online Accounts."
+#~ msgstr "Войдите через «Сетевые учётные записи GNOME»."
 
 #~ msgid "Flag"
 #~ msgstr "Отметить"

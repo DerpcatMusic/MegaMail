@@ -1130,6 +1130,11 @@ msgid_plural "A new message with {n} files attached is open in Hylki."
 msgstr[0] "Uma nova mensagem com {n} arquivo anexado está aberta no Hylki."
 msgstr[1] "Uma nova mensagem com {n} arquivos anexados está aberta no Hylki."
 
+msgid ""
+"{reason} If your organization manages your account, an administrator can "
+"approve Hylki for everyone at {link}"
+msgstr ""
+
 msgid "GnuPG (gpg) is not installed, so this message cannot be read."
 msgstr ""
 "O GnuPG (gpg) não está instalado, por isso não é possível ler esta mensagem."
@@ -1264,9 +1269,6 @@ msgstr "Digite os endpoints OAuth do provedor e depois entre."
 
 msgid "Sign in with your browser — no password needed."
 msgstr "Entre pelo navegador — não é necessária uma senha."
-
-msgid "Sign in through GNOME Online Accounts."
-msgstr "Entre pelas Contas online do GNOME."
 
 msgid "Requires Proton Mail Bridge running locally."
 msgstr "Requer que o Proton Mail Bridge esteja em execução localmente."
@@ -6179,6 +6181,9 @@ msgstr "A caixa de entrada unificada no modo claro"
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid "Sign in through GNOME Online Accounts."
+#~ msgstr "Entre pelas Contas online do GNOME."
 
 #~ msgid "Flag"
 #~ msgstr "Marcar com estrela"
