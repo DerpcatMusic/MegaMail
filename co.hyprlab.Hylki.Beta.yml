@@ -159,6 +159,7 @@ modules:
       - install -Dm644 data/icons/hicolor/256x256/apps/co.hyprlab.Hylki.Beta.png /app/share/icons/hicolor/256x256/apps/co.hyprlab.Hylki.Beta.png
       - install -Dm644 data/icons/hicolor/512x512/apps/co.hyprlab.Hylki.Beta.png /app/share/icons/hicolor/512x512/apps/co.hyprlab.Hylki.Beta.png
       - install -Dm644 data/icons/hicolor/scalable/apps/co.hyprlab.Hylki.Beta.svg /app/share/icons/hicolor/scalable/apps/co.hyprlab.Hylki.Beta.svg
+      - install -Dm644 data/icons/hicolor/symbolic/apps/co.hyprlab.Hylki-symbolic.svg /app/share/icons/hicolor/symbolic/apps/co.hyprlab.Hylki.Beta-symbolic.svg
       # The restart helper's D-Bus service (Settings → App icon → Restart Now):
       # exported by Flatpak, so the bus can start a fresh sandbox instance.
       - install -Dm644 data/co.hyprlab.Hylki.Beta.Restart.service /app/share/dbus-1/services/co.hyprlab.Hylki.Beta.Restart.service
