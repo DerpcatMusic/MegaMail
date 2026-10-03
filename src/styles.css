@@ -787,6 +787,16 @@ flowbox.attach-flow > flowboxchild {
   margin: 0;
 }
 
+/* On one line the sender reads in the subject's weight, so bold says one
+   thing only: unread. */
+.message-row.single-line .message-sender {
+  font-weight: 400;
+}
+
+.message-row.single-line .message-sender.unread {
+  font-weight: 700;
+}
+
 /* Conversation threading: count chip + compact expand/collapse chevron on the
    thread head, and an indented, accent-edged look for nested replies. */
 /* Thread heads: the conversation's message count and its expand/collapse

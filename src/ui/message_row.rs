@@ -1817,9 +1817,11 @@ impl Row {
         if single {
             // [star][sender][lock][subject — preview][tags][clip][chip][date]
             into(&w.line, &[star, name, lock, subject, tags, clip, chip, date]);
+            // A fixed width in pixels, not characters: bold characters are
+            // wider, and the subjects of read and unread rows must line up.
             w.name.set_hexpand(false);
-            w.name.set_width_chars(18);
-            w.name.set_max_width_chars(18);
+            w.name.set_size_request(160, -1);
+            w.name.set_max_width_chars(1);
             w.name.set_xalign(0.0);
             w.date.set_width_chars(9);
             w.date.set_xalign(1.0);
@@ -1829,7 +1831,7 @@ impl Row {
             into(&w.subject_line, &[subject, tags]);
             into(&w.preview_line, &[lock, preview]);
             w.name.set_hexpand(true);
-            w.name.set_width_chars(-1);
+            w.name.set_size_request(-1, -1);
             w.name.set_max_width_chars(-1);
             w.date.set_width_chars(-1);
             w.date.set_xalign(0.5);
