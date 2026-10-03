@@ -8,8 +8,9 @@ The full list. The [README](../README.md) carries a shorter one.
   worker, with a unified *Inboxes* view across all of them.
 - **JMAP:** a Stalwart or Fastmail mailbox over the JSON mail protocol,
   including push. See [Configuration](DOCUMENTATION.md#jmap-stalwart-fastmail).
-- **OAuth 2.0 sign-in:** Google, Microsoft and custom providers over
-  XOAUTH2. See [Configuration](DOCUMENTATION.md#oauth-google--microsoft).
+- **OAuth 2.0 sign-in:** Microsoft with Hylki's own app (no GNOME Online
+  Accounts needed), Google through GNOME Online Accounts, and custom
+  providers over XOAUTH2. See [Configuration](DOCUMENTATION.md#oauth-google--microsoft).
 - **GNOME Online Accounts:** import an account already set up in GNOME
   Settings, IMAP and SMTP accounts and Microsoft 365 over Graph included.
   See [Configuration](DOCUMENTATION.md#gnome-online-accounts). Pausing an account's Mail

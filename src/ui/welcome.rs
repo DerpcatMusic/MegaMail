@@ -78,7 +78,12 @@ pub enum WelcomeCmd {
     Tested { account: Box<AccountConfig>, result: ConnTest, seq: u32 },
     /// The browser sign-in for a custom OAuth account ended: its refresh
     /// token, or why not.
-    SignedIn { account: Box<AccountConfig>, result: Result<String, String>, seq: u32 },
+    SignedIn {
+        account: Box<AccountConfig>,
+        /// The refresh token, and who signed in when the provider says.
+        result: Result<(String, Option<(String, String)>), String>,
+        seq: u32,
+    },
 }
 
 pub struct Welcome {
@@ -931,6 +936,11 @@ impl Component for Welcome {
             WelcomeInput::ProviderChanged => {
                 let sel = widgets.provider_row.selected();
                 let oauth = wizard_provider(sel).is_some_and(|p| p.wizard_is_oauth());
+                // Microsoft brings its own client and servers (#329): only
+                // the address is asked for, and even that is filled in by
+                // the sign-in.
+                let custom = wizard_provider(sel).is_some_and(|p| p.wizard_is_custom_oauth());
+                let builtin = wizard_provider(sel).is_some_and(|p| p.wizard_builtin_oauth().is_some());
                 // A newer choice supersedes a sign-in still waiting in the
                 // browser; its late result is ignored.
                 self.test_seq += 1;
@@ -946,8 +956,9 @@ impl Component for Welcome {
                     widgets.oauth_token_url_row.upcast_ref(),
                     widgets.oauth_scope_row.upcast_ref(),
                 ] {
-                    row.set_visible(oauth);
+                    row.set_visible(custom);
                 }
+                widgets.server_exp.set_visible(!builtin);
                 widgets
                     .add_btn
                     .set_label(&if oauth { i18n("Sign In & Add") } else { i18n("Test & Add") });
@@ -1136,9 +1147,20 @@ impl Component for Welcome {
                 widgets.test_spinner.stop();
                 widgets.test_spinner.set_visible(false);
                 widgets.add_btn.set_sensitive(true);
-                let email = account.email.clone();
                 match result {
-                    Ok(refresh) => {
+                    Ok((refresh, who)) => {
+                        // Microsoft's account is named for the mailbox the
+                        // sign-in reached (#329).
+                        if let Some((name, address)) = who {
+                            if !address.is_empty() {
+                                account.email = address.clone();
+                                account.username = address;
+                            }
+                            if account.name.is_empty() {
+                                account.name = name;
+                            }
+                        }
+                        let email = account.email.clone();
                         account.oauth_refresh = refresh;
                         self.added.push(email.clone());
                         widgets.status_lbl.set_css_classes(&["welcome-hint", "success"]);
@@ -1191,18 +1213,22 @@ impl Welcome {
         smtp: String,
     ) {
         let text = |row: &adw::EntryRow| row.text().trim().to_string();
-        let settings = crate::config::OAuthSettings {
+        let builtin = wizard_provider(widgets.provider_row.selected()).and_then(|p| p.wizard_builtin_oauth());
+        let protocol = if builtin.is_some() { Protocol::Graph } else { Protocol::Imap };
+        let settings = builtin.unwrap_or_else(|| crate::config::OAuthSettings {
             auth_url: text(&widgets.oauth_auth_url_row),
             token_url: text(&widgets.oauth_token_url_row),
             client_id: text(&widgets.oauth_client_id_row),
             client_secret: widgets.oauth_secret_row.text().to_string(),
             scopes: text(&widgets.oauth_scope_row),
-        };
-        if email.is_empty()
-            || host.is_empty()
-            || settings.client_id.is_empty()
-            || settings.auth_url.is_empty()
-            || settings.token_url.is_empty()
+        });
+        // Microsoft needs nothing typed: the sign-in says who it is.
+        if protocol != Protocol::Graph
+            && (email.is_empty()
+                || host.is_empty()
+                || settings.client_id.is_empty()
+                || settings.auth_url.is_empty()
+                || settings.token_url.is_empty())
         {
             widgets.status_lbl.set_css_classes(&["welcome-hint", "error"]);
             widgets.status_lbl.set_text(&i18n(
@@ -1213,9 +1239,10 @@ impl Welcome {
         let account = AccountConfig {
             name: widgets.name_row.text().trim().to_string(),
             email: email.clone(),
-            imap_host: host,
+            protocol,
+            imap_host: if protocol == Protocol::Graph { String::new() } else { host },
             imap_port: widgets.port_row.text().trim().parse().unwrap_or(993),
-            smtp_host: smtp,
+            smtp_host: if protocol == Protocol::Graph { String::new() } else { smtp },
             smtp_port: widgets.smtp_port_row.text().trim().parse().unwrap_or(587),
             username: email,
             oauth: true,
@@ -1231,7 +1258,12 @@ impl Welcome {
         widgets.status_lbl.set_text(&i18n("Opening browser… complete sign-in there."));
         sender.oneshot_command(async move {
             let result = tokio::task::spawn_blocking(move || {
-                crate::oauth::run_flow(&settings).map(|f| f.refresh_token)
+                let refresh = crate::oauth::run_flow(&settings)?.refresh_token;
+                if settings.token_url.contains("microsoftonline") {
+                    let (name, address, refresh) = crate::oauth::microsoft_whoami(&settings, &refresh)?;
+                    return Ok((refresh, Some((name, address))));
+                }
+                Ok((refresh, None))
             })
             .await
             .unwrap_or_else(|_| Err("sign-in task failed".into()));

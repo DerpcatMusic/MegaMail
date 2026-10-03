@@ -233,8 +233,18 @@ It is refused where it would not save space or would break the message:
 
 ### OAuth (Google / Microsoft)
 
-**Microsoft** works out of the box: pick *Microsoft* in the account editor and
-sign in.
+**Microsoft** signs in with Hylki's own app, with or without GNOME Online
+Accounts: pick *Microsoft 365 / Outlook* in the first-run wizard or in
+Settings → Mail Accounts, and sign in in the browser. The account's name and
+address are filled in from the sign-in, and its mail is read and sent through
+Microsoft Graph. This also works where GNOME Online Accounts cannot add the
+account, as with personal accounts on GNOME 46 (Ubuntu 24.04, Linux Mint 22).
+
+Personal accounts (outlook.com, hotmail.com, live.com) approve Hylki
+themselves the first time. A work or school account may need its
+organization's administrator to approve Hylki once for everyone, at
+`https://login.microsoftonline.com/organizations/adminconsent?client_id=01cdc012-c8d8-4d03-822c-76696a01c14e`;
+Hylki shows that link when Microsoft refuses a sign-in for want of approval.
 
 **Google** signs in through **GNOME Online Accounts**. Add your Google account in
 *GNOME Settings → Online Accounts*, then import it in Hylki. Official builds don't

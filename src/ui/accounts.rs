@@ -55,14 +55,35 @@ impl Provider {
     // Wizard accessors (src/ui/welcome.rs): the fields stay private to this
     // module, which owns the table's meaning.
 
-    /// Google and Microsoft stay out of the wizard's manual form: they are
-    /// imported from GNOME Online Accounts on the page before it.
+    /// Google stays out of the wizard's manual form: it is imported from
+    /// GNOME Online Accounts on the page before it. Microsoft signs in here
+    /// too, with Hylki's own app (#329), for systems whose GNOME Online
+    /// Accounts cannot add it.
     pub(crate) fn wizard_listed(&self) -> bool {
-        !matches!(self.kind, ProviderKind::Google | ProviderKind::Microsoft)
+        self.kind != ProviderKind::Google
     }
-    /// Custom OAuth, the one OAuth entry the wizard's form signs in itself.
+    /// The entries the wizard's form signs in to in the browser: Custom
+    /// OAuth, and Microsoft.
     pub(crate) fn wizard_is_oauth(&self) -> bool {
+        matches!(self.kind, ProviderKind::CustomOAuth | ProviderKind::Microsoft)
+    }
+    /// Custom OAuth: its endpoints and client are typed into the form.
+    pub(crate) fn wizard_is_custom_oauth(&self) -> bool {
         self.kind == ProviderKind::CustomOAuth
+    }
+    /// A built-in provider's OAuth client and endpoints, for the wizard's
+    /// sign-in (Microsoft).
+    pub(crate) fn wizard_builtin_oauth(&self) -> Option<crate::config::OAuthSettings> {
+        let name = self.oauth_name().filter(|_| self.kind == ProviderKind::Microsoft)?;
+        let p = crate::oauth::preset(name)?;
+        let (client_id, client_secret) = crate::oauth::provider_credentials(name);
+        Some(crate::config::OAuthSettings {
+            auth_url: p.auth_url.to_string(),
+            token_url: p.token_url.to_string(),
+            client_id,
+            client_secret,
+            scopes: p.scopes.to_string(),
+        })
     }
     pub(crate) fn wizard_label(&self) -> &'static str {
         self.label
@@ -86,6 +107,7 @@ impl Provider {
     pub(crate) fn wizard_protocol(&self) -> Protocol {
         match self.kind {
             ProviderKind::Jmap => Protocol::Jmap,
+            ProviderKind::Microsoft => Protocol::Graph,
             _ => Protocol::Imap,
         }
     }
@@ -113,7 +135,7 @@ pub(crate) const PROVIDERS: &[Provider] = &[
     Provider { label: "IMAP/POP3 Account", brand: "mail", kind: ProviderKind::Manual, imap_host: "", imap_port: 0, smtp_host: "", smtp_port: 0, hint: i18n_noop("Enter your server details manually.") },
     Provider { label: "Custom (OAuth)…", brand: "mail-oauth", kind: ProviderKind::CustomOAuth, imap_host: "", imap_port: 0, smtp_host: "", smtp_port: 0, hint: i18n_noop("Enter your provider's OAuth endpoints, then sign in.") },
     Provider { label: "Google (Gmail) — sign in", brand: "gmail", kind: ProviderKind::Google, imap_host: "", imap_port: 0, smtp_host: "", smtp_port: 0, hint: i18n_noop("Sign in with your browser — no password needed.") },
-    Provider { label: "Microsoft 365 / Outlook", brand: "outlook", kind: ProviderKind::Microsoft, imap_host: "", imap_port: 0, smtp_host: "", smtp_port: 0, hint: i18n_noop("Sign in through GNOME Online Accounts.") },
+    Provider { label: "Microsoft 365 / Outlook", brand: "outlook", kind: ProviderKind::Microsoft, imap_host: "", imap_port: 0, smtp_host: "", smtp_port: 0, hint: i18n_noop("Sign in with your browser — no password needed.") },
     Provider { label: "iCloud", brand: "icloud", kind: ProviderKind::Preset, imap_host: "imap.mail.me.com", imap_port: 993, smtp_host: "smtp.mail.me.com", smtp_port: 587, hint: APP_PW },
     Provider { label: "Yahoo Mail", brand: "yahoo", kind: ProviderKind::Preset, imap_host: "imap.mail.yahoo.com", imap_port: 993, smtp_host: "smtp.mail.yahoo.com", smtp_port: 465, hint: APP_PW },
     Provider { label: "Proton Mail (Bridge)", brand: "proton", kind: ProviderKind::Preset, imap_host: "127.0.0.1", imap_port: 1143, smtp_host: "127.0.0.1", smtp_port: 1025, hint: i18n_noop("Requires Proton Mail Bridge running locally.") },
@@ -510,7 +532,9 @@ pub enum AccountsCmd {
     /// Test-connection result.
     Test(ConnTest),
     /// OAuth sign-in result: the refresh token, or an error message.
-    OAuth(Result<String, String>),
+    /// A browser sign-in finished: the refresh token, and who signed in
+    /// when the provider says (Microsoft).
+    OAuth(Result<(String, Option<(String, String)>), String>),
     /// Alias SMTP test result (#34).
     AliasTested(Result<(), String>),
     /// An account's secrets, read from the keyring for its editor.
@@ -2272,7 +2296,14 @@ impl Component for AccountsWindow {
                     .set_label(&i18n("Opening browser… complete sign-in there."));
                 sender.oneshot_command(async move {
                     let r = tokio::task::spawn_blocking(move || {
-                        crate::oauth::run_flow(&settings).map(|f| f.refresh_token)
+                        let refresh = crate::oauth::run_flow(&settings)?.refresh_token;
+                        // Microsoft says who signed in, so the account is named
+                        // for the mailbox reached (#329).
+                        if settings.token_url.contains("microsoftonline") {
+                            let (name, address, refresh) = crate::oauth::microsoft_whoami(&settings, &refresh)?;
+                            return Ok((refresh, Some((name, address))));
+                        }
+                        Ok((refresh, None))
                     })
                     .await
                     .unwrap_or_else(|_| Err("sign-in task failed".into()));
@@ -2934,8 +2965,16 @@ impl Component for AccountsWindow {
                 widgets.oauth_signin_btn.set_sensitive(true);
                 widgets.oauth_status.set_visible(true);
                 match result {
-                    Ok(refresh) => {
+                    Ok((refresh, who)) => {
                         self.pending_oauth_refresh = Some(refresh);
+                        if let Some((name, address)) = who {
+                            if !address.is_empty() {
+                                widgets.email_row.set_text(&address);
+                            }
+                            if !name.is_empty() && widgets.name_row.text().trim().is_empty() {
+                                widgets.name_row.set_text(&name);
+                            }
+                        }
                         widgets.oauth_status.set_css_classes(&["success"]);
                         widgets.oauth_status.set_label(&i18n("✓ Signed in — save the account to finish"));
                     }
@@ -4348,10 +4387,11 @@ fn protocol_at(idx: u32) -> Protocol {
 /// The protocol the form stands for: the provider's own for one that has
 /// one (Stalwart's JMAP), otherwise the Incoming Protocol row's.
 fn form_protocol(widgets: &AccountsWindowWidgets) -> Protocol {
-    if provider_at(widgets.provider_row.selected()).kind == ProviderKind::Jmap {
-        Protocol::Jmap
-    } else {
-        protocol_at(widgets.protocol_row.selected())
+    match provider_at(widgets.provider_row.selected()).kind {
+        ProviderKind::Jmap => Protocol::Jmap,
+        // Hylki's own Microsoft sign-in asks for Graph, not IMAP (#329).
+        ProviderKind::Microsoft => Protocol::Graph,
+        _ => protocol_at(widgets.protocol_row.selected()),
     }
 }
 

@@ -24,6 +24,15 @@
   every use, and Hylki kept the first one. It now keeps the new one, and
   reuses each access token until shortly before it expires instead of
   asking for a new one for every connection.
+- **Added: Microsoft accounts without GNOME Online Accounts** (#329,
+  requested by erenoglu and yolaws). *Microsoft 365 / Outlook*, in the
+  first-run wizard and in Settings → Mail Accounts, now signs in with
+  Hylki's own Microsoft app in the browser and reads and sends mail
+  through Graph. It works for personal and work accounts, including where
+  GNOME Online Accounts cannot add them (GNOME 46 with personal accounts)
+  or an organization refuses what it asks for. The account's name and
+  address come from the sign-in. A work account whose organization has not
+  approved Hylki is told where its administrator can.
 - **Added: a single-line message list** (#334, requested by erenoglu).
   Settings → Message List → Layout puts each message on one line, in
   columns: the sender, the subject with the start of the text dimmed after

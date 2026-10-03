@@ -1221,11 +1221,21 @@ async fn graph_token(account: &AccountConfig, emit: &impl Fn(WorkerEvent)) -> Op
     match fetch_oauth_token(account).await {
         Some(t) => Some(t),
         None => {
-            emit(WorkerEvent::net_error(format!(
+            // Signed in through Hylki's own Microsoft app (#329) rather than
+            // GNOME Online Accounts: it is Hylki's sign-in to renew.
+            emit(WorkerEvent::net_error(if account.goa_id.is_some() {
+                format!(
                     "GNOME Online Accounts could not provide a sign-in token for {}. Open \
                      Settings → Online Accounts and sign in again.",
                     account.email
-                )));
+                )
+            } else {
+                format!(
+                    "Microsoft did not accept the saved sign-in for {}. Open Hylki's Settings → \
+                     Mail Accounts and sign in to it again.",
+                    account.email
+                )
+            }));
             None
         }
     }
