@@ -585,6 +585,8 @@ pub struct MessageList {
     widths: std::collections::HashMap<crate::config::ListColumn, i32>,
     /// How wide the rows are, for fitting the columns into it.
     pane_width: i32,
+    /// The headings' sized cells, which a drag resizes in place.
+    heading_bins: std::cell::RefCell<std::collections::HashMap<crate::config::ListColumn, crate::ui::column_bin::ColumnBin>>,
 }
 
 /// The Correspondents column (#334): who wrote in a conversation, oldest
@@ -1329,6 +1331,7 @@ impl SimpleComponent for MessageList {
             headings_bar: gtk::Box::new(gtk::Orientation::Horizontal, 8),
             widths: std::collections::HashMap::new(),
             pane_width: 0,
+            heading_bins: Default::default(),
             bulk_tag_btn: gtk::Button::new(),
         };
 
@@ -2064,7 +2067,11 @@ impl SimpleComponent for MessageList {
                 // The rows follow every step; the headings are left alone
                 // while their handle is held, as rebuilding them would drop
                 // it mid-drag. It has moved its own heading already.
-                self.shared.look.borrow_mut().widths = self.fitted_widths();
+                let fitted = self.fitted_widths();
+                for (c, bin) in self.heading_bins.borrow().iter() {
+                    bin.set_width(fitted.get(c).copied().unwrap_or_else(|| crate::ui::message_row::default_width(*c)));
+                }
+                self.shared.look.borrow_mut().widths = fitted;
                 self.shared.refresh_all();
                 if done {
                     let input = self.shared.input.clone();
@@ -2965,7 +2972,7 @@ impl MessageList {
             .map(|c| (c, self.sort.downwards() != self.sort_reversed));
         let input = self.shared.input.clone();
         let resized = self.shared.input.clone();
-        crate::ui::message_row::fill_headings(
+        *self.heading_bins.borrow_mut() = crate::ui::message_row::fill_headings(
             &self.headings_bar,
             &look,
             sorted,

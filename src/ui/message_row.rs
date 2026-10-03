@@ -760,7 +760,8 @@ pub fn fill_headings(
     sortable: &dyn Fn(ListColumn) -> bool,
     click: Rc<dyn Fn(ListColumn)>,
     resize: Rc<dyn Fn(ListColumn, Option<i32>, bool)>,
-) {
+) -> HashMap<ListColumn, ColumnBin> {
+    let mut bins = HashMap::new();
     while let Some(child) = bar.first_child() {
         bar.remove(&child);
     }
@@ -827,6 +828,9 @@ pub fn fill_headings(
                 binned(label)
             }
         };
+        if let Some(bin) = &bin {
+            bins.insert(column, bin.clone());
+        }
         let cell = match bin {
             Some(bin) if resizable(column) => resize_handle(cell, &bin, column, at < subject_at, resize.clone()),
             _ => cell,
@@ -844,6 +848,7 @@ pub fn fill_headings(
         }
         line.append(&cell);
     }
+    bins
 }
 
 /// A heading with a handle for dragging its column's width (#334), on the
@@ -873,9 +878,21 @@ fn resize_handle(
     let drag = gtk::GestureDrag::new();
     let start = Rc::new(Cell::new(0));
     let last = Rc::new(Cell::new(0));
+    // Where the press was, across the window. The drag's own offsets are
+    // measured from the handle, which moves with the edge it drags, so each
+    // step would count the last one's move again and the edge would shake.
+    let pressed_at = Rc::new(Cell::new(0.0f32));
+    // The pointer across the window, from a point on the handle as it is now.
+    fn across(handle: &gtk::Widget, x: f64, y: f64) -> Option<f32> {
+        let root = handle.root()?;
+        handle.compute_point(&root, &gtk::graphene::Point::new(x as f32, y as f32)).map(|p| p.x())
+    }
     {
-        let (bin, start, last) = (bin.clone(), start.clone(), last.clone());
-        drag.connect_drag_begin(move |g, _, _| {
+        let (bin, start, last, pressed_at) = (bin.clone(), start.clone(), last.clone(), pressed_at.clone());
+        drag.connect_drag_begin(move |g, x, y| {
+            if let Some(at) = g.widget().and_then(|h| across(&h, x, y)) {
+                pressed_at.set(at);
+            }
             // Its own, so the heading under it does not take the press for
             // a click that sorts.
             g.set_state(gtk::EventSequenceState::Claimed);
@@ -886,13 +903,16 @@ fn resize_handle(
         });
     }
     {
-        let (bin, start, last, resize) = (bin.clone(), start.clone(), last.clone(), resize.clone());
-        drag.connect_drag_update(move |_, dx, _| {
-            let dx = dx.round() as i32;
+        let (start, last, resize) = (start.clone(), last.clone(), resize.clone());
+        drag.connect_drag_update(move |g, dx, dy| {
+            let Some((x, y)) = g.start_point() else { return };
+            let Some(now) = g.widget().and_then(|h| across(&h, x + dx, y + dy)) else { return };
+            let dx = (now - pressed_at.get()).round() as i32;
             let px = (start.get() + if before_subject { dx } else { -dx }).clamp(MIN, MAX);
             if px != last.get() {
                 last.set(px);
-                bin.set_width(px);
+                // The list sets the heading's width with the rows', fitted
+                // to the pane the same way.
                 resize(column, Some(px), false);
             }
         });
