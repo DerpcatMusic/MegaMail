@@ -398,9 +398,12 @@ Translate in its right-click menu. The card then shows the translation, with a b
 it came from, and **Show Original** in the banner or the menu switches back. A translation is kept for
 the rest of the session, so opening the message again costs nothing more.
 
-What is sent is the message as Reader View shows it: its text, paragraphs,
-lists, links and quotes, without the sender's styling, images or tracking.
-Long messages go in pieces, and one over about 120,000 characters is not sent.
+What is sent is the message's text, a paragraph or a cell at a time, with
+the bold, italics and links inside it but none of the sender's styling,
+images or link addresses. The translation is put back where the text was, so
+the message keeps its design; a plain-text message is shown as Reader View
+shows it. Long messages go in pieces, and one with over about 120,000
+characters to send is not sent.
 Messages that arrived encrypted are never sent.
 
 With **Offer to translate** on, a message in a language other than the one

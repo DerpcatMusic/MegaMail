@@ -4429,6 +4429,21 @@ impl SimpleComponent for AppModel {
                 });
             }
         }
+        // HYLKI_SHOWCASE_TRANSLATE=<account>:<id>[@<seconds>] translates
+        // that message (open by then) at 8 s, as its A文 button would, so a
+        // translation can be captured (#327).
+        if let Ok(v) = std::env::var("HYLKI_SHOWCASE_TRANSLATE") {
+            let (item, at) = showcase_at(&v, 8);
+            if let Some((a, id)) = item
+                .split_once(':')
+                .and_then(|(a, id)| Some((a.parse::<u32>().ok()?, id.parse::<u32>().ok()?)))
+            {
+                let view = model.message_view.sender().clone();
+                gtk::glib::timeout_add_seconds_local_once(at, move || {
+                    let _ = view.send(MessageViewInput::Translate { account_id: a, id });
+                });
+            }
+        }
         // HYLKI_SHOWCASE_INBOX=<account>[@<seconds>] switches to that
         // account's Inbox at 3 s or the time given (the first account's when
         // it is not a number), real accounts included, for the same probe

@@ -91,8 +91,10 @@
   Translation takes a DeepL, Google Cloud Translation, Microsoft Translator
   or LibreTranslate key of your own, and the A文 button in a card's actions,
   or Translate in the message's right-click menu, shows it in your language, with a banner naming the service and
-  **Show Original** to switch back. What is sent is the message as Reader
-  View shows it, and encrypted messages are never sent. **Offer to
+  **Show Original** to switch back. What is sent is the message's text,
+  without its styling, images or link addresses, and the translation is
+  shown in the message's own design (in 1.43.0-beta.1 it was shown as
+  Reader View; reported by pdf). Encrypted messages are never sent. **Offer to
   translate** adds a Translate button to messages in another language,
   recognised on the computer itself, so nothing is sent until it is pressed.
   In the composer, the same button beside the format chooser translates what

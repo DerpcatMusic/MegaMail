@@ -3827,7 +3827,7 @@ impl MessageView {
                 .map(|m| {
                     let key = (m.account_id, m.id);
                     let shown = match self.translations.get(&key) {
-                        Some(TrState::Shown(t)) => Some(t.html.clone()),
+                        Some(TrState::Shown(t)) => Some((t.html.clone(), t.reader)),
                         _ => None,
                     };
                     (key, (self.translate_inner_html(m, &translation), shown))
@@ -3890,10 +3890,11 @@ impl MessageView {
         let mark_selection = thread.len() > 1;
         let mut sections = String::new();
         for m in thread {
-            // A card showing its translation (#327) shows it as Reader View
-            // does, which is what was sent.
-            let translated =
-                LIVE_TRANSLATE.with(|t| t.borrow().get(&(m.account_id, m.id)).and_then(|(_, html)| html.clone()));
+            // A card showing its translation (#327): the message with its
+            // text replaced, or for plain text a Reader View fragment.
+            let (translated, translated_reader) = LIVE_TRANSLATE
+                .with(|t| t.borrow().get(&(m.account_id, m.id)).and_then(|(_, shown)| shown.clone()))
+                .map_or((None, false), |(html, reader)| (Some(html), reader));
             let body = if m.body.trim().is_empty() && translated.is_none() {
                 "<div class=\"vireo-loading\">Loading…</div>".to_string()
             } else {
@@ -3910,7 +3911,7 @@ impl MessageView {
                         style
                     },
                     accent,
-                    reader || translated.is_some(),
+                    reader || translated_reader,
                     zoom,
                 )
             };
@@ -6572,7 +6573,7 @@ thread_local! {
         std::cell::RefCell::new(std::collections::HashMap::new());
     /// Each card's translation banner (#327), and the translation the card
     /// shows instead of its message, if it shows one. Empty in tests.
-    static LIVE_TRANSLATE: std::cell::RefCell<std::collections::HashMap<(u32, u32), (String, Option<String>)>> =
+    static LIVE_TRANSLATE: std::cell::RefCell<std::collections::HashMap<(u32, u32), (String, Option<(String, bool)>)>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
     /// Each card's folded bar (#326), already rendered. Empty in tests.
     static LIVE_FOLDBAR: std::cell::RefCell<std::collections::HashMap<(u32, u32), String>> =
