@@ -4494,6 +4494,15 @@ msgstr ""
 "Az általad elküldött üzenetek a fiók Gravatar-képét, fotóját vagy emojiját "
 "jelenítik meg, ahogyan az oldalsávban található kör is."
 
+msgid "Layout"
+msgstr ""
+
+msgid ""
+"Each message on lines of its own, or on one line in columns. Automatic uses "
+"one line while the list is dragged wide and lines of their own when it is "
+"narrow."
+msgstr ""
+
 msgid "Preview lines"
 msgstr "Előnézeti sorok"
 
@@ -5263,6 +5272,13 @@ msgstr "2 sor"
 
 msgid "3 lines"
 msgstr "3 sor"
+
+msgid "Cards"
+msgstr ""
+
+#, fuzzy
+msgid "Single line"
+msgstr "Aláhúzott"
 
 msgid ""
 "The launcher shows an icon set outside Hylki. Picking one here replaces it."

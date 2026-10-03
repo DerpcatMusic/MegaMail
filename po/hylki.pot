@@ -4028,6 +4028,15 @@ msgid ""
 "circle in the sidebar does."
 msgstr ""
 
+msgid "Layout"
+msgstr ""
+
+msgid ""
+"Each message on lines of its own, or on one line in columns. Automatic uses "
+"one line while the list is dragged wide and lines of their own when it is "
+"narrow."
+msgstr ""
+
 msgid "Preview lines"
 msgstr ""
 
@@ -4623,6 +4632,12 @@ msgid "2 lines"
 msgstr ""
 
 msgid "3 lines"
+msgstr ""
+
+msgid "Cards"
+msgstr ""
+
+msgid "Single line"
 msgstr ""
 
 msgid ""

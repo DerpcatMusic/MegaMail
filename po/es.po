@@ -4476,6 +4476,15 @@ msgstr ""
 "Los mensajes que envías muestran el Gravatar, imagen o emoji de la cuenta, "
 "igual que su círculo en la barra lateral."
 
+msgid "Layout"
+msgstr ""
+
+msgid ""
+"Each message on lines of its own, or on one line in columns. Automatic uses "
+"one line while the list is dragged wide and lines of their own when it is "
+"narrow."
+msgstr ""
+
 msgid "Preview lines"
 msgstr "Líneas de vista previa"
 
@@ -5240,6 +5249,13 @@ msgstr "2 líneas"
 
 msgid "3 lines"
 msgstr "3 líneas"
+
+msgid "Cards"
+msgstr ""
+
+#, fuzzy
+msgid "Single line"
+msgstr "Subrayado"
 
 msgid ""
 "The launcher shows an icon set outside Hylki. Picking one here replaces it."

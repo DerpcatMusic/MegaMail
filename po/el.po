@@ -4513,6 +4513,15 @@ msgstr ""
 "Τα μηνύματα που στείλατε εμφανίζουν το Gravatar, την εικόνα ή το emoji του "
 "λογαριασμού, όπως ο κύκλος του στην πλευρική στήλη."
 
+msgid "Layout"
+msgstr ""
+
+msgid ""
+"Each message on lines of its own, or on one line in columns. Automatic uses "
+"one line while the list is dragged wide and lines of their own when it is "
+"narrow."
+msgstr ""
+
 msgid "Preview lines"
 msgstr "Γραμμές προεπισκόπησης"
 
@@ -5279,6 +5288,13 @@ msgstr "2 γραμμές"
 
 msgid "3 lines"
 msgstr "3 γραμμές"
+
+msgid "Cards"
+msgstr ""
+
+#, fuzzy
+msgid "Single line"
+msgstr "Υπογράμμιση"
 
 msgid ""
 "The launcher shows an icon set outside Hylki. Picking one here replaces it."

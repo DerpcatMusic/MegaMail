@@ -4536,6 +4536,15 @@ msgstr ""
 "Wysłane wiadomości mają awatar z serwisu Gravatar, obraz lub emoji konta, "
 "tak jak jego kółko w panelu bocznym."
 
+msgid "Layout"
+msgstr ""
+
+msgid ""
+"Each message on lines of its own, or on one line in columns. Automatic uses "
+"one line while the list is dragged wide and lines of their own when it is "
+"narrow."
+msgstr ""
+
 msgid "Preview lines"
 msgstr "Wiersze podglądu"
 
@@ -5290,6 +5299,13 @@ msgstr "2 wiersze"
 
 msgid "3 lines"
 msgstr "3 wiersze"
+
+msgid "Cards"
+msgstr ""
+
+#, fuzzy
+msgid "Single line"
+msgstr "Podkreślenie"
 
 msgid ""
 "The launcher shows an icon set outside Hylki. Picking one here replaces it."

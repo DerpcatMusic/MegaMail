@@ -4509,6 +4509,15 @@ msgstr ""
 "Отправленные вами письма содержат Gravatar, изображение или эмодзи учётной "
 "записи — так же, как и её значок на боковой панели."
 
+msgid "Layout"
+msgstr ""
+
+msgid ""
+"Each message on lines of its own, or on one line in columns. Automatic uses "
+"one line while the list is dragged wide and lines of their own when it is "
+"narrow."
+msgstr ""
+
 msgid "Preview lines"
 msgstr "Строки предпросмотра"
 
@@ -5244,6 +5253,13 @@ msgstr "2 строки"
 
 msgid "3 lines"
 msgstr "3 строки"
+
+msgid "Cards"
+msgstr ""
+
+#, fuzzy
+msgid "Single line"
+msgstr "Подчёркнутый"
 
 msgid ""
 "The launcher shows an icon set outside Hylki. Picking one here replaces it."
