@@ -10388,6 +10388,32 @@ NIL NIL NIL NIL NIL NIL NIL))\r\n";
         }
     }
 
+    /// #340: a send that fails on a file gone since it was attached cannot
+    /// be queued either, so the message comes back for a composer instead
+    /// of being dropped.
+    #[test]
+    fn an_unqueueable_failed_send_comes_back() {
+        let cache = Cache::in_memory().expect("cache");
+        let account = sample_account();
+        let mut msg = sample_outgoing();
+        msg.to = "ann@example.com".into();
+        msg.attachments = vec!["/nonexistent/hylki-test/moved.pdf".into()];
+        let events = std::cell::RefCell::new(Vec::new());
+        send_failed(Some(&cache), 1, &account, &msg, None, "could not read the attachment", &|e| {
+            events.borrow_mut().push(e)
+        });
+        let events = events.into_inner();
+        assert!(
+            events.iter().any(|e| matches!(e, WorkerEvent::Unsent(m) if m.subject == "Subject")),
+            "{events:?}"
+        );
+        // A message that does build is queued and not handed back.
+        msg.attachments.clear();
+        let events = std::cell::RefCell::new(Vec::new());
+        send_failed(Some(&cache), 1, &account, &msg, None, "offline", &|e| events.borrow_mut().push(e));
+        assert!(!events.into_inner().iter().any(|e| matches!(e, WorkerEvent::Unsent(_))));
+    }
+
     /// A draft saved before any address is typed: the bytes build without a
     /// To header, and the send path still refuses the same message.
     #[test]
