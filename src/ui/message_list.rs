@@ -58,7 +58,41 @@ fn message_cmp(a: &Message, b: &Message, order: SortOrder) -> std::cmp::Ordering
         // `true` sorts after `false`, so compare b-vs-a to put unread/flagged first.
         SortOrder::UnreadFirst => b.unread.cmp(&a.unread).then(b.timestamp.cmp(&a.timestamp)),
         SortOrder::FlaggedFirst => b.starred.cmp(&a.starred).then(b.timestamp.cmp(&a.timestamp)),
+        // The single line's other columns (#334).
+        SortOrder::Recipients => {
+            let to = |m: &Message| crate::ui::message_row::recipient_names(&m.to).to_lowercase();
+            to(a).cmp(&to(b)).then(b.timestamp.cmp(&a.timestamp))
+        }
+        SortOrder::Account => a.account_id.cmp(&b.account_id).then(b.timestamp.cmp(&a.timestamp)),
+        SortOrder::Attachment => b.has_attachment.cmp(&a.has_attachment).then(b.timestamp.cmp(&a.timestamp)),
+        SortOrder::Importance => b
+            .importance
+            .to_i64()
+            .cmp(&a.importance.to_i64())
+            .then(b.timestamp.cmp(&a.timestamp)),
+        // Soonest due first; mail with no due date after all that has one.
+        SortOrder::Due => (a.due == 0, a.due).cmp(&(b.due == 0, b.due)).then(b.timestamp.cmp(&a.timestamp)),
     }
+}
+
+/// The order a click on a column's heading sorts by (#334), if the column
+/// has one. In Sent the sender column names the recipients, and sorts by
+/// them.
+pub fn column_sort(column: crate::config::ListColumn, show_recipient: bool) -> Option<SortOrder> {
+    use crate::config::ListColumn as C;
+    Some(match column {
+        C::Star => SortOrder::FlaggedFirst,
+        C::Sender if show_recipient => SortOrder::Recipients,
+        C::Sender => SortOrder::Sender,
+        C::Recipients => SortOrder::Recipients,
+        C::Subject => SortOrder::Subject,
+        C::Attachment => SortOrder::Attachment,
+        C::Importance => SortOrder::Importance,
+        C::Account => SortOrder::Account,
+        C::Due => SortOrder::Due,
+        C::Date => SortOrder::DateNewest,
+        C::Correspondents | C::Tags => return None,
+    })
 }
 
 /// The conversation key a message belongs to: its owning account plus the
@@ -542,6 +576,11 @@ pub struct MessageList {
     graph_accounts: std::collections::HashSet<u32>,
     /// The list holds mail of one of `graph_accounts`.
     graph_in_view: bool,
+    /// The sort runs the other way: a heading clicked twice (#334).
+    sort_reversed: bool,
+    /// Show the column headings over a single-line list (#334).
+    headings: bool,
+    headings_bar: gtk::Box,
 }
 
 /// The Correspondents column (#334): who wrote in a conversation, oldest
@@ -586,18 +625,47 @@ pub enum SortOrder {
     Subject,
     UnreadFirst,
     FlaggedFirst,
+    Recipients,
+    Account,
+    Attachment,
+    Importance,
+    Due,
 }
 
 impl SortOrder {
+    const KEYS: [(SortOrder, &'static str); 11] = [
+        (SortOrder::DateNewest, "date_newest"),
+        (SortOrder::DateOldest, "date_oldest"),
+        (SortOrder::Sender, "sender"),
+        (SortOrder::Subject, "subject"),
+        (SortOrder::UnreadFirst, "unread"),
+        (SortOrder::FlaggedFirst, "flagged"),
+        (SortOrder::Recipients, "recipients"),
+        (SortOrder::Account, "account"),
+        (SortOrder::Attachment, "attachment"),
+        (SortOrder::Importance, "importance"),
+        (SortOrder::Due, "due"),
+    ];
+
     pub fn from_key(key: &str) -> Self {
-        match key {
-            "date_oldest" => SortOrder::DateOldest,
-            "sender" => SortOrder::Sender,
-            "subject" => SortOrder::Subject,
-            "unread" => SortOrder::UnreadFirst,
-            "flagged" => SortOrder::FlaggedFirst,
-            _ => SortOrder::DateNewest,
-        }
+        SortOrder::KEYS.iter().find(|(_, k)| *k == key).map(|(o, _)| *o).unwrap_or(SortOrder::DateNewest)
+    }
+
+    pub fn key(self) -> &'static str {
+        SortOrder::KEYS.iter().find(|(o, _)| *o == self).map(|(_, k)| *k).unwrap_or("date_newest")
+    }
+
+    /// Whether the order runs from the most to the least: newest first,
+    /// starred first and so on, against A to Z.
+    fn downwards(self) -> bool {
+        matches!(
+            self,
+            SortOrder::DateNewest
+                | SortOrder::UnreadFirst
+                | SortOrder::FlaggedFirst
+                | SortOrder::Attachment
+                | SortOrder::Importance
+        )
     }
 }
 
@@ -684,6 +752,10 @@ pub enum MessageListInput {
     SetSingleLine(bool),
     /// The single-line columns, in order (#334).
     SetColumns(Vec<crate::config::ListColumn>),
+    /// Show the column headings over a single-line list, or not (#334).
+    SetHeadings(bool),
+    /// A column's heading was clicked: sort by it, or the other way (#334).
+    SortByColumn(crate::config::ListColumn),
     /// Each account's name for the Account column, and which accounts are
     /// Microsoft 365 ones, for the Due column (#334).
     SetAccountNames {
@@ -879,6 +951,9 @@ pub enum MessageListOutput {
     /// The search field became active (non-empty) or inactive (empty), so the app
     /// can supply or drop the cross-folder search pool.
     SearchActive(bool),
+    /// A column heading changed the sort (#334), by its key: the sort
+    /// menus follow.
+    SortChanged(&'static str),
 }
 
 #[relm4::component(pub)]
@@ -1076,6 +1151,18 @@ impl SimpleComponent for MessageList {
                 },
             },
 
+            // The single line's column headings (#334), filled by
+            // `sync_headings`; a click on one sorts by its column.
+            gtk::Box {
+                add_css_class: "list-headings-bar",
+                #[watch]
+                set_visible: model.single_line && model.headings,
+                #[local_ref]
+                headings_bar -> gtk::Box {
+                    set_hexpand: true,
+                },
+            },
+
             gtk::Overlay {
                 #[wrap(Some)]
                 #[name = "scroller"]
@@ -1222,10 +1309,14 @@ impl SimpleComponent for MessageList {
             columns: crate::config::ListColumn::DEFAULT.to_vec(),
             graph_accounts: std::collections::HashSet::new(),
             graph_in_view: false,
+            sort_reversed: false,
+            headings: false,
+            headings_bar: gtk::Box::new(gtk::Orientation::Horizontal, 8),
             bulk_tag_btn: gtk::Button::new(),
         };
 
         let bulk_tag_btn = model.bulk_tag_btn.clone();
+        let headings_bar = model.headings_bar.clone();
         let widgets = view_output!();
         model.scroller = Some(widgets.scroller.clone());
         {
@@ -1932,11 +2023,34 @@ impl SimpleComponent for MessageList {
                 self.selection_count = 0;
             }
             MessageListInput::SetSort(order) => {
-                if self.sort != order {
+                if self.sort != order || self.sort_reversed {
                     self.sort = order;
+                    self.sort_reversed = false;
                     self.rebuild();
                     self.scroll_top();
+                    self.sync_headings();
                 }
+            }
+            MessageListInput::SetHeadings(on) => {
+                self.headings = on;
+                self.sync_headings();
+            }
+            MessageListInput::SortByColumn(column) => {
+                let Some(order) = column_sort(column, self.show_recipient) else { return };
+                match (order, self.sort) {
+                    // Date has an order each way of its own.
+                    (SortOrder::DateNewest, SortOrder::DateNewest) => self.sort = SortOrder::DateOldest,
+                    (SortOrder::DateNewest, SortOrder::DateOldest) => self.sort = SortOrder::DateNewest,
+                    (order, current) if order == current => self.sort_reversed = !self.sort_reversed,
+                    (order, _) => {
+                        self.sort = order;
+                        self.sort_reversed = false;
+                    }
+                }
+                self.rebuild();
+                self.scroll_top();
+                self.sync_headings();
+                let _ = sender.output(MessageListOutput::SortChanged(self.sort.key()));
             }
             MessageListInput::ToggleThread(key) => {
                 // Expansion disabled: the chevron stays but does nothing — the
@@ -2715,6 +2829,37 @@ impl MessageList {
             look.tags_gen = self.tags_gen;
         }
         self.shared.refresh_all();
+        self.sync_headings();
+    }
+
+    /// Fill the column headings from the look and the sort (#334). Only
+    /// while they are shown: they follow the next change once they are.
+    fn sync_headings(&self) {
+        if !(self.single_line && self.headings) {
+            return;
+        }
+        let look = self.shared.look.borrow().clone();
+        let show_recipient = self.show_recipient;
+        let sorted = look
+            .columns
+            .iter()
+            .copied()
+            .find(|c| match (column_sort(*c, show_recipient), self.sort) {
+                (Some(SortOrder::DateNewest), SortOrder::DateOldest) => true,
+                (Some(order), current) => order == current,
+                (None, _) => false,
+            })
+            .map(|c| (c, self.sort.downwards() != self.sort_reversed));
+        let input = self.shared.input.clone();
+        crate::ui::message_row::fill_headings(
+            &self.headings_bar,
+            &look,
+            sorted,
+            &|c| column_sort(c, show_recipient).is_some(),
+            Rc::new(move |c| {
+                let _ = input.send(MessageListInput::SortByColumn(c));
+            }),
+        );
     }
 
     /// The selected rows' positions, in list order.
@@ -3145,7 +3290,11 @@ impl MessageList {
             self.sync_look();
         }
         let sort = self.sort;
-        matches.sort_by(|a, b| message_cmp(a, b, sort));
+        let reversed = self.sort_reversed;
+        matches.sort_by(|a, b| {
+            let order = message_cmp(a, b, sort);
+            if reversed { order.reverse() } else { order }
+        });
         self.total_matches = matches.len();
 
         // Group into conversations by reply headers (Message-ID / In-Reply-To /
@@ -3538,7 +3687,7 @@ impl MessageList {
 #[cfg(test)]
 mod tests {
     use super::{
-        compute_thread_keys, correspondents, heads_its_row, latest_elsewhere, nested_members, reader_conversation,
+        column_sort, compute_thread_keys, correspondents, heads_its_row, message_cmp, SortOrder, latest_elsewhere, nested_members, reader_conversation,
         row_for_reader_key, thread_slot, unasked_threads,
     };
     use crate::ui::message_row::{row_edits, swipe_progress_px, RowEdit, SWIPE_ARM, SWIPE_MAX};
@@ -3679,6 +3828,24 @@ mod tests {
             importance: Default::default(),
             due: 0,
         }
+    }
+
+    /// #334: every sort keeps its key, a heading sorts by its column (the
+    /// recipients in Sent), and due dates sort soonest first, undated last.
+    #[test]
+    fn headings_sort_by_their_columns() {
+        use crate::config::ListColumn;
+        for c in ListColumn::ALL {
+            if let Some(order) = column_sort(c, false) {
+                assert_eq!(SortOrder::from_key(order.key()), order);
+            }
+        }
+        assert_eq!(column_sort(ListColumn::Sender, true), Some(SortOrder::Recipients));
+        assert_eq!(column_sort(ListColumn::Tags, false), None);
+        let due = |id, due| Message { due, ..msg(id, "", "") };
+        let mut list = vec![due(1, 0), due(2, 300), due(3, 100)];
+        list.sort_by(|a, b| message_cmp(a, b, SortOrder::Due));
+        assert_eq!(list.iter().map(|m| m.id).collect::<Vec<_>>(), vec![3, 2, 1]);
     }
 
     /// #334: who wrote, oldest first and each once; who it went to when

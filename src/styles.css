@@ -818,6 +818,29 @@ flowbox.attach-flow > flowboxchild {
   opacity: 0.5;
 }
 
+/* The column headings over a single-line list (#334): laid out as a row
+   is, in the date's size and grey, the sorted column in the accent color,
+   over a hairline that parts them from the rows. */
+.list-headings-bar {
+  border-bottom: 1px solid alpha(currentColor, 0.08);
+}
+
+.message-row.single-line.list-headings {
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+.list-headings .list-heading {
+  font-size: 0.82em;
+  opacity: 0.6;
+}
+
+.list-headings .sorted .list-heading,
+.list-headings .list-heading.sorted {
+  color: @accent_color;
+  opacity: 1;
+}
+
 /* On the accent ground of a selected row they read in white, as the rest
    of the row does. */
 .message-list > row:selected .message-row.single-line .message-date.overdue,

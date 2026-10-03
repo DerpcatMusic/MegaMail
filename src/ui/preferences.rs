@@ -147,6 +147,7 @@ pub struct PrefInit {
     pub preview_lines: u32,
     pub list_layout: crate::config::ListLayout,
     pub list_columns: Vec<crate::config::ListColumn>,
+    pub list_headings: bool,
     pub single_key_shortcuts: bool,
     pub run_in_background: bool,
     pub autostart: bool,
@@ -426,10 +427,12 @@ struct ChipZones {
 impl ChipZones {
     /// One zone per `(title, hint)`. `has_room` says whether a zone takes
     /// another chip; `on_drop` is handed the chip's key, the zone and the
-    /// slot, and says whether it took it.
+    /// slot, and says whether it took it. `scroll` keeps each zone's chips
+    /// on one row that scrolls sideways instead of wrapping.
     fn build(
         host: &gtk::Box,
         heads: &[(String, String)],
+        scroll: bool,
         has_room: impl Fn(usize, &ChipFlow) -> bool + Clone + 'static,
         on_drop: impl Fn(String, usize, usize) -> bool + Clone + 'static,
     ) -> Self {
@@ -466,7 +469,17 @@ impl ChipZones {
             let flow = ChipFlow::new(chip_size.clone(), drag_size.clone());
             flow.set_halign(gtk::Align::Fill);
             flow.set_valign(gtk::Align::Start);
-            flow.add_css_class("toolbar-zone");
+            // The dashed frame: the flow itself, or around the scroller,
+            // which must not scroll away with the chips.
+            let scroller = scroll.then(|| {
+                flow.set_single_row(true);
+                crate::ui::fade_scroll::FadeScroll::new(&flow)
+            });
+            let frame: gtk::Widget = match &scroller {
+                Some(s) => s.clone().upcast(),
+                None => flow.clone().upcast(),
+            };
+            frame.add_css_class("toolbar-zone");
 
             let empty = gtk::Label::new(Some(&i18n("Empty")));
             empty.add_css_class("dim-label");
@@ -474,7 +487,7 @@ impl ChipZones {
             empty.set_halign(gtk::Align::Center);
             empty.set_valign(gtk::Align::Center);
             let overlay = gtk::Overlay::new();
-            overlay.set_child(Some(&flow));
+            overlay.set_child(Some(&frame));
             overlay.add_overlay(&empty);
             column.append(&overlay);
             let row = gtk::ListBoxRow::new();
@@ -490,10 +503,17 @@ impl ChipZones {
             // that slot. The dragged chip is hidden in its own zone for
             // the duration, so the hole it left closes the same way.
             let drop = gtk::DropTarget::new(gtk::glib::Type::STRING, gtk::gdk::DragAction::MOVE);
+            // A chip held near a scrolling zone's edge scrolls it, so a slot
+            // past the frame can be reached.
+            let edge = scroller.as_ref().map(|s| EdgeScroll::new(s.hadjustment(), &flow));
             let fb = flow.clone();
             let room = has_room.clone();
             let take = on_drop.clone();
+            let es = edge.clone();
             drop.connect_drop(move |_, value, x, y| {
+                if let Some(es) = &es {
+                    es.stop();
+                }
                 let Ok(key) = value.get::<String>() else {
                     return false;
                 };
@@ -506,31 +526,41 @@ impl ChipZones {
                 take(key, zone, index)
             });
             let fb = flow.clone();
+            let fr = frame.clone();
             let room = has_room.clone();
             drop.connect_enter(move |_, x, y| {
                 // A full zone takes nothing: no gap, no drop.
                 if !room(zone, &fb) {
                     return gtk::gdk::DragAction::empty();
                 }
-                fb.add_css_class("drop-active");
+                fr.add_css_class("drop-active");
                 fb.set_gap(Some(fb.insertion_index(x, y)));
                 gtk::gdk::DragAction::MOVE
             });
             let fb = flow.clone();
             let el = empty.clone();
             let room = has_room.clone();
+            let es = edge.clone();
             drop.connect_motion(move |_, x, y| {
                 if !room(zone, &fb) {
                     return gtk::gdk::DragAction::empty();
                 }
                 el.set_visible(false);
                 fb.set_gap(Some(fb.insertion_index(x, y)));
+                if let Some(es) = &es {
+                    es.track(x, y);
+                }
                 gtk::gdk::DragAction::MOVE
             });
             let fb = flow.clone();
+            let fr = frame.clone();
             let el = empty.clone();
+            let es = edge.clone();
             drop.connect_leave(move |_| {
-                fb.remove_css_class("drop-active");
+                if let Some(es) = &es {
+                    es.stop();
+                }
+                fr.remove_css_class("drop-active");
                 fb.set_gap(None);
                 // The "Empty" caption comes back with the next rebuild if
                 // the zone is still empty.
@@ -603,6 +633,63 @@ impl ChipZones {
     }
 }
 
+/// Scrolls a one-row zone while a dragged chip is held near either end of
+/// its frame, and keeps the gap under the pointer as the chips pass it.
+#[derive(Clone)]
+struct EdgeScroll {
+    adj: gtk::Adjustment,
+    flow: ChipFlow,
+    /// The pointer in the frame (not the scrolled row), while it is near
+    /// an edge.
+    at: Rc<std::cell::Cell<Option<(f64, f64)>>>,
+    timer: Rc<std::cell::RefCell<Option<gtk::glib::SourceId>>>,
+}
+
+impl EdgeScroll {
+    /// How near an end the pointer starts the scroll, and how far each
+    /// frame moves it.
+    const REACH: f64 = 48.0;
+    const STEP: f64 = 8.0;
+
+    fn new(adj: gtk::Adjustment, flow: &ChipFlow) -> Self {
+        EdgeScroll {
+            adj,
+            flow: flow.clone(),
+            at: Rc::new(std::cell::Cell::new(None)),
+            timer: Rc::new(std::cell::RefCell::new(None)),
+        }
+    }
+
+    /// The pointer moved to (`x`, `y`) on the row.
+    fn track(&self, x: f64, y: f64) {
+        let in_frame = x - self.adj.value();
+        let near = in_frame < Self::REACH || in_frame > self.adj.page_size() - Self::REACH;
+        self.at.set(near.then_some((in_frame, y)));
+        if near && self.timer.borrow().is_none() {
+            let me = self.clone();
+            let id = gtk::glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
+                let Some((in_frame, y)) = me.at.get() else {
+                    me.timer.borrow_mut().take();
+                    return gtk::glib::ControlFlow::Break;
+                };
+                let dir = if in_frame < Self::REACH { -1.0 } else { 1.0 };
+                let max = me.adj.upper() - me.adj.page_size();
+                me.adj.set_value((me.adj.value() + dir * Self::STEP).clamp(me.adj.lower(), max.max(0.0)));
+                me.flow.set_gap(Some(me.flow.insertion_index(in_frame + me.adj.value(), y)));
+                gtk::glib::ControlFlow::Continue
+            });
+            *self.timer.borrow_mut() = Some(id);
+        }
+    }
+
+    fn stop(&self) {
+        self.at.set(None);
+        if let Some(id) = self.timer.borrow_mut().take() {
+            id.remove();
+        }
+    }
+}
+
 /// The reader toolbar editor (Settings → Appearance → Toolbar): one drop
 /// zone per side plus a "not shown" pool.
 struct ToolbarEditor {
@@ -623,6 +710,7 @@ impl ToolbarEditor {
         let zones = ChipZones::build(
             host,
             &heads,
+            false,
             |zone, flow| zone_has_room(flow, TOOLBAR_ZONES[zone]),
             move |key, zone, index| {
                 let _ = input.send(PrefInput::ToolbarDrop { key, side: TOOLBAR_ZONES[zone], index });
@@ -649,6 +737,7 @@ impl ColumnEditor {
         let zones = ChipZones::build(
             host,
             &heads,
+            true,
             |_, _| true,
             move |key, zone, index| {
                 // The subject is the column that takes the room the others
@@ -1109,6 +1198,7 @@ pub enum PrefOutput {
     SetListLayout(crate::config::ListLayout),
     /// The single-line list's columns, in order (#334).
     SetListColumns(Vec<crate::config::ListColumn>),
+    SetListHeadings(bool),
     SetSingleKey(bool),
     SetRunInBackground(bool),
     SetAutostart(bool),
@@ -2598,10 +2688,23 @@ impl Component for Preferences {
                                     ),
                                     #[watch]
                                     set_sensitive: model.list_single_possible,
+
+                                    #[name = "list_headings_row"]
+                                    adw::SwitchRow {
+                                        set_title: &i18n("Column headings"),
+                                        set_subtitle: &i18n("Names the columns above the list. Click one to sort \
+                                                       the list by it, and again to reverse the order."),
+                                        connect_active_notify[sender] => move |row| {
+                                            let _ = sender.output(PrefOutput::SetListHeadings(row.is_active()));
+                                        },
+                                    },
+
                                     #[name = "column_editor_box"]
                                     gtk::Box {
                                         set_orientation: gtk::Orientation::Vertical,
                                         set_spacing: 12,
+                                        // Clear of the switch's card above.
+                                        set_margin_top: 12,
 
                                         gtk::Button {
                                             set_label: &i18n("Restore Defaults"),
@@ -3680,6 +3783,7 @@ impl Component for Preferences {
             &i18n("Automatic"),
         ])));
         no_truncate(&widgets.list_layout_row);
+        widgets.list_headings_row.set_active(init.list_headings);
         widgets.list_layout_row.set_selected(match init.list_layout {
             crate::config::ListLayout::Cards => 0,
             crate::config::ListLayout::SingleLine => 1,

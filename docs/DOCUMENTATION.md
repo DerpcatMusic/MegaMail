@@ -764,6 +764,12 @@ until it is fetched again. Only Microsoft 365 has a due date, so Due Date
 takes room only in a list that holds Microsoft 365 mail. **Restore
 Defaults** goes back to star, sender, subject, tags, attachment and date.
 
+**Column headings**, in the same group, names the columns above the list.
+Clicking a heading sorts the list by that column, and clicking it again
+reverses the order; the sorted heading is in the accent color, with an
+arrow. Tags and Correspondents do not sort. The sort menu follows the
+headings.
+
 ### Text size
 
 **Settings → Appearance → Text size** makes Hylki's text smaller or larger

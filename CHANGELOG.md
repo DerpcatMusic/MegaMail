@@ -11,7 +11,10 @@
   Microsoft 365), Account, and Due Date, which a Microsoft 365 follow-up
   flag carries and which takes room only in a list with Microsoft 365 mail.
   The cache gains importance and due-date columns in place; mail already
-  cached reads as normal importance until it is fetched again.
+  cached reads as normal importance until it is fetched again. **Column
+  headings** names the columns above the list; clicking one sorts by it,
+  and clicking again reverses the order. The sort menu says "Starred
+  first" where it said "Flagged first".
 - **Fixed: mail syncing could wait forever on a silent IMAP connection**
   (#324, by Salem Sayed Abdel Gawad). Reads and writes now fail after 60
   seconds without progress, including reads inside a FETCH response, so the

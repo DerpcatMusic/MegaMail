@@ -756,6 +756,8 @@ pub struct AppModel {
     list_layout: config::ListLayout,
     /// The columns of a single-line list, in order (#334).
     list_columns: Vec<config::ListColumn>,
+    /// Headings over them, which sort the list when clicked (#334).
+    list_headings: bool,
     /// The list pane is wide enough for one line per message, which
     /// Automatic follows.
     list_wide: bool,
@@ -1438,6 +1440,8 @@ pub enum AppMsg {
     ToggleAccountTags(u32),
     /// The message list's visible-count text changed.
     ListCount(String),
+    /// A column heading sorted the list (#334): the sort menus follow.
+    ListSortChanged(&'static str),
     /// Build the Settings window ahead of its first open (see the handler).
     PrewarmSettings,
     /// Close the Settings window as the user would (the showcase's reopen
@@ -2798,6 +2802,7 @@ impl SimpleComponent for AppModel {
                     }
                     MessageListOutput::SelectionCleared => AppMsg::ClearReader,
                     MessageListOutput::SearchActive(active) => AppMsg::SearchActive(active),
+                    MessageListOutput::SortChanged(key) => AppMsg::ListSortChanged(key),
                 });
 
         let message_view =
@@ -3226,6 +3231,7 @@ impl SimpleComponent for AppModel {
             preview_lines: config::load_preview_lines(),
             list_layout: config::load_list_layout(),
             list_columns: config::load_list_columns(),
+            list_headings: config::load_privacy().list_headings,
             list_wide: config::load_list_pane_width() >= LIST_WIDE_ON,
             shortcuts_win: None,
             run_in_background: std::rc::Rc::new(std::cell::Cell::new(
@@ -3471,6 +3477,7 @@ impl SimpleComponent for AppModel {
         });
         model.push_single_line();
         model.message_list.emit(MessageListInput::SetColumns(model.list_columns.clone()));
+        model.message_list.emit(MessageListInput::SetHeadings(model.list_headings));
         model.sidebars_emit(SidebarInput::SetFocus {
             hide_accounts: model.focus.active(config::FocusPart::HideAccounts),
             fold_unified: model.focus.active(config::FocusPart::FoldUnified),
@@ -5187,7 +5194,7 @@ impl SimpleComponent for AppModel {
                 (i18n_noop("Sender (A–Z)"), "sender"),
                 (i18n_noop("Subject (A–Z)"), "subject"),
                 (i18n_noop("Unread first"), "unread"),
-                (i18n_noop("Flagged first"), "flagged"),
+                (i18n_noop("Starred first"), "flagged"),
             ] {
                 menu.append(Some(&i18n(label)), Some(&format!("sortmenu.order::{key}")));
             }
@@ -7456,6 +7463,11 @@ impl SimpleComponent for AppModel {
                     self.push_single_line();
                 }
             }
+            AppMsg::Pref(PrefOutput::SetListHeadings(on)) => {
+                if pref!(self.list_headings = on) {
+                    self.message_list.emit(MessageListInput::SetHeadings(on));
+                }
+            }
             AppMsg::Pref(PrefOutput::SetListColumns(columns)) => {
                 if pref!(self.list_columns = columns.clone()) {
                     self.message_list.emit(MessageListInput::SetColumns(columns));
@@ -7497,6 +7509,11 @@ impl SimpleComponent for AppModel {
             }
 
             AppMsg::ListCount(text) => self.list_count = text,
+            AppMsg::ListSortChanged(key) => {
+                if let Some(lh) = self.list_header_widgets.get() {
+                    lh.sort.set_state(&key.to_variant());
+                }
+            }
 
             AppMsg::Pref(PrefOutput::SetContactsRow(show)) => {
                 if pref!(self.show_contacts = show) {
@@ -10986,6 +11003,7 @@ impl AppModel {
             preview_lines: self.preview_lines,
             list_layout: self.list_layout,
             list_columns: config::ListColumn::to_keys(&self.list_columns),
+            list_headings: self.list_headings,
             single_key_shortcuts: self.single_key.get(),
             run_in_background: self.run_in_background.get(),
             autostart: self.autostart,
@@ -13342,7 +13360,7 @@ impl AppModel {
             (i18n_noop("Sender (A–Z)"), "sender"),
             (i18n_noop("Subject (A–Z)"), "subject"),
             (i18n_noop("Unread first"), "unread"),
-            (i18n_noop("Flagged first"), "flagged"),
+            (i18n_noop("Starred first"), "flagged"),
         ]
         .into_iter()
         .map(|(label, key)| {
@@ -17742,6 +17760,7 @@ impl AppModel {
             preview_lines: self.preview_lines,
             list_layout: self.list_layout,
             list_columns: self.list_columns.clone(),
+            list_headings: self.list_headings,
             single_key_shortcuts: self.single_key.get(),
             run_in_background: self.run_in_background.get(),
             autostart: self.autostart,

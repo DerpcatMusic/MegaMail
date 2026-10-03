@@ -714,6 +714,94 @@ fn first_recipient_addr(to: &str) -> Option<String> {
     (!addr.is_empty()).then(|| addr.to_string())
 }
 
+/// Fill `bar` with the single line's column headings (#334), laid out as a
+/// row is so each sits over its column. `sorted` is the column the list is
+/// sorted by and whether it runs downwards; a sortable heading sorts the
+/// list by its column when clicked.
+pub fn fill_headings(
+    bar: &gtk::Box,
+    look: &RowLook,
+    sorted: Option<(ListColumn, bool)>,
+    sortable: &dyn Fn(ListColumn) -> bool,
+    click: Rc<dyn Fn(ListColumn)>,
+) {
+    while let Some(child) = bar.first_child() {
+        bar.remove(&child);
+    }
+    let mut classes = vec!["message-row", "single-line", "list-headings"];
+    if !look.avatars {
+        classes.push("no-avatar");
+    }
+    bar.set_css_classes(&classes);
+    bar.set_spacing(8);
+    // The avatar's and the unread dot's places.
+    if look.avatars {
+        let room = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        room.set_size_request(16, -1);
+        bar.append(&room);
+    }
+    let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    dot.set_size_request(10, -1);
+    bar.append(&dot);
+    let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    line.set_hexpand(true);
+    bar.append(&line);
+
+    for &column in &look.columns {
+        let arrow = sorted.filter(|(c, _)| *c == column).map(|(_, down)| if down { " \u{25BE}" } else { " \u{25B4}" });
+        let text = |name: String| {
+            let label = gtk::Label::new(Some(&format!("{name}{}", arrow.unwrap_or(""))));
+            label.set_xalign(0.0);
+            label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            label.add_css_class("list-heading");
+            label
+        };
+        let binned = |px: i32, name: String| {
+            let bin = ColumnBin::new(px);
+            bin.set_child(Some(&text(name)));
+            bin.upcast::<gtk::Widget>()
+        };
+        let icon = |name: &str| {
+            let image = gtk::Image::from_icon_name(name);
+            image.add_css_class("list-heading");
+            image.upcast::<gtk::Widget>()
+        };
+        let cell: gtk::Widget = match column {
+            ListColumn::Star => icon("starred-symbolic"),
+            ListColumn::Attachment => icon("mail-attachment-symbolic"),
+            ListColumn::Importance => icon("emblem-important-symbolic"),
+            ListColumn::Sender => binned(SENDER_COLUMN_PX, if look.show_recipient { i18n("To") } else { i18n("From") }),
+            ListColumn::Recipients => binned(SENDER_COLUMN_PX, i18n("To")),
+            ListColumn::Correspondents => binned(PEOPLE_COLUMN_PX, i18n(column.label())),
+            ListColumn::Account => binned(ACCOUNT_COLUMN_PX, i18n(column.label())),
+            ListColumn::Subject => {
+                let bin = binned(0, i18n(column.label()));
+                bin.set_hexpand(true);
+                bin
+            }
+            ListColumn::Tags => text(i18n(column.label())).upcast(),
+            ListColumn::Due | ListColumn::Date => {
+                let label = text(if column == ListColumn::Due { i18n("Due") } else { i18n(column.label()) });
+                label.set_width_chars(9);
+                label.set_xalign(1.0);
+                label.upcast()
+            }
+        };
+        cell.set_tooltip_text(Some(&i18n(column.label())));
+        if arrow.is_some() {
+            cell.add_css_class("sorted");
+        }
+        if sortable(column) {
+            cell.set_cursor_from_name(Some("pointer"));
+            let click = click.clone();
+            let gesture = gtk::GestureClick::new();
+            gesture.connect_released(move |_, _, _, _| click(column));
+            cell.add_controller(gesture);
+        }
+        line.append(&cell);
+    }
+}
+
 /// A follow-up flag's due date for the Due column (#334): the day alone,
 /// the year too when it is not this one. Empty when there is none.
 fn due_label(due: i64) -> String {

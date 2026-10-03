@@ -1302,6 +1302,9 @@ pub(crate) struct PrivacyFile {
     /// an older one throw the whole file away.
     #[serde(default = "default_list_columns")]
     pub(crate) list_columns: Vec<String>,
+    /// Headings over those columns, which sort the list when clicked.
+    #[serde(default)]
+    pub(crate) list_headings: bool,
     /// Single-key shortcuts (j/k, r, a, d…) without a modifier. Off by default:
     /// a stray keystroke shouldn't archive mail for someone who never asked.
     #[serde(default)]
@@ -1571,6 +1574,7 @@ impl Default for PrivacyFile {
             preview_lines: default_preview_lines(),
             list_layout: ListLayout::Cards,
             list_columns: default_list_columns(),
+            list_headings: false,
             single_key_shortcuts: false,
             run_in_background: false,
             autostart: false,
