@@ -63,6 +63,11 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="1.43.0-beta.1" date="2026-10-02" type="development">
+      <description>
+        <p>First preview of 1.43.0: Microsoft accounts without GNOME Online Accounts, a single-line message list, translating messages, folding messages in a conversation, and fixes for unread state, notifications and list redraws.</p>
+      </description>
+    </release>
     <release version="1.42.0-beta.7" date="2026-10-01" type="development">
       <description>
         <p>Seventh preview of 1.42.0: new mail arrives promptly after the computer wakes from sleep.</p>

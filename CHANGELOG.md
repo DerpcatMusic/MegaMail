@@ -1,5 +1,515 @@
 # Changelog
 
+## 1.43.0-beta.1 — 2026-10-02
+
+The first beta previewing 1.43.0, with what main has gained since 1.42.0.
+
+- **Fixed: mail syncing could wait forever on a silent IMAP connection**
+  (#324, by Salem Sayed Abdel Gawad). Reads and writes now fail after 60
+  seconds without progress, including reads inside a FETCH response, so the
+  worker reconnects instead of leaving later refreshes queued behind it.
+  Downloads that keep receiving data can take longer, and IMAP IDLE waits
+  keep their own deadlines.
+- **Fixed: the message list redrew itself on every sync** (#330, reported
+  by pdf). Microsoft 365, JMAP and POP3 accounts never stored the
+  preview with the rest of a message, so each sync showed the folder from
+  the cache with every preview blank and then filled them in again from
+  the server. On IMAP, a sync with no new mail still counted as a change
+  whenever the server sent a message without a preview, because the cached
+  one was kept on disk but not in the list the sync produced. Each of these
+  rebuilt the list, and conversation rows forgot their size and newest
+  message until they were scrolled away and back. A quiet sync now changes
+  nothing, a sync with new mail redraws only the rows that changed, and
+  conversation rows keep what they show while it is checked again.
+- **Fixed: Microsoft accounts added with Custom OAuth would have to sign
+  in again after about 90 days.** Microsoft replaces the refresh token on
+  every use, and Hylki kept the first one. It now keeps the new one, and
+  reuses each access token until shortly before it expires instead of
+  asking for a new one for every connection.
+- **Added: Microsoft accounts without GNOME Online Accounts** (#329,
+  requested by erenoglu and yolaws). *Microsoft 365 / Outlook*, in the
+  first-run wizard and in Settings → Mail Accounts, now signs in with
+  Hylki's own Microsoft app in the browser and reads and sends mail
+  through Graph. It works for personal and work accounts, including where
+  GNOME Online Accounts cannot add them (GNOME 46 with personal accounts)
+  or an organization refuses what it asks for. The account's name and
+  address come from the sign-in. A work account whose organization has not
+  approved Hylki is told where its administrator can.
+- **Added: a single-line message list** (#334, requested by erenoglu).
+  Settings → Message List → Layout puts each message on one line, in
+  columns: the sender, the subject with the start of the text dimmed after
+  it, tags, a paperclip, the conversation's size and a short date.
+  Automatic does so only while the list pane is dragged wide, and goes
+  back to cards when it is narrow. A conversation opened out in the list
+  keeps its replies on one line too.
+- **Added: translating messages** (#327, requested by pdf). Settings →
+  Translation takes a DeepL, Google Cloud Translation, Microsoft Translator
+  or LibreTranslate key of your own, and the A文 button in a card's actions,
+  or Translate in the message's right-click menu, shows it in your language, with a banner naming the service and
+  **Show Original** to switch back. What is sent is the message as Reader
+  View shows it, and encrypted messages are never sent. **Offer to
+  translate** adds a Translate button to messages in another language,
+  recognised on the computer itself, so nothing is sent until it is pressed.
+  In the composer, the same button beside the format chooser translates what
+  you wrote, or the selection, leaving the quote and signature alone. It
+  offers the language of the message you are answering first, and Ctrl+Z
+  undoes it.
+- **Added: Ctrl+N, Ctrl+R, Ctrl+Shift+R and Ctrl+U** (#328, requested by
+  pdf). They start a new message, reply, reply to all and show the
+  message's source, the keys other mail apps use for these. They work with
+  single-key shortcuts switched off, and are left to the composer while
+  you are writing, where Ctrl+U underlines.
+- **Added: folding messages in a conversation** (#326, requested by pdf).
+  A click on a message's header folds it to one line, as Proton Mail shows
+  them: the sender's circle and name, then whether it is starred, sent or
+  received and has files, and the day. A click on the line opens it again.
+  **Settings → Conversations → Fold earlier messages** opens conversations
+  with the read messages, or all of them, folded but the newest, and the
+  reading pane's right-click menu has Expand All Messages and Collapse All
+  Messages. Printing shows every message in full.
+- **Fixed: quoted text that stayed unfolded, or could not be folded again**
+  (#326, reported by pdf). The reader now finds the quote inside a message
+  wrapped in one outer block, as Outlook and many templates write it, in
+  Outlook desktop's header block, under an "Original Message" divider, in
+  Yahoo replies, and in plain-text mail, where the trailing `>` lines and
+  the "On … wrote:" line above them are folded. Once opened, the ••• button
+  sits where the quote begins, so it closes it again, and opening a quote no
+  longer scrolls the conversation away from it. A forward with nothing
+  written above it is no longer folded down to nothing.
+- **Fixed: a reply written in Markdown started on the quote's "wrote:"
+  line.** The empty line above the quote was lost when the body became
+  Markdown, so whatever was typed first ran into the attribution and was
+  sent as one paragraph with it. The reply now opens on its own line, with a
+  blank line before the quote.
+- **Fixed: a notification could open the window with an empty reading
+  pane** (#332, reported by yioannides). A message shown while the window
+  was hidden, running in the background, could be loaded without ever
+  being painted; it is now loaded again when the window comes back. Mail
+  that had only just arrived when its notification was clicked, before its
+  folder's list was in, is opened once the list has it, instead of the
+  request being dropped.
+- **Fixed: a message could stay marked unread after it was read** (#333,
+  reported by yioannides). Read and star changes found their message by
+  its UID alone, which repeats from folder to folder and, in the unified
+  view, from account to account, so another message took the change; and a
+  conversation's row counted a message from another folder that happened
+  to share a UID. The new-mail notification is now withdrawn when the mail
+  is read inside its conversation, read elsewhere, or when its folder has
+  nothing unread, and a notification left over from an earlier run is
+  withdrawn at startup. Unread counts the server sent while a read was
+  being stored are asked for again once it is.
+- **Updated: Hungarian,** by Laszlo Lang (#320), now complete.
+
+## 1.42.0 — 2026-10-01
+
+Everything from 1.42.0-beta.1 to 1.42.0-beta.7: recipients from LDAP
+directories, replies that quote the message as it looks, files dragged onto
+the window, a sound for new mail, a faster message list for large folders,
+prompt reconnection after the computer wakes, and fixes for messages stuck
+on "Loading…". Polish is a new translation.
+
+- **Added: recipients from LDAP directories** (#307, requested by Isak
+  Samsten, whose branch the composer's lookup is based on). Settings → LDAP
+  Directories adds a company directory: server, encryption, search base and,
+  when the directory needs one, who to sign in as and a password. Typing
+  three characters of a name or address in To, Cc or Bcc asks every
+  directory that is switched on, and the people it finds join the
+  suggestions. Directories are Evolution Data Server address books, the
+  same kind Evolution makes, so Hylki carries no LDAP client of its own and
+  a directory set up in Evolution is listed and searched too. Saving checks
+  the connection and reports a refused password or an unreachable server.
+- **Fixed: some senders' names showed with backslashes and quotes** (#312,
+  reported by mfschumann), as `\"Sender Name\"` in the message list and the
+  reader. Some IMAP servers pass the quotes around a name in the From header
+  on to the app, escaped with backslashes, and the backslashes were kept.
+  Names and subjects are now read without them, and names already stored
+  are cleaned when the new version first opens the mail cache.
+- **Fixed: shortcuts acted on one message of a selection** (#313, reported
+  by Amadeus Paulussen). With several messages selected, the star, archive,
+  spam, read and tag keys changed only one of them. They now act on every
+  selected message, as Delete already did, and so do the matching buttons
+  on the reader's toolbar. Star, read and a tag are set on the whole
+  selection, or cleared from it when every message already has them, and
+  one Ctrl+Z undoes the lot. The star in the bar over a selection in the
+  list, and in its right-click menu, could only add stars; it now takes them
+  off when every selected message has one, and shows which it will do. Its
+  Mark as Read and Mark as Unread buttons are one button that works the same
+  way: it marks the selection read when any of it is unread, and unread
+  otherwise. A Tags button there, and a Tags submenu in the selection's
+  right-click menu, put a tag on every selected message, or take it off
+  them all when each already has it.
+- **Fixed: a conversation found by searching all folders showed mail from
+  other conversations** (#317, reported by Nonchalantcz). The search
+  grouped its results into conversations by message number, and a number
+  is only unique within one folder, so a message in another folder with the
+  same number as one in the conversation was shown in it as well. Results
+  are now grouped by folder and number. A conversation opened earlier is
+  also remembered by its folder, so returning to one no longer shows
+  another folder's conversation with the same number.
+- **Fixed: clicking through messages was slow** (#323, reported by yiannis
+  ioannides). Two things ran on every click. The list grouped the whole
+  folder into conversations again to find the one clicked, which on a
+  folder of 57,000 messages took a fifth of a second in a debug build. And
+  the reader loaded its colors into a stylesheet for the whole window,
+  which made GTK restyle every row of the list, another sixth of a second
+  with 500 rows. The grouping is now kept until the folder changes, and the
+  colors are loaded once and picked by class. The sidebar, the list and the
+  tag colors had the same reload on every sidebar rebuild, and now reload
+  only when a color changes. With thousands of messages loaded by scrolling,
+  the app could stop responding altogether: the list built every row again
+  whenever anything about it changed, and the next page, the conversation
+  sizes that follow each page and new mail each set it off. It now keeps
+  the rows that still show the same message and builds only what changed.
+- **Changed: the message list holds the whole folder** (#323). It used to
+  build 500 rows and another 500 each time it was scrolled to the bottom,
+  and every row it held made each click slower: GTK restyles every row
+  whenever keyboard focus moves from one to the next, about a quarter of a
+  second per click with 3,000 rows. The list is now a `GtkListView`, which
+  builds only the rows on screen and reuses them while scrolling, so a
+  click costs the same in a folder of 300 messages or 57,000. There are no
+  pages any more: the count in the header is the whole folder, a
+  conversation is grouped across all of it, and Select All selects every
+  message in the folder. A conversation's size is asked of the cache when
+  its row first comes on screen, and the answer updates that row alone.
+- **Fixed: new mail took minutes to arrive after the computer woke** (#322,
+  reported by yiannis ioannides). Connections left open across a suspend
+  are dead, and the app reconnected only when logind announced the wake,
+  which it can't hear from inside the Flatpak. There the dead connection
+  sat until the next automatic fetch, up to five minutes later. The app now
+  also notices a wake from the clock, within ten seconds, and when the
+  network is still coming back at that moment it reconnects as soon as the
+  network is up, rather than failing once and waiting for the next fetch.
+- **Fixed: saving a contact failed in the Flatpak** (#314, by Felix
+  Günther), with "Evolution Data Server is not available". Hylki looked for
+  Evolution Data Server's service files, which the Flatpak runtime does not
+  have. It now asks the session bus for the service instead. The LDAP
+  directories added in #307 were affected the same way and work in the
+  Flatpak too.
+- **Fixed: Add to Contacts offered books it could not write to** (#315, by
+  Felix Günther). An account with several address books, such as Nextcloud
+  with Contacts, Recently contacted and System address book, listed each
+  under the account's name alone, and picking a read-only one failed with
+  "Permission denied". Each book is now named after its account and itself,
+  and read-only books are left out, both there and when a new contact is
+  created. The books are looked up without holding up the window.
+- **Changed: "Flag" is called "Star" everywhere.** The reader's toolbar and
+  its overflow menu, the message window, the selection bar and Settings →
+  Appearance → Toolbar said Flag for the same star the list, the sidebar's
+  Starred folders and the `s` key call a star. The reader's and the message
+  window's star button now also say whether a click adds or removes it.
+  Marking a selection read or unread, or starring it, from that bar no
+  longer clears the selection and closes the bar, so another action can
+  follow. Its buttons no longer take the keyboard focus from the list either,
+  which turned the selection grey and stopped the single-key shortcuts.
+- **Fixed: a message sometimes opened showing another message's text.** The
+  bodies kept in memory were filed by message number, and the number is only
+  unique within a folder, so a message in Sent could replace the text of the
+  Inbox message with the same number. The Inbox message then opened with the
+  Sent message's text, often just a signature, under its own header. Bodies
+  are now kept per folder.
+- **Fixed: paperclips, attachments and sender checks on the wrong message.**
+  The same mix-up affected what arrives with a message's text: whether it has
+  attachments, the files themselves, and the sender check with its OpenPGP
+  result and Unsubscribe and invitation banners. A message in one folder could
+  gain or lose a paperclip, or show a verdict, that belonged to the message
+  with the same number in another folder. Each now reaches only its own
+  message.
+- **Added: how much storage a mail account uses** (#298, requested by
+  rsx-xp). An account's page in Settings → Mail Accounts shows the space in
+  use, the limit and what is free, with a bar that turns amber past 90% and
+  red when the mailbox is full. The figures come from the server: IMAP
+  servers that offer the QUOTA extension and JMAP servers that report quotas
+  (Stalwart, Fastmail). Microsoft 365 and POP3 give no figure, so the row is
+  not shown for them.
+- **Added: the OpenPGP chip can say what it found in words** (#300,
+  requested by rsx-xp). With **Settings → Reading → Name the OpenPGP result**
+  switched on, the small colored shield beside the sender's name becomes a
+  label on a wash of the same color: Signed, Encrypted, Encrypted and signed,
+  or what is wrong, such as Bad signature, Signed, unknown key or Signed, key
+  not trusted. Clicking it still opens the details. The setting is off by
+  default, which keeps the icons alone.
+- **Changed: attachment chips in the composer show more** (#299, requested
+  by rsx-xp). Each attached file shows its size under its name, and pictures
+  and PDFs show a thumbnail in place of the paper clip; other files show
+  their type's icon. The chips are all one width, up to three to a row. A
+  name too long for its chip fades out at the edge, and pointing at the chip
+  slides the rest of the name into view. Hovering also shows a larger
+  picture, the file's type and its size. A double click opens the file, and
+  a right-click offers Open and Remove.
+- **Fixed: turning off Expandable conversations left the carets on the
+  count chips** until the next sync rebuilt the list. The rows are now
+  built again at once, and switching the message list's action palette on
+  or off applies at once too.
+- **Fixed: right-clicking a message sometimes opened no menu.** A
+  right-click between two messages of a conversation or at the reader's
+  edge found no message and did nothing, and in a message opened in its own
+  window a right-click on the text never opened a menu at all. Over a link
+  or a picture it opened a short menu of the link's or picture's own
+  instead of the message's. The reader now opens the message's menu wherever
+  it is clicked (the nearest message's, between two), in the main window and
+  in a message's own window. A link adds Open Link and Copy Link Address
+  (Copy Email Address for a mail link) at the top, a picture adds Save
+  Image As… and Copy Image, and selected text adds Copy. Escape now closes
+  the small menu an address opens.
+- **Fixed: a right-click menu that fits neither below nor above the pointer
+  is shown.** Such a menu was not shown at all, which is why the message
+  menu, taller than half a window, opened near the top and bottom of a
+  message but not halfway down, depending on where the window sat on the
+  screen. A menu now moves up as far as it needs to fit in the window, and
+  one taller than the window scrolls.
+- **Fixed: a blank conversation count on a grey selected row.** When the
+  message list does not have the keyboard focus, the selected row turns grey,
+  and its conversation chip showed a white pill with no number in it. The
+  chip now keeps its grey pill and count there, and a tag on that row keeps
+  its own text color.
+- **Changed: conversations open out across folders** (#309, reported by
+  Amadeus Paulussen). An expanded conversation in a folder or in Inboxes now
+  lists its messages from other folders too, such as your replies in Sent
+  and the parts in Archive or All Mail, in time order. A conversation with
+  one message in the folder and the rest elsewhere used to show a count but
+  could not be expanded, which in an inbox was most of them. The row itself
+  is still the folder's own message, so archiving, moving or deleting it acts
+  on that folder's mail only; drafts, Trash and Junk are not listed.
+- **Fixed: plain-text messages arrived empty** (#297, reported by
+  Amadeus Paulussen). With **Write messages in** set to Plain text, the message was
+  sent, and saved to Sent, without its body; a plain-text draft lost its
+  body the same way. Rich-text mail was sent with an empty plain-text part,
+  which mail clients that show plain text displayed as a blank message.
+- **Fixed: Reload in the print preview** (#301, reported by rsx-xp).
+  Right-clicking the preview offered Reload, which replaced the preview with
+  "Could not connect to hylki.localhost". The message view, the print
+  preview and the composer no longer offer Back, Forward, Stop or Reload.
+- **Fixed: exported settings were named `vireo-settings.toml`** (#304,
+  reported by Amadeus Paulussen). The file is now `hylki-settings.toml`.
+- **Fixed: empty message previews.** A message whose HTML has a `<header>`
+  element showed an empty or cut-short preview in the message list,
+  because everything after that element was dropped. Previews also no
+  longer run the lines of a signature together, and show characters
+  written as entities (`&bull;`, `&zwnj;`) as the characters themselves.
+- **Changed: attachment sizes use decimal units**, as Files does (2.0 kB
+  rather than 2.0 KB), in your language.
+- **Fixed: a recipient whose name has a comma in it** ("Martin, Jason").
+  The name was split at the comma, so the send was refused as having an
+  invalid address, and with encryption on Hylki asked for a key for
+  "Martin". A contact chosen from the suggestions or the contacts list is now
+  inserted with its name in quotes, and a name typed or pasted without them
+  is read whole.
+- **Fixed: unsubscribing by email from a plus-addressed handle.** A list
+  whose unsubscribe address has a `+` in it (`list+token@example.com`) was
+  sent the request at an address with a space in place of the `+`.
+- **Fixed: the type of an attached Word or Excel file.** A `.docx` or
+  `.xlsx` was sent labelled as the old `.doc` or `.xls` format. Attachments
+  are now typed from the same table the desktop opens files by.
+- **Fixed: birthdays in Contacts are written in your language and date
+  format**, as mail dates are, rather than always in English as "April 12,
+  1985".
+- **Changed: no `-- ` line above the signature.** New messages, replies and
+  forwards put the signature after a blank line only. **Settings → Composing
+  → Separator line above the signature** brings the line back for anyone who
+  writes to mailing lists or to people on Thunderbird, Evolution or Mutt,
+  which use it to dim the signature and leave it out of their quotes. A draft
+  keeps the form it was saved in, and changing the From account replaces
+  either form. See
+  [Where the signature goes](docs/DOCUMENTATION.md#where-the-signature-goes).
+- **Fixed: messages stuck on "Loading…" and a composer that takes no
+  typing on some systems** (#296, reported by Christian Lauinger). On some
+  hosts the fonts the Flatpak lends WebKit send its web process into a loop
+  in the first font lookup, so no message ever displays and the composer
+  body never takes a key, while mail syncs normally. When a message has not
+  displayed after 8 seconds, Hylki now loads a small test page in a
+  separate web process. If that hangs as well, it tries again with only the
+  runtime's own fonts, and once that loads, it restarts the stuck views on
+  them. The choice is kept until the Flatpak runtime is updated, when the
+  host's fonts are tried again. Only message bodies and the composer lose
+  the host's fonts; the rest of the window keeps them.
+- **Changed: a reply or a forward quotes the message as it looks** (#295,
+  reported by urkos101). The quote keeps the original's colors,
+  backgrounds, fonts and spacing, including those set in a `<style>` block,
+  which are written onto the elements they apply to, and the pictures the
+  message carries inside itself. Before, every style was dropped, so a
+  designed message (an order confirmation, a newsletter) lost its layout,
+  and its embedded pictures showed as empty boxes. Pictures on the sender's
+  server now load in the composer only when the reader loads them for that
+  message; before, the composer loaded them whatever the remote content
+  setting said. Nothing in a quote can fetch a resource through CSS or
+  cover the composer. In dark mode a quote that sets its own colors sits on
+  a light ground. See [Replies and forwards](docs/DOCUMENTATION.md#replies-and-forwards).
+- **New: replies and forwards can open in a window** (#295). **Settings →
+  Composing → Reply and forward in the main window**, switched off, opens
+  Reply, Reply All and Forward in a window of their own. It is on by
+  default, which keeps them in the reading pane as before.
+- **New: a choice of what Return does in the composer.** In rich text,
+  Return starts a new line in the same paragraph and Shift+Return starts a
+  new paragraph, sent as a `<p>` with space before the next one. **Settings
+  → Composing → Return starts a new paragraph** swaps them. Before, Return
+  made a new block that looked like a line in the message but became a
+  paragraph in its plain-text copy, and Shift+Return made a line. Lists and
+  the two-Return exit from a quote are unchanged. See
+  [Return and Shift+Return](docs/DOCUMENTATION.md#return-and-shiftreturn).
+- **New: a sound for new mail** (#292, suggested by yioannides).
+  **Settings → General → Sound for new mail** switches it on, and **Sound**
+  picks one of GNOME's four alert sounds (Click, Hum, String, Swing), which
+  Hylki now carries, or a file of your own (WAV, MP3, OGG, FLAC or anything
+  else GStreamer plays), of which Hylki keeps a copy. Picking a sound plays
+  it. It is off by default, and plays once for a burst of mail from several
+  accounts. It stays quiet when GNOME's event sounds are off, and during Do
+  Not Disturb in a native install; the Flatpak cannot read Do Not Disturb.
+  The Flatpak gains `--socket=pulseaudio` to play it. See
+  [Notifications](docs/DOCUMENTATION.md#notifications).
+- **New: files dragged onto the window go into a message** (#293). Dragged
+  over a composer, the files bring up a card for each place they can go:
+  **Attach**, **Insert in Text** (when a picture is among them and the
+  message is rich text; other files are attached) and **Upload to Cloud**
+  (when a cloud storage account is set up, opening the upload dialog). The
+  card under the pointer fills with the accent color. Dragged over the main
+  window with no composer open, they bring up the same cards side by side,
+  each starting a new message: **Attach to New Message** (with the same
+  large-file question as *Send with Hylki*), **Insert in New Message** and
+  **Share Link in New Message**. With a composer open, files dropped
+  elsewhere in the window go into it. Before, only the text area of the
+  composer took files. See
+  [Dragging files into a message](docs/DOCUMENTATION.md#dragging-files-into-a-message).
+- **New: Delete from Server… removes one attachment from a message** (#289,
+  suggested by yioannides). It is in the right-click menu of a file in the
+  attachment drawer and in the attachment gallery, and asks first. The file
+  shows pale red with "Deleting…" until the server answers, then fades out,
+  in the grid and list views of both. On IMAP
+  and JMAP the message is stored again without the file, keeping its folder,
+  flags, keywords and date, and the original is deleted; the file's place
+  holds a note in Thunderbird's `text/x-moz-deleted` format, which Hylki does
+  not list as an attachment. Microsoft 365 deletes the attachment in place.
+  Refused on Gmail (All Mail would keep the original), POP3, signed or
+  encrypted messages, and a message that is only the file. See
+  [Deleting an attachment from the server](docs/DOCUMENTATION.md#deleting-an-attachment-from-the-server).
+- **New: folders can be put in your own order in the sidebar** by dragging
+  them. While a folder is dragged, a line in the accent color shows the gap
+  between folders where it will land, indented to the level it lands at.
+  Dropped in a gap at its own level, the folder only changes places. In a
+  gap at another level, it is moved there on the server first, as dropping
+  it on a folder does, and then takes that place. Over the middle third of
+  a folder, the folder is outlined and the dragged one moves inside it.
+  Inbox, Sent, Drafts and the other main folders reorder among themselves.
+  A folder never dragged, such as one created later, goes just after the
+  sibling before it by name. The order is kept on this computer only.
+  **Reset Folder Order**, in the right-click menu of the account's header
+  or its Folders heading, forgets it. See
+  [Folder order](docs/DOCUMENTATION.md#folder-order).
+- **New: a choice of folder order.** **Settings → Sidebar → Folder order**
+  sorts every account's custom folders by Custom Order (the default: by
+  name, with dragged folders where they were put), Name (A to Z), Name (Z
+  to A) or Full Path (the whole path on the server, as Gmail on the web
+  lists labels). An account can choose its own under **Folder Order** in
+  its settings, or from the right-click menu of its Folders heading in the
+  sidebar. Dragging a custom folder puts its account in Custom Order.
+- **Changed: only the chevrons open and close sidebar items.** Clicking a
+  folder that has sub-folders opens the folder and leaves its sub-folders
+  as they were; the arrow beside it shows or hides them. The Folders,
+  Filters and Tags headings open and close from their chevron alone, not
+  their name. Double-clicking or long-pressing Inboxes, Starred, Sent,
+  Drafts, Archive, Filters or Tags no longer opens or closes the list under
+  it; its chevron does. In the icon rail, which has no chevrons, a click on
+  a heading's icon and a long press on a unified row still do.
+- **Changed: custom folders sort by the name shown in the sidebar**, not
+  by their path on the server, as Thunderbird sorts them. Gmail's
+  `[Gmail]/Important` and `[Gmail]/Test` sorted by the bracket, ahead of
+  every folder named with a letter, and now sort as "Important" and
+  "Test". Full Path keeps the old order.
+- **Fixed: a folder another client added, renamed or moved stayed as it
+  was until Hylki was restarted.** Refresh, and each automatic check for
+  mail, now reads the folder list again as well as the unread counts.
+- **Fixed: moving a folder left its sub-folders unsubscribed on some
+  servers.** The server moves the sub-folders with it, but Dovecot keeps
+  their subscriptions at the old names, so a client showing subscribed
+  folders only (Thunderbird's default) lost sight of them. Hylki now moves
+  each sub-folder's subscription too.
+- **Fixed: the menu offered to reveal a status bar already showing** (#294,
+  reported by frenchy82). The menu item reads *Hide Status Bar* while the
+  bar is down, an error message passing through it included, and hides it.
+  Before, choosing it with only a passing message showing held the bar open.
+- **Fixed: Escape discarded a message being written without asking** (#290,
+  reported by EmmanuelP). Escape, Cancel and the composer window's close
+  button now ask whether to save the message to Drafts, discard it or keep
+  editing, once anything has been written or attached. An untouched reply
+  still closes at once. Escape in the question answers Keep Editing.
+- **Fixed: Unsubscribe said "Unsubscribed" when the list had done nothing**
+  (#284, reported by Nonchalantcz). A one-click request the list answered
+  with a redirect was followed as a GET, whose landing page answered 200.
+  Only a direct 2xx answer to the POST now counts; anything else falls back
+  to the mail route or, failing that, opens the list's page in the browser.
+  Mail from a list dated more than two days after you unsubscribed now says
+  the list is still sending, instead of labelling it as from a list you left.
+- **Fixed: a notification button left the busy pointer up for 15 seconds**
+  on GNOME Wayland. GNOME Shell runs a button as a launch of the app and
+  shows the busy pointer until a window of the app appears. Mark as Read,
+  Archive, Delete and Spam show none, and GTK has no way to end a launch on
+  Wayland without one, so the pointer stayed until the shell gave up. Hylki
+  now tells the shell the launch is over as the button is handled.
+- **Fixed: the reading pane flashed black between messages** on graphics
+  hardware (not in a virtual machine). When opening a message changed the
+  pane's size, as the attachment drawer came or went, WebKit's GPU renderer
+  showed an empty frame before the new message was drawn. The message now
+  loads once the pane has been redrawn at its new size.
+- **Changed: messages and the attachment drawer crossfade.** Opening a
+  message dissolves the one before into it over 80 ms instead of cutting,
+  and the attachment drawer fades in, fades out, or dissolves from one
+  message's files to the next's on the same beat.
+- **Polish translation** (PR #306 by Tomasz Bojanowski), complete.
+- **Translations:** French (PRs #281 and #303 by frenchy82), German (PR #302
+  by Christian Lauinger), Spanish (PR #287 by Daniel Miguel), Portuguese and
+  Brazilian Portuguese (PR #280 by Paulo Fino) and Greek (PR #291 by Yiannis
+  Ioannides) brought up to date.
+- **Changed: JMAP is set up through the Stalwart (JMAP) provider only.**
+  The Incoming Protocol row of an IMAP/POP3 account offers IMAP and POP3,
+  and is hidden for Stalwart, whose protocol is always JMAP. Accounts
+  already on JMAP open under Stalwart as before. Custom (OAuth) moves up
+  the Provider list to sit under IMAP/POP3 Account.
+- **Changed: the welcome wizard imports from GNOME Online Accounts on a page
+  of its own.** The first account page lists the mail accounts in GNOME
+  Settings → Online Accounts, Google and Microsoft included, and can be
+  skipped. The next page adds an account by hand: its Provider list leaves
+  out Google and Microsoft, and Custom (OAuth) takes the client and
+  endpoint fields the account editor has, signs in through the browser and
+  adds the account; its title reads "Add another email account" after an
+  import. Either page's button reads Skip until something is added or, on
+  the second, typed. The last page's button reads Finish.
+- **Changed: Mail Accounts marks an account with no provider logo by how it
+  connects** (#277): a blue IMAP, red POP3 or yellow OAuth tile in place
+  of the blue and yellow envelopes, in the account list, the Provider
+  picker and over the account editor.
+- **Changed: the app icon gallery offers five icons** (#277, suggested by
+  yioannides): the default, the blue, navy and yellow squares, and the
+  classic icon. The squircles, the envelopes and the birds are gone. A
+  squircle that was chosen becomes the square of the same color, and any
+  other retired choice becomes the default.
+- **Changed: GitHub release pages show each paragraph as one line** (#277).
+  The notes are wrapped in the repository, and GitHub kept every one of
+  those line breaks. An @ on a release page now links only people whose work
+  is in the release; anyone else the notes mention is named without one.
+- **New: Settings > Privacy > Warn when the addressing doesn't match.**
+  Turned off, a message marked "Check this sender" (its replies go to
+  another domain, or its sender's name claims a domain the address is not
+  on) no longer gets the red banner across the top. The badge beside the
+  sender still shows the verdict, and a possible forgery keeps the banner
+  whatever the switch says. On by default; stored as `show_spoof_banner`
+  in `privacy.toml`. The banner's sentence for an addressing mismatch was
+  also never sent for translation, and now is.
+- **Fixed: the tray icon was published three times at every startup**
+  (#275, reported by mfreeman72). Settings is built hidden a moment after
+  startup so that it opens at once, and setting its rows to the saved
+  values fired the same signals a change by hand does: the tray icon choice
+  was reported twice, the first time wrong, and the tray item was taken
+  down and published again for each, with the settings file written each
+  time. Cinnamon's status applet crashed on the churn. A row now reports
+  only a change made after the window is built.
+- **Fixed: some icons showed as a broken image on KDE and other desktops**
+  (#278). Since 1.41.0 the icon theme draws Hylki's icons, and inside the
+  Flatpak a theme can list a file the sandbox cannot open, typically a
+  symlink into the host's `/usr/share/icons`. GTK drew its placeholder for
+  those and never fell back to the bundled copy. Hylki now looks up each
+  icon it carries in the theme once the window is up, and again when the
+  theme changes, and swaps in its own copy for every file that cannot be
+  read, leaving the rest of the theme in place.
+
 ## 1.42.0-beta.7 — 2026-10-01
 
 The seventh beta previewing 1.42.0, with what main has gained since
