@@ -3205,6 +3205,9 @@ msgstr "Marcar todo como no leído"
 msgid "Due"
 msgstr ""
 
+msgid "Drag to resize, double-click for the usual width"
+msgstr ""
+
 msgid "High importance"
 msgstr ""
 

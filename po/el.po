@@ -3235,6 +3235,9 @@ msgstr "Σήμανση όλων ως μη αναγνωσμένων"
 msgid "Due"
 msgstr ""
 
+msgid "Drag to resize, double-click for the usual width"
+msgstr ""
+
 msgid "High importance"
 msgstr ""
 
