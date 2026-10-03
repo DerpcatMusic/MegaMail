@@ -136,6 +136,9 @@ The full list. The [README](../README.md) carries a shorter one.
   what you are reading, and puts it back afterwards.
 - **A customizable reader toolbar:** reorder its buttons, or drag them in and
   out, in Settings → Appearance.
+- **A single-line message list:** sender, subject and the start of the
+  text on one line per message, always, or whenever the list pane is
+  dragged wide.
 - **Swipe actions** on message rows, with an adjustable sensitivity.
 - **Single-key shortcuts:** Gmail-style `j`/`k`, `r`, `a`, `d` and friends,
   without a modifier. See [Keyboard shortcuts](KEYBOARD_SHORTCUTS.md).

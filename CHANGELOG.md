@@ -24,6 +24,13 @@
   every use, and Hylki kept the first one. It now keeps the new one, and
   reuses each access token until shortly before it expires instead of
   asking for a new one for every connection.
+- **Added: a single-line message list** (#334, requested by erenoglu).
+  Settings → Message List → Layout puts each message on one line, in
+  columns: the sender, the subject with the start of the text dimmed after
+  it, tags, a paperclip, the conversation's size and a short date.
+  Automatic does so only while the list pane is dragged wide, and goes
+  back to cards when it is narrow. A conversation opened out in the list
+  keeps its replies on one line too.
 - **Added: translating messages** (#327, requested by pdf). Settings →
   Translation takes a DeepL, Google Cloud Translation, Microsoft Translator
   or LibreTranslate key of your own, and the A文 button in a card's actions,

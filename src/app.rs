@@ -55,6 +55,11 @@ const READER_MIN_WIDTH: i32 = 400;
 /// and read mail used to turn unread again in the meantime (#255).
 const PENDING_SEEN_MAX: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// How wide the list pane has to be dragged before Automatic lays the list
+/// out on one line, and how far back before it returns to cards (#334).
+const LIST_WIDE_ON: i32 = 600;
+const LIST_WIDE_OFF: i32 = 560;
+
 /// The same for mail taken out of a folder (moved, deleted, marked as
 /// spam): how long it stays off that folder's list without the worker's
 /// word that the move has run.
@@ -747,6 +752,11 @@ pub struct AppModel {
     list_count: String,
     /// Lines of preview text per message-list row (1–3).
     preview_lines: u32,
+    /// The message list's layout setting (#334).
+    list_layout: config::ListLayout,
+    /// The list pane is wide enough for one line per message, which
+    /// Automatic follows.
+    list_wide: bool,
     /// The keyboard-shortcut reference, while it is open — so the shortcut that
     /// opens it closes it again.
     shortcuts_win: Option<adw::Window>,
@@ -1612,6 +1622,8 @@ pub enum AppMsg {
     DeferredMarkRead { message: Box<Message> },
     /// The list header's starred quick filter.
     SetStarredFilter(bool),
+    /// The list pane is this wide now (a drag of the divider, #334).
+    ListPaneWidth(i32),
     /// Write the exported log straight to `path`, no chooser: the
     /// HYLKI_SHOWCASE_MEMORY hook, for reading the memory section of a
     /// running instance.
@@ -1939,11 +1951,15 @@ impl SimpleComponent for AppModel {
                         // position-notify fires per pixel of a drag (and when the
                         // window squeezes the pane), one write once it settles.
                         connect_position_notify[
+                            sender,
                             pending = std::rc::Rc::new(std::cell::RefCell::new(
                                 None::<gtk::glib::SourceId>,
                             ))
                         ] => move |p| {
                             let pos = p.position();
+                            // Automatic layout follows the width as it is
+                            // dragged, not once the drag has settled (#334).
+                            sender.input(AppMsg::ListPaneWidth(pos));
                             if let Some(id) = pending.borrow_mut().take() {
                                 id.remove();
                             }
@@ -3206,6 +3222,8 @@ impl SimpleComponent for AppModel {
             last_settings_page: None,
             list_count: String::new(),
             preview_lines: config::load_preview_lines(),
+            list_layout: config::load_list_layout(),
+            list_wide: config::load_list_pane_width() >= LIST_WIDE_ON,
             shortcuts_win: None,
             run_in_background: std::rc::Rc::new(std::cell::Cell::new(
                 config::load_privacy().run_in_background,
@@ -3448,6 +3466,7 @@ impl SimpleComponent for AppModel {
             subject: model.list_show_subject(),
             animate: false,
         });
+        model.push_single_line();
         model.sidebars_emit(SidebarInput::SetFocus {
             hide_accounts: model.focus.active(config::FocusPart::HideAccounts),
             fold_unified: model.focus.active(config::FocusPart::FoldUnified),
@@ -7428,6 +7447,22 @@ impl SimpleComponent for AppModel {
 
             AppMsg::Shortcut(action) => self.run_shortcut(action, &sender),
 
+            AppMsg::Pref(PrefOutput::SetListLayout(layout)) => {
+                if pref!(self.list_layout = layout) {
+                    self.push_single_line();
+                }
+            }
+            AppMsg::ListPaneWidth(width) => {
+                // A margin each way, so a drag that rests near the line does
+                // not flick the rows back and forth.
+                let wide = if self.list_wide { width >= LIST_WIDE_OFF } else { width >= LIST_WIDE_ON };
+                if wide != self.list_wide {
+                    self.list_wide = wide;
+                    if self.list_layout == config::ListLayout::Automatic {
+                        self.push_single_line();
+                    }
+                }
+            }
             AppMsg::Pref(PrefOutput::SetPreviewLines(lines)) => {
                 if self.preview_lines != lines {
                     let was_off = self.preview_lines == 0;
@@ -10940,6 +10975,7 @@ impl AppModel {
             single_card_default_applied: true,
             spellcheck_langs: self.spellcheck_langs.clone(),
             preview_lines: self.preview_lines,
+            list_layout: self.list_layout,
             single_key_shortcuts: self.single_key.get(),
             run_in_background: self.run_in_background.get(),
             autostart: self.autostart,
@@ -13446,6 +13482,17 @@ impl AppModel {
 
     /// Hand the list its look; `animate` slides the avatars away or back
     /// (a Focus Mode toggle) rather than rebuilding the rows outright.
+    /// Tell the list whether to lay messages out on one line (#334): the
+    /// Layout setting, or for Automatic, the width of the pane.
+    fn push_single_line(&self) {
+        let on = match self.list_layout {
+            config::ListLayout::Cards => false,
+            config::ListLayout::SingleLine => true,
+            config::ListLayout::Automatic => self.list_wide,
+        };
+        self.message_list.emit(MessageListInput::SetSingleLine(on));
+    }
+
     fn push_list_look(&self, animate: bool) {
         self.message_list.emit(MessageListInput::SetLook {
             avatars: self.list_avatars(),
@@ -17669,6 +17716,7 @@ impl AppModel {
             text_scale: self.text_scale,
             theme: self.theme.clone(),
             preview_lines: self.preview_lines,
+            list_layout: self.list_layout,
             single_key_shortcuts: self.single_key.get(),
             run_in_background: self.run_in_background.get(),
             autostart: self.autostart,

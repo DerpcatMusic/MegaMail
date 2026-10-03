@@ -145,6 +145,7 @@ pub struct PrefInit {
     /// Focus Mode: the master switch and the parts it strips.
     pub focus: crate::config::FocusMode,
     pub preview_lines: u32,
+    pub list_layout: crate::config::ListLayout,
     pub single_key_shortcuts: bool,
     pub run_in_background: bool,
     pub autostart: bool,
@@ -880,6 +881,7 @@ pub enum PrefInput {
     ToggleRailFoldFiltered(bool),
     ToggleRailFoldTags(bool),
     ChangePreviewLines(u32),
+    ChangeListLayout(u32),
     ChangeReadMark(u32),
     ExportSettings,
     ExportLog,
@@ -1012,6 +1014,7 @@ pub enum PrefOutput {
     /// The "this window opens to" choice changed (true = Accounts).
     SetSettingsOpenAccounts(bool),
     SetPreviewLines(u32),
+    SetListLayout(crate::config::ListLayout),
     SetSingleKey(bool),
     SetRunInBackground(bool),
     SetAutostart(bool),
@@ -2394,6 +2397,18 @@ impl Component for Preferences {
                                         },
                                     },
 
+                                    #[name = "list_layout_row"]
+                                    adw::ComboRow {
+                                        set_title: &i18n("Layout"),
+                                        set_subtitle: &i18n("Each message on lines of its own, or on one line \
+                                                       in columns. Automatic uses one line while the list \
+                                                       is dragged wide and lines of their own when it is \
+                                                       narrow."),
+                                        connect_selected_notify[sender] => move |row| {
+                                            sender.input(PrefInput::ChangeListLayout(row.selected()));
+                                        },
+                                    },
+
                                     #[name = "preview_lines_row"]
                                     adw::ComboRow {
                                         set_title: &i18n("Preview lines"),
@@ -3536,6 +3551,17 @@ impl Component for Preferences {
             .preview_lines_row
             .set_model(Some(&gtk::StringList::new(&preview_labels)));
         widgets.preview_lines_row.set_selected(init.preview_lines.min(3));
+        widgets.list_layout_row.set_model(Some(&gtk::StringList::new(&[
+            &i18n("Cards"),
+            &i18n("Single line"),
+            &i18n("Automatic"),
+        ])));
+        no_truncate(&widgets.list_layout_row);
+        widgets.list_layout_row.set_selected(match init.list_layout {
+            crate::config::ListLayout::Cards => 0,
+            crate::config::ListLayout::SingleLine => 1,
+            crate::config::ListLayout::Automatic => 2,
+        });
 
         widgets.background_row.set_active(init.run_in_background);
         widgets.autostart_row.set_active(init.autostart);
@@ -4575,6 +4601,14 @@ impl Component for Preferences {
                     .map(|(_, t)| *t)
                     .unwrap_or_default();
                 let _ = sender.output(PrefOutput::SetTrayIcon(icon));
+            }
+            PrefInput::ChangeListLayout(index) => {
+                let layout = match index {
+                    1 => crate::config::ListLayout::SingleLine,
+                    2 => crate::config::ListLayout::Automatic,
+                    _ => crate::config::ListLayout::Cards,
+                };
+                let _ = sender.output(PrefOutput::SetListLayout(layout));
             }
             PrefInput::ChangePreviewLines(index) => {
                 // The combo lists Off, then 1, 2 and 3 lines — so the row index is

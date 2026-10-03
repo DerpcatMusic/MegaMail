@@ -532,6 +532,9 @@ pub struct MessageList {
     thread_expansion: bool,
     /// Whether rows carry the actions palette line at all (preference).
     list_palette: bool,
+    /// One line per message (#334): set by the Layout setting, or by the
+    /// pane's width when it is Automatic.
+    single_line: bool,
 }
 
 /// How the message list is ordered.
@@ -637,6 +640,8 @@ pub enum MessageListInput {
     SetLook { avatars: bool, preview_lines: u32, subject: bool, animate: bool },
     /// The Focus Mode slide finished: rebuild the rows as they now are.
     LookSettled,
+    /// Lay the rows out on one line, or as cards (#334).
+    SetSingleLine(bool),
     /// Fill them with senders' own site icons, or stop (#30).
     SetSenderLogos(bool),
     /// The date or clock preference changed: every row's date is built with the
@@ -1165,6 +1170,7 @@ impl SimpleComponent for MessageList {
             threading: true,
             thread_expansion: true,
             list_palette: true,
+            single_line: false,
             bulk_tag_btn: gtk::Button::new(),
         };
 
@@ -1441,6 +1447,12 @@ impl SimpleComponent for MessageList {
                 if self.sender_logos != on {
                     self.sender_logos = on;
                     self.face_gen += 1;
+                    self.sync_look();
+                }
+            }
+            MessageListInput::SetSingleLine(on) => {
+                if self.single_line != on {
+                    self.single_line = on;
                     self.sync_look();
                 }
             }
@@ -2612,7 +2624,10 @@ impl MessageList {
             look.sender_logos = self.sender_logos;
             look.preview_lines = self.preview_lines;
             look.show_subject = self.show_subject;
-            look.show_palette = self.list_palette;
+            // The palette hangs under a card; a single line has no room for
+            // it, so actions come from the menu, swipes and keys there.
+            look.show_palette = self.list_palette && !self.single_line;
+            look.single_line = self.single_line;
             look.in_junk = self.in_junk;
             look.in_drafts = self.in_drafts;
             look.show_recipient = self.show_recipient;
@@ -2935,20 +2950,22 @@ impl MessageList {
         // newest wins whenever it is later than anything on screen (#236);
         // off, which is how Hylki has always behaved, the folder has the last
         // word.
-        let (latest, from, preview) = if let Some(l) = &elsewhere {
+        let (latest, from, preview, latest_at) = if let Some(l) = &elsewhere {
             (
                 Some(crate::models::datetime_list_at(l.timestamp, &l.date)),
                 Some((l.from_name.clone(), l.from_addr.clone())),
                 Some(l.preview.clone()),
+                Some((l.timestamp, l.date.clone())),
             )
         } else if count > 1 {
             (
                 Some(newest_here.datetime_list()),
                 Some((newest_here.from_name.clone(), newest_here.from_addr.clone())),
                 Some(newest_here.preview.clone()),
+                Some((newest_here.timestamp, newest_here.date.clone())),
             )
         } else {
-            (None, None, None)
+            (None, None, None, None)
         };
         let any_starred = count > 1 && msgs.iter().any(|m| m.starred);
         // The row stays this folder's oldest message, whatever the other
@@ -2981,6 +2998,7 @@ impl MessageList {
             from,
             preview,
             latest,
+            latest_at,
             unread: any_unread,
             starred: any_starred,
             revealed: true,

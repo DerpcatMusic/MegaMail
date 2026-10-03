@@ -98,6 +98,9 @@ pub struct RowMeta {
     pub from: Option<(String, String)>,
     pub preview: Option<String>,
     pub latest: Option<String>,
+    /// When that newest member arrived, and its date header, for a short
+    /// date on a one-line row (#334).
+    pub latest_at: Option<(i64, String)>,
     /// Any message of the conversation is unread / starred (heads only).
     pub unread: bool,
     pub starred: bool,
@@ -408,6 +411,9 @@ pub struct RowLook {
     pub avatars: bool,
     /// Whether a sender's site icon may fill it (#30).
     pub sender_logos: bool,
+    /// One line per message, in columns, instead of the three-line card
+    /// (#334).
+    pub single_line: bool,
     /// How many lines of the message's text a row shows (0–3).
     pub preview_lines: u32,
     /// Whether the subject line is drawn (Focus Mode can take it away).
@@ -437,6 +443,7 @@ impl Default for RowLook {
             gravatar: false,
             avatars: true,
             sender_logos: false,
+            single_line: false,
             preview_lines: 1,
             show_subject: true,
             show_palette: true,
@@ -956,6 +963,11 @@ pub struct RowWidgets {
     avatar: adw::Avatar,
     dot: gtk::Box,
     text: gtk::Box,
+    /// The three-line card's first line, which the single-line layout
+    /// borrows its widgets from (#334).
+    top: gtk::Box,
+    /// The single-line layout's one line (#334).
+    line: gtk::Box,
     name: gtk::Label,
     clip: gtk::Image,
     star: gtk::Image,
@@ -998,6 +1010,8 @@ struct RowState {
     tags_for: Option<(Vec<String>, u64)>,
     avatar_shown: bool,
     hovered: bool,
+    /// The widgets are laid out on one line (#334).
+    single: bool,
     dragging: bool,
     palette_open: bool,
     palette: Option<PaletteButtons>,
@@ -1351,6 +1365,8 @@ impl Row {
         let msg = &data.msg;
         let meta = &data.meta;
         let w = &self.w;
+        self.arrange(look.single_line);
+        let single = look.single_line;
 
         self.sync_host_classes();
         {
@@ -1383,7 +1399,9 @@ impl Row {
         if !look.show_palette {
             content.push("no-palette");
         }
-        if look.show_palette && look.avatars && look.preview_lines == 0 {
+        if single {
+            content.push("single-line");
+        } else if look.show_palette && look.avatars && look.preview_lines == 0 {
             content.push("palette-room");
         }
         w.content.set_css_classes(&content);
@@ -1414,17 +1432,23 @@ impl Row {
         // Faded rather than hidden: the slot is always reserved and only
         // the dot's ink changes, so text never jitters as mail is read.
         let unread = msg.unread || meta.unread;
-        w.dot.set_valign(if look.avatars { gtk::Align::Center } else { gtk::Align::Start });
+        w.dot.set_valign(if look.avatars || single { gtk::Align::Center } else { gtk::Align::Start });
         w.dot.set_opacity(if unread { 1.0 } else { 0.0 });
         w.text.set_valign(if look.avatars { gtk::Align::Center } else { gtk::Align::Start });
 
         w.name.set_label(&self.name_line(&data, &look));
         w.name.set_css_classes(if unread { &["message-sender", "unread"] } else { &["message-sender"] });
         w.clip.set_visible(msg.has_attachment);
-        w.star.set_visible(msg.starred || meta.starred);
-        match &meta.latest {
-            Some(latest) => w.date.set_label(latest),
-            None => w.date.set_label(&msg.datetime_list()),
+        // On one line the star keeps its column whether lit or not, so the
+        // senders line up.
+        let starred = msg.starred || meta.starred;
+        w.star.set_visible(starred || single);
+        w.star.set_opacity(if starred { 1.0 } else { 0.0 });
+        match (&meta.latest, &meta.latest_at) {
+            (_, Some((ts, date))) if single => w.date.set_label(&crate::models::date_short(*ts, date)),
+            (Some(latest), _) if !single => w.date.set_label(latest),
+            _ if single => w.date.set_label(&crate::models::date_short(msg.timestamp, &msg.date)),
+            _ => w.date.set_label(&msg.datetime_list()),
         }
         w.chip.set_visible(meta.count > 1);
         w.chip_count.set_label(&meta.count.to_string());
@@ -1436,16 +1460,37 @@ impl Row {
         });
 
         w.subject_line.set_visible(look.show_subject);
-        w.subject.set_label(&msg.subject);
+        // One line: the subject, then its text dimmed after it, in one label,
+        // so the subject is cut only once the text has gone (#334).
+        if single {
+            let esc = |t: &str| gtk::glib::markup_escape_text(t).to_string();
+            let text = crate::models::preview_display(meta.preview.as_deref().unwrap_or(&msg.preview));
+            let markup = if look.preview_lines > 0 && !text.is_empty() {
+                format!("{} <span weight=\"normal\" alpha=\"55%\">— {}</span>", esc(&msg.subject), esc(&text))
+            } else {
+                esc(&msg.subject)
+            };
+            w.subject.set_markup(&markup);
+        } else {
+            w.subject.set_use_markup(false);
+            w.subject.set_label(&msg.subject);
+        }
         w.subject.set_css_classes(if unread { &["message-subject", "unread"] } else { &["message-subject"] });
         self.render_tags(msg, &shared, &look);
 
         let preview = meta.preview.as_deref().unwrap_or(&msg.preview);
         w.preview_line.set_visible(look.preview_lines > 0);
         w.lock.set_visible(crate::models::preview_is_encrypted(preview));
-        w.preview.set_label(&crate::models::preview_display(preview));
-        w.preview.set_wrap(look.preview_lines > 1);
-        w.preview.set_lines(look.preview_lines.max(1) as i32);
+        let shown = crate::models::preview_display(preview);
+        if single {
+            // Carried by the subject's label on one line.
+            w.preview.set_visible(false);
+        } else {
+            w.preview.set_visible(true);
+            w.preview.set_label(&shown);
+            w.preview.set_wrap(look.preview_lines > 1);
+            w.preview.set_lines(look.preview_lines.max(1) as i32);
+        }
 
         w.surface.set_sensitivity(shared.swipe_sensitivity.get());
         if let Some(t) = self.tracker.borrow().as_ref() {
@@ -1743,6 +1788,57 @@ impl Row {
     }
 
     /// Show this many preview lines in place (Focus Mode).
+    /// Lay the row's widgets out on one line or as the three-line card
+    /// (#334). They are moved, not copied, and only when the layout
+    /// changes: a row is recycled across messages but rarely across layouts.
+    fn arrange(&self, single: bool) {
+        if self.st.borrow().single == single {
+            return;
+        }
+        self.st.borrow_mut().single = single;
+        let w = &self.w;
+        fn into(to: &gtk::Box, widgets: &[&gtk::Widget]) {
+            for widget in widgets {
+                if let Some(from) = widget.parent().and_downcast::<gtk::Box>() {
+                    from.remove(*widget);
+                }
+                to.append(*widget);
+            }
+        }
+        let name: &gtk::Widget = w.name.upcast_ref();
+        let subject: &gtk::Widget = w.subject.upcast_ref();
+        let star: &gtk::Widget = w.star.upcast_ref();
+        let clip: &gtk::Widget = w.clip.upcast_ref();
+        let date: &gtk::Widget = w.date.upcast_ref();
+        let chip: &gtk::Widget = w.chip.upcast_ref();
+        let tags: &gtk::Widget = w.tags_box.upcast_ref();
+        let lock: &gtk::Widget = w.lock.upcast_ref();
+        let preview: &gtk::Widget = w.preview.upcast_ref();
+        if single {
+            // [star][sender][lock][subject — preview][tags][clip][chip][date]
+            into(&w.line, &[star, name, lock, subject, tags, clip, chip, date]);
+            w.name.set_hexpand(false);
+            w.name.set_width_chars(18);
+            w.name.set_max_width_chars(18);
+            w.name.set_xalign(0.0);
+            w.date.set_width_chars(9);
+            w.date.set_xalign(1.0);
+            w.avatar.set_size(24);
+        } else {
+            into(&w.top, &[name, clip, star, date, chip]);
+            into(&w.subject_line, &[subject, tags]);
+            into(&w.preview_line, &[lock, preview]);
+            w.name.set_hexpand(true);
+            w.name.set_width_chars(-1);
+            w.name.set_max_width_chars(-1);
+            w.date.set_width_chars(-1);
+            w.date.set_xalign(0.5);
+            w.avatar.set_size(38);
+        }
+        w.text.set_visible(!single);
+        w.line.set_visible(single);
+    }
+
     pub fn set_preview_lines(&self, lines: u32) {
         let lines = lines.clamp(1, 3);
         self.w.preview.set_wrap(lines > 1);
@@ -2441,6 +2537,13 @@ fn build_widgets() -> RowWidgets {
     preview_line.append(&preview);
     text.append(&preview_line);
 
+    // The single-line layout's row (#334): empty and hidden until a row is
+    // laid out that way, when the widgets above move into it.
+    let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    line.set_hexpand(true);
+    line.set_visible(false);
+    content.append(&line);
+
     // The last reply's rail: a real dotted border on a widget spanning
     // exactly the row's top half, so it ends at the node dot. Added before
     // the node so the dot draws over where they meet.
@@ -2520,6 +2623,8 @@ fn build_widgets() -> RowWidgets {
         avatar,
         dot,
         text,
+        top,
+        line,
         name,
         clip,
         star,

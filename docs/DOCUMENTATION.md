@@ -718,6 +718,17 @@ conversation offers **Expand All Messages** and **Collapse All Messages**.
 What you fold or open stays that way while the conversation is on screen.
 Printing shows every message in full.
 
+### Message list layout
+
+**Settings → Message List → Layout** sets how the list shows a message.
+**Cards** gives the sender, the subject and the start of the text lines of
+their own. **Single line** puts them on one line in columns: the sender's
+circle and name, the subject with the text dimmed after it, then tags, a
+paperclip, the conversation's size and a short date. **Automatic** uses one
+line while the list pane is dragged wider than about 600 pixels and cards
+when it is narrower. On one line the actions palette is not shown; the
+right-click menu, swipes and keyboard shortcuts do the same things.
+
 ### Text size
 
 **Settings → Appearance → Text size** makes Hylki's text smaller or larger

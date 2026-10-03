@@ -1293,6 +1293,10 @@ pub(crate) struct PrivacyFile {
     /// preview off entirely, and stops it being fetched.
     #[serde(default = "default_preview_lines")]
     pub(crate) preview_lines: u32,
+    /// How the message list lays out a message: as a card, on one line, or
+    /// whichever the pane's width suits (#334).
+    #[serde(default)]
+    pub(crate) list_layout: ListLayout,
     /// Single-key shortcuts (j/k, r, a, d…) without a modifier. Off by default:
     /// a stray keystroke shouldn't archive mail for someone who never asked.
     #[serde(default)]
@@ -1560,6 +1564,7 @@ impl Default for PrivacyFile {
             text_scale: default_text_scale(),
             theme: String::new(),
             preview_lines: default_preview_lines(),
+            list_layout: ListLayout::Cards,
             single_key_shortcuts: false,
             run_in_background: false,
             autostart: false,
@@ -2834,6 +2839,23 @@ pub fn load_theme() -> String {
     } else {
         id
     }
+}
+
+/// How the message list lays out a message (#334).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ListLayout {
+    /// Sender, subject and preview on lines of their own.
+    #[default]
+    Cards,
+    /// One line per message, in columns.
+    SingleLine,
+    /// One line when the list pane is wide, cards when it is narrow.
+    Automatic,
+}
+
+pub fn load_list_layout() -> ListLayout {
+    load_privacy().list_layout
 }
 
 /// Lines of message text shown under the subject in the list; 0 means previews

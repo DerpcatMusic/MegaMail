@@ -1275,18 +1275,7 @@ const FOLD_BAR_FACE: &str = "\u{1}face\u{1}";
 /// The day on a folded card's bar, short as Proton has it: the time for
 /// today, the day and month this year, the year too before that.
 fn fold_bar_date(m: &Message) -> String {
-    use crate::datefmt as d;
-    if m.timestamp <= 0 {
-        return m.date.clone();
-    }
-    let now = d::now();
-    if d::day_key(m.timestamp) == d::day_key(now) {
-        d::time(m.timestamp)
-    } else if d::year(m.timestamp) == d::year(now) {
-        d::day_month(m.timestamp)
-    } else {
-        d::day_month_year(m.timestamp)
-    }
+    crate::models::date_short(m.timestamp, &m.date)
 }
 
 fn unsub_row_html(key: (u32, u32), inner: &str) -> String {
