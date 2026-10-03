@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Changed: the recipients button and the Unsubscribe and Translate
+  buttons in a message's header are filled, without an outline** (#342,
+  suggested by yioannides), as Adwaita draws buttons. Their shade follows
+  the text color, so they suit light and dark themes alike.
 - **Fixed: new mail sometimes did not appear until the folder was opened
   again** (#336, reported by yioannides). Mail that arrived while the
   connection was busy, marking a message read or fetching a body, was

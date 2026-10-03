@@ -4437,18 +4437,20 @@ impl MessageView {
                  font-size:0.9em;border-bottom:1px solid rgba(128,128,128,0.25);}}\
                .vireo-tr:empty{{display:none;}}\
                .vireo-tr-text{{flex:1 1 auto;min-width:0;opacity:0.8;}}\
-               .vireo-tr-btn{{flex:none;border:1px solid rgba(128,128,128,0.4);border-radius:6px;\
-                 padding:3px 12px;background:rgba(128,128,128,0.1);color:inherit;font:inherit;\
-                 font-size:0.95em;font-weight:600;cursor:pointer;}}\
-               .vireo-tr-btn:hover{{background:rgba(128,128,128,0.22);}}\
+               .vireo-tr-btn{{flex:none;border:none;border-radius:6px;\
+                 padding:3px 12px;background:color-mix(in srgb,currentColor 10%,transparent);\
+                 color:inherit;font:inherit;font-size:0.95em;font-weight:600;cursor:pointer;}}\
+               .vireo-tr-btn:hover{{background:color-mix(in srgb,currentColor 15%,transparent);}}\
+               .vireo-tr-btn:active{{background:color-mix(in srgb,currentColor 30%,transparent);}}\
                .vireo-unsub{{display:flex;align-items:center;gap:10px;padding:8px 14px 9px;\
                  font-size:0.9em;border-bottom:1px solid rgba(128,128,128,0.25);}}\
                .vireo-unsub:empty{{display:none;}}\
                .vireo-unsub-text{{flex:1 1 auto;min-width:0;opacity:0.8;}}\
-               .vireo-unsub-btn{{flex:none;border:1px solid rgba(128,128,128,0.4);border-radius:6px;\
-                 padding:3px 12px;background:rgba(128,128,128,0.1);color:inherit;font:inherit;\
-                 font-size:0.95em;font-weight:600;cursor:pointer;}}\
-               .vireo-unsub-btn:hover{{background:rgba(128,128,128,0.22);}}\
+               .vireo-unsub-btn{{flex:none;border:none;border-radius:6px;\
+                 padding:3px 12px;background:color-mix(in srgb,currentColor 10%,transparent);\
+                 color:inherit;font:inherit;font-size:0.95em;font-weight:600;cursor:pointer;}}\
+               .vireo-unsub-btn:hover{{background:color-mix(in srgb,currentColor 15%,transparent);}}\
+               .vireo-unsub-btn:active{{background:color-mix(in srgb,currentColor 30%,transparent);}}\
                /* The invitation banner (#223): the meeting at the top of\
                   the card, and the answer buttons under it. */\
                .vireo-inv{{display:flex;gap:10px;padding:10px 14px 11px;font-size:0.9em;\
@@ -4656,13 +4658,12 @@ impl MessageView {
                .vireo-folder{{padding:0.05em 0.45em;border-radius:0.7em;\
                  font-size:0.78em;opacity:0.75;border:1px solid currentColor;\
                  white-space:nowrap;flex:none;}}\
-               .vireo-rcpt-toggle{{font:inherit;font-size:0.78em;color:inherit;background:none;\
-                 border:1px solid rgba(128,128,128,0.45);border-radius:999px;\
-                 padding:0.05em 0.6em;cursor:pointer;opacity:0.7;\
-                 white-space:nowrap;flex:none;\
-                 transition:opacity 120ms ease,background 120ms ease;}}\
-               .vireo-rcpt-toggle:hover{{opacity:1;background:rgba(128,128,128,0.18);}}\
-               .vireo-rcpt-toggle.open{{opacity:1;background:rgba(128,128,128,0.18);}}\
+               .vireo-rcpt-toggle{{font:inherit;font-size:0.78em;color:inherit;\
+                 background:color-mix(in srgb,currentColor 10%,transparent);\
+                 border:none;border-radius:6px;padding:0.15em 0.6em;cursor:pointer;\
+                 white-space:nowrap;flex:none;transition:background 120ms ease;}}\
+               .vireo-rcpt-toggle:hover{{background:color-mix(in srgb,currentColor 15%,transparent);}}\
+               .vireo-rcpt-toggle.open{{background:color-mix(in srgb,currentColor 20%,transparent);}}\
                /* Indented past the avatar (26px + 8px gap), so the recipients\
                   align with the sender's name — as does the wrapped meta line. */\
                .vireo-rcpt{{font-size:0.85em;opacity:0.75;\
