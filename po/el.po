@@ -154,8 +154,9 @@ msgstr "Θέμα (Α–Ω)"
 msgid "Unread first"
 msgstr "Μη αναγνωσμένα πρώτα"
 
-msgid "Flagged first"
-msgstr "Επισημασμένα πρώτα"
+#, fuzzy
+msgid "Starred first"
+msgstr "Μη αναγνωσμένα πρώτα"
 
 msgid "Create Folder"
 msgstr "Δημιουργία φακέλου"
@@ -3231,6 +3232,9 @@ msgstr "Σήμανση όλων ως αναγνωσμένων"
 msgid "Mark All as Unread"
 msgstr "Σήμανση όλων ως μη αναγνωσμένων"
 
+msgid "Due"
+msgstr ""
+
 msgid "High importance"
 msgstr ""
 
@@ -4655,6 +4659,14 @@ msgid ""
 "the columns into the order you want, or out of the list. The subject always "
 "stays. Due Date appears only in lists with Microsoft 365 mail. Changes apply "
 "at once."
+msgstr ""
+
+msgid "Column headings"
+msgstr ""
+
+msgid ""
+"Names the columns above the list. Click one to sort the list by it, and "
+"again to reverse the order."
 msgstr ""
 
 msgid "Group messages by conversation"
@@ -6264,6 +6276,9 @@ msgstr "Τα ενοποιημένα εισερχόμενα σε φωτεινή �
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid "Flagged first"
+#~ msgstr "Επισημασμένα πρώτα"
 
 #~ msgid "Sign in through GNOME Online Accounts."
 #~ msgstr "Συνδεθείτε μέσω των Διαδικτυακών λογαριασμών GNOME."

@@ -153,8 +153,9 @@ msgstr "Тема (А–Я)"
 msgid "Unread first"
 msgstr "Сначала непрочитанные"
 
-msgid "Flagged first"
-msgstr "Сначала отмеченные"
+#, fuzzy
+msgid "Starred first"
+msgstr "Сначала непрочитанные"
 
 msgid "Create Folder"
 msgstr "Создать папку"
@@ -3237,6 +3238,9 @@ msgstr "Отметить все как прочитанные"
 msgid "Mark All as Unread"
 msgstr "Отметить все как непрочитанные"
 
+msgid "Due"
+msgstr ""
+
 msgid "High importance"
 msgstr ""
 
@@ -4650,6 +4654,14 @@ msgid ""
 "the columns into the order you want, or out of the list. The subject always "
 "stays. Due Date appears only in lists with Microsoft 365 mail. Changes apply "
 "at once."
+msgstr ""
+
+msgid "Column headings"
+msgstr ""
+
+msgid ""
+"Names the columns above the list. Click one to sort the list by it, and "
+"again to reverse the order."
 msgstr ""
 
 msgid "Group messages by conversation"
@@ -6194,6 +6206,9 @@ msgstr "Общие входящие в светлом режиме"
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid "Flagged first"
+#~ msgstr "Сначала отмеченные"
 
 #~ msgid "Sign in through GNOME Online Accounts."
 #~ msgstr "Войдите через «Сетевые учётные записи GNOME»."

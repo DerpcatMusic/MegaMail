@@ -148,7 +148,7 @@ msgstr ""
 msgid "Unread first"
 msgstr ""
 
-msgid "Flagged first"
+msgid "Starred first"
 msgstr ""
 
 msgid "Create Folder"
@@ -2907,6 +2907,9 @@ msgstr ""
 msgid "Mark All as Unread"
 msgstr ""
 
+msgid "Due"
+msgstr ""
+
 msgid "High importance"
 msgstr ""
 
@@ -4144,6 +4147,14 @@ msgid ""
 "the columns into the order you want, or out of the list. The subject always "
 "stays. Due Date appears only in lists with Microsoft 365 mail. Changes apply "
 "at once."
+msgstr ""
+
+msgid "Column headings"
+msgstr ""
+
+msgid ""
+"Names the columns above the list. Click one to sort the list by it, and "
+"again to reverse the order."
 msgstr ""
 
 msgid "Group messages by conversation"
