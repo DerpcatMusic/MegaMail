@@ -12,6 +12,11 @@
   they used to lose it. Each reopening also added an empty line at the top
   (#349, reported by amadeusp), and an edited Outbox message gained a second
   signature. Neither happens now.
+- **Fixed: the emoji chosen with Ctrl+. never reached the message** (#348,
+  reported by amadeusp). The chooser that opened belonged to WebKitGTK, which
+  drops the emoji picked in it. The composer now opens GTK's emoji chooser
+  itself, at the cursor, on Ctrl+. or Ctrl+;, and types the emoji where the
+  cursor was.
 - **Translations:** French (PR #341 by frenchy82) and Russian (PR #338 by
   Ilya Semenkovich) brought up to date with 1.43.0-beta.1.
 - **Fixed: Send with Hylki in GNOME Files went to the stable build when the

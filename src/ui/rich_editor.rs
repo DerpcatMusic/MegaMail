@@ -559,6 +559,31 @@ impl RichEditor {
         frame.set_overflow(gtk::Overflow::Hidden);
         frame.set_child(Some(&stack));
 
+        {
+            // Ctrl+. and Ctrl+; open WebKitGTK's own emoji chooser, but
+            // what is picked in it never reaches the page (#348; WebKitGTK
+            // 2.50 to 2.54 at least, a bare WebView does the same). The
+            // editor opens GTK's chooser itself, at the caret, and types
+            // the emoji in.
+            let keys = gtk::EventControllerKey::new();
+            keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+            let weak = webview.downgrade();
+            let anchor = stack.downgrade();
+            keys.connect_key_pressed(move |_, keyval, _, state| {
+                use gtk::gdk::{Key, ModifierType};
+                let mods = state & (ModifierType::CONTROL_MASK | ModifierType::SHIFT_MASK | ModifierType::ALT_MASK);
+                if mods != ModifierType::CONTROL_MASK || !matches!(keyval, Key::period | Key::semicolon) {
+                    return gtk::glib::Propagation::Proceed;
+                }
+                let (Some(v), Some(anchor)) = (weak.upgrade(), anchor.upgrade()) else {
+                    return gtk::glib::Propagation::Proceed;
+                };
+                show_emoji_chooser(&v, &anchor);
+                gtk::glib::Propagation::Stop
+            });
+            webview.add_controller(keys);
+        }
+
         let bx = gtk::Box::new(gtk::Orientation::Vertical, 6);
         bx.append(&toolbar);
         bx.append(&frame);
@@ -860,6 +885,58 @@ const PLACE_CARET: &str = "(function(){var b=document.body;\
     var r=kept;\
     if(!r){r=document.createRange();r.setStart(b,0);r.collapse(true);}\
     s.removeAllRanges();s.addRange(r);})()";
+
+/// GTK's emoji chooser over the editor, pointing at the caret (#348). It is
+/// parented only while it is open, so a closed composer leaves nothing
+/// behind.
+fn show_emoji_chooser(webview: &webkit6::WebView, anchor: &gtk::Stack) {
+    let weak = webview.downgrade();
+    let anchor = anchor.downgrade();
+    webview.evaluate_javascript(
+        "window.__hylkiEmojiMark ? window.__hylkiEmojiMark() : ''",
+        None,
+        None,
+        gtk::gio::Cancellable::NONE,
+        move |res| {
+            let (Some(v), Some(anchor)) = (weak.upgrade(), anchor.upgrade()) else { return };
+            let chooser = gtk::EmojiChooser::new();
+            chooser.set_parent(&anchor);
+            let at: Vec<f64> = res
+                .map(|r| r.to_str().to_string())
+                .unwrap_or_default()
+                .split(',')
+                .filter_map(|n| n.trim().parse().ok())
+                .collect();
+            if let [x, y, w, h] = at[..] {
+                // CSS pixels are widget pixels times the zoom.
+                let z = v.zoom_level();
+                let (x, y) = v
+                    .compute_point(&anchor, &gtk::graphene::Point::new((x * z) as f32, (y * z) as f32))
+                    .map_or((x * z, y * z), |p| (p.x() as f64, p.y() as f64));
+                chooser.set_pointing_to(Some(&gtk::gdk::Rectangle::new(
+                    x as i32,
+                    y as i32,
+                    (w * z).max(1.0) as i32,
+                    (h * z).max(1.0) as i32,
+                )));
+            }
+            let weak = v.downgrade();
+            chooser.connect_emoji_picked(move |_, emoji| {
+                let Some(v) = weak.upgrade() else { return };
+                v.grab_focus();
+                let text = serde_json::to_string(emoji).unwrap_or_default();
+                exec(&v, &format!("window.__hylkiEmojiPut && window.__hylkiEmojiPut({text})"));
+            });
+            chooser.connect_closed(|c| {
+                // Unparented after the pick has been handled, not inside the
+                // signal that is still running on it.
+                let c = c.clone();
+                gtk::glib::idle_add_local_once(move || c.unparent());
+            });
+            chooser.popup();
+        },
+    );
+}
 
 fn exec(webview: &webkit6::WebView, js: &str) {
     webview.evaluate_javascript(js, None, None, gtk::gio::Cancellable::NONE, |_| {});
@@ -1294,6 +1371,54 @@ const HISTORY_SCRIPT: &str = r#"<script>
     clearTimeout(timer);
     timer = setTimeout(function(){ closeRun(); kind = null; }, PAUSE_MS);
   }, true);
+})();
+</script>"#;
+
+/// The editor's side of its emoji chooser (#348). `__hylkiEmojiMark` keeps
+/// the caret, for the emoji to go to once the chooser has had the focus,
+/// and says where it is (`x,y,w,h` in CSS pixels) for the chooser to point
+/// at. `__hylkiEmojiPut` types the emoji there. A `<textarea>` (source
+/// mode) keeps its own caret, and the chooser points at the field.
+const EMOJI_SCRIPT: &str = r#"<script>
+(function(){
+  var at = null;
+  function box(r){
+    return [r.left, r.top, Math.max(1, r.width), Math.max(1, r.height)].map(Math.round).join(',');
+  }
+  window.__hylkiEmojiMark = function(){
+    var el = document.activeElement;
+    at = null;
+    if(el && el.tagName === 'TEXTAREA') return box(el.getBoundingClientRect());
+    var sel = getSelection();
+    if(!sel || !sel.rangeCount) return '';
+    at = sel.getRangeAt(0).cloneRange();
+    var rects = at.getClientRects();
+    if(rects.length) return box(rects[rects.length - 1]);
+    /* A caret in an empty line has no box of its own. Its container is
+       often the whole body, whose box would put the chooser under the
+       message rather than under the caret: measure the line the caret is
+       on, the child at its offset, by its start and one line high. */
+    var n = at.startContainer;
+    var e = n.nodeType === 3 ? n.parentNode : n;
+    if(n.nodeType === 1 && n.childNodes.length){
+      var c = n.childNodes[Math.min(at.startOffset, n.childNodes.length - 1)];
+      e = c.nodeType === 3 ? n : c;
+    }
+    if(!e || !e.getBoundingClientRect) return '';
+    var r = e.getBoundingClientRect();
+    var lh = parseFloat(getComputedStyle(e).lineHeight)
+      || parseFloat(getComputedStyle(e).fontSize) * 1.3 || 20;
+    return box({left: r.left, top: r.top, width: 1, height: Math.min(r.height || lh, lh)});
+  };
+  window.__hylkiEmojiPut = function(text){
+    if(at){
+      var sel = getSelection();
+      sel.removeAllRanges();
+      sel.addRange(at);
+      at = null;
+    }
+    document.execCommand('insertText', false, text);
+  };
 })();
 </script>"#;
 
@@ -1852,7 +1977,7 @@ fn document(content: &str, webview: &webkit6::WebView, image_policy: &str) -> St
     let return_paragraph = crate::config::load_privacy().return_paragraph;
     let script = format!(
         "<script>window.__hylkiPasteRich={paste_rich};\
-         window.__hylkiReturnParagraph={return_paragraph};</script>{PASTE_SCRIPT}{HISTORY_SCRIPT}"
+         window.__hylkiReturnParagraph={return_paragraph};</script>{PASTE_SCRIPT}{HISTORY_SCRIPT}{EMOJI_SCRIPT}"
     );
     format!(
         "<!doctype html><html><head><meta charset=\"utf-8\">\
@@ -1940,7 +2065,7 @@ fn source_document(text: &str, webview: &webkit6::WebView) -> String {
            }});\
            t.focus();t.setSelectionRange(0,0);\
          }})();\
-         </script>{HISTORY_SCRIPT}</body></html>",
+         </script>{HISTORY_SCRIPT}{EMOJI_SCRIPT}</body></html>",
         text = gtk::glib::markup_escape_text(text)
     )
 }
