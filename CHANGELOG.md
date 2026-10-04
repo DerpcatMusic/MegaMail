@@ -17,6 +17,10 @@
   drops the emoji picked in it. The composer now opens GTK's emoji chooser
   itself, at the cursor, on Ctrl+. or Ctrl+;, and types the emoji where the
   cursor was.
+- **Changed: the emoji chooser opens at the cursor in every text field.** In
+  the subject, the search fields and the fields in Settings, GTK pointed it at
+  the middle of the field, wherever the cursor was. It now opens under the
+  cursor, from Ctrl+., Ctrl+; or Insert Emoji in the field's menu.
 - **Translations:** French (PR #341 by frenchy82) and Russian (PR #338 by
   Ilya Semenkovich) brought up to date with 1.43.0-beta.1.
 - **Fixed: Send with Hylki in GNOME Files went to the stable build when the

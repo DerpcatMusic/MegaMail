@@ -211,6 +211,11 @@ fn main() {
     let first_run = std::env::var("HYLKI_DEMO").is_err()
         && config::load().unwrap_or_default().is_empty()
         && !config::wizard_completed();
+    // Every window's text fields open their emoji chooser at the cursor.
+    {
+        use gtk::gio::prelude::ApplicationExt;
+        adw_app.connect_startup(|_| crate::ui::emoji::follow_all());
+    }
     let app = RelmApp::from_app(adw_app)
         .with_args(args)
         .visible_on_activate(!hidden && !first_run);
