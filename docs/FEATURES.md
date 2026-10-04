@@ -17,6 +17,9 @@ The full list. The [README](../README.md) carries a shorter one.
   service in GNOME Settings pauses it here.
 - **Per-alias SMTP:** each address on an account can send through its own
   server and credentials.
+- **Any From address:** type a name and address for one message, such as a
+  `+tag` address, and replies to a `+tag` address answer from it. A JMAP
+  server's own identities are offered too.
 - **Proton Bridge, Zimbra, iCloud, Mailfence and other awkward servers:**
   STARTTLS with locally signed certificates, a certificate in the hosting
   company's name rather than yours, servers without MOVE, and non-compliant

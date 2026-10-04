@@ -210,6 +210,11 @@ pub struct ComposePrefill {
     /// For a reply: the original's To+Cc, so the composer can answer from the
     /// alias the mail was addressed to (#34). Empty otherwise.
     pub reply_addressed_to: String,
+    /// A From of the user's own making (#347): a draft saved from an address
+    /// that is no identity, or a reply to a `+tag` address. "Name <addr>"
+    /// or a bare address; the composer opens its From as text when this is
+    /// not the identity it selects.
+    pub custom_from: String,
     /// For a new message: the address to send from when the user has chosen
     /// a default identity in Settings (#157). Empty = the account's own
     /// address. Ignored when `reply_addressed_to` names an identity.
@@ -322,6 +327,8 @@ pub struct Compose {
     /// A compact reply's field rows, revealed by the header button (#154)
     /// or from the start by the preference.
     fields_shown: bool,
+    /// The From is typed, in `custom_from_row`, not picked (#347).
+    custom_from: bool,
     /// The pane is too narrow for the full toolbar: everything but Cancel,
     /// Send and the fields chevron folds into the ⋯ menu (like the reader's
     /// header), so the window controls at the end never leave the canvas.
@@ -460,6 +467,8 @@ pub enum ComposeInput {
     TranslateMenu,
     /// The quoted message's text came back: show the languages.
     ShowTranslateMenu(String),
+    /// Type the From instead of picking it, or go back to the list (#347).
+    CustomFrom(bool),
     /// Show Original or Show Translation: the translation was the last
     /// edit, so it is undone or done again, the subject with it (#327).
     TranslateToggle { original: bool },
@@ -857,6 +866,14 @@ impl Component for Compose {
                                 set_title: &i18n("From"),
                                 connect_selected_notify => ComposeInput::AccountChanged,
                             },
+                            // The From as text (#347): any name and address,
+                            // sent through the account chosen above.
+                            #[name = "custom_from_row"]
+                            adw::EntryRow {
+                                set_title: &i18n("From"),
+                                set_input_purpose: gtk::InputPurpose::Email,
+                                set_visible: false,
+                            },
                             #[name = "to_row"]
                             adw::EntryRow {
                                 set_title: &i18n("To"),
@@ -1096,6 +1113,7 @@ impl Component for Compose {
             compact: compact && !prefill.to.trim().is_empty(),
             decorations,
             fields_shown: crate::config::load_privacy().reply_fields,
+            custom_from: false,
             narrow: false,
             // Files handed in from outside are something to lose: closing
             // asks first, as it would once the user had attached them.
@@ -1208,11 +1226,18 @@ impl Component for Compose {
             let cc = widgets.cc_row.clone();
             let bcc = widgets.bcc_row.clone();
             let reply_to = widgets.reply_to_row.clone();
+            let from = widgets.from_row.clone();
+            let custom = widgets.custom_from_row.clone();
             let btn = more.clone();
             more.connect_clicked(move |_| {
                 cc.set_visible(true);
                 bcc.set_visible(true);
                 reply_to.set_visible(true);
+                // With one address the From row is hidden; More brings it,
+                // with its pencil for typing another (#347).
+                if !custom.is_visible() {
+                    from.set_visible(true);
+                }
                 btn.set_visible(false);
             });
             widgets.to_row.add_suffix(&more);
@@ -1247,6 +1272,47 @@ impl Component for Compose {
         widgets.from_row.set_factory(Some(&factory));
         widgets.from_row.set_selected(selected as u32);
         widgets.from_row.set_visible(model.accounts.len() > 1);
+        {
+            // The pencil types a From of your own (#347); the custom row's
+            // button goes back to the list.
+            let edit = gtk::Button::from_icon_name("document-edit-symbolic");
+            edit.add_css_class("flat");
+            edit.set_valign(gtk::Align::Center);
+            edit.set_tooltip_text(Some(i18n("Type a From address").as_str()));
+            let s = sender.input_sender().clone();
+            edit.connect_clicked(move |_| {
+                let _ = s.send(ComposeInput::CustomFrom(true));
+            });
+            widgets.from_row.add_suffix(&edit);
+            let back = gtk::Button::from_icon_name("pan-down-symbolic");
+            back.add_css_class("flat");
+            back.set_valign(gtk::Align::Center);
+            back.set_tooltip_text(Some(i18n("Choose from your addresses").as_str()));
+            let s = sender.input_sender().clone();
+            back.connect_clicked(move |_| {
+                let _ = s.send(ComposeInput::CustomFrom(false));
+            });
+            widgets.custom_from_row.add_suffix(&back);
+        }
+        // A From that is none of the identities opens as text (#347).
+        let custom = prefill.custom_from.trim();
+        if !custom.is_empty() {
+            let addr = crate::worker::parse_recipients(custom)
+                .into_iter()
+                .next()
+                .map(|(_, a)| a)
+                .unwrap_or_default();
+            let same = model.accounts.get(selected).is_some_and(|a| same_from(&identity_display(a), custom));
+            // A bare address that is the identity's counts as the identity.
+            let bare = !custom.contains('<')
+                && model.accounts.get(selected).is_some_and(|a| a.email.eq_ignore_ascii_case(&addr));
+            if !same && !bare {
+                model.custom_from = true;
+                widgets.from_row.set_visible(false);
+                widgets.custom_from_row.set_text(custom);
+                widgets.custom_from_row.set_visible(true);
+            }
+        }
 
         widgets.to_row.set_text(&prefill.to);
         widgets.cc_row.set_text(&prefill.cc);
@@ -1933,6 +1999,24 @@ impl Component for Compose {
                 self.report_history(&sender);
             }
 
+            ComposeInput::CustomFrom(on) => {
+                self.custom_from = on;
+                if on {
+                    // Start from the address that was picked, to edit.
+                    let idx = widgets.from_row.selected() as usize;
+                    let start = self.accounts.get(idx).map(identity_display).unwrap_or_default();
+                    if widgets.custom_from_row.text().trim().is_empty() {
+                        widgets.custom_from_row.set_text(&start);
+                    }
+                    widgets.from_row.set_visible(false);
+                    widgets.custom_from_row.set_visible(true);
+                    widgets.custom_from_row.grab_focus();
+                } else {
+                    widgets.custom_from_row.set_visible(false);
+                    widgets.from_row.set_visible(true);
+                }
+            }
+
             ComposeInput::AccountChanged => {
                 self.follow_account_signing(widgets);
                 // Swap the editor's signature block for the new account's.
@@ -2466,7 +2550,16 @@ impl Component for Compose {
                     }
                 }
                 let from_account_id = self.accounts.get(idx).map(|a| a.id).unwrap_or(1);
-                let from_alias = self.accounts.get(idx).and_then(|a| a.alias_from.clone());
+                let from_alias = match self.chosen_from(widgets) {
+                    Ok(from) => from,
+                    Err(why) => {
+                        let parent = widgets.to_row.root().and_downcast::<gtk::Window>();
+                        let dialog = adw::MessageDialog::new(parent.as_ref(), Some(&i18n("Check the From address")), Some(&why));
+                        dialog.add_response("ok", &i18n("OK"));
+                        dialog.present();
+                        break 'handle;
+                    }
+                };
 
                 // Pull the body out of the editor (async), then finish
                 // sending via SendBody. The send-time reader also recuts any
@@ -2506,7 +2599,11 @@ impl Component for Compose {
                 let subject = widgets.subject_row.text().to_string();
                 let idx = widgets.from_row.selected() as usize;
                 let from_account_id = self.accounts.get(idx).map(|a| a.id).unwrap_or(1);
-                let from_alias = self.accounts.get(idx).and_then(|a| a.alias_from.clone());
+                // A draft keeps even a From still being typed: it is checked
+                // when the message is sent.
+                let from_alias = self
+                    .chosen_from(widgets)
+                    .unwrap_or_else(|_| self.accounts.get(idx).and_then(|a| a.alias_from.clone()));
                 let s = sender.clone();
                 self.read_body_as(self.format, false, move |html, text| {
                     s.input(ComposeInput::SaveDraftBody {
@@ -2539,7 +2636,49 @@ impl Component for Compose {
     }
 }
 
+/// An identity's From as the composer writes it out: "Name <address>".
+fn identity_display(a: &ComposeAccount) -> String {
+    a.alias_from.clone().unwrap_or_else(|| a.label.clone()).trim().to_string()
+}
+
+/// Whether two Froms name the same person at the same address, however
+/// each is quoted or spaced.
+fn same_from(a: &str, b: &str) -> bool {
+    let one = |s: &str| {
+        crate::worker::parse_recipients(s)
+            .into_iter()
+            .next()
+            .map(|(n, e)| (n.trim().trim_matches('"').to_string(), e.to_lowercase()))
+    };
+    matches!((one(a), one(b)), (Some(x), Some(y)) if x == y)
+}
+
 impl Compose {
+    /// The From to put on the wire: the picked identity's (`None` for the
+    /// account's own), or the one typed in (#347), which has to hold one
+    /// address.
+    fn chosen_from(&self, widgets: &ComposeWidgets) -> Result<Option<String>, String> {
+        let idx = widgets.from_row.selected() as usize;
+        let picked = self.accounts.get(idx).and_then(|a| a.alias_from.clone());
+        if !self.custom_from {
+            return Ok(picked);
+        }
+        let typed = widgets.custom_from_row.text().trim().to_string();
+        let found = crate::worker::parse_recipients(&typed);
+        let [(name, addr)] = found.as_slice() else {
+            return Err(i18n("The From has to be one address, such as Ann <ann@example.com>."));
+        };
+        let at = addr.split_once('@');
+        if at.is_none_or(|(user, host)| user.is_empty() || !host.contains('.') || addr.contains(char::is_whitespace)) {
+            return Err(i18n_f("“{address}” is not an email address.", &[("address", addr)]));
+        }
+        // Left as the picked identity reads: send as that.
+        if self.accounts.get(idx).is_some_and(|a| same_from(&identity_display(a), &typed)) {
+            return Ok(picked);
+        }
+        Ok(Some(if name.trim().is_empty() { addr.clone() } else { format!("{} <{addr}>", name.trim()) }))
+    }
+
     /// Put Sign where the From account's default has it (#267), until the
     /// user has set it by hand. While encrypting it stays on: encrypted
     /// mail is always signed.

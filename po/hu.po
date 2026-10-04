@@ -2796,6 +2796,13 @@ msgstr "Továbbiak"
 msgid "Show Cc, Bcc and Reply-To"
 msgstr "Másolat, titkos másolat és válaszcím megjelenítése"
 
+#, fuzzy
+msgid "Type a From address"
+msgstr "Feladó címe"
+
+msgid "Choose from your addresses"
+msgstr ""
+
 msgid "Not signed in"
 msgstr "Nincs bejelentkezve"
 
@@ -2871,6 +2878,16 @@ msgstr ""
 
 msgid "Cannot send with OpenPGP"
 msgstr "Nem lehet küldeni OpenPGP-vel"
+
+#, fuzzy
+msgid "Check the From address"
+msgstr "Feladó címe"
+
+msgid "The From has to be one address, such as Ann <ann@example.com>."
+msgstr ""
+
+msgid "“{address}” is not an email address."
+msgstr ""
 
 msgid "{name} (link)"
 msgstr "{name} (hivatkozás)"
@@ -6472,9 +6489,6 @@ msgstr "Hyprlab"
 #~ msgstr ""
 #~ "Az egyező levelek helye; vagy hagyja őket a Beérkezett üzenetek között, "
 #~ "és csak címkézze őket"
-
-#~ msgid "From address"
-#~ msgstr "Feladó címe"
 
 #~ msgid "From name"
 #~ msgstr "Feladó neve"

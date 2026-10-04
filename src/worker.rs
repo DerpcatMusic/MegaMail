@@ -575,6 +575,10 @@ pub enum WorkerEvent {
     /// `remaining` is how many of its messages are still unscanned.
     AttachmentsScanned { folder_path: String, added: u32, remaining: u32 },
     Account(Account),
+    /// The sending identities a JMAP server keeps for the account (#346):
+    /// `(name, address)`, the address `*@domain` for one that sends as
+    /// anyone at the domain.
+    Identities(Vec<(String, String)>),
     Folders(Vec<Folder>),
     Messages { folder_id: u32, messages: Vec<Message> },
     /// What the server found for the "Message body" filter conditions
@@ -4177,7 +4181,7 @@ fn addr_list(header: Option<&mail_parser::Address>) -> String {
 /// A queued message taken apart for editing: the fields a composer needs, plus
 /// its attachments as bytes.
 pub struct EditableMessage {
-    /// The From address, without its display name.
+    /// The From as written: "Name <address>", or the bare address.
     pub from: String,
     pub to: String,
     pub cc: String,
@@ -4210,10 +4214,8 @@ pub fn editable_from_raw(raw: &[u8], envelope_rcpts: &[String]) -> EditableMessa
         .as_ref()
         .and_then(|p| p.from())
         .and_then(|a| a.first())
-        .and_then(|a| a.address())
-        .unwrap_or_default()
-        .trim()
-        .to_string();
+        .and_then(|a| Some(format_recipient(a.name().unwrap_or_default(), a.address()?.trim())))
+        .unwrap_or_default();
     let to = parsed.as_ref().map(|p| addr_list(p.to())).unwrap_or_default();
     let cc = parsed.as_ref().map(|p| addr_list(p.cc())).unwrap_or_default();
     let subject = parsed
@@ -10319,7 +10321,7 @@ NIL NIL NIL NIL NIL NIL NIL))\r\n";
             let back = load_raw(&mut sess, "Drafts", uid).await.expect("raw");
             delete_draft(&mut sess, "Drafts", uid).await.ok();
             let e = editable_from_raw(&back, &[]);
-            assert_eq!(e.from, "work@example.com");
+            assert_eq!(e.from, "Work <work@example.com>");
             assert_eq!(e.bcc, "hidden@example.com");
             assert_eq!(e.in_reply_to, "orig@example.com");
             assert!(e.body_html.contains("draft text"), "{}", e.body_html);
@@ -10923,7 +10925,7 @@ NIL NIL NIL NIL NIL NIL NIL))\r\n";
         let raw = build_draft(&sample_account(), &msg).expect("builds").formatted();
         let editable = editable_from_raw(&raw, &[]);
 
-        assert_eq!(editable.from, "work@example.com");
+        assert_eq!(editable.from, "Work <work@example.com>");
         assert_eq!(editable.bcc, "hidden@example.com");
         assert_eq!(editable.in_reply_to, "Orig@Example.com");
         assert_eq!(editable.references, "first@example.com Orig@Example.com");

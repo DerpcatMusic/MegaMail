@@ -2792,6 +2792,12 @@ msgstr "Más"
 msgid "Show Cc, Bcc and Reply-To"
 msgstr "Mostrar Cc, Cco y Responder a"
 
+msgid "Type a From address"
+msgstr ""
+
+msgid "Choose from your addresses"
+msgstr ""
+
 msgid "Not signed in"
 msgstr "Sesión no iniciada"
 
@@ -2867,6 +2873,16 @@ msgstr ""
 
 msgid "Cannot send with OpenPGP"
 msgstr "No se puede enviar con OpenPGP"
+
+#, fuzzy
+msgid "Check the From address"
+msgstr "DMARC (¿es auténtica la dirección De:?)"
+
+msgid "The From has to be one address, such as Ann <ann@example.com>."
+msgstr ""
+
+msgid "“{address}” is not an email address."
+msgstr ""
 
 msgid "{name} (link)"
 msgstr "{name} (enlace)"

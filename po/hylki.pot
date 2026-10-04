@@ -2528,6 +2528,12 @@ msgstr ""
 msgid "Show Cc, Bcc and Reply-To"
 msgstr ""
 
+msgid "Type a From address"
+msgstr ""
+
+msgid "Choose from your addresses"
+msgstr ""
+
 msgid "Not signed in"
 msgstr ""
 
@@ -2591,6 +2597,15 @@ msgid ""
 msgstr ""
 
 msgid "Cannot send with OpenPGP"
+msgstr ""
+
+msgid "Check the From address"
+msgstr ""
+
+msgid "The From has to be one address, such as Ann <ann@example.com>."
+msgstr ""
+
+msgid "“{address}” is not an email address."
 msgstr ""
 
 msgid "{name} (link)"

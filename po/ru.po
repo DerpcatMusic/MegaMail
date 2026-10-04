@@ -2798,6 +2798,13 @@ msgstr "Ещё"
 msgid "Show Cc, Bcc and Reply-To"
 msgstr "Показать «Копия», «Скрытая копия» и «Адрес для ответа»"
 
+#, fuzzy
+msgid "Type a From address"
+msgstr "Адрес отправителя"
+
+msgid "Choose from your addresses"
+msgstr ""
+
 msgid "Not signed in"
 msgstr "Вход не выполнен"
 
@@ -2867,6 +2874,16 @@ msgstr ""
 
 msgid "Cannot send with OpenPGP"
 msgstr "Невозможно отправить с помощью OpenPGP"
+
+#, fuzzy
+msgid "Check the From address"
+msgstr "Адрес отправителя"
+
+msgid "The From has to be one address, such as Ann <ann@example.com>."
+msgstr ""
+
+msgid "“{address}” is not an email address."
+msgstr ""
 
 msgid "{name} (link)"
 msgstr "{name} (ссылка)"
@@ -6429,9 +6446,6 @@ msgstr "Hyprlab"
 #~ msgstr ""
 #~ "Куда складывать подходящие письма; либо оставить во «Входящих» и только "
 #~ "присвоить метку"
-
-#~ msgid "From address"
-#~ msgstr "Адрес отправителя"
 
 #~ msgid "From name"
 #~ msgstr "Имя отправителя"

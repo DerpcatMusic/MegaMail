@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Added: the From address can be typed** (#347, suggested by pdf). A pencil
+  on the composer's From row turns it into text, for any name and address on
+  one message without making it an alias; the message still goes through the
+  account chosen. With one address, the row is under More. A reply to mail
+  sent to a `+tag` address of yours starts from that address, and a draft
+  saved from a typed address opens with it.
+- **Added: a JMAP server's identities are offered as From addresses** (#346,
+  suggested by pdf). They are read when the account connects, and a message
+  is sent as the identity with its address, or a catch-all identity for its
+  domain (`*@example.org`), before the first identity is used. A JMAP alias
+  no longer shows SMTP settings, which JMAP does not use.
 - **Added: subjects are translated, and the composer can show the original
   again** (#327, suggested by pdf). Translating a message translates its
   subject too, in the heading and on its folded card, and Show Original puts

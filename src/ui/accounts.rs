@@ -2599,7 +2599,8 @@ impl Component for AccountsWindow {
 
             AccountsInput::AliasAdd => {
                 self.alias_editing = None;
-                self.open_alias_dialog(root, &AliasConfig::default(), &sender);
+                let jmap = form_protocol(widgets) == Protocol::Jmap;
+                self.open_alias_dialog(root, &AliasConfig::default(), jmap, &sender);
             }
 
             AccountsInput::AliasEdit(i) => {
@@ -2607,7 +2608,8 @@ impl Component for AccountsWindow {
                     return;
                 };
                 self.alias_editing = Some(i);
-                self.open_alias_dialog(root, &alias, &sender);
+                let jmap = form_protocol(widgets) == Protocol::Jmap;
+                self.open_alias_dialog(root, &alias, jmap, &sender);
             }
 
             AccountsInput::UnhideFolder(i) => {
@@ -3086,11 +3088,14 @@ impl AccountsWindow {
         }
     }
 
-    /// Open the modal alias editor (#34), prefilled from `alias`.
+    /// Open the modal alias editor (#34), prefilled from `alias`. A JMAP
+    /// account's server sends every message itself (#346), so its aliases
+    /// have no SMTP server of their own to set.
     fn open_alias_dialog(
         &mut self,
         root: &adw::Bin,
         alias: &AliasConfig,
+        jmap: bool,
         sender: &ComponentSender<Self>,
     ) {
         self.close_alias_dialog();
@@ -3182,8 +3187,10 @@ impl AccountsWindow {
         content.set_margin_start(24);
         content.set_margin_end(24);
         content.append(&identity_group);
-        content.append(&smtp_group);
-        content.append(&test_box);
+        if !jmap {
+            content.append(&smtp_group);
+            content.append(&test_box);
+        }
 
         let scroller = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)

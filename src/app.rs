@@ -1028,6 +1028,9 @@ pub struct AppModel {
     showing_outbox: bool,
     /// Messages waiting to be sent, per account, as last reported by its worker.
     outbox_by_account: HashMap<u32, Vec<crate::models::OutboxItem>>,
+    /// The sending identities a JMAP server keeps, per account (#346):
+    /// offered as From addresses beside the account's own aliases.
+    server_identities: HashMap<u32, Vec<(String, String)>>,
     /// Gallery items per account inbox, merged for display.
     /// How many attachments the gallery's current query matches, carried
     /// between pages so only the first one pays for the COUNT.
@@ -1709,6 +1712,8 @@ pub enum AppMsg {
     SettingsLeaveEditor { page: String, ask: bool },
     // Worker events (each carries the account it came from)
     SetAccount(Account),
+    /// A JMAP server's sending identities for an account (#346).
+    ServerIdentities { account_id: u32, identities: Vec<(String, String)> },
     SetFolders { account_id: u32, folders: Vec<Folder> },
     Messages { account_id: u32, folder_id: u32, messages: Vec<Message> },
     /// Showcase: open filter rule `i` in the current Accounts panel.
@@ -3382,6 +3387,7 @@ impl SimpleComponent for AppModel {
             showing_contacts: false,
             showing_outbox: false,
             outbox_by_account: HashMap::new(),
+            server_identities: HashMap::new(),
             gallery_total: 0,
             gallery_scan_left: HashMap::new(),
         };
@@ -9570,6 +9576,10 @@ impl SimpleComponent for AppModel {
                 }
             }
 
+            AppMsg::ServerIdentities { account_id, identities } => {
+                self.server_identities.insert(account_id, identities);
+            }
+
             AppMsg::SetAccount(account) => {
                 if let Some(existing) = self.accounts.iter_mut().find(|a| a.id == account.id) {
                     *existing = account;
@@ -14825,7 +14835,12 @@ impl AppModel {
             encrypt: false,
             outbox_origin: Some(id),
             reply_addressed_to: String::new(),
-            from_address: String::new(),
+            from_address: crate::worker::parse_recipients(&editable.from)
+                .into_iter()
+                .next()
+                .map(|(_, addr)| addr)
+                .unwrap_or_default(),
+            custom_from: editable.from,
             send_at: item.send_at,
             cloud_uploads: Vec::new(),
             inline_files: Vec::new(),
@@ -14880,6 +14895,7 @@ impl AppModel {
                 .as_deref()
                 .map(|f| crate::config::split_identity(f).1)
                 .unwrap_or_default(),
+            custom_from: m.from_alias.clone().unwrap_or_default(),
             send_at: m.send_at,
             cloud_uploads: Vec::new(),
             inline_files: Vec::new(),
@@ -14937,7 +14953,14 @@ impl AppModel {
             body_html: e.body_html,
             in_reply_to: e.in_reply_to,
             references: e.references,
-            from_address: e.from,
+            from_address: crate::worker::parse_recipients(&e.from)
+                .into_iter()
+                .next()
+                .map(|(_, addr)| addr)
+                .unwrap_or_default(),
+            // Saved from an address that is no identity (#347): it opens
+            // as typed.
+            custom_from: e.from,
             attachments,
             cloud_uploads: extra.cloud,
             ..Default::default()
@@ -15171,6 +15194,28 @@ impl AppModel {
                         alias_from: Some(display),
                     });
                 }
+                // A JMAP server's own identities (#346), unless the account
+                // already lists the address. A catch-all (`*@domain`) is no
+                // address to send from; typing one into From uses it.
+                for (name, addr) in self.server_identities.get(&id).map(Vec::as_slice).unwrap_or_default() {
+                    if addr.starts_with("*@") || identities.iter().any(|i| i.email.eq_ignore_ascii_case(addr)) {
+                        continue;
+                    }
+                    let display = if name.is_empty() || name.eq_ignore_ascii_case(addr) {
+                        addr.clone()
+                    } else {
+                        format!("{name} <{addr}>")
+                    };
+                    identities.push(ComposeAccount {
+                        id,
+                        label: display.clone(),
+                        signature: signature.clone(),
+                        email: addr.clone(),
+                        pgp_key: pgp_key.clone(),
+                        sign_default,
+                        alias_from: Some(display),
+                    });
+                }
                 identities
             })
             .collect();
@@ -15179,15 +15224,42 @@ impl AppModel {
         // For a new message, the default sender chosen in Settings (#157), if
         // it is one of this account's addresses. Otherwise (and when nothing
         // matches) the account's own address.
-        let hay = prefill.reply_addressed_to.to_lowercase();
-        let want = prefill.from_address.trim().to_lowercase();
-        let selected = (!hay.is_empty())
+        // A reply to a `+tag` address of one of the account's identities
+        // (#347) answers from that address, as typed, through the identity.
+        let plus = (prefill.custom_from.trim().is_empty())
             .then(|| {
-                accounts.iter().position(|c| {
-                    c.id == account_id && hay.contains(c.email.to_lowercase().as_str())
+                crate::worker::parse_recipients(&prefill.reply_addressed_to).into_iter().find_map(|(_, addr)| {
+                    let (user, host) = addr.split_once('@')?;
+                    let (base, _tag) = user.split_once('+')?;
+                    let plain = format!("{base}@{host}");
+                    let i = accounts
+                        .iter()
+                        .position(|c| c.id == account_id && c.email.eq_ignore_ascii_case(&plain))?;
+                    let (name, _) = crate::config::split_identity(
+                        &accounts[i].alias_from.clone().unwrap_or_else(|| accounts[i].label.clone()),
+                    );
+                    Some((i, crate::worker::format_recipient(&name, &addr)))
                 })
             })
-            .flatten()
+            .flatten();
+        let mut prefill = prefill;
+        if let Some((_, from)) = &plus {
+            prefill.custom_from = from.clone();
+        }
+        let hay = prefill.reply_addressed_to.to_lowercase();
+        let want = prefill.from_address.trim().to_lowercase();
+        let by_reply = || {
+            (!hay.is_empty())
+                .then(|| {
+                    accounts.iter().position(|c| {
+                        c.id == account_id && hay.contains(c.email.to_lowercase().as_str())
+                    })
+                })
+                .flatten()
+        };
+        let selected = plus
+            .map(|(i, _)| i)
+            .or_else(by_reply)
             .or_else(|| {
                 (!want.is_empty()).then(|| {
                     accounts
@@ -21490,6 +21562,7 @@ fn map_event(account_id: u32, event: WorkerEvent) -> AppMsg {
             AppMsg::ThreadSummaries { account_id, summaries }
         }
         WorkerEvent::Account(a) => AppMsg::SetAccount(a),
+        WorkerEvent::Identities(identities) => AppMsg::ServerIdentities { account_id, identities },
         WorkerEvent::Folders(folders) => AppMsg::SetFolders { account_id, folders },
         WorkerEvent::Messages { folder_id, messages } => {
             AppMsg::Messages { account_id, folder_id, messages }

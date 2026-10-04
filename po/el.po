@@ -2825,6 +2825,12 @@ msgstr "Περισσότερα"
 msgid "Show Cc, Bcc and Reply-To"
 msgstr "Εμφάνιση Κοιν., Κρυφής κοιν. και Απάντησης προς"
 
+msgid "Type a From address"
+msgstr ""
+
+msgid "Choose from your addresses"
+msgstr ""
+
 msgid "Not signed in"
 msgstr "Δεν έχει γίνει σύνδεση"
 
@@ -2900,6 +2906,16 @@ msgstr ""
 
 msgid "Cannot send with OpenPGP"
 msgstr "Δεν είναι δυνατή η αποστολή με OpenPGP"
+
+#, fuzzy
+msgid "Check the From address"
+msgstr "DMARC (είναι γνήσια η διεύθυνση Από:)"
+
+msgid "The From has to be one address, such as Ann <ann@example.com>."
+msgstr ""
+
+msgid "“{address}” is not an email address."
+msgstr ""
 
 msgid "{name} (link)"
 msgstr "{name} (σύνδεσμος)"

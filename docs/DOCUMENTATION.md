@@ -82,7 +82,9 @@ goes through the server's `EmailSubmission`, which files the copy in Sent
 New mail arrives over the server's EventSource push channel when push is
 on for the account, with a poll as the fallback. Marking a message as spam
 or not spam sets the `$junk` and `$notjunk` keywords the server's filter
-learns from.
+learns from. The server's sending identities are offered in the composer's
+From row (see [The From address](#the-from-address)), and an alias has no
+SMTP settings of its own.
 
 Tested against Stalwart; Fastmail speaks the same standard but has not been
 tried by hand. In `accounts.toml` the account has `protocol = "jmap"` and
@@ -456,6 +458,23 @@ reader shows them for that message, so answering a message does not load
 anything reading it did not. The recipient still gets them. In dark mode a
 quoted message that sets its own colors keeps the light ground it was
 designed for.
+
+### The From address
+
+The From row lists each account's address and the aliases set up for it.
+Its pencil turns the row into text, where any name and address can be typed
+for this one message, a throwaway address or a `+tag` one, without making
+it an alias; the arrow beside it goes back to the list. The message still
+goes through the account picked in the list, and with one address that row
+appears under **More**. A reply to mail sent to a `+tag` address of one of
+your addresses starts from that address, and a draft saved from a typed
+address opens with it. Whether the server accepts mail from an address it
+does not know is up to the server: many refuse it, or rewrite it.
+
+A JMAP account lists the identities the server keeps for it as well, so an
+alias made in the webmail is in the From row without setting it up again.
+The message is sent as the identity with its address, or as a catch-all
+identity for its domain (`*@example.org`) when there is one.
 
 ### Return and Shift+Return
 

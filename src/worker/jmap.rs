@@ -1113,21 +1113,55 @@ async fn auto_empty_jmap(
 // Sending
 // ---------------------------------------------------------------------------
 
-/// The identity to submit as: the one whose address is the From, else the
-/// first the server offers.
-fn jmap_identity_for(s: &JmapSession, from: &str) -> Result<String, String> {
+/// The account's sending identities, as the server lists them.
+fn jmap_identities(s: &JmapSession) -> Result<Vec<serde_json::Value>, String> {
     let responses = jmap_call(
         s,
         &[CAP_CORE, CAP_SUBMISSION],
         vec![call(0, "Identity/get", serde_json::json!({ "accountId": s.account, "ids": null }))],
     )?;
-    let list = args(&responses, 0)["list"].as_array().cloned().unwrap_or_default();
-    let by_addr = list
-        .iter()
-        .find(|i| i["email"].as_str().is_some_and(|e| e.eq_ignore_ascii_case(from)));
-    by_addr
+    Ok(args(&responses, 0)["list"].as_array().cloned().unwrap_or_default())
+}
+
+/// Tell the app which identities the server has (#346), so the composer
+/// offers them as From addresses.
+fn emit_jmap_identities(s: &JmapSession, emit: &impl Fn(WorkerEvent)) {
+    match jmap_identities(s) {
+        Ok(list) => emit(WorkerEvent::Identities(
+            list.iter()
+                .filter_map(|i| {
+                    let email = i["email"].as_str()?.trim().to_string();
+                    let name = i["name"].as_str().unwrap_or_default().trim().to_string();
+                    (!email.is_empty()).then_some((name, email))
+                })
+                .collect(),
+        )),
+        Err(e) => tracing::info!(target: "hylki::jmap", "Identity/get: {e}"),
+    }
+}
+
+/// Which identity sends from `from` (#346): the one with that address,
+/// else one for anyone at its domain (`*@domain`, as Fastmail lists a
+/// domain's catch-all), else the first the server offers.
+fn pick_identity<'a>(list: &'a [serde_json::Value], from: &str) -> Option<&'a str> {
+    let domain = from.rsplit_once('@').map(|(_, d)| d).unwrap_or_default();
+    let email = |i: &serde_json::Value| i["email"].as_str().unwrap_or_default().trim().to_string();
+    list.iter()
+        .find(|i| email(i).eq_ignore_ascii_case(from))
+        .or_else(|| {
+            list.iter().find(|i| {
+                email(i).strip_prefix("*@").is_some_and(|d| !domain.is_empty() && d.eq_ignore_ascii_case(domain))
+            })
+        })
         .or_else(|| list.first())
-        .and_then(|i| i["id"].as_str().map(str::to_string))
+        .and_then(|i| i["id"].as_str())
+}
+
+/// The identity to submit as (see [`pick_identity`]).
+fn jmap_identity_for(s: &JmapSession, from: &str) -> Result<String, String> {
+    let list = jmap_identities(s)?;
+    pick_identity(&list, from)
+        .map(str::to_string)
         .ok_or_else(|| "the server offers no sending identity for this account".to_string())
 }
 
@@ -1621,6 +1655,7 @@ pub(super) async fn run_jmap(
 
     if let Some(s) = jmap_session(&account, &mut state, &emit).await {
         refresh_jmap_folders(&s, account_id, cache.as_ref(), &mut state, &emit).await;
+        emit_jmap_identities(&s, &emit);
         if push_enabled {
             spawn_jmap_push(s.clone(), push_tx.clone());
             push_started = true;
@@ -2315,6 +2350,21 @@ pub(super) async fn run_jmap(
 
 #[cfg(test)]
 mod tests {
+    /// #346: the From picks its identity by address, then by a domain's
+    /// catch-all, before falling back to the first.
+    #[test]
+    fn an_identity_is_picked_by_address_then_by_domain() {
+        let list = vec![
+            serde_json::json!({ "id": "me", "email": "me@example.com" }),
+            serde_json::json!({ "id": "any", "email": "*@example.org" }),
+            serde_json::json!({ "id": "work", "email": "Work@Example.com" }),
+        ];
+        assert_eq!(super::pick_identity(&list, "work@example.com"), Some("work"));
+        assert_eq!(super::pick_identity(&list, "shop+x@EXAMPLE.org"), Some("any"));
+        assert_eq!(super::pick_identity(&list, "other@elsewhere.net"), Some("me"));
+        assert_eq!(super::pick_identity(&[], "me@example.com"), None);
+    }
+
     use super::*;
 
     #[test]
@@ -2445,6 +2495,31 @@ mod tests {
         let sid = jmap_submit(&s, msg.as_bytes(), &me, &[me.clone()], &sent.mailbox_id).expect("submit");
         assert!(jmap_list_messages(&s, &sent.mailbox_id, 1, 0).expect("sent").iter().any(|(_, i, _)| i == &sid));
         println!("submitted {sid}");
+    }
+
+    /// The server's identities (#346), with `JMAP_LIVE` as for [`live`]:
+    /// listed for the composer, and the account's own picked to send as.
+    #[test]
+    #[ignore]
+    fn live_identities() {
+        let Ok(spec) = std::env::var("JMAP_LIVE") else { return };
+        let mut parts = spec.splitn(3, ',');
+        let acc = AccountConfig {
+            imap_host: parts.next().unwrap_or_default().into(),
+            imap_port: 443,
+            username: parts.next().unwrap_or_default().into(),
+            password: parts.next().unwrap_or_default().into(),
+            ..sample_account()
+        };
+        let s = jmap_connect(&acc).expect("session");
+        let list = jmap_identities(&s).expect("Identity/get");
+        println!("identities {list:?}");
+        let events = std::cell::RefCell::new(Vec::new());
+        emit_jmap_identities(&s, &|e| events.borrow_mut().push(e));
+        let got = events.borrow();
+        let Some(WorkerEvent::Identities(ids)) = got.first() else { panic!("no Identities event") };
+        assert!(ids.iter().any(|(_, a)| a.eq_ignore_ascii_case(&acc.username)), "{ids:?}");
+        assert!(jmap_identity_for(&s, &acc.username).is_ok());
     }
 
     /// Removing an attachment over JMAP (#289), with `JMAP_LIVE` as for
