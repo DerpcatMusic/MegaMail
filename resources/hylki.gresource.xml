@@ -25,6 +25,7 @@
     <file>icons/scalable/actions/document-save-symbolic.svg</file>
     <file>icons/scalable/actions/edit-clear-symbolic.svg</file>
     <file>icons/scalable/actions/edit-copy-symbolic.svg</file>
+    <file>icons/scalable/actions/emblem-important-symbolic.svg</file>
     <file>icons/scalable/actions/eye-open-negative-filled-symbolic.svg</file>
     <file>icons/scalable/actions/filter-folder-symbolic.svg</file>
     <file>icons/scalable/actions/filter-symbolic.svg</file>
@@ -38,6 +39,7 @@
     <file>icons/scalable/actions/format-text-underline-symbolic.svg</file>
     <file>icons/scalable/actions/go-next-symbolic.svg</file>
     <file>icons/scalable/actions/go-previous-symbolic.svg</file>
+    <file>icons/scalable/actions/hylki-importance-low-symbolic.svg</file>
     <file>icons/scalable/actions/hylki-mail-read-symbolic.svg</file>
     <file>icons/scalable/actions/hylki-non-starred-symbolic.svg</file>
     <file>icons/scalable/actions/image-x-generic-symbolic.svg</file>

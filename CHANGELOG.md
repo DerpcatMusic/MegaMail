@@ -4,6 +4,60 @@
 
 The first beta previewing 1.43.0, with what main has gained since 1.42.0.
 
+- **Translations:** French (PR #341 by frenchy82) and Russian (PR #338 by
+  Ilya Semenkovich) brought up to date with 1.43.0-beta.1.
+- **Fixed: Send with Hylki in GNOME Files went to the stable build when the
+  beta was installed beside it.** The extension now opens the files in
+  whichever Hylki is the default mail app, and the beta takes every
+  selected file in one message, as the stable build does. Reinstall the
+  extension from Settings → System → GNOME Files to update it.
+- **Changed: the recipients button and the Unsubscribe and Translate
+  buttons in a message's header are filled, without an outline** (#342,
+  suggested by yioannides), as Adwaita draws buttons. Their shade follows
+  the text color, so they suit light and dark themes alike.
+- **Fixed: new mail sometimes did not appear until the folder was opened
+  again** (#336, reported by yioannides). Mail that arrived while the
+  connection was busy, marking a message read or fetching a body, was
+  reported only to the command that reopened the folder before the next
+  wait, and Hylki ignored it there. That command is now checked for new
+  mail. An unread count that arrives while a read mark or a move is still
+  on its way is set aside, as before, but the folder is now synced once
+  they are stored: the count could be the only sign of new mail.
+- **Fixed: Email… in GNOME Files could open no message** (#339, reported by
+  frenchy82). When none of the files could be read, Hylki asked where zero
+  files should go instead of opening a message; it now opens one, with the
+  error beside it. File paths from the desktop's Email portal are read as
+  they come, unescaped, so a name with `&` or `%` in it, or a
+  `file://localhost/` URI, attaches too. A message started from files
+  asks before it is closed unsaved.
+- **Fixed: a message could be lost when an attachment had moved** (#340,
+  reported by 7system7). Attachments are read when the message is sent, and
+  the composer closed on Send. When a file had been moved or deleted, the
+  send failed, the Outbox could not hold the message either, and nothing was
+  kept. Send now refuses while an attached file is missing, and its chip
+  shows Not found. A message that can be neither sent, queued nor saved as
+  a draft opens in a composer again instead of being dropped.
+- **Fixed: folders named Inbox, Sent or Drafts inside other folders took
+  those roles** (#344, reported by bstegmaier75). An archive with an Inbox
+  and a Sent folder for every year moved them all up with the real Inbox,
+  and one of them could be watched for new mail and counted in All
+  Inboxes instead of it. Only the top-level INBOX is the inbox now, and the
+  other roles go by name only at the top level or directly under INBOX.
+- **Added: choosing the single-line list's columns** (#334, requested by
+  erenoglu). Settings → Message List → Columns shows and hides columns and
+  orders them by dragging. Besides the star, sender, subject, tags,
+  paperclip and date there are now Recipients, Correspondents (everyone who
+  wrote in the conversation, filed in other folders included), Importance
+  (from the `X-Priority`, `Importance` and `Priority` headers, or from
+  Microsoft 365), Account, and Due Date, which a Microsoft 365 follow-up
+  flag carries and which takes room only in a list with Microsoft 365 mail.
+  The cache gains importance and due-date columns in place; mail already
+  cached reads as normal importance until it is fetched again. **Column
+  headings** names the columns above the list; clicking one sorts by it,
+  and clicking again reverses the order. Dragging the line at a
+  heading's edge resizes the name and date columns, and a double click on
+  it restores the column's width. The sort menu says "Starred first" where
+  it said "Flagged first". On one line the star and paperclip are smaller.
 - **Fixed: mail syncing could wait forever on a silent IMAP connection**
   (#324, by Salem Sayed Abdel Gawad). Reads and writes now fail after 60
   seconds without progress, including reads inside a FETCH response, so the
@@ -46,8 +100,10 @@ The first beta previewing 1.43.0, with what main has gained since 1.42.0.
   Translation takes a DeepL, Google Cloud Translation, Microsoft Translator
   or LibreTranslate key of your own, and the A文 button in a card's actions,
   or Translate in the message's right-click menu, shows it in your language, with a banner naming the service and
-  **Show Original** to switch back. What is sent is the message as Reader
-  View shows it, and encrypted messages are never sent. **Offer to
+  **Show Original** to switch back. What is sent is the message's text,
+  without its styling, images or link addresses, and the translation is
+  shown in the message's own design (in 1.43.0-beta.1 it was shown as
+  Reader View; reported by pdf). Encrypted messages are never sent. **Offer to
   translate** adds a Translate button to messages in another language,
   recognised on the computer itself, so nothing is sent until it is pressed.
   In the composer, the same button beside the format chooser translates what

@@ -482,7 +482,7 @@ fn px(v: &str) -> Option<f64> {
 
 /// Whether the sender hid this element: preview text a client shows in the
 /// list but never in the message, Outlook-only blocks, collapsed spacers.
-fn is_hidden(attrs: &[html5ever::Attribute]) -> bool {
+pub(crate) fn is_hidden(attrs: &[html5ever::Attribute]) -> bool {
     if attr(attrs, "hidden").is_some() {
         return true;
     }

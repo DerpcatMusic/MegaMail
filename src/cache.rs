@@ -55,6 +55,8 @@ CREATE TABLE IF NOT EXISTS messages (
     preview        TEXT    NOT NULL DEFAULT '',
     reply_to       TEXT    NOT NULL DEFAULT '',
     keywords       TEXT    NOT NULL DEFAULT '',
+    importance     INTEGER NOT NULL DEFAULT 0,
+    due            INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (account_id, folder_path, uid)
 );
 CREATE INDEX IF NOT EXISTS messages_by_message_id ON messages (message_id);
@@ -530,6 +532,10 @@ impl Cache {
         // their folder syncs again and the flags come down with the rest.
         let _ =
             conn.execute("ALTER TABLE messages ADD COLUMN keywords TEXT NOT NULL DEFAULT ''", []);
+        // And the list's Importance and Due columns (#334): mail already
+        // cached reads as normal, and undated, until it is fetched again.
+        let _ = conn.execute("ALTER TABLE messages ADD COLUMN importance INTEGER NOT NULL DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE messages ADD COLUMN due INTEGER NOT NULL DEFAULT 0", []);
         // And the OpenPGP verdict (#133) beside the sender check, as JSON;
         // empty for a message that carried none. Kept as a marker: nothing
         // OpenPGP is cached, so a body that was (by the first build of the
@@ -759,7 +765,7 @@ impl Cache {
     pub fn load_messages(&self, account_id: u32, folder_path: &str, folder_id: u32) -> Vec<Message> {
         let run = || -> rusqlite::Result<Vec<Message>> {
             let mut stmt = self.conn.prepare(&format!(
-                "SELECT uid, from_name, from_addr, subject, date, ts, unread, starred, has_attachment, recipients, cc, message_id, references_, preview, reply_to, {KEYWORDS_COL}
+                "SELECT uid, from_name, from_addr, subject, date, ts, unread, starred, has_attachment, recipients, cc, message_id, references_, preview, reply_to, {KEYWORDS_COL}, importance, due
                  FROM messages WHERE account_id = ?1 AND folder_path = ?2 ORDER BY uid DESC",
             ))?;
             let rows = stmt.query_map(params![account_id, folder_path], |row| {
@@ -785,6 +791,8 @@ impl Cache {
                     has_attachment: row.get(8)?,
                     message_id: row.get(11)?,
                     references: row.get(12)?,
+                    importance: crate::models::Importance::from_i64(row.get(16)?),
+                    due: row.get(17)?,
                 };
                 // Rows written before NUL-scrubbing existed may still carry
                 // one; GTK labels abort on interior NULs.
@@ -847,12 +855,13 @@ impl Cache {
             for m in messages {
                 tx.execute(
                     "INSERT INTO messages
-                     (account_id, folder_path, uid, from_name, from_addr, subject, date, ts, unread, starred, has_attachment, recipients, cc, message_id, references_, preview, reply_to, keywords)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                     (account_id, folder_path, uid, from_name, from_addr, subject, date, ts, unread, starred, has_attachment, recipients, cc, message_id, references_, preview, reply_to, keywords, importance, due)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
                     params![
                         account_id, folder_path, m.uid, m.from_name, m.from_addr, m.subject,
                         m.date, m.timestamp, m.unread, m.starred, m.has_attachment, m.to, m.cc,
-                        m.message_id, m.references, m.preview, m.reply_to, m.keywords.join(" ")
+                        m.message_id, m.references, m.preview, m.reply_to, m.keywords.join(" "),
+                        m.importance.to_i64(), m.due
                     ],
                 )?;
             }
@@ -888,8 +897,8 @@ impl Cache {
                 // lost its preview.
                 tx.execute(
                     "INSERT INTO messages
-                     (account_id, folder_path, uid, from_name, from_addr, subject, date, ts, unread, starred, has_attachment, recipients, cc, message_id, references_, preview, reply_to, keywords)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+                     (account_id, folder_path, uid, from_name, from_addr, subject, date, ts, unread, starred, has_attachment, recipients, cc, message_id, references_, preview, reply_to, keywords, importance, due)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
                      ON CONFLICT(account_id, folder_path, uid) DO UPDATE SET
                        from_name = excluded.from_name,
                        from_addr = excluded.from_addr,
@@ -905,11 +914,14 @@ impl Cache {
                        references_ = excluded.references_,
                        preview = CASE WHEN excluded.preview = '' THEN messages.preview ELSE excluded.preview END,
                        reply_to = excluded.reply_to,
-                       keywords = excluded.keywords",
+                       keywords = excluded.keywords,
+                       importance = excluded.importance,
+                       due = excluded.due",
                     params![
                         account_id, folder_path, m.uid, m.from_name, m.from_addr, m.subject,
                         m.date, m.timestamp, m.unread, m.starred, m.has_attachment, m.to, m.cc,
-                        m.message_id, m.references, m.preview, m.reply_to, m.keywords.join(" ")
+                        m.message_id, m.references, m.preview, m.reply_to, m.keywords.join(" "),
+                        m.importance.to_i64(), m.due
                     ],
                 )?;
             }
@@ -1027,7 +1039,7 @@ impl Cache {
             }
             let sql = format!(
                 "SELECT folder_path, uid, from_name, from_addr, subject, date, ts, unread, starred, \
-                        has_attachment, recipients, cc, message_id, references_, preview, reply_to, {keywords} \
+                        has_attachment, recipients, cc, message_id, references_, preview, reply_to, {keywords}, importance, due \
                  FROM messages WHERE rowid IN ({members}) ORDER BY ts DESC LIMIT ?1",
                 keywords = KEYWORDS_COL,
                 members = rowid_list(&members),
@@ -1056,6 +1068,8 @@ impl Cache {
                         has_attachment: row.get(9)?,
                         message_id: row.get(12)?,
                         references: row.get(13)?,
+                        importance: crate::models::Importance::from_i64(row.get(17)?),
+                        due: row.get(18)?,
                 };
                 m.scrub_nuls();
                 Ok((row.get::<_, String>(0)?, m))
@@ -2112,7 +2126,7 @@ impl Cache {
         let needle = format!(" {} ", keyword.to_ascii_lowercase());
         let sql = format!(
             "SELECT folder_path, uid, from_name, from_addr, subject, date, ts, unread, starred, \
-                    has_attachment, recipients, cc, message_id, references_, preview, reply_to, {KEYWORDS_COL} \
+                    has_attachment, recipients, cc, message_id, references_, preview, reply_to, {KEYWORDS_COL}, importance, due \
              FROM messages \
              WHERE account_id = ?1 AND instr(' ' || lower({KEYWORDS_COL}) || ' ', ?2) > 0 \
              ORDER BY ts DESC LIMIT ?3"
@@ -2142,6 +2156,8 @@ impl Cache {
                     has_attachment: row.get(9)?,
                     message_id: row.get(12)?,
                     references: row.get(13)?,
+                    importance: crate::models::Importance::from_i64(row.get(17)?),
+                    due: row.get(18)?,
                 };
                 m.scrub_nuls();
                 Ok((row.get::<_, String>(0)?, m))
@@ -2483,6 +2499,8 @@ mod tests {
             has_attachment: false,
             message_id: String::new(),
             references: String::new(),
+            importance: Default::default(),
+            due: 0,
         };
         c.save_messages(1, "Inbox", std::slice::from_ref(&m));
         assert_eq!(c.load_messages(1, "Inbox", 2), [m]);

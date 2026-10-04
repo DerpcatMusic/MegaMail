@@ -922,6 +922,7 @@ impl Component for Compose {
         let draft_origin = prefill.draft_origin.clone();
         let outbox_origin = prefill.outbox_origin;
         let prefill_attachments = prefill.attachments.clone();
+        let handed_files = !prefill_attachments.is_empty() && draft_origin.is_none() && outbox_origin.is_none();
         let prefill_encrypt = prefill.encrypt;
         let send_at = prefill.send_at;
         let current_sig = accounts.get(selected).map(|a| a.signature.clone()).unwrap_or_default();
@@ -1084,7 +1085,9 @@ impl Component for Compose {
             decorations,
             fields_shown: crate::config::load_privacy().reply_fields,
             narrow: false,
-            fields_dirty: false,
+            // Files handed in from outside are something to lose: closing
+            // asks first, as it would once the user had attached them.
+            fields_dirty: handed_files,
             asking_discard: false,
             sign: false,
             sign_touched: false,
@@ -2348,6 +2351,30 @@ impl Component for Compose {
                     widgets.to_row.add_css_class("error");
                     break 'handle;
                 }
+                // A file moved or deleted since it was attached (#340): the
+                // composer closes on Send, so this is the last moment the
+                // message can still be fixed rather than lost.
+                let missing: Vec<String> = self
+                    .attachments
+                    .iter()
+                    .filter(|p| std::fs::File::open(p).is_err())
+                    .map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())
+                    .collect();
+                if !missing.is_empty() {
+                    self.rebuild_attachments(&widgets.attach_box, &sender);
+                    let parent = widgets.to_row.root().and_downcast::<gtk::Window>();
+                    let dialog = adw::MessageDialog::new(
+                        parent.as_ref(),
+                        Some(&i18n("An attachment is missing")),
+                        Some(&i18n_f(
+                            "Hylki cannot read {names}. It was moved or deleted after it was attached. Remove it, or attach it again from where it is now.",
+                            &[("names", &missing.join(", "))],
+                        )),
+                    );
+                    dialog.add_response("ok", &i18n("OK"));
+                    dialog.present();
+                    break 'handle;
+                }
                 let cc = widgets.cc_row.text().trim().to_string();
                 let bcc = widgets.bcc_row.text().trim().to_string();
                 let reply_to = widgets.reply_to_row.text().trim().to_string();
@@ -3400,13 +3427,20 @@ fn attachment_chip(
     text.set_valign(gtk::Align::Center);
     let lbl = FadeLabel::new(&name, CHIP_NAME_NATURAL);
     text.append(&lbl);
-    if let Some(n) = size {
-        let size_lbl = gtk::Label::new(Some(&crate::models::human_size(n)));
-        size_lbl.set_xalign(0.0);
-        size_lbl.add_css_class("dim-label");
-        size_lbl.add_css_class("caption");
-        text.append(&size_lbl);
-    }
+    let size_text = match size {
+        Some(n) => crate::models::human_size(n),
+        None => {
+            // Moved or deleted since it was attached (#340): Send refuses it.
+            chip.add_css_class("missing");
+            chip.set_tooltip_text(Some(&i18n("The file was moved or deleted. Attach it again from where it is now.")));
+            i18n("Not found")
+        }
+    };
+    let size_lbl = gtk::Label::new(Some(&size_text));
+    size_lbl.set_xalign(0.0);
+    size_lbl.add_css_class("dim-label");
+    size_lbl.add_css_class("caption");
+    text.append(&size_lbl);
     chip.append(&text);
     slide_on_hover(&chip, &lbl);
     let rm = gtk::Button::from_icon_name("window-close-symbolic");

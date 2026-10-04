@@ -153,8 +153,9 @@ msgstr "Temat (A–Z)"
 msgid "Unread first"
 msgstr "Najpierw nieprzeczytane"
 
-msgid "Flagged first"
-msgstr "Najpierw oznaczone gwiazdką"
+#, fuzzy
+msgid "Starred first"
+msgstr "Najpierw nieprzeczytane"
 
 msgid "Create Folder"
 msgstr "Utwórz katalog"
@@ -976,6 +977,37 @@ msgstr "Nazwa (od Z do A)"
 msgid "Full Path"
 msgstr "Pełna ścieżka"
 
+#, fuzzy
+msgid "Sender"
+msgstr "Nadawcy"
+
+#, fuzzy
+msgid "Recipients"
+msgstr "Ukryj odbiorców"
+
+msgid "Correspondents"
+msgstr ""
+
+msgid "Subject"
+msgstr "Temat"
+
+#, fuzzy
+msgid "Attachment"
+msgstr "Załączniki"
+
+#, fuzzy
+msgid "Importance"
+msgstr "Importuj klucz"
+
+msgid "Account"
+msgstr "Konto"
+
+msgid "Due Date"
+msgstr ""
+
+msgid "Date"
+msgstr ""
+
 msgid "Spam"
 msgstr "Spam"
 
@@ -1397,9 +1429,6 @@ msgstr "Adres lub domena"
 
 msgid "Block this sender"
 msgstr "Dodaj do zablokowanych nadawców"
-
-msgid "Account"
-msgstr "Konto"
 
 msgid "Save"
 msgstr "Zapisz"
@@ -2779,9 +2808,6 @@ msgstr "UDW"
 msgid "Reply-To"
 msgstr "Odpowiedź do"
 
-msgid "Subject"
-msgstr "Temat"
-
 msgid "Writing in {format}"
 msgstr "Tryb pisania: {format}"
 
@@ -2859,6 +2885,15 @@ msgstr ""
 msgid "Could not translate"
 msgstr "Nie udało się oznaczyć wiadomości etykietą: {e}"
 
+#, fuzzy
+msgid "An attachment is missing"
+msgstr "{n} załącznik"
+
+msgid ""
+"Hylki cannot read {names}. It was moved or deleted after it was attached. "
+"Remove it, or attach it again from where it is now."
+msgstr ""
+
 msgid "Cannot send with OpenPGP"
 msgstr "Nie można wysłać wiadomości z użyciem OpenPGP"
 
@@ -2918,6 +2953,13 @@ msgstr "Ten czas już minął"
 
 msgid "Choose a time later than now."
 msgstr "Wybierz godzinę w przyszłości."
+
+msgid "The file was moved or deleted. Attach it again from where it is now."
+msgstr ""
+
+#, fuzzy
+msgid "Not found"
+msgstr "Niewyświetlane"
 
 msgid "Contacts"
 msgstr "Kontakty"
@@ -3193,6 +3235,10 @@ msgstr ""
 "• Zaktualizowanie pakietu „xdg-desktop-portal” i ponowne zalogowanie się "
 "może rozwiązać problem z bezpośrednim otwieraniem odnośników"
 
+#, fuzzy
+msgid "me"
+msgstr "Nazwa"
+
 msgid "Choose which folders to search"
 msgstr "Wybierz katalogi do przeszukania"
 
@@ -3222,6 +3268,19 @@ msgstr "Oznacz wszystkie jako przeczytane"
 
 msgid "Mark All as Unread"
 msgstr "Oznacz wszystkie jako nieprzeczytane"
+
+msgid "Due"
+msgstr ""
+
+msgid "Drag to resize, double-click for the usual width"
+msgstr ""
+
+msgid "High importance"
+msgstr ""
+
+#, fuzzy
+msgid "Low importance"
+msgstr "Zaimportowano klucz"
 
 msgid "Mark as read"
 msgstr "Oznacz jako przeczytane"
@@ -3947,6 +4006,9 @@ msgstr "Co 15 minut"
 msgid "Every 30 minutes"
 msgstr "Co 30 minut"
 
+msgid "Drag to move"
+msgstr "Przeciągnij, aby przenieść"
+
 msgid "Left group"
 msgstr "Lewa grupa"
 
@@ -3965,8 +4027,16 @@ msgstr "Niewyświetlane"
 msgid "Drop a button here to hide it"
 msgstr "Upuść tu przycisk, aby go ukryć"
 
-msgid "Drag to move"
-msgstr "Przeciągnij, aby przenieść"
+#, fuzzy
+msgid "Shown"
+msgstr "Wyświetl"
+
+msgid "Left to right"
+msgstr ""
+
+#, fuzzy
+msgid "Drop a column here to hide it"
+msgstr "Upuść tu przycisk, aby go ukryć"
 
 msgid "Senders"
 msgstr "Nadawcy"
@@ -4622,6 +4692,24 @@ msgid ""
 msgstr ""
 "Liczba sekund, przez które paleta działań na liście wiadomości pozostaje "
 "otwarta po odsunięciu z niej kursora."
+
+msgid "Columns"
+msgstr ""
+
+msgid ""
+"What a message shows when the list is on one line, from left to right. Drag "
+"the columns into the order you want, or out of the list. The subject always "
+"stays. Due Date appears only in lists with Microsoft 365 mail. Changes apply "
+"at once."
+msgstr ""
+
+msgid "Column headings"
+msgstr ""
+
+msgid ""
+"Names the columns above the list. Click one to sort the list by it, and "
+"again to reverse the order."
+msgstr ""
 
 msgid "Group messages by conversation"
 msgstr "Grupowanie wiadomości w rozmowy"
@@ -6035,10 +6123,9 @@ msgstr "Nie udało się wysłać: {e}"
 msgid "“{subject}” will be sent {when}"
 msgstr "Wiadomość „{subject}” zostanie wysłana {when}"
 
-msgid "Could not schedule the message: there is no local store to keep it in."
-msgstr ""
-"Nie udało się zaplanować wiadomości: brak lokalnego magazynu, w którym można "
-"ją przechowywać."
+#, fuzzy
+msgid "Could not schedule the message."
+msgstr "Nie udało się usunąć wiadomości: {e}"
 
 msgid ""
 "no OpenPGP key of your own for {addr}; generate one under Settings, OpenPGP"
@@ -6202,6 +6289,15 @@ msgstr "Zbiorcza skrzynka odbiorcza w jasnym motywie"
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid ""
+#~ "Could not schedule the message: there is no local store to keep it in."
+#~ msgstr ""
+#~ "Nie udało się zaplanować wiadomości: brak lokalnego magazynu, w którym "
+#~ "można ją przechowywać."
+
+#~ msgid "Flagged first"
+#~ msgstr "Najpierw oznaczone gwiazdką"
 
 #~ msgid "Sign in through GNOME Online Accounts."
 #~ msgstr "Zaloguj się za pomocą kont online GNOME."

@@ -10,10 +10,12 @@
 //! * **LibreTranslate**: any server, self-hosted ones included, with a key
 //!   only when the server asks for one.
 //!
-//! What is sent is the Reader View of the message ([`crate::reader`]):
-//! its text and structure, without the sender's styling, tracking images
-//! or scripts. Every service is asked to keep the markup, so paragraphs,
-//! lists, links and quotes come back where they were.
+//! What is sent is the message's text, run by run, with the inline markup
+//! inside each run (bold, links) but none of the sender's attributes,
+//! stylesheets, images or scripts. Every service is asked to keep the
+//! markup, and each run's translation goes back where the run was, so the
+//! message keeps its design (#327). A plain-text message goes as its
+//! paragraphs and is shown as Reader View shows it.
 //!
 //! The settings live in `translation.toml`; the key is in the keyring.
 //! Which language a message is in, for the optional "Translate" offer, is
@@ -361,15 +363,19 @@ fn visible_text(html: &str) -> String {
 /// A translated message.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Translated {
-    /// The translation, as a Reader View fragment.
+    /// The translation: the whole message with its text replaced, or, for
+    /// plain text, a Reader View fragment.
     pub html: String,
+    /// `html` is a Reader View fragment, to be shown as Reader View shows
+    /// a message.
+    pub reader: bool,
     /// The language the service found the message to be in.
     pub from: Option<String>,
     pub service: Service,
     pub to: String,
 }
 
-/// The most of a message's Reader View, in characters of HTML, that is
+/// The most of a message, in characters of HTML, that is
 /// sent in one piece: under every service's per-text limit, and a size
 /// whose loss to an error costs little of the user's allowance.
 const CHUNK: usize = 4_500;
@@ -407,17 +413,24 @@ pub fn translate(settings: &Settings, key: &str, body: &str, cache: &str) -> Res
     if key.is_empty() && service != Service::Libre {
         return Err(i18n_f("No key for {service}: add one in Settings → Translation.", &[("service", &service.name())]));
     }
-    let blocks = prepare_blocks(body);
-    let total: usize = blocks.iter().map(String::len).sum();
+    let target = settings.target_language();
+    let mut document = body.contains('<').then(|| InPlace::parse(body));
+    let pieces = match &document {
+        Some(d) => d.pieces.clone(),
+        None => chunk(&prepare_blocks(body)),
+    };
+    let total: usize = pieces.iter().map(String::len).sum();
     if total == 0 {
         return Err(i18n("There is no text to translate."));
     }
     if total > LIMIT {
         return Err(i18n("This message is too long to send for translation."));
     }
-    let target = settings.target_language();
-    let (texts, from) = run(settings, key, &chunk(&blocks), &target)?;
-    let done = Translated { html: texts.concat(), from, service, to: target };
+    let (texts, from) = run(settings, key, &pieces, &target)?;
+    let done = match document.as_mut() {
+        Some(d) => Translated { html: d.fill(&texts), reader: false, from, service, to: target },
+        None => Translated { html: texts.concat(), reader: true, from, service, to: target },
+    };
     if let Ok(mut g) = DONE.lock() {
         let map = g.get_or_insert_with(HashMap::new);
         if map.len() > 200 {
@@ -531,6 +544,224 @@ pub fn parts_to_text(parts: &[String]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+/// Elements that sit inside a line of text. A run of these and text is
+/// what goes to the service as one unit, so a sentence with a link or a
+/// bold word in it is translated whole.
+const INLINE: &[&str] = &[
+    "a", "abbr", "b", "bdi", "bdo", "br", "cite", "code", "data", "dfn", "em", "font", "i", "kbd", "label",
+    "mark", "q", "s", "samp", "small", "span", "strike", "strong", "sub", "sup", "time", "tt", "u", "var",
+    "wbr",
+];
+/// Elements whose content is never sent.
+const UNSENT: &[&str] = &[
+    "script", "style", "head", "title", "noscript", "template", "svg", "math", "textarea", "select",
+];
+/// The attribute that numbers each run in a piece, and the one that stands
+/// in for an inline element's own attributes while it is away: an `href`
+/// full of tracking, a `style`, cost the user's allowance and say nothing.
+const RUN_ATTR: &str = "data-hylki-run";
+const ATTRS_ATTR: &str = "data-hylki-a";
+
+/// A message being translated where it stands (#327): its parsed document,
+/// the runs of text in it, and the pieces of HTML they are sent as.
+struct InPlace {
+    dom: markup5ever_rcdom::RcDom,
+    /// Each run: its parent and the range of the parent's children.
+    runs: Vec<(markup5ever_rcdom::Handle, std::ops::Range<usize>)>,
+    /// The inline elements' attributes, by the number they were sent with.
+    attrs: Vec<Vec<html5ever::Attribute>>,
+    pieces: Vec<String>,
+}
+
+impl InPlace {
+    fn parse(body: &str) -> InPlace {
+        use html5ever::tendril::TendrilSink;
+        let dom = html5ever::parse_document(markup5ever_rcdom::RcDom::default(), Default::default()).one(body);
+        let mut runs = Vec::new();
+        collect_runs(&dom.document, &mut runs);
+        let mut attrs = Vec::new();
+        let mut pieces: Vec<String> = Vec::new();
+        for (i, (parent, range)) in runs.iter().enumerate() {
+            let mut html = format!("<div {RUN_ATTR}=\"{i}\">");
+            for node in &parent.children.borrow()[range.clone()] {
+                stand_in_attrs(node, &mut attrs);
+                html.push_str(&serialize(node));
+            }
+            html.push_str("</div>");
+            match pieces.last_mut() {
+                Some(last) if last.len() + html.len() <= CHUNK => last.push_str(&html),
+                _ => pieces.push(html),
+            }
+        }
+        InPlace { dom, runs, attrs, pieces }
+    }
+
+    /// The document with each run replaced by its translation. A run the
+    /// service did not send back keeps its own text.
+    fn fill(&mut self, translated: &[String]) -> String {
+        use html5ever::tendril::TendrilSink;
+        let mut by_run: HashMap<usize, Vec<markup5ever_rcdom::Handle>> = HashMap::new();
+        // Kept until the end: dropping an RcDom empties every node that was
+        // in it, the ones moved into the message included.
+        let mut answers = Vec::new();
+        for piece in translated {
+            let dom = html5ever::parse_document(markup5ever_rcdom::RcDom::default(), Default::default())
+                .one(format!("<body>{piece}</body>"));
+            find_runs(&dom.document, &mut by_run);
+            answers.push(dom);
+        }
+        for (i, (parent, range)) in self.runs.iter().enumerate().rev() {
+            let mut kids = parent.children.borrow_mut();
+            match by_run.remove(&i) {
+                Some(new) => {
+                    for n in &new {
+                        n.parent.set(Some(std::rc::Rc::downgrade(parent)));
+                        restore_attrs(n, &self.attrs);
+                    }
+                    kids.splice(range.clone(), new);
+                }
+                None => {
+                    for n in &kids[range.clone()] {
+                        restore_attrs(n, &self.attrs);
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        let doc: markup5ever_rcdom::SerializableHandle = self.dom.document.clone().into();
+        let _ = html5ever::serialize(&mut out, &doc, Default::default());
+        drop(answers);
+        String::from_utf8_lossy(&out).into_owned()
+    }
+}
+
+fn element_name(node: &markup5ever_rcdom::Handle) -> Option<String> {
+    match &node.data {
+        markup5ever_rcdom::NodeData::Element { name, .. } => Some(name.local.to_string().to_ascii_lowercase()),
+        _ => None,
+    }
+}
+
+fn is_hidden_node(node: &markup5ever_rcdom::Handle) -> bool {
+    match &node.data {
+        markup5ever_rcdom::NodeData::Element { attrs, .. } => crate::reader::is_hidden(&attrs.borrow()),
+        _ => false,
+    }
+}
+
+/// Text, or an inline element holding only text and inline elements.
+fn is_inline(node: &markup5ever_rcdom::Handle) -> bool {
+    use markup5ever_rcdom::NodeData;
+    match &node.data {
+        NodeData::Text { .. } | NodeData::Comment { .. } => true,
+        NodeData::Element { .. } => {
+            element_name(node).is_some_and(|n| INLINE.contains(&n.as_str()))
+                && !is_hidden_node(node)
+                && node.children.borrow().iter().all(is_inline)
+        }
+        _ => false,
+    }
+}
+
+fn has_text(node: &markup5ever_rcdom::Handle) -> bool {
+    match &node.data {
+        markup5ever_rcdom::NodeData::Text { contents } => contents.borrow().chars().any(char::is_alphanumeric),
+        _ => node.children.borrow().iter().any(has_text),
+    }
+}
+
+/// Every run of inline content with words in it, in document order.
+fn collect_runs(node: &markup5ever_rcdom::Handle, runs: &mut Vec<(markup5ever_rcdom::Handle, std::ops::Range<usize>)>) {
+    let kids = node.children.borrow();
+    let mut i = 0;
+    while i < kids.len() {
+        if is_inline(&kids[i]) {
+            let start = i;
+            while i < kids.len() && is_inline(&kids[i]) {
+                i += 1;
+            }
+            if kids[start..i].iter().any(has_text) {
+                runs.push((node.clone(), start..i));
+            }
+            continue;
+        }
+        let child = &kids[i];
+        let sent = match element_name(child) {
+            Some(name) => !UNSENT.contains(&name.as_str()) && !is_hidden_node(child),
+            None => true,
+        };
+        if sent {
+            collect_runs(child, runs);
+        }
+        i += 1;
+    }
+}
+
+/// Swap an inline element's attributes, and its descendants', for a number.
+fn stand_in_attrs(node: &markup5ever_rcdom::Handle, saved: &mut Vec<Vec<html5ever::Attribute>>) {
+    if let markup5ever_rcdom::NodeData::Element { attrs, .. } = &node.data {
+        let mut attrs = attrs.borrow_mut();
+        if !attrs.is_empty() {
+            let n = saved.len();
+            saved.push(std::mem::take(&mut *attrs));
+            attrs.push(html5ever::Attribute {
+                name: html5ever::QualName::new(None, html5ever::ns!(), html5ever::LocalName::from(ATTRS_ATTR)),
+                value: n.to_string().into(),
+            });
+        }
+    }
+    for c in node.children.borrow().iter() {
+        stand_in_attrs(c, saved);
+    }
+}
+
+/// Put back the attributes [`stand_in_attrs`] took.
+fn restore_attrs(node: &markup5ever_rcdom::Handle, saved: &[Vec<html5ever::Attribute>]) {
+    if let markup5ever_rcdom::NodeData::Element { attrs, .. } = &node.data {
+        let mut attrs = attrs.borrow_mut();
+        let n = attrs
+            .iter()
+            .find(|a| &*a.name.local == ATTRS_ATTR)
+            .and_then(|a| a.value.parse::<usize>().ok());
+        attrs.retain(|a| &*a.name.local != ATTRS_ATTR);
+        if let Some(original) = n.and_then(|n| saved.get(n)) {
+            *attrs = original.clone();
+        }
+    }
+    for c in node.children.borrow().iter() {
+        restore_attrs(c, saved);
+    }
+}
+
+/// The numbered runs in a piece that came back: each one's children.
+fn find_runs(node: &markup5ever_rcdom::Handle, out: &mut HashMap<usize, Vec<markup5ever_rcdom::Handle>>) {
+    if let markup5ever_rcdom::NodeData::Element { attrs, .. } = &node.data {
+        let n = attrs
+            .borrow()
+            .iter()
+            .find(|a| &*a.name.local == RUN_ATTR)
+            .and_then(|a| a.value.trim().parse::<usize>().ok());
+        if let Some(n) = n {
+            out.insert(n, node.children.borrow().clone());
+            return;
+        }
+    }
+    for c in node.children.borrow().iter() {
+        find_runs(c, out);
+    }
+}
+
+fn serialize(node: &markup5ever_rcdom::Handle) -> String {
+    let mut out = Vec::new();
+    let handle: markup5ever_rcdom::SerializableHandle = node.clone().into();
+    let opts = html5ever::serialize::SerializeOpts {
+        traversal_scope: html5ever::serialize::TraversalScope::IncludeNode,
+        ..Default::default()
+    };
+    let _ = html5ever::serialize(&mut out, &handle, opts);
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// The Reader View of a body as top-level blocks. Plain text, which the
@@ -710,6 +941,64 @@ pub fn check(settings: &Settings, key: &str) -> Result<(String, String), String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stand-in service: upper-cases the text, keeps every tag as sent.
+    fn shout(piece: &str) -> String {
+        let mut out = String::new();
+        let mut in_tag = false;
+        for c in piece.chars() {
+            match c {
+                '<' => in_tag = true,
+                '>' => in_tag = false,
+                _ => {}
+            }
+            out.extend(if in_tag || c == '>' { c.to_lowercase().collect::<Vec<_>>() } else { c.to_uppercase().collect() });
+        }
+        out
+    }
+
+    #[test]
+    fn a_translation_keeps_the_messages_design() {
+        // #327: what was sent was Reader View, so it came back unstyled.
+        let body = r##"<!doctype html><html><head><style>.hero{color:#c00}</style></head><body>
+            <div style="display:none">preheader text</div>
+            <table class="hero" bgcolor="#eee"><tr><td style="padding:20px">Hello <a href="https://example.com/track?id=42" style="color:red">our offer</a>, friend.</td></tr></table>
+            <p>Second <b>line</b></p><img src="cid:logo"></body></html>"##;
+        let mut doc = InPlace::parse(body);
+        assert_eq!(doc.runs.len(), 2, "{:?}", doc.pieces);
+        let sent = doc.pieces.concat();
+        assert!(!sent.contains("preheader") && !sent.contains("example.com") && !sent.contains(".hero"), "{sent}");
+        let back: Vec<String> = doc.pieces.iter().map(|p| shout(p)).collect();
+        let html = doc.fill(&back);
+        assert!(html.contains("<style>.hero{color:#c00}</style>"), "{html}");
+        assert!(html.contains(r#"<td style="padding:20px">HELLO <a href="https://example.com/track?id=42" style="color:red">OUR OFFER</a>, FRIEND.</td>"#), "{html}");
+        assert!(html.contains("<p>SECOND <b>LINE</b></p>"), "{html}");
+        assert!(html.contains("preheader text") && html.contains(r##"bgcolor="#eee""##), "{html}");
+        assert!(!html.contains(RUN_ATTR) && !html.contains(ATTRS_ATTR), "{html}");
+    }
+
+    /// The same against a real LibreTranslate server (#327):
+    /// `LIBRE_LIVE=http://localhost:5000 cargo test -- --ignored live_libre`.
+    #[test]
+    #[ignore]
+    fn live_libre_keeps_the_design() {
+        let Ok(url) = std::env::var("LIBRE_LIVE") else { return };
+        let settings = Settings { service: Service::Libre, target: "de".into(), url, ..Default::default() };
+        let body = r##"<html><head><style>.hero{color:#c00}</style></head><body><table class="hero"><tr><td style="padding:20px">Good morning, <a href="https://example.com/x">read our news</a> today.</td></tr></table><p>Thank you for your <b>order</b>.</p></body></html>"##;
+        let t = translate(&settings, "", body, "live-libre-test").expect("translated");
+        eprintln!("{}", t.html);
+        assert!(!t.reader);
+        assert!(t.html.contains("<style>.hero{color:#c00}</style>"));
+        assert!(t.html.contains(r#"<td style="padding:20px">"#) && t.html.contains(r#"href="https://example.com/x""#));
+        assert!(!t.html.contains("Good morning") && !t.html.contains(RUN_ATTR) && !t.html.contains(ATTRS_ATTR));
+    }
+
+    #[test]
+    fn a_run_that_does_not_come_back_keeps_its_text() {
+        let mut doc = InPlace::parse("<p>One <a href=\"x\">two</a></p><p>Three</p>");
+        let html = doc.fill(&[String::new()]);
+        assert!(html.contains("<p>One <a href=\"x\">two</a></p><p>Three</p>"), "{html}");
+    }
 
     #[test]
     fn locales_become_target_codes() {

@@ -602,9 +602,11 @@ pub struct AppModel {
     /// ahead of the STORE still shows the old state; while an entry is
     /// young the app's own state for that message and folder wins over it.
     pending_seen: HashMap<(u32, String, u32), (bool, std::time::Instant)>,
-    /// Accounts whose server unread count arrived while a read mark was on
-    /// its way and was set aside: asked again once the marks are stored.
-    dropped_unread: std::collections::HashSet<u32>,
+    /// Folders (account, folder) whose server unread count arrived while a
+    /// read mark or a move was on its way and was set aside: synced again
+    /// once those are stored. The count may also have been the only word of
+    /// new mail, so a fresh count alone is not enough (#336).
+    dropped_unread: std::collections::HashSet<(u32, u32)>,
     /// Mail taken out of a folder whose move the worker has not reached
     /// yet, keyed by (account, folder path, uid) → when it was sent. A list
     /// the worker fetched ahead of the move still holds it, and putting it
@@ -754,6 +756,12 @@ pub struct AppModel {
     preview_lines: u32,
     /// The message list's layout setting (#334).
     list_layout: config::ListLayout,
+    /// The columns of a single-line list, in order (#334).
+    list_columns: Vec<config::ListColumn>,
+    /// Headings over them, which sort the list when clicked (#334).
+    list_headings: bool,
+    /// The widths columns were dragged to by their headings (#334).
+    list_column_widths: std::collections::HashMap<config::ListColumn, i32>,
     /// The list pane is wide enough for one line per message, which
     /// Automatic follows.
     list_wide: bool,
@@ -1436,6 +1444,10 @@ pub enum AppMsg {
     ToggleAccountTags(u32),
     /// The message list's visible-count text changed.
     ListCount(String),
+    /// A column heading sorted the list (#334): the sort menus follow.
+    ListSortChanged(&'static str),
+    /// A column heading was dragged to a new width (#334): keep it.
+    ListColumnWidths(std::collections::HashMap<config::ListColumn, i32>),
     /// Build the Settings window ahead of its first open (see the handler).
     PrewarmSettings,
     /// Close the Settings window as the user would (the showcase's reopen
@@ -1738,6 +1750,8 @@ pub enum AppMsg {
     /// An unflagged message turned out to carry attachments — give it one.
     HasAttachments { account_id: u32, path: String, message_id: u32 },
     Sent { account_id: u32 },
+    /// A message nothing could keep, back for a composer (#340).
+    Unsent { account_id: u32, message: Box<crate::worker::OutgoingMessage> },
     Status { account_id: u32, text: String },
     Error { account_id: u32, text: String, connectivity: bool },
     NotifyCount(usize),
@@ -2796,6 +2810,8 @@ impl SimpleComponent for AppModel {
                     }
                     MessageListOutput::SelectionCleared => AppMsg::ClearReader,
                     MessageListOutput::SearchActive(active) => AppMsg::SearchActive(active),
+                    MessageListOutput::SortChanged(key) => AppMsg::ListSortChanged(key),
+                    MessageListOutput::ColumnWidths(widths) => AppMsg::ListColumnWidths(widths),
                 });
 
         let message_view =
@@ -3223,6 +3239,9 @@ impl SimpleComponent for AppModel {
             list_count: String::new(),
             preview_lines: config::load_preview_lines(),
             list_layout: config::load_list_layout(),
+            list_columns: config::load_list_columns(),
+            list_headings: config::load_privacy().list_headings,
+            list_column_widths: config::load_list_column_widths(),
             list_wide: config::load_list_pane_width() >= LIST_WIDE_ON,
             shortcuts_win: None,
             run_in_background: std::rc::Rc::new(std::cell::Cell::new(
@@ -3467,6 +3486,9 @@ impl SimpleComponent for AppModel {
             animate: false,
         });
         model.push_single_line();
+        model.message_list.emit(MessageListInput::SetColumns(model.list_columns.clone()));
+        model.message_list.emit(MessageListInput::SetHeadings(model.list_headings));
+        model.message_list.emit(MessageListInput::SetColumnWidths(model.list_column_widths.clone()));
         model.sidebars_emit(SidebarInput::SetFocus {
             hide_accounts: model.focus.active(config::FocusPart::HideAccounts),
             fold_unified: model.focus.active(config::FocusPart::FoldUnified),
@@ -4407,6 +4429,21 @@ impl SimpleComponent for AppModel {
                 });
             }
         }
+        // HYLKI_SHOWCASE_TRANSLATE=<account>:<id>[@<seconds>] translates
+        // that message (open by then) at 8 s, as its A文 button would, so a
+        // translation can be captured (#327).
+        if let Ok(v) = std::env::var("HYLKI_SHOWCASE_TRANSLATE") {
+            let (item, at) = showcase_at(&v, 8);
+            if let Some((a, id)) = item
+                .split_once(':')
+                .and_then(|(a, id)| Some((a.parse::<u32>().ok()?, id.parse::<u32>().ok()?)))
+            {
+                let view = model.message_view.sender().clone();
+                gtk::glib::timeout_add_seconds_local_once(at, move || {
+                    let _ = view.send(MessageViewInput::Translate { account_id: a, id });
+                });
+            }
+        }
         // HYLKI_SHOWCASE_INBOX=<account>[@<seconds>] switches to that
         // account's Inbox at 3 s or the time given (the first account's when
         // it is not a number), real accounts included, for the same probe
@@ -5183,7 +5220,7 @@ impl SimpleComponent for AppModel {
                 (i18n_noop("Sender (A–Z)"), "sender"),
                 (i18n_noop("Subject (A–Z)"), "subject"),
                 (i18n_noop("Unread first"), "unread"),
-                (i18n_noop("Flagged first"), "flagged"),
+                (i18n_noop("Starred first"), "flagged"),
             ] {
                 menu.append(Some(&i18n(label)), Some(&format!("sortmenu.order::{key}")));
             }
@@ -7452,6 +7489,16 @@ impl SimpleComponent for AppModel {
                     self.push_single_line();
                 }
             }
+            AppMsg::Pref(PrefOutput::SetListHeadings(on)) => {
+                if pref!(self.list_headings = on) {
+                    self.message_list.emit(MessageListInput::SetHeadings(on));
+                }
+            }
+            AppMsg::Pref(PrefOutput::SetListColumns(columns)) => {
+                if pref!(self.list_columns = columns.clone()) {
+                    self.message_list.emit(MessageListInput::SetColumns(columns));
+                }
+            }
             AppMsg::ListPaneWidth(width) => {
                 // A margin each way, so a drag that rests near the line does
                 // not flick the rows back and forth.
@@ -7488,6 +7535,19 @@ impl SimpleComponent for AppModel {
             }
 
             AppMsg::ListCount(text) => self.list_count = text,
+            AppMsg::ListColumnWidths(widths) => {
+                pref!(self.list_column_widths = widths);
+            }
+            AppMsg::Pref(PrefOutput::ResetColumnWidths) => {
+                if pref!(self.list_column_widths = Default::default()) {
+                    self.message_list.emit(MessageListInput::SetColumnWidths(Default::default()));
+                }
+            }
+            AppMsg::ListSortChanged(key) => {
+                if let Some(lh) = self.list_header_widgets.get() {
+                    lh.sort.set_state(&key.to_variant());
+                }
+            }
 
             AppMsg::Pref(PrefOutput::SetContactsRow(show)) => {
                 if pref!(self.show_contacts = show) {
@@ -8485,12 +8545,15 @@ impl SimpleComponent for AppModel {
                     attachments.len() + dropped.len(),
                     attachments.len()
                 );
-                if !attachments.is_empty() || !dropped.is_empty() {
+                if !attachments.is_empty() {
                     // Files came along (Files' own "Email…" entry): the same
                     // choice of destination as "Send with Hylki".
                     self.begin_hand_off(FileHandOff { base: prefill, files: attachments, dropped }, &sender);
                     return;
                 }
+                // None of the named files could be read (#339): asking where
+                // no files should go helps nobody, so the message opens with
+                // the error beside it.
                 self.leave_gallery();
                 let account = self
                     .current
@@ -8503,7 +8566,7 @@ impl SimpleComponent for AppModel {
                 } else {
                     self.open_compose(account, prefill, &sender);
                 }
-                self.after_hand_off(0, Vec::new());
+                self.after_hand_off(0, dropped);
             }
 
             AppMsg::PresentComposers => {
@@ -8659,6 +8722,8 @@ impl SimpleComponent for AppModel {
                 // to the Sent folder (#199).
                 self.reload_related(account_id);
             }
+
+            AppMsg::Unsent { account_id, message } => self.compose_unsent(account_id, *message, &sender),
 
             AppMsg::OpenAccounts => self.open_settings_window(&sender, true, false),
 
@@ -9681,7 +9746,7 @@ impl SimpleComponent for AppModel {
                 // made) stands until the mark is stored, and the server is
                 // asked again once it is (#333).
                 if self.pending_seen_in_folder(account_id, folder_id) {
-                    self.dropped_unread.insert(account_id);
+                    self.dropped_unread.insert((account_id, folder_id));
                     return;
                 }
                 // Nothing unread left where the notification points: it is
@@ -9697,6 +9762,7 @@ impl SimpleComponent for AppModel {
                     .folder_path(account_id, folder_id)
                     .is_some_and(|p| self.pending_moves_in(account_id, &p))
                 {
+                    self.dropped_unread.insert((account_id, folder_id));
                     return;
                 }
                 let prev = self.folder_unread.insert((account_id, folder_id), unread);
@@ -9713,10 +9779,8 @@ impl SimpleComponent for AppModel {
                 // were set aside; with the last one stored, ask for fresh
                 // ones, or the badge keeps the app's guess until the next
                 // change (#333).
-                if !self.pending_seen.keys().any(|(a, _, _)| *a == account_id)
-                    && self.dropped_unread.remove(&account_id)
-                {
-                    self.send_to(account_id, MailRequest::RefreshUnread);
+                if !self.pending_seen.keys().any(|(a, _, _)| *a == account_id) {
+                    self.resync_dropped_unread(account_id);
                 }
             }
 
@@ -9745,16 +9809,13 @@ impl SimpleComponent for AppModel {
                     pending.remove(&(account_id, path.clone(), uid));
                 }
                 pending.retain(|_, at| at.elapsed() < PENDING_MOVE_MAX);
+                drop(pending);
+                if !self.pending_moves_in(account_id, &path) && !self.pending_seen_in(account_id, &path) {
+                    self.resync_dropped_unread(account_id);
+                }
             }
 
             AppMsg::FolderUnreadByPath { account_id, path, unread } => {
-                if self.pending_seen_in(account_id, &path) {
-                    self.dropped_unread.insert(account_id);
-                    return;
-                }
-                if self.pending_moves_in(account_id, &path) {
-                    return;
-                }
                 // Resolve against the current list; a path the app no longer
                 // knows (folder deleted/renamed under a live watcher) is
                 // dropped rather than guessed at.
@@ -9763,6 +9824,12 @@ impl SimpleComponent for AppModel {
                     .get(&account_id)
                     .and_then(|fs| fs.iter().find(|f| f.path == path))
                     .map(|f| f.id);
+                if self.pending_seen_in(account_id, &path) || self.pending_moves_in(account_id, &path) {
+                    if let Some(folder_id) = id {
+                        self.dropped_unread.insert((account_id, folder_id));
+                    }
+                    return;
+                }
                 if let Some(folder_id) = id {
                     if unread == 0 && crate::notify::posted_for(account_id).is_some_and(|(f, _)| f == folder_id) {
                         crate::notify::withdraw_mail(account_id);
@@ -10976,6 +11043,9 @@ impl AppModel {
             spellcheck_langs: self.spellcheck_langs.clone(),
             preview_lines: self.preview_lines,
             list_layout: self.list_layout,
+            list_columns: config::ListColumn::to_keys(&self.list_columns),
+            list_headings: self.list_headings,
+            list_column_widths: config::list_column_widths_to(&self.list_column_widths),
             single_key_shortcuts: self.single_key.get(),
             run_in_background: self.run_in_background.get(),
             autostart: self.autostart,
@@ -13005,7 +13075,8 @@ impl AppModel {
             tags_placement: self.tags_placement,
         });
 
-        // Keep the list's per-account tint colors in sync.
+        // Keep the list's per-account tint colors in sync, and what its
+        // Account and Due columns need to know (#334).
         let colors: std::collections::HashMap<u32, String> = self
             .accounts
             .iter()
@@ -13013,6 +13084,19 @@ impl AppModel {
             .collect();
         self.message_list
             .emit(MessageListInput::SetAccountColors(colors));
+        let names: std::collections::HashMap<u32, String> =
+            self.accounts.iter().map(|a| (a.id, self.account_label(a.id))).collect();
+        let graph: std::collections::HashSet<u32> = self
+            .accounts
+            .iter()
+            .filter(|a| {
+                self.config
+                    .get(a.id.saturating_sub(1) as usize)
+                    .is_some_and(|c| c.protocol == config::Protocol::Graph)
+            })
+            .map(|a| a.id)
+            .collect();
+        self.message_list.emit(MessageListInput::SetAccountNames { names, graph });
     }
 
     fn remote_allowed(&self, m: &Message) -> bool {
@@ -13318,7 +13402,7 @@ impl AppModel {
             (i18n_noop("Sender (A–Z)"), "sender"),
             (i18n_noop("Subject (A–Z)"), "subject"),
             (i18n_noop("Unread first"), "unread"),
-            (i18n_noop("Flagged first"), "flagged"),
+            (i18n_noop("Starred first"), "flagged"),
         ]
         .into_iter()
         .map(|(label, key)| {
@@ -14704,6 +14788,56 @@ impl AppModel {
         // The Outbox stays the folder on screen: its list is still what's listed,
         // so its toolbar has to stay too. Leaving it would strand the user in a
         // reader offering Reply and Forward for a message that hasn't been sent.
+        self.open_compose(account_id, prefill, sender);
+    }
+
+    /// Open a message the worker could not send, queue or save (#340). Its
+    /// composer closed when Send was pressed, so without this the message is
+    /// gone. A file that can no longer be read, the usual reason, is left out:
+    /// the error just shown names it.
+    fn compose_unsent(
+        &mut self,
+        account_id: u32,
+        m: crate::worker::OutgoingMessage,
+        sender: &ComponentSender<Self>,
+    ) {
+        let body_html = if m.html.trim().is_empty() {
+            m.body
+                .split("\n\n")
+                .map(|p| format!("<p>{}</p>", gtk::glib::markup_escape_text(p).replace('\n', "<br>")))
+                .collect()
+        } else {
+            m.html
+        };
+        let attachments = m
+            .attachments
+            .iter()
+            .map(std::path::PathBuf::from)
+            .filter(|p| std::fs::File::open(p).is_ok())
+            .collect();
+        let prefill = ComposePrefill {
+            to: m.to,
+            cc: m.cc,
+            bcc: m.bcc,
+            subject: m.subject,
+            body_html,
+            attachments,
+            in_reply_to: m.in_reply_to,
+            references: m.references,
+            draft_origin: m.draft_origin,
+            encrypt: m.encrypt,
+            outbox_origin: m.outbox_origin,
+            reply_addressed_to: String::new(),
+            from_address: m
+                .from_alias
+                .as_deref()
+                .map(|f| crate::config::split_identity(f).1)
+                .unwrap_or_default(),
+            send_at: m.send_at,
+            cloud_uploads: Vec::new(),
+            inline_files: Vec::new(),
+            block_remote_images: false,
+        };
         self.open_compose(account_id, prefill, sender);
     }
 
@@ -17717,6 +17851,8 @@ impl AppModel {
             theme: self.theme.clone(),
             preview_lines: self.preview_lines,
             list_layout: self.list_layout,
+            list_columns: self.list_columns.clone(),
+            list_headings: self.list_headings,
             single_key_shortcuts: self.single_key.get(),
             run_in_background: self.run_in_background.get(),
             autostart: self.autostart,
@@ -19847,6 +19983,32 @@ impl AppModel {
     /// notification, since both read the list. Ask for a quiet resync so
     /// the list follows the count. An open inbox (alone or as All Inboxes)
     /// or an open folder is the IDLE folder, whose own resync covers it.
+    /// Counts set aside while marks or moves were on their way (#333, #336):
+    /// with those stored, sync each such folder that is clear now. A count
+    /// was dropped because it could be stale, but it may also have been the
+    /// only sign of new mail: the open folder's IDLE had already reported
+    /// and the watcher only speaks when the count moves again.
+    fn resync_dropped_unread(&mut self, account_id: u32) {
+        let ready: Vec<u32> = self
+            .dropped_unread
+            .iter()
+            .filter(|(a, _)| *a == account_id)
+            .map(|(_, f)| *f)
+            .filter(|f| {
+                !self.pending_seen_in_folder(account_id, *f)
+                    && !self.folder_path(account_id, *f).is_some_and(|p| self.pending_moves_in(account_id, &p))
+            })
+            .collect();
+        if ready.is_empty() {
+            return;
+        }
+        for folder_id in &ready {
+            self.dropped_unread.remove(&(account_id, *folder_id));
+            self.sync_background_folder(account_id, *folder_id);
+        }
+        self.send_to(account_id, MailRequest::RefreshUnread);
+    }
+
     fn sync_background_folder(&self, account_id: u32, folder_id: u32) {
         let Some(folder) =
             self.counted_folders(account_id).into_iter().find(|f| f.id == folder_id)
@@ -20706,9 +20868,27 @@ fn parse_mailto(uri: &str) -> Option<crate::ui::compose::ComposePrefill> {
     let (mut cc, mut bcc, mut subject, mut body) =
         (String::new(), String::new(), String::new(), String::new());
     let mut attachments: Vec<std::path::PathBuf> = Vec::new();
-    for pair in query.split('&').filter(|p| !p.is_empty()) {
-        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
-        let v = crate::percent::decode(v, false);
+    // The Email portal writes `attachment=` paths raw, unescaped (#339), so
+    // an `&` inside a file name splits the query: a piece with no `=` after
+    // an attachment is the rest of its path.
+    let mut pairs: Vec<String> = Vec::new();
+    for piece in query.split('&').filter(|p| !p.is_empty()) {
+        let continues = !piece.contains('=')
+            && pairs.last().is_some_and(|p| {
+                let key = p.split_once('=').map_or("", |(k, _)| k).to_ascii_lowercase();
+                key == "attach" || key == "attachment"
+            });
+        match pairs.last_mut() {
+            Some(last) if continues => {
+                last.push('&');
+                last.push_str(piece);
+            }
+            _ => pairs.push(piece.to_string()),
+        }
+    }
+    for pair in &pairs {
+        let (k, raw) = pair.split_once('=').unwrap_or((pair, ""));
+        let v = crate::percent::decode(raw, false);
         match k.to_ascii_lowercase().as_str() {
             // A second `to` joins the address part, comma-separated.
             "to" if !v.is_empty() => {
@@ -20722,13 +20902,31 @@ fn parse_mailto(uri: &str) -> Option<crate::ui::compose::ComposePrefill> {
             "subject" => subject = v,
             "body" => body = v,
             // Nautilus's "Send by email" (and xdg-email) pass the files as
-            // attach= parameters (#90) — an absolute path or a file:// URI.
-            // Only absolute paths are accepted; the caller re-checks that
-            // each names a real file before attaching.
+            // attach= parameters (#90), the Email portal as attachment=: an
+            // absolute path or a file:// URI. Only absolute paths are
+            // accepted; the caller re-checks that each names a real file
+            // before attaching.
             "attach" | "attachment" if !v.is_empty() => {
-                let path = v.strip_prefix("file://").unwrap_or(&v);
-                if path.starts_with('/') {
-                    attachments.push(std::path::PathBuf::from(path));
+                let path = if v.starts_with("file:") {
+                    // A URI of its own: GIO undoes its escapes and any
+                    // `localhost` host.
+                    gtk::gio::File::for_uri(&v).path()
+                } else {
+                    Some(std::path::PathBuf::from(&v))
+                };
+                // A raw path with a `%` in its name decodes into another
+                // name; when that one is not there and the raw one is, the
+                // raw one was meant.
+                let path = path.map(|p| {
+                    let literal = std::path::Path::new(raw);
+                    if raw != v && !p.exists() && literal.exists() {
+                        literal.to_path_buf()
+                    } else {
+                        p
+                    }
+                });
+                if let Some(p) = path.filter(|p| p.is_absolute()) {
+                    attachments.push(p);
                 }
             }
             _ => {}
@@ -21264,6 +21462,7 @@ fn map_event(account_id: u32, event: WorkerEvent) -> AppMsg {
             AppMsg::HasAttachments { account_id, path, message_id }
         }
         WorkerEvent::Sent => AppMsg::Sent { account_id },
+        WorkerEvent::Unsent(message) => AppMsg::Unsent { account_id, message },
         WorkerEvent::Outbox { items } => AppMsg::OutboxItems { account_id, items },
         WorkerEvent::Notice(text) => AppMsg::Notice(text),
         WorkerEvent::DraftSaved => AppMsg::DraftSaved,
@@ -22296,6 +22495,21 @@ mod tests {
                 std::path::PathBuf::from("/tmp/c.png"),
             ],
         );
+
+        // The Email portal (#339): attachment=, raw paths, an `&` in a name,
+        // and file:// URIs with their own escapes or a localhost host.
+        let p = super::parse_mailto(
+            "mailto:a@b.c?subject=&body=&attachment=/home/u/Mes Docs/A & B été.pdf\
+             &attachment=file://localhost/tmp/x%20y.txt",
+        )
+        .unwrap();
+        assert_eq!(
+            p.attachments,
+            vec![
+                std::path::PathBuf::from("/home/u/Mes Docs/A & B été.pdf"),
+                std::path::PathBuf::from("/tmp/x y.txt"),
+            ],
+        );
     }
 
     #[test]
@@ -22464,6 +22678,8 @@ mod tests {
             has_attachment: false,
             message_id: message_id.to_string(),
             references: String::new(),
+            importance: Default::default(),
+            due: 0,
         }
     }
 
@@ -22721,6 +22937,8 @@ mod tests {
             has_attachment: false,
             message_id: String::new(),
             references: String::new(),
+            importance: Default::default(),
+            due: 0,
         }
     }
 

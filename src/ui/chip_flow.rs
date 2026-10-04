@@ -5,8 +5,9 @@
 //! dragged chip's own zone closes the hole it left the same way.
 //!
 //! A plain widget subclass: children are laid out left to right, wrapping
-//! at the allocated width, and every child is allocated at an animated
-//! position that eases towards its slot whenever the slots change.
+//! at the allocated width (or on one row, in a scroller, for the message
+//! list's columns), and every child is allocated at an animated position
+//! that eases towards its slot whenever the slots change.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -46,6 +47,9 @@ mod imp {
         /// The size of the chip being dragged right now (shared; zero when
         /// none): the gap opens at exactly that size.
         pub drag_size: RefCell<Option<Rc<Cell<(i32, i32)>>>>,
+        /// Every chip on one row, never wrapped: the row is as wide as its
+        /// chips, for a scroller to show part of.
+        pub single_row: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -68,7 +72,11 @@ mod imp {
 
     impl WidgetImpl for ChipFlow {
         fn request_mode(&self) -> gtk::SizeRequestMode {
-            gtk::SizeRequestMode::HeightForWidth
+            if self.single_row.get() {
+                gtk::SizeRequestMode::ConstantSize
+            } else {
+                gtk::SizeRequestMode::HeightForWidth
+            }
         }
 
         fn measure(&self, orientation: gtk::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
@@ -82,7 +90,8 @@ mod imp {
                 if self.gap.get().is_some() {
                     nat += gap.0 + SPACING;
                 }
-                (widest, (nat - SPACING).max(widest), -1, -1)
+                let nat = (nat - SPACING).max(widest);
+                (if self.single_row.get() { nat } else { widest }, nat, -1, -1)
             } else {
                 let width = if for_size < 0 { i32::MAX / 2 } else { for_size };
                 let h = obj.layout_height(width, &chips);
@@ -151,6 +160,12 @@ impl ChipFlow {
         *this.imp().chip_size.borrow_mut() = Some(chip_size);
         *this.imp().drag_size.borrow_mut() = Some(drag_size);
         this
+    }
+
+    /// Keep every chip on one row (see `single_row`).
+    pub fn set_single_row(&self, on: bool) {
+        self.imp().single_row.set(on);
+        self.queue_resize();
     }
 
     pub fn append(&self, child: &impl IsA<gtk::Widget>) {
@@ -279,7 +294,7 @@ impl ChipFlow {
         let mut out = Vec::with_capacity(entries.len());
         let (mut x, mut y) = (0, 0);
         for (child, w, h) in entries {
-            if x > 0 && x + w > width {
+            if x > 0 && x + w > width && !self.imp().single_row.get() {
                 x = 0;
                 y += row_h + SPACING;
             }

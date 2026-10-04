@@ -398,9 +398,12 @@ Translate in its right-click menu. The card then shows the translation, with a b
 it came from, and **Show Original** in the banner or the menu switches back. A translation is kept for
 the rest of the session, so opening the message again costs nothing more.
 
-What is sent is the message as Reader View shows it: its text, paragraphs,
-lists, links and quotes, without the sender's styling, images or tracking.
-Long messages go in pieces, and one over about 120,000 characters is not sent.
+What is sent is the message's text, a paragraph or a cell at a time, with
+the bold, italics and links inside it but none of the sender's styling,
+images or link addresses. The translation is put back where the text was, so
+the message keeps its design; a plain-text message is shown as Reader View
+shows it. Long messages go in pieces, and one with over about 120,000
+characters to send is not sent.
 Messages that arrived encrypted are never sent.
 
 With **Offer to translate** on, a message in a language other than the one
@@ -738,6 +741,44 @@ paperclip, the conversation's size and a short date. **Automatic** uses one
 line while the list pane is dragged wider than about 600 pixels and cards
 when it is narrower. On one line the actions palette is not shown; the
 right-click menu, swipes and keyboard shortcuts do the same things.
+
+**Settings → Message List → Columns** chooses what a single line shows and
+in what order: drag a column between **Shown** and **Not shown**, or along
+the row. The subject always stays, and the conversation's size rides at its
+end. The columns are:
+
+| Column | What it shows |
+| --- | --- |
+| Star | The star, lit when the message is starred |
+| Sender | Who it is from; in Sent, who it went to |
+| Recipients | Who it went to |
+| Correspondents | Everyone who wrote in the conversation, you as "me" |
+| Subject | The subject, with the start of the text dimmed after it |
+| Tags | The message's tags |
+| Attachment | A paperclip when there are files attached |
+| Importance | A red mark for high importance, a grey arrow for low |
+| Account | The account the message is in |
+| Due Date | When a Microsoft 365 follow-up flag falls due, red once it has passed |
+| Date | When it arrived |
+
+Importance comes from the `X-Priority`, `Importance` and `Priority`
+headers, or from Microsoft 365. Mail already downloaded shows as normal
+until it is fetched again. Only Microsoft 365 has a due date, so Due Date
+takes room only in a list that holds Microsoft 365 mail. **Restore
+Defaults** goes back to star, sender, subject, tags, attachment and date.
+
+**Column headings**, in the same group, names the columns above the list.
+Clicking a heading sorts the list by that column, and clicking it again
+reverses the order; the sorted heading is in the accent color, with an
+arrow. Tags and Correspondents do not sort. The sort menu follows the
+headings.
+
+The name and date columns are resized by dragging the faint line at a
+heading's edge: the right edge of a column left of the subject, the left
+edge of one right of it. A double click on that line puts the column back
+to its usual width, and **Restore Defaults** puts every column back. When
+the list is too narrow for the widths set, the name columns give way in
+proportion and the dates keep theirs.
 
 ### Text size
 

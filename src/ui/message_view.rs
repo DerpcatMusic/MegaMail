@@ -3827,7 +3827,7 @@ impl MessageView {
                 .map(|m| {
                     let key = (m.account_id, m.id);
                     let shown = match self.translations.get(&key) {
-                        Some(TrState::Shown(t)) => Some(t.html.clone()),
+                        Some(TrState::Shown(t)) => Some((t.html.clone(), t.reader)),
                         _ => None,
                     };
                     (key, (self.translate_inner_html(m, &translation), shown))
@@ -3890,10 +3890,11 @@ impl MessageView {
         let mark_selection = thread.len() > 1;
         let mut sections = String::new();
         for m in thread {
-            // A card showing its translation (#327) shows it as Reader View
-            // does, which is what was sent.
-            let translated =
-                LIVE_TRANSLATE.with(|t| t.borrow().get(&(m.account_id, m.id)).and_then(|(_, html)| html.clone()));
+            // A card showing its translation (#327): the message with its
+            // text replaced, or for plain text a Reader View fragment.
+            let (translated, translated_reader) = LIVE_TRANSLATE
+                .with(|t| t.borrow().get(&(m.account_id, m.id)).and_then(|(_, shown)| shown.clone()))
+                .map_or((None, false), |(html, reader)| (Some(html), reader));
             let body = if m.body.trim().is_empty() && translated.is_none() {
                 "<div class=\"vireo-loading\">Loading…</div>".to_string()
             } else {
@@ -3910,7 +3911,7 @@ impl MessageView {
                         style
                     },
                     accent,
-                    reader || translated.is_some(),
+                    reader || translated_reader,
                     zoom,
                 )
             };
@@ -4437,18 +4438,20 @@ impl MessageView {
                  font-size:0.9em;border-bottom:1px solid rgba(128,128,128,0.25);}}\
                .vireo-tr:empty{{display:none;}}\
                .vireo-tr-text{{flex:1 1 auto;min-width:0;opacity:0.8;}}\
-               .vireo-tr-btn{{flex:none;border:1px solid rgba(128,128,128,0.4);border-radius:6px;\
-                 padding:3px 12px;background:rgba(128,128,128,0.1);color:inherit;font:inherit;\
-                 font-size:0.95em;font-weight:600;cursor:pointer;}}\
-               .vireo-tr-btn:hover{{background:rgba(128,128,128,0.22);}}\
+               .vireo-tr-btn{{flex:none;border:none;border-radius:6px;\
+                 padding:3px 12px;background:color-mix(in srgb,currentColor 10%,transparent);\
+                 color:inherit;font:inherit;font-size:0.95em;font-weight:600;cursor:pointer;}}\
+               .vireo-tr-btn:hover{{background:color-mix(in srgb,currentColor 15%,transparent);}}\
+               .vireo-tr-btn:active{{background:color-mix(in srgb,currentColor 30%,transparent);}}\
                .vireo-unsub{{display:flex;align-items:center;gap:10px;padding:8px 14px 9px;\
                  font-size:0.9em;border-bottom:1px solid rgba(128,128,128,0.25);}}\
                .vireo-unsub:empty{{display:none;}}\
                .vireo-unsub-text{{flex:1 1 auto;min-width:0;opacity:0.8;}}\
-               .vireo-unsub-btn{{flex:none;border:1px solid rgba(128,128,128,0.4);border-radius:6px;\
-                 padding:3px 12px;background:rgba(128,128,128,0.1);color:inherit;font:inherit;\
-                 font-size:0.95em;font-weight:600;cursor:pointer;}}\
-               .vireo-unsub-btn:hover{{background:rgba(128,128,128,0.22);}}\
+               .vireo-unsub-btn{{flex:none;border:none;border-radius:6px;\
+                 padding:3px 12px;background:color-mix(in srgb,currentColor 10%,transparent);\
+                 color:inherit;font:inherit;font-size:0.95em;font-weight:600;cursor:pointer;}}\
+               .vireo-unsub-btn:hover{{background:color-mix(in srgb,currentColor 15%,transparent);}}\
+               .vireo-unsub-btn:active{{background:color-mix(in srgb,currentColor 30%,transparent);}}\
                /* The invitation banner (#223): the meeting at the top of\
                   the card, and the answer buttons under it. */\
                .vireo-inv{{display:flex;gap:10px;padding:10px 14px 11px;font-size:0.9em;\
@@ -4656,13 +4659,12 @@ impl MessageView {
                .vireo-folder{{padding:0.05em 0.45em;border-radius:0.7em;\
                  font-size:0.78em;opacity:0.75;border:1px solid currentColor;\
                  white-space:nowrap;flex:none;}}\
-               .vireo-rcpt-toggle{{font:inherit;font-size:0.78em;color:inherit;background:none;\
-                 border:1px solid rgba(128,128,128,0.45);border-radius:999px;\
-                 padding:0.05em 0.6em;cursor:pointer;opacity:0.7;\
-                 white-space:nowrap;flex:none;\
-                 transition:opacity 120ms ease,background 120ms ease;}}\
-               .vireo-rcpt-toggle:hover{{opacity:1;background:rgba(128,128,128,0.18);}}\
-               .vireo-rcpt-toggle.open{{opacity:1;background:rgba(128,128,128,0.18);}}\
+               .vireo-rcpt-toggle{{font:inherit;font-size:0.78em;color:inherit;\
+                 background:color-mix(in srgb,currentColor 10%,transparent);\
+                 border:none;border-radius:6px;padding:0.15em 0.6em;cursor:pointer;\
+                 white-space:nowrap;flex:none;transition:background 120ms ease;}}\
+               .vireo-rcpt-toggle:hover{{background:color-mix(in srgb,currentColor 15%,transparent);}}\
+               .vireo-rcpt-toggle.open{{background:color-mix(in srgb,currentColor 20%,transparent);}}\
                /* Indented past the avatar (26px + 8px gap), so the recipients\
                   align with the sender's name — as does the wrapped meta line. */\
                .vireo-rcpt{{font-size:0.85em;opacity:0.75;\
@@ -6571,7 +6573,7 @@ thread_local! {
         std::cell::RefCell::new(std::collections::HashMap::new());
     /// Each card's translation banner (#327), and the translation the card
     /// shows instead of its message, if it shows one. Empty in tests.
-    static LIVE_TRANSLATE: std::cell::RefCell<std::collections::HashMap<(u32, u32), (String, Option<String>)>> =
+    static LIVE_TRANSLATE: std::cell::RefCell<std::collections::HashMap<(u32, u32), (String, Option<(String, bool)>)>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
     /// Each card's folded bar (#326), already rendered. Empty in tests.
     static LIVE_FOLDBAR: std::cell::RefCell<std::collections::HashMap<(u32, u32), String>> =
@@ -7809,6 +7811,8 @@ mod tests {
             has_attachment: false,
             message_id: String::new(),
             references: String::new(),
+            importance: Default::default(),
+            due: 0,
         }
     }
 

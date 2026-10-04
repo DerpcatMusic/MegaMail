@@ -53,7 +53,10 @@ const FIRST_PAGE: u32 = 200;
 /// Sent — the chain breaks and each incoming message starts a thread of its own,
 /// which is why conversations hardly ever grouped (#21). References carries the
 /// whole ancestry, so one of its ids is almost always present locally.
-const REFS_FETCH_ITEM: &str = " BODY.PEEK[HEADER.FIELDS (REFERENCES)]";
+///
+/// The priority headers ride along for the list's Importance column (#334):
+/// the ENVELOPE has none of them either.
+const REFS_FETCH_ITEM: &str = " BODY.PEEK[HEADER.FIELDS (REFERENCES X-PRIORITY IMPORTANCE PRIORITY)]";
 
 /// Background index backfill: how many messages to fetch per idle drain step.
 /// Bigger = fewer round-trips; smaller = more responsive to interleaved requests.
@@ -671,6 +674,10 @@ pub enum WorkerEvent {
     /// UI should show the paperclip and offer the files.
     HasAttachments { path: String, message_id: u32 },
     Sent,
+    /// A message that could be neither sent, queued nor saved as a draft, handed
+    /// back so the app can open it in a composer again (#340): its composer
+    /// closed when Send or Save was pressed, so this is the only copy left.
+    Unsent(Box<OutgoingMessage>),
     /// Something worth telling the user that isn't a failure — a queued message
     /// going out on its own, say.
     Notice(String),
@@ -2658,6 +2665,7 @@ async fn run_imap(
                             Err(e) => {
                                 emit(WorkerEvent::Status(String::new()));
                                 emit(WorkerEvent::error(i18n_f("Could not save draft: {e}", &[("e", &(e).to_string())])));
+                                emit(WorkerEvent::Unsent(Box::new(message.clone())));
                                 lost = true;
                             }
                         }
@@ -2665,6 +2673,7 @@ async fn run_imap(
                     Err(e) => {
                         emit(WorkerEvent::Status(String::new()));
                         emit(WorkerEvent::error(i18n_f("Could not save draft: {e}", &[("e", &(e).to_string())])));
+                        emit(WorkerEvent::Unsent(Box::new(message)));
                     }
                 }
             }
@@ -3216,42 +3225,59 @@ async fn idle_wait(
     // Stale or wedged connection — drop it so the next request reconnects.
     // The timeout matters as much as the error: a dead-but-open connection
     // (silently dropped by a NAT during a long IDLE) answers nothing at all.
-    match tokio::time::timeout(IDLE_START_TIMEOUT, sel(&mut sess, path)).await {
-        Ok(Ok(_)) => {}
-        _ => return recv_one(rx).await,
-    }
-
-    tracing::debug!(target: "hylki::imap", "> IDLE");
-    let mut handle = sess.idle();
-    match tokio::time::timeout(IDLE_START_TIMEOUT, handle.init()).await {
-        Ok(Ok(())) => {}
-        Ok(Err(_)) => {
-            *session = idle_done(handle).await;
-            return recv_one(rx).await;
+    let missed = match tokio::time::timeout(IDLE_START_TIMEOUT, sel(&mut sess, path)).await {
+        Ok(Ok(mailbox)) => {
+            let missed = missed_new_mail(account_id, path, mailbox.uid_next);
+            // Taken as seen now: the sync below records it again, and one
+            // that fails must not send every later wait round this branch.
+            if missed {
+                note_synced_uid_next(account_id, path, mailbox.uid_next);
+            }
+            missed
         }
-        // No answer: the handle (and its connection) is dropped, not reused.
-        Err(_) => return recv_one(rx).await,
-    }
+        _ => return recv_one(rx).await,
+    };
 
     enum Wake {
         Idle(async_imap::error::Result<async_imap::extensions::idle::IdleResponse>),
         Request(Option<MailRequest>),
+        /// Mail arrived while the connection was busy; the SELECT just
+        /// made reported it, and an IDLE started now never would.
+        Missed,
     }
-    let wake = {
-        handle.as_mut().set_idle(true);
-        let (idle_fut, stop) = handle.wait_with_timeout(Duration::from_secs(timeout_secs));
-        tokio::select! {
-            r = idle_fut => Wake::Idle(r),
-            req = rx.recv() => { drop(stop); Wake::Request(req) }
+    let wake = if missed {
+        tracing::info!("idle: new mail in {path} arrived between commands, syncing");
+        *session = Some(sess);
+        Wake::Missed
+    } else {
+        tracing::debug!(target: "hylki::imap", "> IDLE");
+        let mut handle = sess.idle();
+        match tokio::time::timeout(IDLE_START_TIMEOUT, handle.init()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => {
+                *session = idle_done(handle).await;
+                return recv_one(rx).await;
+            }
+            // No answer: the handle (and its connection) is dropped, not reused.
+            Err(_) => return recv_one(rx).await,
         }
+        let wake = {
+            handle.as_mut().set_idle(true);
+            let (idle_fut, stop) = handle.wait_with_timeout(Duration::from_secs(timeout_secs));
+            tokio::select! {
+                r = idle_fut => Wake::Idle(r),
+                req = rx.recv() => { drop(stop); Wake::Request(req) }
+            }
+        };
+        *session = idle_done(handle).await;
+        wake
     };
-    *session = idle_done(handle).await;
 
     match wake {
         Wake::Request(Some(req)) => IdleOutcome::Request(req),
         Wake::Request(None) => IdleOutcome::Closed,
         // Only re-sync on actual new data; a plain timeout is Quiet.
-        Wake::Idle(Ok(async_imap::extensions::idle::IdleResponse::NewData(_))) => {
+        Wake::Missed | Wake::Idle(Ok(async_imap::extensions::idle::IdleResponse::NewData(_))) => {
             if session.is_some() {
                 if let Ok(messages) = load_messages_retry(
                     account_id, session, account, folder_id, path, use_envelope, cache,
@@ -3898,6 +3924,9 @@ fn send_failed(
     } else {
         i18n_f("Send failed: {e}", &[("e", error)])
     }));
+    if !queued {
+        emit(WorkerEvent::Unsent(Box::new(msg.clone())));
+    }
     emit_outbox(cache, account_id, emit);
 }
 
@@ -3926,7 +3955,8 @@ fn schedule_send(
             &[("subject", &msg.subject), ("when", &crate::datefmt::date_time(at))],
         )));
     } else {
-        emit(WorkerEvent::error(i18n("Could not schedule the message: there is no local store to keep it in.")));
+        emit(WorkerEvent::error(i18n("Could not schedule the message.")));
+        emit(WorkerEvent::Unsent(Box::new(msg.clone())));
     }
     emit_outbox(cache, account_id, emit);
 }
@@ -6147,7 +6177,7 @@ async fn list_folders(
         if crate::models::folder_is_hidden(&path, name.delimiter(), hidden) {
             continue;
         }
-        let (kind, by_special_use) = classify_with_source(&path, name.attributes());
+        let (kind, by_special_use) = classify_with_source(&path, name.delimiter(), name.attributes());
         special_use.push(by_special_use);
         folders.push(Folder {
             id: 0, // assigned by order below
@@ -6592,6 +6622,26 @@ async fn selected_unseen(session: &mut ImapSession) -> Option<u32> {
         .map(|uids| uids.len() as u32)
 }
 
+/// The UIDNEXT each folder had when its list was last loaded, by (account,
+/// path). Mail that lands while the connection is busy with something else
+/// is only told to the SELECT that comes before the next IDLE, never to the
+/// IDLE itself, so that SELECT has to be compared against this (#336).
+static SYNCED_UID_NEXT: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<(u32, String), u32>>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn note_synced_uid_next(account_id: u32, path: &str, uid_next: Option<u32>) {
+    if let Some(next) = uid_next {
+        SYNCED_UID_NEXT.lock().unwrap().insert((account_id, path.to_string()), next);
+    }
+}
+
+/// Whether a folder's UIDNEXT has moved past what its last loaded list saw:
+/// mail arrived that no sync has picked up.
+fn missed_new_mail(account_id: u32, path: &str, uid_next: Option<u32>) -> bool {
+    let seen = SYNCED_UID_NEXT.lock().unwrap().get(&(account_id, path.to_string())).copied();
+    matches!((seen, uid_next), (Some(seen), Some(now)) if now > seen)
+}
+
 /// Load a folder's message index for immediate display.
 ///
 /// Never-synced folder → fetch a fast [`FIRST_PAGE`] of the newest messages so
@@ -6608,6 +6658,7 @@ async fn load_messages(
     cache: Option<&Cache>,
 ) -> Result<Vec<Message>, async_imap::error::Error> {
     let mailbox = sel(session, path).await?;
+    note_synced_uid_next(account_id, path, mailbox.uid_next);
     let total = mailbox.exists;
     if total == 0 {
         // Folder emptied on the server — drop any cached copies so they don't linger.
@@ -7530,6 +7581,8 @@ fn summary_from_headers(account_id: u32, fetch: &Fetch, folder_id: u32) -> Messa
         has_attachment,
         message_id,
         references,
+        importance: mp_importance(parsed.as_ref()),
+        due: 0,
     };
     msg.scrub_nuls();
     msg
@@ -7975,6 +8028,8 @@ fn build_summary(account_id: u32, fetch: &Fetch, folder_id: u32) -> Message {
         has_attachment,
         message_id,
         references,
+        importance: importance_of(fetch),
+        due: 0,
     };
     msg.scrub_nuls();
     msg
@@ -8046,25 +8101,57 @@ fn normalize_msgids(raw: &[u8]) -> String {
         .join(" ")
 }
 
+/// The headers of a `HEADER.FIELDS` block, unfolded, as (name, value).
+///
+/// What comes back is a small header block (the requested headers that the
+/// message has, each folded across lines like any other, terminated by a
+/// blank line) or nothing at all.
+fn header_fields(raw: &[u8]) -> Vec<(String, String)> {
+    let text = String::from_utf8_lossy(raw);
+    let mut out: Vec<(String, String)> = Vec::new();
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if line.starts_with([' ', '\t']) {
+            if let Some((_, value)) = out.last_mut() {
+                value.push(' ');
+                value.push_str(line.trim());
+            }
+        } else if let Some((name, value)) = line.split_once(':') {
+            out.push((name.trim().to_string(), value.trim().to_string()));
+        }
+    }
+    out
+}
+
+/// The headers a fetch that asked for [`REFS_FETCH_ITEM`] brought back.
+fn fetched_fields(fetch: &Fetch) -> Vec<(String, String)> {
+    use async_imap::imap_proto::types::{MessageSection, SectionPath};
+    fetch.section(&SectionPath::Full(MessageSection::Header)).map(header_fields).unwrap_or_default()
+}
+
 /// The `References:` value from a fetch that asked for [`REFS_FETCH_ITEM`],
 /// normalized into the same space-separated form as the ENVELOPE ids.
-///
-/// What comes back is a small header block — the one requested header, folded
-/// across lines like any other, terminated by a blank line — or nothing at all
-/// when the message has no References.
 fn references_of(fetch: &Fetch) -> String {
-    use async_imap::imap_proto::types::{MessageSection, SectionPath};
-    let Some(raw) = fetch.section(&SectionPath::Full(MessageSection::Header)) else {
-        return String::new();
-    };
-    let text = String::from_utf8_lossy(raw);
-    let Some((name, value)) = text.split_once(':') else {
-        return String::new();
-    };
-    if !name.trim().eq_ignore_ascii_case("references") {
-        return String::new();
-    }
-    normalize_msgids(value.as_bytes())
+    fetched_fields(fetch)
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("references"))
+        .map(|(_, value)| normalize_msgids(value.as_bytes()))
+        .unwrap_or_default()
+}
+
+/// The importance the priority headers of a [`REFS_FETCH_ITEM`] fetch give.
+fn importance_of(fetch: &Fetch) -> crate::models::Importance {
+    let fields = fetched_fields(fetch);
+    crate::models::Importance::from_headers(|name| {
+        fields.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
+    })
+}
+
+/// The importance a parsed message's priority headers give.
+fn mp_importance(parsed: Option<&mail_parser::Message>) -> crate::models::Importance {
+    crate::models::Importance::from_headers(|name| parsed.and_then(|p| p.header_raw(name)))
 }
 
 /// The `Message-ID:` value from a fetch that asked for
@@ -8520,6 +8607,8 @@ fn summary_from_raw(account_id: u32, folder_id: u32, uid: u32, raw: &[u8]) -> Me
         has_attachment,
         message_id,
         references,
+        importance: mp_importance(parsed.as_ref()),
+        due: 0,
     };
     msg.scrub_nuls();
     msg
@@ -9208,7 +9297,7 @@ async fn run_mock(
 /// `list_folders` prefer the real special-use folder when a server also exposes a
 /// stray folder that merely *looks* like it fills the same role — e.g. Gmail's
 /// real `[Gmail]/Trash` (\Trash) next to a plain top-level `Trash` label.
-fn classify_with_source(path: &str, attrs: &[NameAttribute]) -> (FolderKind, bool) {
+fn classify_with_source(path: &str, delimiter: Option<&str>, attrs: &[NameAttribute]) -> (FolderKind, bool) {
     // Prefer RFC 6154 SPECIAL-USE attributes; fall back to name matching.
     for a in attrs {
         match a {
@@ -9222,9 +9311,28 @@ fn classify_with_source(path: &str, attrs: &[NameAttribute]) -> (FolderKind, boo
         }
     }
 
-    let leaf = path.rsplit(['/', '.']).next().unwrap_or(path).to_lowercase();
+    // INBOX is the one name RFC 3501 fixes, and only as the whole path: an
+    // `Archiv/2020/Inbox` is an ordinary folder (#344).
+    if path.eq_ignore_ascii_case("INBOX") {
+        return (FolderKind::Inbox, false);
+    }
+    // The other roles go by name only where a server keeps them: at the top,
+    // or one level down under INBOX (Dovecot, Courier) or a bracketed
+    // container ([Gmail]). A `Sent` deeper in an archive is the user's own.
+    let parts: Vec<&str> = match delimiter {
+        Some(d) if !d.is_empty() => path.split(d).collect(),
+        _ => path.split(['/', '.']).collect(),
+    };
+    let placed = match parts.as_slice() {
+        [_] => true,
+        [parent, _] => parent.eq_ignore_ascii_case("INBOX") || parent.starts_with('['),
+        _ => false,
+    };
+    if !placed {
+        return (FolderKind::Custom, false);
+    }
+    let leaf = parts.last().copied().unwrap_or(path).to_lowercase();
     let kind = match leaf.as_str() {
-        "inbox" => FolderKind::Inbox,
         "sent" | "sent items" | "sent mail" => FolderKind::Sent,
         "drafts" => FolderKind::Drafts,
         "trash" | "deleted" | "deleted items" | "bin" => FolderKind::Trash,
@@ -9965,6 +10073,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_the_top_level_inbox_is_the_inbox() {
+        // #344: an archive keeps per-year Inbox and Sent folders.
+        let kind = |p: &str, d: &str| classify_with_source(p, Some(d), &[]).0;
+        assert_eq!(kind("INBOX", "/"), FolderKind::Inbox);
+        assert_eq!(kind("Inbox", "/"), FolderKind::Inbox);
+        assert_eq!(kind("Archiv/2020/Inbox", "/"), FolderKind::Custom);
+        assert_eq!(kind("Archiv/2020/Sent", "/"), FolderKind::Custom);
+        assert_eq!(kind("INBOX.Archiv.Inbox", "."), FolderKind::Custom);
+        // Where servers keep their roles, names still count.
+        assert_eq!(kind("Sent", "/"), FolderKind::Sent);
+        assert_eq!(kind("INBOX.Sent", "."), FolderKind::Sent);
+        assert_eq!(kind("INBOX.Trash", "."), FolderKind::Trash);
+        assert_eq!(kind("[Gmail]/Spam", "/"), FolderKind::Junk);
+        assert_eq!(kind("Projects/Drafts", "/"), FolderKind::Custom);
+        // A dot in a name is not a level when the server's delimiter is /.
+        assert_eq!(kind("v1.0/Sent", "/"), FolderKind::Custom);
+    }
+
+    #[test]
     fn envelope_names_lose_the_quotes_a_server_kept() {
         // #312: the name as imap-proto hands it back, escapes and all.
         let name = clean_display_name(&decode_header(&unescape_quoted(br#"\"Sender Name\""#)));
@@ -10079,6 +10206,53 @@ NIL NIL NIL NIL NIL NIL NIL))\r\n";
     /// `IMAP_LIVE=host,port,user,password cargo test --bin hylki
     /// worker::tests::live_rename_moves_subscriptions -- --ignored`
     #[test]
+    /// #336 against a real server: mail appended while the connection is
+    /// busy is picked up by the next wait, not left until something else
+    /// happens to sync the folder.
+    #[test]
+    #[ignore]
+    fn live_idle_catches_mail_that_landed_between_commands() {
+        let Ok(spec) = std::env::var("IMAP_LIVE") else { return };
+        let p: Vec<&str> = spec.splitn(4, ',').collect();
+        let account = AccountConfig {
+            imap_host: p[0].into(),
+            imap_port: p[1].parse().expect("port"),
+            username: p[2].into(),
+            password: p[3].into(),
+            security: Some(crate::config::ServerSecurity {
+                imap_starttls: false,
+                imap_accept_invalid_certs: true,
+                ..Default::default()
+            }),
+            ..sample_account()
+        };
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let mut sess = connect(&account).await.expect("connect");
+            load_messages(7, &mut sess, 1, "INBOX", true, None).await.expect("load");
+            let subject = format!("hylki-336-{}", std::process::id());
+            let raw = format!(
+                "From: a@example.test\r\nTo: b@example.test\r\nSubject: {subject}\r\nMessage-ID: <{subject}@example.test>\r\n\r\nhello\r\n"
+            );
+            let mut other = connect(&account).await.expect("connect");
+            append_to_sent(&mut other, "INBOX", raw.as_bytes()).await.expect("append");
+            let (_tx, mut rx) = mpsc::unbounded_channel();
+            let mut session = Some(sess);
+            let events = std::cell::RefCell::new(Vec::new());
+            let outcome = idle_wait(
+                &mut session, &account, 7, 1, "INBOX", &mut rx, None, &mut true,
+                &mut Default::default(), &mut Default::default(), &Default::default(),
+                &|e| events.borrow_mut().push(e), 5,
+            )
+            .await;
+            assert!(matches!(outcome, IdleOutcome::Refreshed), "the wait went quiet");
+            let got = events.borrow().iter().any(|e| {
+                matches!(e, WorkerEvent::Messages { messages, .. } if messages.iter().any(|m| m.subject == subject))
+            });
+            assert!(got, "the new message was not listed");
+        });
+    }
+
     #[ignore]
     fn live_rename_moves_subscriptions() {
         let Ok(spec) = std::env::var("IMAP_LIVE") else { return };
@@ -10227,6 +10401,8 @@ NIL NIL NIL NIL NIL NIL NIL))\r\n";
             has_attachment: true,
             message_id: String::new(),
             references: String::new(),
+            importance: Default::default(),
+            due: 0,
         }
     }
 
@@ -10295,6 +10471,45 @@ NIL NIL NIL NIL NIL NIL NIL))\r\n";
             send_at: None,
             calendar: None,
         }
+    }
+
+    /// #336: mail that lands while the connection is busy shows only as a
+    /// moved UIDNEXT on the next SELECT.
+    #[test]
+    fn a_moved_uid_next_is_missed_mail() {
+        let path = "INBOX-336-test";
+        assert!(!missed_new_mail(99, path, Some(10)), "nothing loaded yet");
+        note_synced_uid_next(99, path, Some(10));
+        assert!(!missed_new_mail(99, path, Some(10)));
+        assert!(missed_new_mail(99, path, Some(12)));
+        assert!(!missed_new_mail(99, path, None));
+        assert!(!missed_new_mail(98, path, Some(12)), "another account");
+    }
+
+    /// #340: a send that fails on a file gone since it was attached cannot
+    /// be queued either, so the message comes back for a composer instead
+    /// of being dropped.
+    #[test]
+    fn an_unqueueable_failed_send_comes_back() {
+        let cache = Cache::in_memory().expect("cache");
+        let account = sample_account();
+        let mut msg = sample_outgoing();
+        msg.to = "ann@example.com".into();
+        msg.attachments = vec!["/nonexistent/hylki-test/moved.pdf".into()];
+        let events = std::cell::RefCell::new(Vec::new());
+        send_failed(Some(&cache), 1, &account, &msg, None, "could not read the attachment", &|e| {
+            events.borrow_mut().push(e)
+        });
+        let events = events.into_inner();
+        assert!(
+            events.iter().any(|e| matches!(e, WorkerEvent::Unsent(m) if m.subject == "Subject")),
+            "{events:?}"
+        );
+        // A message that does build is queued and not handed back.
+        msg.attachments.clear();
+        let events = std::cell::RefCell::new(Vec::new());
+        send_failed(Some(&cache), 1, &account, &msg, None, "offline", &|e| events.borrow_mut().push(e));
+        assert!(!events.into_inner().iter().any(|e| matches!(e, WorkerEvent::Unsent(_))));
     }
 
     /// A draft saved before any address is typed: the bytes build without a
@@ -11432,6 +11647,18 @@ NIL NIL NIL NIL NIL NIL NIL))\r\n";
         assert_eq!(merge_msgids("", ""), "");
         // A malformed reply whose In-Reply-To names an ancestor References omits.
         assert_eq!(merge_msgids("a@x", "c@z"), "a@x c@z");
+    }
+
+    #[test]
+    fn header_fields_unfold_each_requested_header() {
+        // #334: References and the priority headers come back in one block.
+        let raw = b"References: <a@x>\r\n <b@y>\r\nX-Priority: 1 (Highest)\r\nImportance: high\r\n\r\n";
+        let fields = header_fields(raw);
+        assert_eq!(fields.len(), 3);
+        assert_eq!(fields[0], ("References".to_string(), "<a@x> <b@y>".to_string()));
+        assert_eq!(normalize_msgids(fields[0].1.as_bytes()), "a@x b@y");
+        assert_eq!(fields[1], ("X-Priority".to_string(), "1 (Highest)".to_string()));
+        assert!(header_fields(b"").is_empty());
     }
 
     #[test]

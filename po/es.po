@@ -152,8 +152,9 @@ msgstr "Asunto (A–Z)"
 msgid "Unread first"
 msgstr "No leídos primero"
 
-msgid "Flagged first"
-msgstr "Marcados primero"
+#, fuzzy
+msgid "Starred first"
+msgstr "No leídos primero"
 
 msgid "Create Folder"
 msgstr "Crear carpeta"
@@ -959,6 +960,37 @@ msgstr "Nombre (Z a A)"
 msgid "Full Path"
 msgstr "Ruta completa"
 
+#, fuzzy
+msgid "Sender"
+msgstr "Remitentes"
+
+#, fuzzy
+msgid "Recipients"
+msgstr "Ocultar destinatarios"
+
+msgid "Correspondents"
+msgstr ""
+
+msgid "Subject"
+msgstr "Asunto"
+
+#, fuzzy
+msgid "Attachment"
+msgstr "Archivos adjuntos"
+
+#, fuzzy
+msgid "Importance"
+msgstr "Importar clave"
+
+msgid "Account"
+msgstr "Cuenta"
+
+msgid "Due Date"
+msgstr ""
+
+msgid "Date"
+msgstr ""
+
 msgid "Spam"
 msgstr "Correo no deseado"
 
@@ -1374,9 +1406,6 @@ msgstr "Dirección o dominio"
 
 msgid "Block this sender"
 msgstr "Bloquear este remitente"
-
-msgid "Account"
-msgstr "Cuenta"
 
 msgid "Save"
 msgstr "Guardar"
@@ -2742,9 +2771,6 @@ msgstr "Cco"
 msgid "Reply-To"
 msgstr "Responder a"
 
-msgid "Subject"
-msgstr "Asunto"
-
 msgid "Writing in {format}"
 msgstr "Escribiendo en {format}"
 
@@ -2822,6 +2848,15 @@ msgstr ""
 msgid "Could not translate"
 msgstr "No se pudo etiquetar el mensaje: {e}"
 
+#, fuzzy
+msgid "An attachment is missing"
+msgstr "{n} archivo adjunto"
+
+msgid ""
+"Hylki cannot read {names}. It was moved or deleted after it was attached. "
+"Remove it, or attach it again from where it is now."
+msgstr ""
+
 msgid "Cannot send with OpenPGP"
 msgstr "No se puede enviar con OpenPGP"
 
@@ -2878,6 +2913,13 @@ msgstr "Esa hora ya ha pasado"
 
 msgid "Choose a time later than now."
 msgstr "Elige una hora posterior a la actual."
+
+msgid "The file was moved or deleted. Attach it again from where it is now."
+msgstr ""
+
+#, fuzzy
+msgid "Not found"
+msgstr "No visible"
 
 msgid "Contacts"
 msgstr "Contactos"
@@ -3142,6 +3184,10 @@ msgstr ""
 "enlace, cópialo y ábrelo en el navegador • Actualizar «xdg-desktop-portal» y "
 "volver a iniciar sesión puede solucionar la apertura directa de enlaces"
 
+#, fuzzy
+msgid "me"
+msgstr "Nombre"
+
 msgid "Choose which folders to search"
 msgstr "Elegir las carpetas en las que buscar"
 
@@ -3171,6 +3217,19 @@ msgstr "Marcar todo como leído"
 
 msgid "Mark All as Unread"
 msgstr "Marcar todo como no leído"
+
+msgid "Due"
+msgstr ""
+
+msgid "Drag to resize, double-click for the usual width"
+msgstr ""
+
+msgid "High importance"
+msgstr ""
+
+#, fuzzy
+msgid "Low importance"
+msgstr "Clave importada"
 
 msgid "Mark as read"
 msgstr "Marcar como leído"
@@ -3886,6 +3945,9 @@ msgstr "Cada 15 minutos"
 msgid "Every 30 minutes"
 msgstr "Cada 30 minutos"
 
+msgid "Drag to move"
+msgstr "Arrastra para mover"
+
 msgid "Left group"
 msgstr "Grupo izquierdo"
 
@@ -3904,8 +3966,16 @@ msgstr "No visible"
 msgid "Drop a button here to hide it"
 msgstr "Suelta aquí un botón para ocultarlo"
 
-msgid "Drag to move"
-msgstr "Arrastra para mover"
+#, fuzzy
+msgid "Shown"
+msgstr "Mostrar"
+
+msgid "Left to right"
+msgstr ""
+
+#, fuzzy
+msgid "Drop a column here to hide it"
+msgstr "Suelta aquí un botón para ocultarlo"
 
 msgid "Senders"
 msgstr "Remitentes"
@@ -4562,6 +4632,24 @@ msgid ""
 msgstr ""
 "Segundos que permanece abierta la paleta de acciones de la lista tras "
 "retirar el cursor."
+
+msgid "Columns"
+msgstr ""
+
+msgid ""
+"What a message shows when the list is on one line, from left to right. Drag "
+"the columns into the order you want, or out of the list. The subject always "
+"stays. Due Date appears only in lists with Microsoft 365 mail. Changes apply "
+"at once."
+msgstr ""
+
+msgid "Column headings"
+msgstr ""
+
+msgid ""
+"Names the columns above the list. Click one to sort the list by it, and "
+"again to reverse the order."
+msgstr ""
 
 msgid "Group messages by conversation"
 msgstr "Agrupar mensajes por conversación"
@@ -5986,10 +6074,9 @@ msgstr "El envío ha fallado: {e}"
 msgid "“{subject}” will be sent {when}"
 msgstr "«{subject}» se enviará {when}"
 
-msgid "Could not schedule the message: there is no local store to keep it in."
-msgstr ""
-"No se pudo programar el mensaje: no hay ningún almacenamiento local donde "
-"conservarlo."
+#, fuzzy
+msgid "Could not schedule the message."
+msgstr "No se pudo eliminar el mensaje: {e}"
 
 msgid ""
 "no OpenPGP key of your own for {addr}; generate one under Settings, OpenPGP"
@@ -6151,6 +6238,15 @@ msgstr "La bandeja de entrada unificada en modo claro"
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid ""
+#~ "Could not schedule the message: there is no local store to keep it in."
+#~ msgstr ""
+#~ "No se pudo programar el mensaje: no hay ningún almacenamiento local donde "
+#~ "conservarlo."
+
+#~ msgid "Flagged first"
+#~ msgstr "Marcados primero"
 
 #~ msgid "Sign in through GNOME Online Accounts."
 #~ msgstr "Inicia sesión mediante Cuentas en línea de GNOME."

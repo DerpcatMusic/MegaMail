@@ -154,8 +154,9 @@ msgstr "Θέμα (Α–Ω)"
 msgid "Unread first"
 msgstr "Μη αναγνωσμένα πρώτα"
 
-msgid "Flagged first"
-msgstr "Επισημασμένα πρώτα"
+#, fuzzy
+msgid "Starred first"
+msgstr "Μη αναγνωσμένα πρώτα"
 
 msgid "Create Folder"
 msgstr "Δημιουργία φακέλου"
@@ -961,6 +962,37 @@ msgstr ""
 msgid "Full Path"
 msgstr ""
 
+#, fuzzy
+msgid "Sender"
+msgstr "Αποστολείς"
+
+#, fuzzy
+msgid "Recipients"
+msgstr "Απόκρυψη παραληπτών"
+
+msgid "Correspondents"
+msgstr ""
+
+msgid "Subject"
+msgstr "Θέμα"
+
+#, fuzzy
+msgid "Attachment"
+msgstr "Συνημμένα"
+
+#, fuzzy
+msgid "Importance"
+msgstr "Εισαγωγή κλειδιού"
+
+msgid "Account"
+msgstr "Λογαριασμός"
+
+msgid "Due Date"
+msgstr ""
+
+msgid "Date"
+msgstr ""
+
 msgid "Spam"
 msgstr "Ανεπιθύμητα"
 
@@ -1384,9 +1416,6 @@ msgstr "Διεύθυνση ή τομέας"
 
 msgid "Block this sender"
 msgstr "Αποκλεισμός αυτού του αποστολέα"
-
-msgid "Account"
-msgstr "Λογαριασμός"
 
 msgid "Save"
 msgstr "Αποθήκευση"
@@ -2775,9 +2804,6 @@ msgstr "Κρυφή κοιν."
 msgid "Reply-To"
 msgstr "Απάντηση προς"
 
-msgid "Subject"
-msgstr "Θέμα"
-
 msgid "Writing in {format}"
 msgstr "Σύνταξη σε {format}"
 
@@ -2855,6 +2881,15 @@ msgstr ""
 msgid "Could not translate"
 msgstr "Δεν ήταν δυνατή η προσθήκη ετικέτας στο μήνυμα: {e}"
 
+#, fuzzy
+msgid "An attachment is missing"
+msgstr "{n} συνημμένο"
+
+msgid ""
+"Hylki cannot read {names}. It was moved or deleted after it was attached. "
+"Remove it, or attach it again from where it is now."
+msgstr ""
+
 msgid "Cannot send with OpenPGP"
 msgstr "Δεν είναι δυνατή η αποστολή με OpenPGP"
 
@@ -2915,6 +2950,13 @@ msgstr "Αυτή η ώρα έχει παρέλθει"
 
 msgid "Choose a time later than now."
 msgstr "Επιλέξτε ώρα μεταγενέστερη από την τρέχουσα."
+
+msgid "The file was moved or deleted. Attach it again from where it is now."
+msgstr ""
+
+#, fuzzy
+msgid "Not found"
+msgstr "Δεν εμφανίζεται"
 
 msgid "Contacts"
 msgstr "Επαφές"
@@ -3172,6 +3214,10 @@ msgstr ""
 "• Η ενημέρωση του «xdg-desktop-portal» και η εκ νέου σύνδεση ενδέχεται να "
 "διορθώσουν το απευθείας άνοιγμα συνδέσμων"
 
+#, fuzzy
+msgid "me"
+msgstr "Όνομα"
+
 msgid "Choose which folders to search"
 msgstr "Επιλέξτε τους φακέλους αναζήτησης"
 
@@ -3201,6 +3247,19 @@ msgstr "Σήμανση όλων ως αναγνωσμένων"
 
 msgid "Mark All as Unread"
 msgstr "Σήμανση όλων ως μη αναγνωσμένων"
+
+msgid "Due"
+msgstr ""
+
+msgid "Drag to resize, double-click for the usual width"
+msgstr ""
+
+msgid "High importance"
+msgstr ""
+
+#, fuzzy
+msgid "Low importance"
+msgstr "Το κλειδί εισήχθη"
 
 msgid "Mark as read"
 msgstr "Σήμανση ως αναγνωσμένο"
@@ -3920,6 +3979,9 @@ msgstr "Κάθε 15 λεπτά"
 msgid "Every 30 minutes"
 msgstr "Κάθε 30 λεπτά"
 
+msgid "Drag to move"
+msgstr "Σύρετε για μετακίνηση"
+
 msgid "Left group"
 msgstr "Αριστερή ομάδα"
 
@@ -3938,8 +4000,16 @@ msgstr "Δεν εμφανίζεται"
 msgid "Drop a button here to hide it"
 msgstr "Αποθέστε ένα κουμπί εδώ για να το αποκρύψετε"
 
-msgid "Drag to move"
-msgstr "Σύρετε για μετακίνηση"
+#, fuzzy
+msgid "Shown"
+msgstr "Εμφάνιση"
+
+msgid "Left to right"
+msgstr ""
+
+#, fuzzy
+msgid "Drop a column here to hide it"
+msgstr "Αποθέστε ένα κουμπί εδώ για να το αποκρύψετε"
 
 msgid "Senders"
 msgstr "Αποστολείς"
@@ -4599,6 +4669,24 @@ msgid ""
 msgstr ""
 "Για πόσα δευτερόλεπτα παραμένει ανοικτή η παλέτα ενεργειών της λίστας "
 "μηνυμάτων αφού φύγει ο δείκτης."
+
+msgid "Columns"
+msgstr ""
+
+msgid ""
+"What a message shows when the list is on one line, from left to right. Drag "
+"the columns into the order you want, or out of the list. The subject always "
+"stays. Due Date appears only in lists with Microsoft 365 mail. Changes apply "
+"at once."
+msgstr ""
+
+msgid "Column headings"
+msgstr ""
+
+msgid ""
+"Names the columns above the list. Click one to sort the list by it, and "
+"again to reverse the order."
+msgstr ""
 
 msgid "Group messages by conversation"
 msgstr "Ομαδοποίηση μηνυμάτων κατά συζήτηση"
@@ -6037,10 +6125,9 @@ msgstr "Η αποστολή απέτυχε: {e}"
 msgid "“{subject}” will be sent {when}"
 msgstr "Το «{subject}» θα σταλεί {when}"
 
-msgid "Could not schedule the message: there is no local store to keep it in."
-msgstr ""
-"Δεν ήταν δυνατός ο προγραμματισμός του μηνύματος: δεν υπάρχει τοπικός χώρος "
-"αποθήκευσης για να διατηρηθεί."
+#, fuzzy
+msgid "Could not schedule the message."
+msgstr "Δεν ήταν δυνατή η διαγραφή του μηνύματος: {e}"
 
 msgid ""
 "no OpenPGP key of your own for {addr}; generate one under Settings, OpenPGP"
@@ -6207,6 +6294,15 @@ msgstr "Τα ενοποιημένα εισερχόμενα σε φωτεινή �
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid ""
+#~ "Could not schedule the message: there is no local store to keep it in."
+#~ msgstr ""
+#~ "Δεν ήταν δυνατός ο προγραμματισμός του μηνύματος: δεν υπάρχει τοπικός "
+#~ "χώρος αποθήκευσης για να διατηρηθεί."
+
+#~ msgid "Flagged first"
+#~ msgstr "Επισημασμένα πρώτα"
 
 #~ msgid "Sign in through GNOME Online Accounts."
 #~ msgstr "Συνδεθείτε μέσω των Διαδικτυακών λογαριασμών GNOME."

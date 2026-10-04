@@ -534,6 +534,8 @@ mod tests {
             has_attachment: false,
             message_id: String::new(),
             references: String::new(),
+            importance: Default::default(),
+            due: 0,
         };
         let empty = message_bytes(&m);
         assert_eq!(empty, std::mem::size_of::<Message>());

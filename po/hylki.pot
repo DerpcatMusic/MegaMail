@@ -148,7 +148,7 @@ msgstr ""
 msgid "Unread first"
 msgstr ""
 
-msgid "Flagged first"
+msgid "Starred first"
 msgstr ""
 
 msgid "Create Folder"
@@ -891,6 +891,33 @@ msgstr ""
 msgid "Full Path"
 msgstr ""
 
+msgid "Sender"
+msgstr ""
+
+msgid "Recipients"
+msgstr ""
+
+msgid "Correspondents"
+msgstr ""
+
+msgid "Subject"
+msgstr ""
+
+msgid "Attachment"
+msgstr ""
+
+msgid "Importance"
+msgstr ""
+
+msgid "Account"
+msgstr ""
+
+msgid "Due Date"
+msgstr ""
+
+msgid "Date"
+msgstr ""
+
 msgid "Spam"
 msgstr ""
 
@@ -1270,9 +1297,6 @@ msgid "Address or domain"
 msgstr ""
 
 msgid "Block this sender"
-msgstr ""
-
-msgid "Account"
 msgstr ""
 
 msgid "Save"
@@ -2484,9 +2508,6 @@ msgstr ""
 msgid "Reply-To"
 msgstr ""
 
-msgid "Subject"
-msgstr ""
-
 msgid "Writing in {format}"
 msgstr ""
 
@@ -2555,6 +2576,14 @@ msgstr ""
 msgid "Could not translate"
 msgstr ""
 
+msgid "An attachment is missing"
+msgstr ""
+
+msgid ""
+"Hylki cannot read {names}. It was moved or deleted after it was attached. "
+"Remove it, or attach it again from where it is now."
+msgstr ""
+
 msgid "Cannot send with OpenPGP"
 msgstr ""
 
@@ -2604,6 +2633,12 @@ msgid "That time has passed"
 msgstr ""
 
 msgid "Choose a time later than now."
+msgstr ""
+
+msgid "The file was moved or deleted. Attach it again from where it is now."
+msgstr ""
+
+msgid "Not found"
 msgstr ""
 
 msgid "Contacts"
@@ -2853,6 +2888,9 @@ msgid ""
 "directly"
 msgstr ""
 
+msgid "me"
+msgstr ""
+
 msgid "Choose which folders to search"
 msgstr ""
 
@@ -2881,6 +2919,18 @@ msgid "Mark All as Read"
 msgstr ""
 
 msgid "Mark All as Unread"
+msgstr ""
+
+msgid "Due"
+msgstr ""
+
+msgid "Drag to resize, double-click for the usual width"
+msgstr ""
+
+msgid "High importance"
+msgstr ""
+
+msgid "Low importance"
 msgstr ""
 
 msgid "Mark as read"
@@ -3544,6 +3594,9 @@ msgstr ""
 msgid "Every 30 minutes"
 msgstr ""
 
+msgid "Drag to move"
+msgstr ""
+
 msgid "Left group"
 msgstr ""
 
@@ -3562,7 +3615,13 @@ msgstr ""
 msgid "Drop a button here to hide it"
 msgstr ""
 
-msgid "Drag to move"
+msgid "Shown"
+msgstr ""
+
+msgid "Left to right"
+msgstr ""
+
+msgid "Drop a column here to hide it"
 msgstr ""
 
 msgid "Senders"
@@ -4095,6 +4154,24 @@ msgstr ""
 msgid ""
 "Seconds the message list's actions palette stays open after the cursor "
 "leaves it."
+msgstr ""
+
+msgid "Columns"
+msgstr ""
+
+msgid ""
+"What a message shows when the list is on one line, from left to right. Drag "
+"the columns into the order you want, or out of the list. The subject always "
+"stays. Due Date appears only in lists with Microsoft 365 mail. Changes apply "
+"at once."
+msgstr ""
+
+msgid "Column headings"
+msgstr ""
+
+msgid ""
+"Names the columns above the list. Click one to sort the list by it, and "
+"again to reverse the order."
 msgstr ""
 
 msgid "Group messages by conversation"
@@ -5328,7 +5405,7 @@ msgstr ""
 msgid "“{subject}” will be sent {when}"
 msgstr ""
 
-msgid "Could not schedule the message: there is no local store to keep it in."
+msgid "Could not schedule the message."
 msgstr ""
 
 msgid ""

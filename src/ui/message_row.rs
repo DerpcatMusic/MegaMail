@@ -15,8 +15,10 @@ use adw::prelude::*;
 use gtk::glib;
 use gtk::subclass::prelude::ObjectSubclassIsExt;
 
+use crate::config::ListColumn;
 use crate::i18n::i18n;
-use crate::models::Message;
+use crate::models::{Importance, Message};
+use crate::ui::column_bin::ColumnBin;
 use crate::ui::context_menu::{show_context_menu, MenuEntry};
 use crate::ui::message_list::MessageListInput;
 
@@ -53,6 +55,44 @@ pub const SWIPE_MAX: f64 = 120.0;
 /// reply's rail stub reaches 2px the same way. The swipe surface's clip
 /// leaves this much room on the left, or both come out cut in half.
 const THREAD_NODE_REACH: f32 = 8.0;
+/// The single line's name columns, in pixels (#334): wide enough for most
+/// names, and fixed so the columns after them line up.
+const SENDER_COLUMN_PX: i32 = 160;
+const PEOPLE_COLUMN_PX: i32 = 200;
+const ACCOUNT_COLUMN_PX: i32 = 110;
+/// The star's and the paperclip's size on a single line.
+const LINE_ICON_PX: i32 = 12;
+
+/// The width a single-line column takes until it is dragged to another
+/// (#334): negative for a date, which is as wide as its text.
+pub fn default_width(column: ListColumn) -> i32 {
+    match column {
+        ListColumn::Sender | ListColumn::Recipients => SENDER_COLUMN_PX,
+        ListColumn::Correspondents => PEOPLE_COLUMN_PX,
+        ListColumn::Account => ACCOUNT_COLUMN_PX,
+        _ => -1,
+    }
+}
+
+/// Whether a column's width can be dragged: the ones of text, but not the
+/// subject, which takes the rest, or the tags, as wide as they are.
+pub fn resizable(column: ListColumn) -> bool {
+    matches!(
+        column,
+        ListColumn::Sender
+            | ListColumn::Recipients
+            | ListColumn::Correspondents
+            | ListColumn::Account
+            | ListColumn::Due
+            | ListColumn::Date
+    )
+}
+
+/// The width a column takes in `look`.
+fn column_width(look: &RowLook, column: ListColumn) -> i32 {
+    look.widths.get(&column).copied().unwrap_or_else(|| default_width(column))
+}
+
 /// Distance past which the indicator reads as "armed" (full color) — purely
 /// a visual cue; `AdwSwipeTracker` makes the real commit decision on
 /// release, factoring in velocity too.
@@ -104,6 +144,9 @@ pub struct RowMeta {
     /// Any message of the conversation is unread / starred (heads only).
     pub unread: bool,
     pub starred: bool,
+    /// Who took part in the conversation, for the Correspondents column
+    /// (#334); worked out only while that column is shown.
+    pub people: Option<String>,
     /// The row's height is open. False only while a reply slides shut
     /// before it is taken out of the list.
     pub revealed: bool,
@@ -414,6 +457,11 @@ pub struct RowLook {
     /// One line per message, in columns, instead of the three-line card
     /// (#334).
     pub single_line: bool,
+    /// Those columns, in order, the Due column left out of a list without
+    /// Microsoft 365 mail in it.
+    pub columns: Vec<ListColumn>,
+    /// The widths columns were dragged to; the rest keep their own.
+    pub widths: HashMap<ListColumn, i32>,
     /// How many lines of the message's text a row shows (0–3).
     pub preview_lines: u32,
     /// Whether the subject line is drawn (Focus Mode can take it away).
@@ -444,6 +492,8 @@ impl Default for RowLook {
             avatars: true,
             sender_logos: false,
             single_line: false,
+            columns: ListColumn::DEFAULT.to_vec(),
+            widths: HashMap::new(),
             preview_lines: 1,
             show_subject: true,
             show_palette: true,
@@ -464,6 +514,8 @@ pub struct RowShared {
     /// The tags (#71): the chips a row shows are the message's keywords that
     /// name one of these.
     pub tags: RefCell<Vec<crate::config::Tag>>,
+    /// Each account's name, for the Account column (#334).
+    pub account_names: RefCell<HashMap<u32, String>>,
     /// How long an actions palette stays open after the pointer leaves it.
     pub palette_collapse_secs: Cell<u64>,
     /// Open the palette on row hover.
@@ -496,6 +548,7 @@ impl RowShared {
         Rc::new(RowShared {
             look: RefCell::new(RowLook::default()),
             tags: RefCell::new(Vec::new()),
+            account_names: RefCell::new(HashMap::new()),
             palette_collapse_secs: Cell::new(5),
             palette_hover: Cell::new(privacy.list_palette_hover),
             swipe_reversed: Cell::new(privacy.swipe_reversed),
@@ -667,7 +720,7 @@ pub async fn find_logo(email: String) -> FaceCmd {
 }
 
 /// Display names from a raw To header: "Ann <a@x>, b@y" -> "Ann, b@y".
-fn recipient_names(to: &str) -> String {
+pub fn recipient_names(to: &str) -> String {
     let mut names: Vec<String> = Vec::new();
     for part in to.split(',') {
         let part = part.trim();
@@ -694,6 +747,214 @@ fn first_recipient_addr(to: &str) -> Option<String> {
         None => first,
     };
     (!addr.is_empty()).then(|| addr.to_string())
+}
+
+/// Fill `bar` with the single line's column headings (#334), laid out as a
+/// row is so each sits over its column. `sorted` is the column the list is
+/// sorted by and whether it runs downwards; a sortable heading sorts the
+/// list by its column when clicked.
+pub fn fill_headings(
+    bar: &gtk::Box,
+    look: &RowLook,
+    sorted: Option<(ListColumn, bool)>,
+    sortable: &dyn Fn(ListColumn) -> bool,
+    click: Rc<dyn Fn(ListColumn)>,
+    resize: Rc<dyn Fn(ListColumn, Option<i32>, bool)>,
+) -> HashMap<ListColumn, ColumnBin> {
+    let mut bins = HashMap::new();
+    while let Some(child) = bar.first_child() {
+        bar.remove(&child);
+    }
+    let mut classes = vec!["message-row", "single-line", "list-headings"];
+    if !look.avatars {
+        classes.push("no-avatar");
+    }
+    bar.set_css_classes(&classes);
+    bar.set_spacing(8);
+    // The avatar's and the unread dot's places.
+    if look.avatars {
+        let room = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        room.set_size_request(16, -1);
+        bar.append(&room);
+    }
+    let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    dot.set_size_request(10, -1);
+    bar.append(&dot);
+    let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    line.set_hexpand(true);
+    bar.append(&line);
+
+    let subject_at = look.columns.iter().position(|c| *c == ListColumn::Subject).unwrap_or(0);
+    for (at, &column) in look.columns.iter().enumerate() {
+        let arrow = sorted.filter(|(c, _)| *c == column).map(|(_, down)| if down { " \u{25BE}" } else { " \u{25B4}" });
+        let text = |name: String| {
+            let label = gtk::Label::new(Some(&format!("{name}{}", arrow.unwrap_or(""))));
+            label.set_xalign(0.0);
+            label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            label.add_css_class("list-heading");
+            label
+        };
+        let icon = |name: &str, px: i32| {
+            let image = gtk::Image::from_icon_name(name);
+            image.set_pixel_size(px);
+            image.add_css_class("list-heading");
+            image.upcast::<gtk::Widget>()
+        };
+        let mut bin = None;
+        let mut binned = |label: gtk::Label| {
+            let b = ColumnBin::new(column_width(look, column));
+            b.set_child(Some(&label));
+            bin = Some(b.clone());
+            b.upcast::<gtk::Widget>()
+        };
+        let cell: gtk::Widget = match column {
+            ListColumn::Star => icon("starred-symbolic", LINE_ICON_PX),
+            ListColumn::Attachment => icon("mail-attachment-symbolic", LINE_ICON_PX),
+            ListColumn::Importance => icon("emblem-important-symbolic", -1),
+            ListColumn::Sender => binned(text(if look.show_recipient { i18n("To") } else { i18n("From") })),
+            ListColumn::Recipients => binned(text(i18n("To"))),
+            ListColumn::Correspondents | ListColumn::Account => binned(text(i18n(column.label()))),
+            ListColumn::Subject => {
+                let b = ColumnBin::new(0);
+                b.set_child(Some(&text(i18n(column.label()))));
+                b.set_hexpand(true);
+                b.upcast()
+            }
+            ListColumn::Tags => text(i18n(column.label())).upcast(),
+            ListColumn::Due | ListColumn::Date => {
+                let label = text(if column == ListColumn::Due { i18n("Due") } else { i18n(column.label()) });
+                label.set_width_chars(9);
+                label.set_xalign(1.0);
+                binned(label)
+            }
+        };
+        if let Some(bin) = &bin {
+            bins.insert(column, bin.clone());
+        }
+        let cell = match bin {
+            Some(bin) if resizable(column) => resize_handle(cell, &bin, column, at < subject_at, resize.clone()),
+            _ => cell,
+        };
+        cell.set_tooltip_text(Some(&i18n(column.label())));
+        if arrow.is_some() {
+            cell.add_css_class("sorted");
+        }
+        if sortable(column) {
+            cell.set_cursor_from_name(Some("pointer"));
+            let click = click.clone();
+            let gesture = gtk::GestureClick::new();
+            gesture.connect_released(move |_, _, _, _| click(column));
+            cell.add_controller(gesture);
+        }
+        line.append(&cell);
+    }
+    bins
+}
+
+/// A heading with a handle for dragging its column's width (#334), on the
+/// edge it shares with the subject: the right edge of a column before it,
+/// the left of one after it, so the edge follows the pointer. Each step of
+/// a drag is handed to `resize`, the last marked done; a double click puts
+/// the column back to its own width.
+fn resize_handle(
+    cell: gtk::Widget,
+    bin: &ColumnBin,
+    column: ListColumn,
+    before_subject: bool,
+    resize: Rc<dyn Fn(ListColumn, Option<i32>, bool)>,
+) -> gtk::Widget {
+    const MIN: i32 = 32;
+    const MAX: i32 = 800;
+    let overlay = gtk::Overlay::new();
+    overlay.set_child(Some(&cell));
+    let handle = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    handle.add_css_class("column-resize-handle");
+    handle.set_size_request(8, -1);
+    handle.set_halign(if before_subject { gtk::Align::End } else { gtk::Align::Start });
+    handle.set_cursor_from_name(Some("col-resize"));
+    handle.set_tooltip_text(Some(&i18n("Drag to resize, double-click for the usual width")));
+    overlay.add_overlay(&handle);
+
+    let drag = gtk::GestureDrag::new();
+    let start = Rc::new(Cell::new(0));
+    let last = Rc::new(Cell::new(0));
+    // Where the press was, across the window. The drag's own offsets are
+    // measured from the handle, which moves with the edge it drags, so each
+    // step would count the last one's move again and the edge would shake.
+    let pressed_at = Rc::new(Cell::new(0.0f32));
+    // The pointer across the window, from a point on the handle as it is now.
+    fn across(handle: &gtk::Widget, x: f64, y: f64) -> Option<f32> {
+        let root = handle.root()?;
+        handle.compute_point(&root, &gtk::graphene::Point::new(x as f32, y as f32)).map(|p| p.x())
+    }
+    {
+        let (bin, start, last, pressed_at) = (bin.clone(), start.clone(), last.clone(), pressed_at.clone());
+        drag.connect_drag_begin(move |g, x, y| {
+            if let Some(at) = g.widget().and_then(|h| across(&h, x, y)) {
+                pressed_at.set(at);
+            }
+            // Its own, so the heading under it does not take the press for
+            // a click that sorts.
+            g.set_state(gtk::EventSequenceState::Claimed);
+            let asked = bin.asked_width();
+            let now = if asked > 0 { asked } else { bin.width() };
+            start.set(now);
+            last.set(now);
+        });
+    }
+    {
+        let (start, last, resize) = (start.clone(), last.clone(), resize.clone());
+        drag.connect_drag_update(move |g, dx, dy| {
+            let Some((x, y)) = g.start_point() else { return };
+            let Some(now) = g.widget().and_then(|h| across(&h, x + dx, y + dy)) else { return };
+            let dx = (now - pressed_at.get()).round() as i32;
+            let px = (start.get() + if before_subject { dx } else { -dx }).clamp(MIN, MAX);
+            if px != last.get() {
+                last.set(px);
+                // The list sets the heading's width with the rows', fitted
+                // to the pane the same way.
+                resize(column, Some(px), false);
+            }
+        });
+    }
+    {
+        let (start, last, resize) = (start.clone(), last.clone(), resize.clone());
+        // A press that never moved (half of a double click) changes nothing.
+        drag.connect_drag_end(move |_, _, _| {
+            if last.get() != start.get() {
+                resize(column, Some(last.get()), true);
+            }
+        });
+    }
+    let click = gtk::GestureClick::new();
+    {
+        let (bin, resize) = (bin.clone(), resize.clone());
+        click.connect_pressed(move |g, n, _, _| {
+            if n == 2 {
+                g.set_state(gtk::EventSequenceState::Claimed);
+                bin.set_width(default_width(column));
+                resize(column, None, true);
+            }
+        });
+    }
+    // One group: the drag claiming the press must not deny the double
+    // click on the same handle.
+    click.group_with(&drag);
+    handle.add_controller(drag);
+    handle.add_controller(click);
+    overlay.upcast()
+}
+
+/// A follow-up flag's due date for the Due column (#334): the day alone,
+/// the year too when it is not this one. Empty when there is none.
+fn due_label(due: i64) -> String {
+    if due <= 0 {
+        String::new()
+    } else if crate::datefmt::year(due) == crate::datefmt::year(crate::datefmt::now()) {
+        crate::datefmt::day_month(due)
+    } else {
+        crate::datefmt::day_month_year(due)
+    }
 }
 
 /// The tag section of a message menu (#71): one entry per tag, its swatch
@@ -968,6 +1229,21 @@ pub struct RowWidgets {
     top: gtk::Box,
     /// The single-line layout's one line (#334).
     line: gtk::Box,
+    /// The single-line layout's own columns, which a card has no place for,
+    /// each in the bin that sizes its column.
+    recipients: gtk::Label,
+    recipients_col: ColumnBin,
+    people: gtk::Label,
+    people_col: ColumnBin,
+    importance: gtk::Image,
+    account: gtk::Label,
+    account_col: ColumnBin,
+    due: gtk::Label,
+    due_col: ColumnBin,
+    /// The bins the sender, the subject and the date move into on one line.
+    name_col: ColumnBin,
+    subject_col: ColumnBin,
+    date_col: ColumnBin,
     name: gtk::Label,
     clip: gtk::Image,
     star: gtk::Image,
@@ -1010,8 +1286,9 @@ struct RowState {
     tags_for: Option<(Vec<String>, u64)>,
     avatar_shown: bool,
     hovered: bool,
-    /// The widgets are laid out on one line (#334).
-    single: bool,
+    /// The columns the widgets are laid out in on one line, or `None` for
+    /// the card (#334).
+    columns: Option<Vec<ListColumn>>,
     dragging: bool,
     palette_open: bool,
     palette: Option<PaletteButtons>,
@@ -1365,8 +1642,10 @@ impl Row {
         let msg = &data.msg;
         let meta = &data.meta;
         let w = &self.w;
-        self.arrange(look.single_line);
+        self.arrange(look.single_line.then_some(&look.columns[..]));
         let single = look.single_line;
+        // Whether a widget's column is on: a card shows what it always has.
+        let col = |c: ListColumn| !single || look.columns.contains(&c);
 
         self.sync_host_classes();
         {
@@ -1436,14 +1715,33 @@ impl Row {
         w.dot.set_opacity(if unread { 1.0 } else { 0.0 });
         w.text.set_valign(if look.avatars { gtk::Align::Center } else { gtk::Align::Start });
 
+        w.name_col.set_visible(col(ListColumn::Sender));
         w.name.set_label(&self.name_line(&data, &look));
         w.name.set_css_classes(if unread { &["message-sender", "unread"] } else { &["message-sender"] });
-        w.clip.set_visible(msg.has_attachment);
-        // On one line the star keeps its column whether lit or not, so the
-        // senders line up.
+        // On one line an icon keeps its column whether lit or not, so the
+        // columns after it line up.
+        w.clip.set_visible(if single { col(ListColumn::Attachment) } else { msg.has_attachment });
+        w.clip.set_opacity(if msg.has_attachment { 1.0 } else { 0.0 });
         let starred = msg.starred || meta.starred;
-        w.star.set_visible(starred || single);
+        w.star.set_visible(if single { col(ListColumn::Star) } else { starred });
         w.star.set_opacity(if starred { 1.0 } else { 0.0 });
+        if single {
+            self.fill_columns(&data, &look, &shared, unread);
+        }
+        w.date.set_visible(col(ListColumn::Date));
+        w.date_col.set_visible(col(ListColumn::Date));
+        if single {
+            for (c, bin) in [
+                (ListColumn::Sender, &w.name_col),
+                (ListColumn::Recipients, &w.recipients_col),
+                (ListColumn::Correspondents, &w.people_col),
+                (ListColumn::Account, &w.account_col),
+                (ListColumn::Due, &w.due_col),
+                (ListColumn::Date, &w.date_col),
+            ] {
+                bin.set_width(column_width(&look, c));
+            }
+        }
         match (&meta.latest, &meta.latest_at) {
             (_, Some((ts, date))) if single => w.date.set_label(&crate::models::date_short(*ts, date)),
             (Some(latest), _) if !single => w.date.set_label(latest),
@@ -1476,6 +1774,7 @@ impl Row {
             w.subject.set_label(&msg.subject);
         }
         w.subject.set_css_classes(if unread { &["message-subject", "unread"] } else { &["message-subject"] });
+        w.tags_box.set_visible(col(ListColumn::Tags));
         self.render_tags(msg, &shared, &look);
 
         let preview = meta.preview.as_deref().unwrap_or(&msg.preview);
@@ -1499,6 +1798,54 @@ impl Row {
         }
         self.sync_palette_buttons();
         self.sync_swipe_strip();
+    }
+
+    /// The columns only a single line has (#334): each shown or not as the
+    /// setting says, and filled from the message when it is.
+    fn fill_columns(&self, data: &RowData, look: &RowLook, shared: &RowShared, unread: bool) {
+        let w = &self.w;
+        let msg = &data.msg;
+        let on = |c: ListColumn| look.columns.contains(&c);
+        let weight: &[&str] = if unread { &["message-sender", "unread"] } else { &["message-sender"] };
+
+        w.recipients_col.set_visible(on(ListColumn::Recipients));
+        if on(ListColumn::Recipients) {
+            w.recipients.set_label(&recipient_names(&msg.to));
+            w.recipients.set_css_classes(weight);
+        }
+
+        w.people_col.set_visible(on(ListColumn::Correspondents));
+        if on(ListColumn::Correspondents) {
+            let people = data.meta.people.clone().unwrap_or_else(|| msg.from_name.clone());
+            w.people.set_tooltip_text(Some(&people));
+            w.people.set_label(&people);
+            w.people.set_css_classes(weight);
+        }
+
+        w.importance.set_visible(on(ListColumn::Importance));
+        let (icon, class, tip) = match msg.importance {
+            Importance::High => ("emblem-important-symbolic", "importance-high", Some(i18n("High importance"))),
+            Importance::Low => ("hylki-importance-low-symbolic", "importance-low", Some(i18n("Low importance"))),
+            Importance::Normal => ("emblem-important-symbolic", "importance-high", None),
+        };
+        w.importance.set_icon_name(Some(icon));
+        w.importance.set_css_classes(&[class]);
+        w.importance.set_opacity(if tip.is_some() { 1.0 } else { 0.0 });
+        w.importance.set_tooltip_text(tip.as_deref());
+
+        w.account_col.set_visible(on(ListColumn::Account));
+        if on(ListColumn::Account) {
+            let name = shared.account_names.borrow().get(&msg.account_id).cloned().unwrap_or_default();
+            w.account.set_tooltip_text(Some(&name));
+            w.account.set_label(&name);
+        }
+
+        w.due_col.set_visible(on(ListColumn::Due));
+        if on(ListColumn::Due) {
+            w.due.set_label(&due_label(msg.due));
+            let overdue = msg.due > 0 && crate::datefmt::day_key(msg.due) < crate::datefmt::day_key(crate::datefmt::now());
+            w.due.set_css_classes(if overdue { &["message-date", "overdue"] } else { &["message-date"] });
+        }
     }
 
     /// The row's own classes, on the item widget the view wraps it in.
@@ -1791,17 +2138,22 @@ impl Row {
     /// Lay the row's widgets out on one line or as the three-line card
     /// (#334). They are moved, not copied, and only when the layout
     /// changes: a row is recycled across messages but rarely across layouts.
-    fn arrange(&self, single: bool) {
-        if self.st.borrow().single == single {
+    fn arrange(&self, columns: Option<&[ListColumn]>) {
+        if self.st.borrow().columns.as_deref() == columns {
             return;
         }
-        self.st.borrow_mut().single = single;
+        self.st.borrow_mut().columns = columns.map(<[ListColumn]>::to_vec);
         let w = &self.w;
+        fn detach(widget: &gtk::Widget) {
+            if let Some(from) = widget.parent().and_downcast::<gtk::Box>() {
+                from.remove(widget);
+            } else if let Some(bin) = widget.parent().and_downcast::<ColumnBin>() {
+                bin.set_child(None::<&gtk::Widget>);
+            }
+        }
         fn into(to: &gtk::Box, widgets: &[&gtk::Widget]) {
             for widget in widgets {
-                if let Some(from) = widget.parent().and_downcast::<gtk::Box>() {
-                    from.remove(*widget);
-                }
+                detach(widget);
                 to.append(*widget);
             }
         }
@@ -1814,31 +2166,60 @@ impl Row {
         let tags: &gtk::Widget = w.tags_box.upcast_ref();
         let lock: &gtk::Widget = w.lock.upcast_ref();
         let preview: &gtk::Widget = w.preview.upcast_ref();
-        if single {
-            // [star][sender][lock][subject — preview][tags][clip][chip][date]
-            into(&w.line, &[star, name, lock, subject, tags, clip, chip, date]);
-            // A fixed width in pixels, not characters: bold characters are
-            // wider, and the subjects of read and unread rows must line up.
+        if let Some(columns) = columns {
+            // In the setting's order; a column that is off keeps its widget
+            // wherever it was, hidden. The conversation chip rides at the
+            // subject's end, where the subject gives way to it.
+            for c in columns {
+                match c {
+                    ListColumn::Star => into(&w.line, &[star]),
+                    ListColumn::Sender => {
+                        detach(name);
+                        w.name_col.set_child(Some(name));
+                        into(&w.line, &[w.name_col.upcast_ref()]);
+                    }
+                    ListColumn::Recipients => into(&w.line, &[w.recipients_col.upcast_ref()]),
+                    ListColumn::Correspondents => into(&w.line, &[w.people_col.upcast_ref()]),
+                    ListColumn::Subject => {
+                        detach(subject);
+                        w.subject_col.set_child(Some(subject));
+                        into(&w.line, &[lock, w.subject_col.upcast_ref(), chip]);
+                    }
+                    ListColumn::Tags => into(&w.line, &[tags]),
+                    ListColumn::Attachment => into(&w.line, &[clip]),
+                    ListColumn::Importance => into(&w.line, &[w.importance.upcast_ref()]),
+                    ListColumn::Account => into(&w.line, &[w.account_col.upcast_ref()]),
+                    ListColumn::Due => into(&w.line, &[w.due_col.upcast_ref()]),
+                    ListColumn::Date => {
+                        detach(date);
+                        w.date_col.set_child(Some(date));
+                        into(&w.line, &[w.date_col.upcast_ref()]);
+                    }
+                }
+            }
+            // Its bin sets the width (see `ColumnBin`); expanding, the
+            // name would take the subject's room.
             w.name.set_hexpand(false);
-            w.name.set_size_request(160, -1);
-            w.name.set_max_width_chars(1);
             w.name.set_xalign(0.0);
             w.date.set_width_chars(9);
             w.date.set_xalign(1.0);
             w.avatar.set_size(16);
+            // Smaller marks on one line, level with its smaller text.
+            w.star.set_pixel_size(LINE_ICON_PX);
+            w.clip.set_pixel_size(LINE_ICON_PX);
         } else {
             into(&w.top, &[name, clip, star, date, chip]);
             into(&w.subject_line, &[subject, tags]);
             into(&w.preview_line, &[lock, preview]);
             w.name.set_hexpand(true);
-            w.name.set_size_request(-1, -1);
-            w.name.set_max_width_chars(-1);
             w.date.set_width_chars(-1);
             w.date.set_xalign(0.5);
             w.avatar.set_size(38);
+            w.star.set_pixel_size(-1);
+            w.clip.set_pixel_size(-1);
         }
-        w.text.set_visible(!single);
-        w.line.set_visible(single);
+        w.text.set_visible(columns.is_none());
+        w.line.set_visible(columns.is_some());
     }
 
     pub fn set_preview_lines(&self, lines: u32) {
@@ -2545,6 +2926,38 @@ fn build_widgets() -> RowWidgets {
     line.set_hexpand(true);
     line.set_visible(false);
     content.append(&line);
+    // The columns a card has no place for, which live on that line, each in
+    // a bin that keeps it the same width on every row.
+    let column_label = |px: i32| {
+        let label = gtk::Label::new(None);
+        label.set_xalign(0.0);
+        label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        let bin = ColumnBin::new(px);
+        bin.set_child(Some(&label));
+        bin.set_visible(false);
+        line.append(&bin);
+        (label, bin)
+    };
+    let (recipients, recipients_col) = column_label(SENDER_COLUMN_PX);
+    let (people, people_col) = column_label(PEOPLE_COLUMN_PX);
+    let (account, account_col) = column_label(ACCOUNT_COLUMN_PX);
+    let name_col = ColumnBin::new(SENDER_COLUMN_PX);
+    let subject_col = ColumnBin::new(0);
+    let date_col = ColumnBin::new(-1);
+    // The subject takes whatever room the other columns leave.
+    subject_col.set_hexpand(true);
+    account.add_css_class("message-account");
+    let due = gtk::Label::new(None);
+    due.set_width_chars(9);
+    due.set_xalign(1.0);
+    due.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    let due_col = ColumnBin::new(-1);
+    due_col.set_child(Some(&due));
+    due_col.set_visible(false);
+    line.append(&due_col);
+    let importance = gtk::Image::from_icon_name("emblem-important-symbolic");
+    importance.set_visible(false);
+    line.append(&importance);
 
     // The last reply's rail: a real dotted border on a widget spanning
     // exactly the row's top half, so it ends at the node dot. Added before
@@ -2621,6 +3034,18 @@ fn build_widgets() -> RowWidgets {
         palette_spacer,
         palette_inner,
         content,
+        recipients,
+        recipients_col,
+        people,
+        people_col,
+        importance,
+        account,
+        account_col,
+        due,
+        due_col,
+        name_col,
+        subject_col,
+        date_col,
         avatar_revealer,
         avatar,
         dot,
