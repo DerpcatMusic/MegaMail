@@ -30,9 +30,10 @@ for _version in ("4.1", "4.0"):
 
 from gi.repository import Gio, GLib, GObject, Nautilus  # noqa: E402
 
-__version__ = "1"
+__version__ = "2"
 
-# The stable build first, the beta after it; whichever is installed answers.
+# The stable build first, the beta after it; whichever is installed answers,
+# unless the other one is the default mail app (see _app_order).
 APP_IDS = ("co.hyprlab.Hylki", "co.hyprlab.Hylki.Beta")
 
 # Nautilus loads this file outside the app, so its translations live here
@@ -168,8 +169,28 @@ def _appimage_path():
     return bundle if bundle and os.access(bundle, os.X_OK) else None
 
 
+def _app_order():
+    """Hylki's app ids, the default mail app's first.
+
+    With the stable and the beta both installed, the files go to the one
+    the user reads mail in, which is the one set to open mailto: links.
+    """
+    order = list(APP_IDS)
+    try:
+        default = Gio.AppInfo.get_default_for_uri_scheme("mailto")
+        chosen = default.get_id() if default is not None else None
+    except GLib.Error:
+        chosen = None
+    if chosen and chosen.endswith(".desktop"):
+        chosen = chosen[: -len(".desktop")]
+    if chosen in order:
+        order.remove(chosen)
+        order.insert(0, chosen)
+    return order
+
+
 def _launch(uris):
-    for app_id in APP_IDS:
+    for app_id in _app_order():
         info = _desktop_app_info(app_id + ".desktop")
         if info is None:
             continue

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Fixed: Send with Hylki in GNOME Files went to the stable build when the
+  beta was installed beside it.** The extension now opens the files in
+  whichever Hylki is the default mail app, and the beta takes every
+  selected file in one message, as the stable build does. Reinstall the
+  extension from Settings → System → GNOME Files to update it.
 - **Changed: the recipients button and the Unsubscribe and Translate
   buttons in a message's header are filled, without an outline** (#342,
   suggested by yioannides), as Adwaita draws buttons. Their shade follows
