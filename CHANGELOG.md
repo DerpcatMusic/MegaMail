@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Added: Microsoft accounts can sign in with another app registration**
+  (#329, suggested by erenoglu). An Advanced row on a Microsoft account's
+  page takes a client ID, a tenant, scopes and a redirect URI, so an
+  organization that has approved another mail app, such as Evolution, can
+  sign in with that registration. A redirect that is not a `localhost`
+  address signs in in a window of Hylki's, which catches it, rather than in
+  the browser.
 - **Added: the From address can be typed** (#347, suggested by pdf). A pencil
   on the composer's From row turns it into text, for any name and address on
   one message without making it an alias; the message still goes through the

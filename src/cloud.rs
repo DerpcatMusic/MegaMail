@@ -792,6 +792,7 @@ fn dropbox_settings(account: &CloudAccount) -> crate::config::OAuthSettings {
         client_id: dropbox_client_id(account),
         client_secret: String::new(),
         scopes: "account_info.read files.content.write sharing.write".to_string(),
+        redirect_uri: String::new(),
     }
 }
 

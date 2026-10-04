@@ -248,6 +248,21 @@ organization's administrator to approve Hylki once for everyone, at
 `https://login.microsoftonline.com/organizations/adminconsent?client_id=01cdc012-c8d8-4d03-822c-76696a01c14e`;
 Hylki shows that link when Microsoft refuses a sign-in for want of approval.
 
+An organization that has approved another mail app's registration, and not
+Hylki's, can sign in with that one instead. The **Advanced** row on the
+account's page takes its **Client ID**, a **Tenant** (`common`,
+`organizations`, `consumers`, or the organization's directory ID or
+domain), the **Scopes** it was approved for and its **Redirect URI**. Empty
+rows keep Hylki's own. Scopes are Graph's short names, space-separated,
+such as `Mail.ReadWrite Mail.Send User.Read`; `offline_access` is added if
+it is missing. Hylki reads and sends mail, so only the mail scopes are used,
+whatever else the list grants. A redirect URI that is not a `localhost`
+address, such as Evolution's
+`https://login.microsoftonline.com/common/oauth2/nativeclient`, makes the
+sign-in run in a window of Hylki's instead of the browser, so the answer
+can be caught; that window keeps nothing once it closes. Evolution's
+registration is `20460e5d-ce91-49af-a3a5-70b6be7486d1` with that redirect.
+
 **Google** signs in through **GNOME Online Accounts**. Add your Google account in
 *GNOME Settings → Online Accounts*, then import it in Hylki. Official builds don't
 bundle a Google OAuth client (Google's secret can't live in a public repo), so

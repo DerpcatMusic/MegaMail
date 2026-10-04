@@ -83,6 +83,7 @@ impl Provider {
             client_id,
             client_secret,
             scopes: p.scopes.to_string(),
+            redirect_uri: String::new(),
         })
     }
     pub(crate) fn wizard_label(&self) -> &'static str {
@@ -1140,6 +1141,36 @@ impl Component for AccountsWindow {
                                 adw::EntryRow {
                                     set_title: &i18n("Scopes (space-separated)"),
                                     set_visible: false,
+                                },
+                                // Microsoft's own sign-in, made with another app
+                                // registration (#329): one an organization has
+                                // approved, say. Empty rows keep Hylki's.
+                                #[name = "ms_advanced"]
+                                adw::ExpanderRow {
+                                    set_title: &i18n("Advanced"),
+                                    set_subtitle: &i18n("Sign in with another app registration"),
+                                    set_visible: false,
+                                    add_row: ms_client_row = &adw::EntryRow {
+                                        set_title: &i18n("Client ID"),
+                                    },
+                                    add_row: ms_tenant_row = &adw::EntryRow {
+                                        set_title: &i18n("Tenant (common, organizations, consumers or an ID)"),
+                                    },
+                                    add_row: ms_scopes_row = &adw::EntryRow {
+                                        set_title: &i18n("Scopes (space-separated)"),
+                                    },
+                                    add_row: ms_redirect_row = &adw::EntryRow {
+                                        set_title: &i18n("Redirect URI"),
+                                        // A redirect of its own signs in in
+                                        // Hylki's window, not the browser.
+                                        connect_changed[signin = oauth_signin_btn.clone()] => move |row| {
+                                            signin.set_label(&if row.text().trim().is_empty() {
+                                                i18n("Sign In with Browser")
+                                            } else {
+                                                i18n("Sign In")
+                                            });
+                                        },
+                                    },
                                 },
                                 #[name = "oauth_signin_btn"]
                                 gtk::Button {
@@ -2291,6 +2322,27 @@ impl Component for AccountsWindow {
                 widgets.oauth_signin_btn.set_sensitive(false);
                 widgets.oauth_status.set_visible(true);
                 widgets.oauth_status.set_css_classes(&["dim-label"]);
+                // A redirect Hylki cannot listen on (#329): the sign-in runs
+                // in a window of its own, which catches it.
+                if !settings.redirect_uri.trim().is_empty() {
+                    widgets.oauth_status.set_label(&i18n("Complete the sign-in in the window that opened."));
+                    let parent = root.root().and_downcast::<gtk::Window>();
+                    let s = sender.clone();
+                    crate::ui::web_signin::run(parent.as_ref(), &settings.clone(), move |answer| {
+                        s.oneshot_command(async move {
+                            let r = tokio::task::spawn_blocking(move || {
+                                let (request, code) = answer?;
+                                let refresh = crate::oauth::exchange_code(&settings, &request, &code)?.refresh_token;
+                                let (name, address, refresh) = crate::oauth::microsoft_whoami(&settings, &refresh)?;
+                                Ok((refresh, Some((name, address))))
+                            })
+                            .await
+                            .unwrap_or_else(|_| Err("sign-in task failed".into()));
+                            AccountsCmd::OAuth(r)
+                        });
+                    });
+                    return;
+                }
                 widgets
                     .oauth_status
                     .set_label(&i18n("Opening browser… complete sign-in there."));
@@ -3692,6 +3744,7 @@ impl AccountsWindow {
         widgets.oauth_auth_url_row.set_visible(is_custom);
         widgets.oauth_token_url_row.set_visible(is_custom);
         widgets.oauth_scope_row.set_visible(is_custom);
+        widgets.ms_advanced.set_visible(p.kind == ProviderKind::Microsoft && !needs_goa);
         if !is_oauth || needs_goa {
             widgets.oauth_status.set_visible(false);
         }
@@ -3726,13 +3779,24 @@ impl AccountsWindow {
         if let Some(name) = provider {
             let p = crate::oauth::preset(name).unwrap();
             let (client_id, client_secret) = crate::oauth::provider_credentials(name);
-            OAuthSettings {
+            let mut settings = OAuthSettings {
                 auth_url: p.auth_url.to_string(),
                 token_url: p.token_url.to_string(),
                 client_id,
                 client_secret,
                 scopes: p.scopes.to_string(),
+                redirect_uri: String::new(),
+            };
+            if name == "microsoft" {
+                crate::oauth::microsoft_advanced(
+                    &mut settings,
+                    &trimmed(&widgets.ms_client_row),
+                    &trimmed(&widgets.ms_tenant_row),
+                    &trimmed(&widgets.ms_scopes_row),
+                    &trimmed(&widgets.ms_redirect_row),
+                );
             }
+            settings
         } else {
             OAuthSettings {
                 auth_url: trimmed(&widgets.oauth_auth_url_row),
@@ -3740,6 +3804,7 @@ impl AccountsWindow {
                 client_id: trimmed(&widgets.oauth_client_id_row),
                 client_secret: widgets.oauth_secret_row.text().to_string(),
                 scopes: trimmed(&widgets.oauth_scope_row),
+                redirect_uri: String::new(),
             }
         }
     }
@@ -4256,6 +4321,13 @@ fn fill_editor(widgets: &AccountsWindowWidgets, acc: &AccountConfig) {
     widgets.oauth_auth_url_row.set_text(s.map(|s| s.auth_url.as_str()).unwrap_or(""));
     widgets.oauth_token_url_row.set_text(s.map(|s| s.token_url.as_str()).unwrap_or(""));
     widgets.oauth_scope_row.set_text(s.map(|s| s.scopes.as_str()).unwrap_or(""));
+    // What a Microsoft account was set up with beyond Hylki's own app (#329).
+    let adv = s.map(crate::oauth::microsoft_advanced_of).unwrap_or_default();
+    widgets.ms_client_row.set_text(&adv.0);
+    widgets.ms_tenant_row.set_text(&adv.1);
+    widgets.ms_scopes_row.set_text(&adv.2);
+    widgets.ms_redirect_row.set_text(&adv.3);
+    widgets.ms_advanced.set_expanded(!(adv.0.is_empty() && adv.1.is_empty() && adv.2.is_empty() && adv.3.is_empty()));
     widgets.oauth_status.set_visible(false);
     widgets.oauth_signin_btn.set_sensitive(true);
 
@@ -4297,6 +4369,7 @@ fn set_connection_editable(widgets: &AccountsWindowWidgets, editable: bool) {
         widgets.oauth_auth_url_row.upcast_ref(),
         widgets.oauth_token_url_row.upcast_ref(),
         widgets.oauth_scope_row.upcast_ref(),
+        widgets.ms_advanced.upcast_ref(),
     ] {
         row.set_sensitive(editable);
     }
@@ -4333,6 +4406,10 @@ fn clear_editor(widgets: &AccountsWindowWidgets) {
     widgets.oauth_auth_url_row.set_text("");
     widgets.oauth_token_url_row.set_text("");
     widgets.oauth_scope_row.set_text("");
+    for row in [&widgets.ms_client_row, &widgets.ms_tenant_row, &widgets.ms_scopes_row, &widgets.ms_redirect_row] {
+        row.set_text("");
+    }
+    widgets.ms_advanced.set_expanded(false);
     widgets.oauth_status.set_visible(false);
     widgets.test_result.set_visible(false);
     widgets.test_btn.set_sensitive(true);

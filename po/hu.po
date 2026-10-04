@@ -1481,8 +1481,28 @@ msgstr "Token URL"
 msgid "Scopes (space-separated)"
 msgstr "Hatókörök (szóközzel elválasztva)"
 
+msgid "Advanced"
+msgstr ""
+
+msgid "Sign in with another app registration"
+msgstr ""
+
+#, fuzzy
+msgid "Client ID"
+msgstr "OAuth ügyfélazonosító (Client ID)"
+
+msgid "Tenant (common, organizations, consumers or an ID)"
+msgstr ""
+
+msgid "Redirect URI"
+msgstr ""
+
 msgid "Sign In with Browser"
 msgstr "Bejelentkezés böngészővel"
+
+#, fuzzy
+msgid "Sign In"
+msgstr "Bejelentkezés"
 
 msgid ""
 "Google and Microsoft sign-in use GNOME Online Accounts.\n"
@@ -1764,6 +1784,10 @@ msgid "Enter a client ID (and endpoints for a custom provider) first"
 msgstr ""
 "Először adja meg az ügyfélazonosítót (cliend ID, és egyéni szolgáltató "
 "esetén a végpontokat)"
+
+#, fuzzy
+msgid "Complete the sign-in in the window that opened."
+msgstr "A bejelentkezés nem tárolható a kulcstartón: {e}"
 
 msgid "Opening browser… complete sign-in there."
 msgstr "Böngésző megnyitása… ott fejezze be a bejelentkezést."
@@ -5687,6 +5711,9 @@ msgstr "Levélszemét kiürítése…"
 
 msgid "Edit Tag…"
 msgstr "Címke szerkesztése…"
+
+msgid "The sign-in window was closed."
+msgstr ""
 
 msgid "Welcome to Hylki"
 msgstr "Üdvözli a Hylki"

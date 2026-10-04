@@ -1504,8 +1504,28 @@ msgstr "URL διακριτικού"
 msgid "Scopes (space-separated)"
 msgstr "Πεδία πρόσβασης (χωρισμένα με κενά)"
 
+msgid "Advanced"
+msgstr ""
+
+msgid "Sign in with another app registration"
+msgstr ""
+
+#, fuzzy
+msgid "Client ID"
+msgstr "Αναγνωριστικό πελάτη OAuth"
+
+msgid "Tenant (common, organizations, consumers or an ID)"
+msgstr ""
+
+msgid "Redirect URI"
+msgstr ""
+
 msgid "Sign In with Browser"
 msgstr "Σύνδεση με πρόγραμμα περιήγησης"
+
+#, fuzzy
+msgid "Sign In"
+msgstr "Σύνδεση και προσθήκη"
 
 msgid ""
 "Google and Microsoft sign-in use GNOME Online Accounts.\n"
@@ -1791,6 +1811,10 @@ msgid "Enter a client ID (and endpoints for a custom provider) first"
 msgstr ""
 "Εισαγάγετε πρώτα ένα αναγνωριστικό πελάτη (και endpoints για προσαρμοσμένο "
 "πάροχο)"
+
+#, fuzzy
+msgid "Complete the sign-in in the window that opened."
+msgstr "Δεν ήταν δυνατή η αποθήκευση των στοιχείων σύνδεσης στο keyring: {e}"
 
 msgid "Opening browser… complete sign-in there."
 msgstr "Άνοιγμα προγράμματος περιήγησης… ολοκληρώστε τη σύνδεση εκεί."
@@ -5702,6 +5726,9 @@ msgstr "Άδειασμα ανεπιθύμητων…"
 
 msgid "Edit Tag…"
 msgstr "Επεξεργασία ετικέτας…"
+
+msgid "The sign-in window was closed."
+msgstr ""
 
 msgid "Welcome to Hylki"
 msgstr "Καλώς ορίσατε στο Hylki"

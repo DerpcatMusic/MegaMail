@@ -1505,8 +1505,28 @@ msgstr "URL do token"
 msgid "Scopes (space-separated)"
 msgstr "Escopos (separados por espaços)"
 
+msgid "Advanced"
+msgstr ""
+
+msgid "Sign in with another app registration"
+msgstr ""
+
+#, fuzzy
+msgid "Client ID"
+msgstr "ID de cliente OAuth"
+
+msgid "Tenant (common, organizations, consumers or an ID)"
+msgstr ""
+
+msgid "Redirect URI"
+msgstr ""
+
 msgid "Sign In with Browser"
 msgstr "Entrar pelo navegador"
+
+#, fuzzy
+msgid "Sign In"
+msgstr "Assinatura"
 
 msgid ""
 "Google and Microsoft sign-in use GNOME Online Accounts.\n"
@@ -1788,6 +1808,10 @@ msgid "Enter a client ID (and endpoints for a custom provider) first"
 msgstr ""
 "Digite primeiro um ID de cliente (e os pontos de acesso, no caso de um "
 "provedor personalizado)"
+
+#, fuzzy
+msgid "Complete the sign-in in the window that opened."
+msgstr "Não foi possível salvar os dados de acesso no chaveiro: {e}"
 
 msgid "Opening browser… complete sign-in there."
 msgstr "Abrindo o navegador… conclua o acesso por lá."
@@ -5694,6 +5718,9 @@ msgstr "Esvaziar spam…"
 
 msgid "Edit Tag…"
 msgstr "Editar etiqueta…"
+
+msgid "The sign-in window was closed."
+msgstr ""
 
 msgid "Welcome to Hylki"
 msgstr "Bem-vindo ao Hylki"

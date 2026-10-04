@@ -1221,6 +1221,7 @@ impl Welcome {
             client_id: text(&widgets.oauth_client_id_row),
             client_secret: widgets.oauth_secret_row.text().to_string(),
             scopes: text(&widgets.oauth_scope_row),
+            redirect_uri: String::new(),
         });
         // Microsoft needs nothing typed: the sign-in says who it is.
         if protocol != Protocol::Graph

@@ -1498,8 +1498,28 @@ msgstr "URL токена"
 msgid "Scopes (space-separated)"
 msgstr "Области доступа (через пробел)"
 
+msgid "Advanced"
+msgstr ""
+
+msgid "Sign in with another app registration"
+msgstr ""
+
+#, fuzzy
+msgid "Client ID"
+msgstr "Идентификатор клиента OAuth (Client ID)"
+
+msgid "Tenant (common, organizations, consumers or an ID)"
+msgstr ""
+
+msgid "Redirect URI"
+msgstr ""
+
 msgid "Sign In with Browser"
 msgstr "Войти через браузер"
+
+#, fuzzy
+msgid "Sign In"
+msgstr "Авторизация"
 
 msgid ""
 "Google and Microsoft sign-in use GNOME Online Accounts.\n"
@@ -1779,6 +1799,10 @@ msgid "Enter a client ID (and endpoints for a custom provider) first"
 msgstr ""
 "Сначала введите идентификатор клиента (и адреса серверов для нестандартного "
 "провайдера)"
+
+#, fuzzy
+msgid "Complete the sign-in in the window that opened."
+msgstr "Не удалось сохранить данные входа в связке ключей: {e}"
 
 msgid "Opening browser… complete sign-in there."
 msgstr "Открытие браузера… завершите вход в нём."
@@ -5659,6 +5683,9 @@ msgstr "Очистить спам…"
 
 msgid "Edit Tag…"
 msgstr "Редактировать метку…"
+
+msgid "The sign-in window was closed."
+msgstr ""
 
 msgid "Welcome to Hylki"
 msgstr "Добро пожаловать в Hylki"

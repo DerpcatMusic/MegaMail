@@ -1516,8 +1516,28 @@ msgstr "Adres URL tokena"
 msgid "Scopes (space-separated)"
 msgstr "Zakresy (rozdzielone spacjami)"
 
+msgid "Advanced"
+msgstr ""
+
+msgid "Sign in with another app registration"
+msgstr ""
+
+#, fuzzy
+msgid "Client ID"
+msgstr "Identyfikator klienta OAuth"
+
+msgid "Tenant (common, organizations, consumers or an ID)"
+msgstr ""
+
+msgid "Redirect URI"
+msgstr ""
+
 msgid "Sign In with Browser"
 msgstr "Zaloguj się w przeglądarce"
+
+#, fuzzy
+msgid "Sign In"
+msgstr "Podpis"
 
 msgid ""
 "Google and Microsoft sign-in use GNOME Online Accounts.\n"
@@ -1802,6 +1822,10 @@ msgid "Enter a client ID (and endpoints for a custom provider) first"
 msgstr ""
 "Najpierw wprowadź identyfikator klienta (oraz punkty końcowe w przypadku "
 "własnego dostawcy)"
+
+#, fuzzy
+msgid "Complete the sign-in in the window that opened."
+msgstr "Nie udało się zapisać danych logowania w bazie kluczy: {e}"
 
 msgid "Opening browser… complete sign-in there."
 msgstr "Otwieranie przeglądarki… Dokończ w niej logowanie."
@@ -5715,6 +5739,9 @@ msgstr "Opróżnij katalog spamu…"
 
 msgid "Edit Tag…"
 msgstr "Modyfikuj etykietę…"
+
+msgid "The sign-in window was closed."
+msgstr ""
 
 msgid "Welcome to Hylki"
 msgstr "Witamy w aplikacji Hylki"

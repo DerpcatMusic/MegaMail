@@ -1378,7 +1378,25 @@ msgstr ""
 msgid "Scopes (space-separated)"
 msgstr ""
 
+msgid "Advanced"
+msgstr ""
+
+msgid "Sign in with another app registration"
+msgstr ""
+
+msgid "Client ID"
+msgstr ""
+
+msgid "Tenant (common, organizations, consumers or an ID)"
+msgstr ""
+
+msgid "Redirect URI"
+msgstr ""
+
 msgid "Sign In with Browser"
+msgstr ""
+
+msgid "Sign In"
 msgstr ""
 
 msgid ""
@@ -1613,6 +1631,9 @@ msgid "Testing…"
 msgstr ""
 
 msgid "Enter a client ID (and endpoints for a custom provider) first"
+msgstr ""
+
+msgid "Complete the sign-in in the window that opened."
 msgstr ""
 
 msgid "Opening browser… complete sign-in there."
@@ -5030,6 +5051,9 @@ msgid "Empty Junk…"
 msgstr ""
 
 msgid "Edit Tag…"
+msgstr ""
+
+msgid "The sign-in window was closed."
 msgstr ""
 
 msgid "Welcome to Hylki"

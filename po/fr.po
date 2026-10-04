@@ -1504,8 +1504,28 @@ msgstr "URL du jeton"
 msgid "Scopes (space-separated)"
 msgstr "Scopes (séparées par un espace)"
 
+msgid "Advanced"
+msgstr ""
+
+msgid "Sign in with another app registration"
+msgstr ""
+
+#, fuzzy
+msgid "Client ID"
+msgstr "ID client OAuth"
+
+msgid "Tenant (common, organizations, consumers or an ID)"
+msgstr ""
+
+msgid "Redirect URI"
+msgstr ""
+
 msgid "Sign In with Browser"
 msgstr "Se connecter via le navigateur"
+
+#, fuzzy
+msgid "Sign In"
+msgstr "Connexion"
 
 msgid ""
 "Google and Microsoft sign-in use GNOME Online Accounts.\n"
@@ -1789,6 +1809,10 @@ msgid "Enter a client ID (and endpoints for a custom provider) first"
 msgstr ""
 "Saisissez d'abord un ID client (et les points de terminaison pour un "
 "fournisseur personnalisé)"
+
+#, fuzzy
+msgid "Complete the sign-in in the window that opened."
+msgstr "Impossible d'enregistrer la connexion dans le trousseau de clés : {e}"
 
 msgid "Opening browser… complete sign-in there."
 msgstr "Ouverture du navigateur… terminez la connexion à partir de là."
@@ -5693,6 +5717,9 @@ msgstr "Vider les Indésirables…"
 
 msgid "Edit Tag…"
 msgstr "Modifier le tag…"
+
+msgid "The sign-in window was closed."
+msgstr ""
 
 msgid "Welcome to Hylki"
 msgstr "Bienvenue dans Hylki"

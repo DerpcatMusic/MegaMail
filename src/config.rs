@@ -587,6 +587,12 @@ pub struct OAuthSettings {
     #[serde(default)]
     pub client_secret: String,
     pub scopes: String,
+    /// A redirect the client is registered with other than a loopback one,
+    /// such as Microsoft's `…/oauth2/nativeclient` (#329). Empty: Hylki's
+    /// own loopback listener, with the sign-in in the browser. Otherwise the
+    /// sign-in runs in a window of Hylki's, which catches the redirect.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub redirect_uri: String,
 }
 
 
