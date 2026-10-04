@@ -4691,9 +4691,11 @@ msgstr ""
 msgid "Fold earlier messages"
 msgstr "Сворачивать предыдущие сообщения"
 
+#, fuzzy
 msgid ""
-"Which messages of a conversation open folded to one line. The newest always "
-"opens, and a click on a folded message opens it."
+"Which messages of a conversation open folded to their sender, subject and "
+"first lines. The newest always opens, and a click on a folded message opens "
+"it."
 msgstr ""
 "Какие сообщения в обсуждении открываются свёрнутыми в одну строку. Самое "
 "новое сообщение всегда открывается полностью, а нажатие на свёрнутое "

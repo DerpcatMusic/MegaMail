@@ -4717,9 +4717,11 @@ msgstr ""
 msgid "Fold earlier messages"
 msgstr "Replier les messages précédents"
 
+#, fuzzy
 msgid ""
-"Which messages of a conversation open folded to one line. The newest always "
-"opens, and a click on a folded message opens it."
+"Which messages of a conversation open folded to their sender, subject and "
+"first lines. The newest always opens, and a click on a folded message opens "
+"it."
 msgstr ""
 "Quels messages d'une conversation s'ouvrent repliés sur une seule ligne. Le "
 "plus récent est toujours déplié, et un clic sur un message replié le déplie."

@@ -191,6 +191,10 @@ pub struct MessageView {
     unsub_state: std::collections::HashMap<(u32, u32), UnsubState>,
     /// Which messages of a conversation open folded (#326).
     fold_messages: crate::config::FoldMessages,
+    /// What a folded card shows under the sender, as the message list
+    /// does: the subject line, and how many lines of preview (#326).
+    fold_subject: bool,
+    fold_preview_lines: u32,
     /// A document was loaded while the view was not on screen (#332).
     painted_hidden: bool,
     /// The conversation's messages filed in Sent, for the folded bar.
@@ -442,10 +446,28 @@ impl MessageView {
         } else {
             "<span class=\"vireo-fbar-ico vireo-fbar-none\"></span>".to_string()
         };
+        // Below the sender, what the message list shows of it (#326): the
+        // subject when the list has one, and as many lines of preview.
+        let subject = if self.fold_subject && !m.subject.trim().is_empty() {
+            format!("<div class=\"vireo-fbar-subj\">{}</div>", escape_text(&m.subject))
+        } else {
+            String::new()
+        };
+        let preview = crate::models::preview_display(&m.preview);
+        let preview = if self.fold_preview_lines > 0 && !preview.trim().is_empty() {
+            format!(
+                "<div class=\"vireo-fbar-prev\" style=\"-webkit-line-clamp:{}\">{}</div>",
+                self.fold_preview_lines,
+                escape_text(preview.trim()),
+            )
+        } else {
+            String::new()
+        };
         format!(
             "<div class=\"vireo-fbar\" data-key=\"{}:{}\" title=\"{}\">\
-             {FOLD_BAR_FACE}<span class=\"vireo-fbar-from\">{}</span>{star}{place}{clip}\
-             <span class=\"vireo-fbar-date\">{}</span></div>",
+             {FOLD_BAR_FACE}<div class=\"vireo-fbar-main\"><div class=\"vireo-fbar-top\">\
+             <span class=\"vireo-fbar-from\">{}</span>{star}{place}{clip}\
+             <span class=\"vireo-fbar-date\">{}</span></div>{subject}{preview}</div></div>",
             key.0,
             key.1,
             attr_escape(&i18n("Click to open this message")),
@@ -898,6 +920,8 @@ pub enum MessageViewInput {
     SetSingleMessageCard(bool),
     /// Which messages of a conversation open folded (#326).
     SetFoldMessages(crate::config::FoldMessages),
+    /// What a folded card shows, from the message list's look (#326).
+    SetFoldLook { subject: bool, preview_lines: u32 },
     /// A card's header folded or opened it (#326).
     Folded { account_id: u32, id: u32, folded: bool },
     /// Expand All (false) or Collapse All (true) from the reading pane's
@@ -1997,6 +2021,8 @@ impl Component for MessageView {
             unsubscribed: std::collections::HashMap::new(),
             unsub_state: std::collections::HashMap::new(),
             fold_messages: crate::config::FoldMessages::Never,
+            fold_subject: true,
+            fold_preview_lines: 1,
             painted_hidden: false,
             sent: std::collections::HashSet::new(),
             folds: std::collections::HashMap::new(),
@@ -2575,6 +2601,14 @@ impl Component for MessageView {
                 if self.fold_messages != fold {
                     self.fold_messages = fold;
                     self.folds.clear();
+                    self.render();
+                }
+            }
+            MessageViewInput::SetFoldLook { subject, preview_lines } => {
+                let preview_lines = preview_lines.min(3);
+                if (self.fold_subject, self.fold_preview_lines) != (subject, preview_lines) {
+                    self.fold_subject = subject;
+                    self.fold_preview_lines = preview_lines;
                     self.render();
                 }
             }
@@ -3749,6 +3783,8 @@ impl MessageView {
         // offer Translate at all.
         crate::translate::generation().hash(&mut h);
         self.fold_messages.hash(&mut h);
+        self.fold_subject.hash(&mut h);
+        self.fold_preview_lines.hash(&mut h);
         let mut shown: Vec<(u32, u32, usize)> = self
             .translations
             .iter()
@@ -4371,8 +4407,15 @@ impl MessageView {
                .vireo-msg.selected{{box-shadow:0 0 0 2px {accent};}}\
                .vireo-fbar{{display:none;}}\
                .vireo-msg.vireo-folded{{background-image:linear-gradient(rgba(128,128,128,0.07),rgba(128,128,128,0.07));}}\
-               .vireo-msg.vireo-folded>.vireo-fbar{{display:flex;align-items:center;gap:12px;\
+               .vireo-msg.vireo-folded>.vireo-fbar{{display:flex;align-items:flex-start;gap:12px;\
                  padding:14px 18px;cursor:pointer;user-select:none;}}\
+               .vireo-fbar-main{{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:2px;}}\
+               .vireo-fbar-top{{display:flex;align-items:center;gap:12px;min-height:26px;}}\
+               .vireo-fbar>.vireo-ava{{align-self:flex-start;}}\
+               .vireo-fbar-subj{{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:0.85;}}\
+               .vireo-msg.unread .vireo-fbar-subj{{font-weight:600;opacity:1;}}\
+               .vireo-fbar-prev{{display:-webkit-box;-webkit-box-orient:vertical;overflow:hidden;\
+                 opacity:0.6;font-size:0.92em;line-height:1.35;overflow-wrap:anywhere;}}\
                .vireo-fbar-from{{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;\
                  white-space:nowrap;opacity:0.85;}}\
                .vireo-msg.unread .vireo-fbar-from{{font-weight:700;opacity:1;}}\

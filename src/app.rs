@@ -3488,6 +3488,10 @@ impl SimpleComponent for AppModel {
             subject: model.list_show_subject(),
             animate: false,
         });
+        model.message_view.emit(MessageViewInput::SetFoldLook {
+            subject: model.list_show_subject(),
+            preview_lines: model.list_preview_lines(),
+        });
         model.push_single_line();
         model.message_list.emit(MessageListInput::SetColumns(model.list_columns.clone()));
         model.message_list.emit(MessageListInput::SetHeadings(model.list_headings));
@@ -13604,6 +13608,11 @@ impl AppModel {
             preview_lines: self.list_preview_lines(),
             subject: self.list_show_subject(),
             animate,
+        });
+        // A folded card in a conversation shows what a list row does (#326).
+        self.message_view.emit(MessageViewInput::SetFoldLook {
+            subject: self.list_show_subject(),
+            preview_lines: self.list_preview_lines(),
         });
     }
 

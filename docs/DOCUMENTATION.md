@@ -716,10 +716,13 @@ quoted lines, so an answer written inline always shows in full.
 
 ### Folding messages in a conversation
 
-A click on a message's header in a conversation folds it to one line: the
-sender's circle and name, then a star, a paper plane or an inbox for sent
-or received, a paperclip when it has files, and the day. A click on that
-line opens it again; a double-click on the header still opens the message in
+A click on a message's header in a conversation folds it to a short card: a
+line with the sender's circle and name, then a star, a paper plane or an
+inbox for sent or received, a paperclip when it has files, and the day.
+Under it come the subject and the start of the message, as the message list
+shows them: as many lines of preview as **Settings → Message List → Preview
+lines** asks for, and no subject while Focus Mode hides it. A click on the
+card opens it again; a double-click on the header still opens the message in
 a window of its own.
 
 **Settings → Conversations → Fold earlier messages** decides how a

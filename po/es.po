@@ -4696,8 +4696,9 @@ msgid "Fold earlier messages"
 msgstr "Buscar en el mensaje"
 
 msgid ""
-"Which messages of a conversation open folded to one line. The newest always "
-"opens, and a click on a folded message opens it."
+"Which messages of a conversation open folded to their sender, subject and "
+"first lines. The newest always opens, and a click on a folded message opens "
+"it."
 msgstr ""
 
 msgid "Show your own replies in the message list"

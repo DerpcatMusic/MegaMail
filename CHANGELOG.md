@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Changed: a folded message in a conversation shows its subject and first
+  lines** (#326, suggested by pdf). Under the sender, a folded card now has
+  the subject and as many lines of preview as the message list shows, so the
+  setting under Settings → Message List → Preview lines decides both. With
+  no preview lines, it shows the sender and subject.
 - **Fixed: a reopened draft lost its From address, Bcc, files and place in
   the conversation** (#350, reported by pdf). A draft opened in the composer
   was rebuilt from what the reader showed of it: the To, Cc, subject and

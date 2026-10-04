@@ -2772,9 +2772,9 @@ impl Component for Preferences {
                                     #[name = "fold_messages_row"]
                                     adw::ComboRow {
                                         set_title: &i18n("Fold earlier messages"),
-                                        set_subtitle: &i18n("Which messages of a conversation open folded to one \
-                                                       line. The newest always opens, and a click on a folded \
-                                                       message opens it."),
+                                        set_subtitle: &i18n("Which messages of a conversation open folded to their \
+                                                       sender, subject and first lines. The newest always opens, \
+                                                       and a click on a folded message opens it."),
                                         connect_selected_notify[sender] => move |row| {
                                             sender.input(PrefInput::ChangeFoldMessages(row.selected()));
                                         },
