@@ -93,7 +93,13 @@ the server in `imap_host`.
 ### Folder order
 
 An account's main folders (Inbox, Drafts, Sent, Archive, Junk, Trash) come
-first, in that order, then its custom folders, each under its parent. How
+first, in that order, then its custom folders, each under its parent.
+Folders kept inside the Inbox on the server (`INBOX.Ablage`, `INBOX/Lists`)
+are listed under the Inbox row, with an arrow on it to fold them away, when
+the account has folders outside the Inbox too, as Roundcube and Apple Mail
+show them. A server that keeps every folder inside the Inbox (an `INBOX.`
+prefix, as on Courier and some Dovecot setups) has them under **Folders**
+instead, without the prefix. How
 the custom folders are sorted is chosen in **Settings → Sidebar → Folder
 order**, for every account:
 

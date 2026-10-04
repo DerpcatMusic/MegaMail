@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Changed: folders inside the Inbox are listed under it** (#345, suggested
+  by bstegmaier75). On a server that keeps some folders inside the Inbox
+  (`INBOX.Ablage`) and others beside it, the ones inside are now under the
+  Inbox row, which folds them away with its arrow, as Roundcube and Apple
+  Mail show them. Before, they were mixed in with the other folders. A
+  server that keeps every folder inside the Inbox is unchanged.
 - **Added: unread counts can mark only new mail** (#343, suggested by pdf).
   With Settings → Sidebar → Highlight only new unread mail on (it is off by
   default), a folder's count is in the accent color only while mail has come
