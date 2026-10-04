@@ -2,7 +2,9 @@
 Name=Hylki (beta)
 GenericName=Email Client
 Comment=A clean, fast GNOME-native email client — beta channel
-Exec=hylki %u
+# %U, not %u: a file manager hands every selected file to one launch, so
+# they all land in the same message ("Send with Hylki" from GNOME Files).
+Exec=hylki %U
 Icon=co.hyprlab.Hylki.Beta
 Terminal=false
 Type=Application
