@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Added: subjects are translated, and the composer can show the original
+  again** (#327, suggested by pdf). Translating a message translates its
+  subject too, in the heading and on its folded card, and Show Original puts
+  it back. In the composer, translating everything you wrote takes the
+  subject with it, except in a reply or forward. Until the text is changed
+  again, the Translate menu offers Show Original and Show Translation, which
+  swap the body and subject back and forth.
 - **Changed: a folded message in a conversation shows its subject and first
   lines** (#326, suggested by pdf). Under the sender, a folded card now has
   the subject and as many lines of preview as the message list shows, so the

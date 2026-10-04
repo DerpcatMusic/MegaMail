@@ -2848,6 +2848,12 @@ msgstr "Supprimer {name}"
 msgid "Typing"
 msgstr "Dactylographie"
 
+msgid "Show Original"
+msgstr "Afficher l'original"
+
+msgid "Show Translation"
+msgstr "Afficher la traduction"
+
 msgid "{language} (the quoted message)"
 msgstr "{language} (le message cité)"
 
@@ -3337,14 +3343,8 @@ msgstr "Traduit par {service} (langue d'origine : {language})."
 msgid "Translated by {service}."
 msgstr "Traduit par {service}."
 
-msgid "Show Original"
-msgstr "Afficher l'original"
-
 msgid "Showing the original."
 msgstr "Affichage de l'original."
-
-msgid "Show Translation"
-msgstr "Afficher la traduction"
 
 msgid "This message is in {language}."
 msgstr "Ce message est rédigé en {language}."

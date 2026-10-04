@@ -2825,6 +2825,14 @@ msgid "Typing"
 msgstr "Gépelés"
 
 #, fuzzy
+msgid "Show Original"
+msgstr "Címzettek megjelenítése"
+
+#, fuzzy
+msgid "Show Translation"
+msgstr "Beszélgetés megjelenítése"
+
+#, fuzzy
 msgid "{language} (the quoted message)"
 msgstr "Az idézett üzenet felett"
 
@@ -3322,16 +3330,8 @@ msgid "Translated by {service}."
 msgstr "Fordította"
 
 #, fuzzy
-msgid "Show Original"
-msgstr "Címzettek megjelenítése"
-
-#, fuzzy
 msgid "Showing the original."
 msgstr "Megjelenítés rámutatáskor"
-
-#, fuzzy
-msgid "Show Translation"
-msgstr "Beszélgetés megjelenítése"
 
 #, fuzzy
 msgid "This message is in {language}."

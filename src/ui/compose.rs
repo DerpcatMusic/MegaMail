@@ -353,6 +353,9 @@ pub struct Compose {
     translate_btn: gtk::Button,
     /// A translation is out: the button waits and the body is locked.
     translating: bool,
+    /// The subject as written and as translated with the body, so Show
+    /// Original and Show Translation can swap it back and forth (#327).
+    tr_subject: Option<(String, String)>,
     preview_btn: gtk::ToggleButton,
     /// The preview toggle's icon-and-label insides, kept only so the label
     /// can be dropped in a pane too narrow to carry it.
@@ -457,12 +460,15 @@ pub enum ComposeInput {
     TranslateMenu,
     /// The quoted message's text came back: show the languages.
     ShowTranslateMenu(String),
+    /// Show Original or Show Translation: the translation was the last
+    /// edit, so it is undone or done again, the subject with it (#327).
+    TranslateToggle { original: bool },
     /// Translate what was written (or the selection) into this language.
     TranslateTo(String),
     /// The editor handed over what is to be translated.
     TranslateBegun { found: String, target: String },
     /// The translation came back, or failed.
-    Translated { result: Result<Vec<String>, String>, how: TranslateHow },
+    Translated { result: Result<Vec<String>, String>, how: TranslateHow, subject: Option<String> },
     /// The body came back for a format change; put it in the new one.
     LoadAs { from: ComposeFormat, to: ComposeFormat, body: String },
     /// Show or hide the rendered preview of a source message.
@@ -1102,6 +1108,7 @@ impl Component for Compose {
             format_btn,
             translate_btn,
             translating: false,
+            tr_subject: None,
             preview_btn,
             preview_content,
             encrypt: false,
@@ -2134,16 +2141,31 @@ impl Component for Compose {
                     break 'handle;
                 }
                 let s = sender.input_sender().clone();
-                self.editor.eval(TR_QUOTE_TEXT, move |text| {
+                let js = format!("JSON.stringify({{q:{TR_QUOTE_TEXT},t:window.__hylkiTrState||''}})");
+                self.editor.eval(&js, move |text| {
                     let _ = s.send(ComposeInput::ShowTranslateMenu(text));
                 });
             }
 
-            ComposeInput::ShowTranslateMenu(quoted) => {
+            ComposeInput::ShowTranslateMenu(found) => {
+                let v: serde_json::Value = serde_json::from_str(&found).unwrap_or_default();
+                let quoted = v["q"].as_str().unwrap_or_default().to_string();
                 let entry = |code: String, label: String| {
                     let s = sender.clone();
                     MenuEntry::new(label, move || s.input(ComposeInput::TranslateTo(code.clone())))
                 };
+                // Back to what was written, or to the translation again,
+                // while the translation is still the last thing done to the
+                // text (#327).
+                let toggle = match v["t"].as_str() {
+                    Some("translated") => Some((i18n("Show Original"), true)),
+                    Some("original") => Some((i18n("Show Translation"), false)),
+                    _ => None,
+                };
+                let toggle = toggle.map(|(label, original)| {
+                    let s = sender.clone();
+                    vec![MenuEntry::new(label, move || s.input(ComposeInput::TranslateToggle { original }))]
+                });
                 // First what the conversation suggests: the language of the
                 // message being answered, then the one last used.
                 let mut first = Vec::new();
@@ -2169,11 +2191,14 @@ impl Component for Compose {
                     .iter()
                     .map(|code| entry(code.to_string(), crate::translate::language_name(code)))
                     .collect();
-                let sections = if first.is_empty() {
+                let mut sections = if first.is_empty() {
                     vec![all]
                 } else {
                     vec![first, vec![MenuEntry::submenu(i18n("Other Languages"), vec![all])]]
                 };
+                if let Some(toggle) = toggle {
+                    sections.insert(0, toggle);
+                }
                 let btn = &self.translate_btn;
                 crate::ui::context_menu::show_context_menu_with_header(
                     btn,
@@ -2245,21 +2270,54 @@ impl Component for Compose {
                     }
                     break 'handle;
                 }
+                // The subject goes too when the whole message is translated,
+                // unless it is a reply's or a forward's: that one is already
+                // in the conversation's language.
+                let subject = widgets.subject_row.text().trim().to_string();
+                let subject = (v["sel"].as_bool() != Some(true)
+                    && !subject.is_empty()
+                    && self.in_reply_to.trim().is_empty()
+                    && !crate::models::is_reply_or_forward_subject(&subject))
+                .then_some(subject);
+                let mut parts = parts;
+                if let Some(subject) = &subject {
+                    parts.push(gtk::glib::markup_escape_text(subject).to_string());
+                }
                 let s = sender.input_sender().clone();
                 std::thread::spawn(move || {
                     let settings = crate::translate::load();
                     let key = crate::translate::load_key(settings.service).unwrap_or_default();
                     let result = crate::translate::translate_parts(&settings, &key, &parts, &target);
-                    let _ = s.send(ComposeInput::Translated { result, how });
+                    let _ = s.send(ComposeInput::Translated { result, how, subject });
                 });
             }
 
-            ComposeInput::Translated { result, how } => {
+            ComposeInput::TranslateToggle { original } => {
+                self.history_step(!original, widgets, &sender);
+                if let Some((written, translated)) = &self.tr_subject {
+                    let (from, to) = if original { (translated, written) } else { (written, translated) };
+                    if widgets.subject_row.text().as_str() == from.as_str() {
+                        widgets.subject_row.set_text(to);
+                    }
+                }
+            }
+
+            ComposeInput::Translated { result, how, subject } => {
                 self.translating = false;
                 self.translate_btn.set_sensitive(true);
                 match result {
                     // One edit, so Ctrl+Z gives back what was written.
-                    Ok(parts) => {
+                    Ok(mut parts) => {
+                        self.tr_subject = None;
+                        if let Some(original) = subject {
+                            let translated = parts.pop().map(|t| {
+                                crate::markdown::plain_text(&t).split_whitespace().collect::<Vec<_>>().join(" ")
+                            });
+                            if let Some(translated) = translated.filter(|t| !t.is_empty()) {
+                                widgets.subject_row.set_text(&translated);
+                                self.tr_subject = Some((original, translated));
+                            }
+                        }
                         let (end, text) = match how {
                             TranslateHow::Rich => (TR_RICH_END, parts.concat()),
                             TranslateHow::Html => (TR_SOURCE_END, parts.concat()),
@@ -3688,11 +3746,13 @@ window.__hylkiTr=r;b.setAttribute('contenteditable','false');
 return JSON.stringify({parts:p,sel:sel});})()"#;
 
 /// The translation in place of what was taken, as one edit the editor's
-/// undo can take back.
+/// undo can take back. `__hylkiTrState` then follows it for the Translate
+/// menu (#327): "translated", "original" once undone, and nothing once
+/// anything else is done to the text.
 const TR_RICH_END: &str = r#"(function(h){var b=document.body;if(!b)return;b.setAttribute('contenteditable','true');
 var r=window.__hylkiTr;window.__hylkiTr=null;if(!r)return;b.focus();
 var s=getSelection();s.removeAllRanges();s.addRange(r);
-document.execCommand('insertHTML',false,h);window.__hylkiDirty=true;})(ARG)"#;
+document.execCommand('insertHTML',false,h);window.__hylkiDirty=true;window.__hylkiTrState='translated';if(!window.__hylkiTrWatch){window.__hylkiTrWatch=true;document.addEventListener('input',function(e){var st=window.__hylkiTrState;if(!st)return;var k=e.inputType||'';if(k==='historyUndo')window.__hylkiTrState=st==='translated'?'original':'';else if(k==='historyRedo')window.__hylkiTrState=st==='original'?'translated':'';else window.__hylkiTrState='';},true);}})(ARG)"#;
 
 /// The source field's version of [`TR_RICH_BEGIN`]: the selection, else
 /// the text above the quote (and, in Markdown, its "wrote:" line) and the
@@ -3713,7 +3773,7 @@ window.__hylkiTr={a:a,e:e};t.readOnly=true;return JSON.stringify({text:x,sel:sel
 const TR_SOURCE_END: &str = r#"(function(x){var t=document.getElementById('src');if(!t)return;t.readOnly=false;
 var r=window.__hylkiTr;window.__hylkiTr=null;if(!r)return;t.focus();t.setSelectionRange(r.a,r.e);
 if(!document.execCommand('insertText',false,x))t.setRangeText(x,r.a,r.e,'end');
-window.__hylkiDirty=true;t.dispatchEvent(new Event('input'));})(ARG)"#;
+window.__hylkiDirty=true;t.dispatchEvent(new Event('input'));window.__hylkiTrState='translated';if(!window.__hylkiTrWatch){window.__hylkiTrWatch=true;document.addEventListener('input',function(e){var st=window.__hylkiTrState;if(!st)return;var k=e.inputType||'';if(k==='historyUndo')window.__hylkiTrState=st==='translated'?'original':'';else if(k==='historyRedo')window.__hylkiTrState=st==='original'?'translated':'';else window.__hylkiTrState='';},true);}})(ARG)"#;
 
 /// A translation that will not come: unlock the body as it was.
 const TR_CANCEL: &str = r#"(function(){var b=document.body;if(b&&!document.getElementById('src'))b.setAttribute('contenteditable','true');

@@ -2846,6 +2846,14 @@ msgid "Typing"
 msgstr "Eingabe"
 
 #, fuzzy
+msgid "Show Original"
+msgstr "Empfänger anzeigen"
+
+#, fuzzy
+msgid "Show Translation"
+msgstr "Unterhaltung anzeigen"
+
+#, fuzzy
 msgid "{language} (the quoted message)"
 msgstr "Über der zitierten Nachricht"
 
@@ -3344,16 +3352,8 @@ msgid "Translated by {service}."
 msgstr "Übersetzt von"
 
 #, fuzzy
-msgid "Show Original"
-msgstr "Empfänger anzeigen"
-
-#, fuzzy
 msgid "Showing the original."
 msgstr "Beim Darüberfahren sichtbar"
-
-#, fuzzy
-msgid "Show Translation"
-msgstr "Unterhaltung anzeigen"
 
 #, fuzzy
 msgid "This message is in {language}."

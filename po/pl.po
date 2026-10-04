@@ -2858,6 +2858,14 @@ msgid "Typing"
 msgstr "Pisanie"
 
 #, fuzzy
+msgid "Show Original"
+msgstr "Wyświetl odbiorców"
+
+#, fuzzy
+msgid "Show Translation"
+msgstr "Wyświetl rozmowę"
+
+#, fuzzy
 msgid "{language} (the quoted message)"
 msgstr "Nad cytowaną wiadomością"
 
@@ -3360,16 +3368,8 @@ msgid "Translated by {service}."
 msgstr "Tłumacze"
 
 #, fuzzy
-msgid "Show Original"
-msgstr "Wyświetl odbiorców"
-
-#, fuzzy
 msgid "Showing the original."
 msgstr "Wyświetlana po najechaniu kursorem"
-
-#, fuzzy
-msgid "Show Translation"
-msgstr "Wyświetl rozmowę"
 
 #, fuzzy
 msgid "This message is in {language}."

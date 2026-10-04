@@ -2826,6 +2826,12 @@ msgstr "Удалить {name}?"
 msgid "Typing"
 msgstr "Ввод текста"
 
+msgid "Show Original"
+msgstr "Показать оригинал"
+
+msgid "Show Translation"
+msgstr "Показать перевод"
+
 msgid "{language} (the quoted message)"
 msgstr "{language} (цитируемое сообщение)"
 
@@ -3319,14 +3325,8 @@ msgstr "Переведено с языка «{language}» с помощью се
 msgid "Translated by {service}."
 msgstr "Переведено с помощью сервиса {service}."
 
-msgid "Show Original"
-msgstr "Показать оригинал"
-
 msgid "Showing the original."
 msgstr "Отображается оригинал."
-
-msgid "Show Translation"
-msgstr "Показать перевод"
 
 msgid "This message is in {language}."
 msgstr "Это сообщение написано на языке «{language}»."

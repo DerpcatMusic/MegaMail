@@ -97,10 +97,7 @@ fn is_reply_or_forward(parsed: &mail_parser::Message) -> bool {
     if parsed.in_reply_to().as_text_list().is_some_and(|l| !l.is_empty()) {
         return true;
     }
-    let subject = parsed.subject().unwrap_or_default().trim_start().to_ascii_lowercase();
-    ["re:", "fw:", "fwd:", "aw:", "sv:", "vs:", "tr:", "rv:", "wg:", "antw:", "r:", "i:"]
-        .iter()
-        .any(|p| subject.starts_with(p))
+    crate::models::is_reply_or_forward_subject(parsed.subject().unwrap_or_default())
 }
 
 fn first_address(a: Option<&mail_parser::Address>) -> Option<String> {

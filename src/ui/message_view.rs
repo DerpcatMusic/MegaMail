@@ -340,6 +340,15 @@ impl MessageView {
     }
 
 
+    /// A message's subject as shown: translated while its translation is
+    /// (#327).
+    fn shown_subject(&self, m: &Message) -> String {
+        match self.translations.get(&(m.account_id, m.id)) {
+            Some(TrState::Shown(t)) => t.subject.clone().unwrap_or_else(|| m.subject.clone()),
+            _ => m.subject.clone(),
+        }
+    }
+
     /// What a card's translation banner holds right now (#327): where a
     /// translation stands, or, with the offer switched on, a Translate
     /// button on a message in another language. Nothing otherwise.
@@ -449,7 +458,7 @@ impl MessageView {
         // Below the sender, what the message list shows of it (#326): the
         // subject when the list has one, and as many lines of preview.
         let subject = if self.fold_subject && !m.subject.trim().is_empty() {
-            format!("<div class=\"vireo-fbar-subj\">{}</div>", escape_text(&m.subject))
+            format!("<div class=\"vireo-fbar-subj\">{}</div>", escape_text(&self.shown_subject(m)))
         } else {
             String::new()
         };
@@ -1865,7 +1874,7 @@ impl Component for MessageView {
 
                     gtk::Label {
                         #[watch]
-                        set_label: model.current.as_ref().map(|m| m.subject.as_str()).unwrap_or_default(),
+                        set_label: &model.current.as_ref().map(|m| model.shown_subject(m)).unwrap_or_default(),
                         set_halign: gtk::Align::Start,
                         set_wrap: true,
                         // Break mid-word for unbreakable tokens (e.g. an
@@ -2813,7 +2822,7 @@ impl Component for MessageView {
                         let input = sender.input_sender().clone();
                         std::thread::spawn(move || {
                             let api_key = crate::translate::load_key(settings.service).unwrap_or_default();
-                            let result = crate::translate::translate(&settings, &api_key, &m.body, &cache);
+                            let result = crate::translate::translate(&settings, &api_key, &m.body, &m.subject, &cache);
                             input.emit(MessageViewInput::Translated { account_id, id, result });
                         });
                     }

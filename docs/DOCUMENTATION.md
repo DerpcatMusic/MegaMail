@@ -395,7 +395,9 @@ answers. **Translate into** is Hylki's own language unless another is chosen.
 
 A message is translated from the A文 button in its card's actions, or from
 Translate in its right-click menu. The card then shows the translation, with a banner naming the service and the language
-it came from, and **Show Original** in the banner or the menu switches back. A translation is kept for
+it came from, and **Show Original** in the banner or the menu switches back. The
+subject is translated with it, in the heading above the message and on its
+folded card. A translation is kept for
 the rest of the session, so opening the message again costs nothing more.
 
 What is sent is the message's text, a paragraph or a cell at a time, with
@@ -415,8 +417,12 @@ In the composer, the A文 button beside the format chooser translates what
 you are writing: the selection if there is one, otherwise everything you
 wrote above the quote and signature, which are left as they are. It offers
 the language of the message you are answering first, recognised offline,
-then the one you used last, then every other. The translation replaces your
-text as one edit, so Ctrl+Z gives back what you wrote. It works in rich
+then the one you used last, then every other. When everything is
+translated, the subject is too, unless the message is a reply or a forward,
+whose subject is already the conversation's. The translation replaces your
+text as one edit, so Ctrl+Z gives back what you wrote. Until you change the
+text again, the same menu offers **Show Original**, which puts back what you
+wrote, subject included, and then **Show Translation**. It works in rich
 text, plain text, Markdown and HTML. A message set to be encrypted is never
 sent for translation.
 

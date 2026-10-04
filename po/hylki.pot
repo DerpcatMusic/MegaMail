@@ -2554,6 +2554,12 @@ msgstr ""
 msgid "Typing"
 msgstr ""
 
+msgid "Show Original"
+msgstr ""
+
+msgid "Show Translation"
+msgstr ""
+
 msgid "{language} (the quoted message)"
 msgstr ""
 
@@ -3007,13 +3013,7 @@ msgstr ""
 msgid "Translated by {service}."
 msgstr ""
 
-msgid "Show Original"
-msgstr ""
-
 msgid "Showing the original."
-msgstr ""
-
-msgid "Show Translation"
 msgstr ""
 
 msgid "This message is in {language}."

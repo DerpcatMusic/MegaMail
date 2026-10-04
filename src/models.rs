@@ -426,6 +426,15 @@ pub fn preview_is_encrypted(preview: &str) -> bool {
     preview.trim() == ENCRYPTED_PREVIEW
 }
 
+/// Whether a subject wears one of the prefixes mail programs put on an
+/// answer or a forward, in any of the languages they write them in.
+pub fn is_reply_or_forward_subject(subject: &str) -> bool {
+    let subject = subject.trim_start().to_ascii_lowercase();
+    ["re:", "fw:", "fwd:", "aw:", "sv:", "vs:", "tr:", "rv:", "wg:", "antw:", "r:", "i:"]
+        .iter()
+        .any(|p| subject.starts_with(p))
+}
+
 /// The words the list shows for a stored preview.
 pub fn preview_display(preview: &str) -> String {
     if preview_is_encrypted(preview) {
