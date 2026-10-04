@@ -2243,7 +2243,7 @@ pub(super) async fn run_jmap(
 
             MailRequest::Settle { path, uids } => emit(WorkerEvent::MovesSettled { path, uids }),
 
-            MailRequest::ExportRaw { token, path, uid } => {
+            MailRequest::ExportRaw { token, path, uid, .. } => {
                 let raw = match jmap_session(&account, &mut state, &emit).await {
                     Some(s) => jmap_fetch_raw(&s, &mut state, &path, uid).await,
                     None => Err(i18n("Could not reach the server")),

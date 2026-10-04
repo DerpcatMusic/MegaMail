@@ -1096,7 +1096,7 @@ pub(super) async fn run_graph(
 
             MailRequest::Settle { path, uids } => emit(WorkerEvent::MovesSettled { path, uids }),
 
-            MailRequest::ExportRaw { token, path, uid } => {
+            MailRequest::ExportRaw { token, path, uid, .. } => {
                 let raw = graph_fetch_raw(&account, &mut state, &path, uid, &emit).await;
                 emit(WorkerEvent::RawExported { token, raw });
             }

@@ -227,6 +227,10 @@ pub struct ComposePrefill {
     /// The quoted original's remote content was not loaded in the reader,
     /// so the editor does not load its pictures either (#295).
     pub block_remote_images: bool,
+    /// The body is a message picked up again as it was written (one the
+    /// worker handed back unsent): it already has its blank line and its
+    /// signature. Drafts and queued messages count as this without it.
+    pub resumed: bool,
 }
 
 /// Everything the compose pane needs to open.
@@ -936,16 +940,18 @@ impl Component for Compose {
 
         // Initial editor content: a blank line to type on, then the
         // signature and the quoted reply/forward (if any), in the order
-        // the setting says (#237). A draft already contains its signature;
-        // don't add another. With Return set to start paragraphs the line
-        // is a paragraph too, so the first Return splits it into two.
-        let mut content = String::from(if crate::config::load_privacy().return_paragraph {
-            "<p><br></p>"
-        } else {
-            "<div><br></div>"
+        // the setting says (#237). A draft or a queued message already has
+        // both and gets neither again: each reopening of a draft used to add
+        // another blank line (#349). With Return set to start paragraphs the
+        // line is a paragraph too, so the first Return splits it into two.
+        let resumed = prefill.resumed || draft_origin.is_some() || outbox_origin.is_some();
+        let mut content = String::from(match (resumed, crate::config::load_privacy().return_paragraph) {
+            (true, _) => "",
+            (false, true) => "<p><br></p>",
+            (false, false) => "<div><br></div>",
         });
         let sig_dashes = crate::config::load_privacy().signature_dashes;
-        let sig = if draft_origin.is_none() && !current_sig.is_empty() {
+        let sig = if !resumed && !current_sig.is_empty() {
             sig_html(&current_sig, sig_dashes)
         } else {
             String::new()

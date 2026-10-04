@@ -1082,10 +1082,12 @@ pub struct AppModel {
     /// on the stack.
     undo_action: Option<RelmAction<UndoAction>>,
     redo_action: Option<RelmAction<RedoAction>>,
-    /// A draft awaiting its body before opening in the compose editor.
-    /// A draft whose body is being fetched before its editor opens, and
+    /// A draft whose content is being fetched before its editor opens, and
     /// whether that editor goes in the reading pane (true) or a window.
     pending_draft: Option<(Message, bool, HandOffFiles)>,
+    /// The `ExportRaw` token the pending draft's bytes come back under.
+    /// While it is set, the draft waits for those and not for its body.
+    pending_draft_token: Option<u64>,
     /// A message whose body is being fetched so a reply to it can open with
     /// handed-in files (Send with Hylki → Reply to a Message…).
     pending_reply: Option<(Message, HandOffFiles)>,
@@ -3130,6 +3132,7 @@ impl SimpleComponent for AppModel {
             body_cache: crate::ram_cache::RamCache::new(BODY_CACHE_BUDGET),
             sender_cache: HashMap::new(),
             pending_draft: None,
+            pending_draft_token: None,
             pending_reply: None,
             pending_draft_pick: None,
             pending_edit_as_new: None,
@@ -8665,6 +8668,7 @@ impl SimpleComponent for AppModel {
                     }
                 }
                 self.pending_draft = None;
+                self.pending_draft_token = None;
                 self.close_compose(id);
                 self.message_list.emit(MessageListInput::ReclaimFocus);
             }
@@ -9785,6 +9789,20 @@ impl SimpleComponent for AppModel {
             }
 
             AppMsg::RawExported { token, raw } => {
+                if self.pending_draft_token == Some(token) {
+                    self.pending_draft_token = None;
+                    let Some((m, inline, extra)) = self.pending_draft.take() else { return };
+                    match raw {
+                        Ok(raw) => self.compose_from_draft_raw(m, &raw, inline, extra, &sender),
+                        // Offline, say: the body the reader has is still
+                        // better than nothing.
+                        Err(e) => {
+                            tracing::warn!("draft {} could not be fetched whole: {e}", m.uid);
+                            self.open_draft_body(m, inline, extra, &sender);
+                        }
+                    }
+                    return;
+                }
                 let Some(t) = self.transfers.get(&token) else { return };
                 match raw {
                     Ok(raw) => self.send_to(t.dest_account, MailRequest::ImportRaw {
@@ -10217,7 +10235,10 @@ impl SimpleComponent for AppModel {
                     self.body_cache.insert(k, body.clone());
                 }
                 // If this body was fetched to open a draft, open the editor now.
-                if let Some((pd, inline, extra)) = self.pending_draft.take() {
+                // One waiting for its bytes ignores a body the prefetch sent.
+                if let Some((pd, inline, extra)) =
+                    self.pending_draft.take_if(|_| self.pending_draft_token.is_none())
+                {
                     if pd.account_id == account_id && pd.id == message_id {
                         self.compose_from_draft(pd, body, inline, extra, &sender);
                         return;
@@ -14703,13 +14724,29 @@ impl AppModel {
             .map(|f| f.kind)
     }
 
-    /// Open a draft for editing: reuse a cached body if we have one, otherwise
-    /// fetch it and open the editor once it arrives (see the `Body` handler).
-    /// `inline` puts the editor in the reading pane (a selected draft);
-    /// otherwise it gets a window (a draft opened by double-click or Enter).
-    /// `extra` carries files handed in from GNOME Files to attach (or
-    /// upload) on top of the draft's own.
+    /// Open a draft for editing, from its own bytes (#349, #350): the body
+    /// the reader shows has lost the From, the Bcc, the threading headers
+    /// and the files. The editor opens once they arrive (see the
+    /// `RawExported` handler). `inline` puts the editor in the reading pane
+    /// (a selected draft); otherwise it gets a window (a draft opened by
+    /// double-click or Enter). `extra` carries files handed in from GNOME
+    /// Files to attach (or upload) on top of the draft's own.
     fn open_draft(&mut self, m: Message, inline: bool, extra: HandOffFiles, sender: &ComponentSender<Self>) {
+        let Some(path) = self.resolve_folder_path(&m) else {
+            self.open_draft_body(m, inline, extra, sender);
+            return;
+        };
+        let token = self.next_transfer;
+        self.next_transfer += 1;
+        self.pending_draft_token = Some(token);
+        self.send_to(m.account_id, MailRequest::ExportRaw { token, path, uid: m.uid, for_reader: true });
+        self.pending_draft = Some((m, inline, extra));
+    }
+
+    /// Open a draft from its body alone, when its bytes can't be had: a
+    /// cached body if there is one, otherwise fetched, with the editor
+    /// opening once it arrives (see the `Body` handler).
+    fn open_draft_body(&mut self, m: Message, inline: bool, extra: HandOffFiles, sender: &ComponentSender<Self>) {
         let body = if !m.body.is_empty() {
             Some(m.body.clone())
         } else {
@@ -14784,6 +14821,7 @@ impl AppModel {
             cloud_uploads: Vec::new(),
             inline_files: Vec::new(),
             block_remote_images: false,
+            resumed: false,
         };
         // The Outbox stays the folder on screen: its list is still what's listed,
         // so its toolbar has to stay too. Leaving it would strand the user in a
@@ -14837,6 +14875,7 @@ impl AppModel {
             cloud_uploads: Vec::new(),
             inline_files: Vec::new(),
             block_remote_images: false,
+            resumed: true,
         };
         self.open_compose(account_id, prefill, sender);
     }
@@ -14854,22 +14893,63 @@ impl AppModel {
         extra: HandOffFiles,
         sender: &ComponentSender<Self>,
     ) {
-        let path = self.resolve_folder_path(&m).unwrap_or_default();
         let prefill = ComposePrefill {
             to: m.to.clone(),
             cc: m.cc.clone(),
             subject: m.subject.clone(),
             body_html,
-            draft_origin: Some(crate::models::DraftOrigin {
-                account_id: m.account_id,
-                folder_id: m.folder_id,
-                path,
-                uid: m.uid,
-            }),
+            from_address: m.from_addr.clone(),
             attachments: extra.attach,
             cloud_uploads: extra.cloud,
             ..Default::default()
         };
+        self.show_draft_composer(m, prefill, inline, sender);
+    }
+
+    /// Open the compose editor on a draft's own bytes: everything it was
+    /// saved with, its files written out for the composer to attach.
+    fn compose_from_draft_raw(
+        &mut self,
+        m: Message,
+        raw: &[u8],
+        inline: bool,
+        extra: HandOffFiles,
+        sender: &ComponentSender<Self>,
+    ) {
+        let e = crate::worker::editable_from_raw(raw, &[]);
+        let mut attachments =
+            stage_attachments(&format!("hylki-draft-{}-{}", m.account_id, m.uid), &e.attachments);
+        attachments.extend(extra.attach);
+        let prefill = ComposePrefill {
+            to: e.to,
+            cc: e.cc,
+            bcc: e.bcc,
+            subject: e.subject,
+            body_html: e.body_html,
+            in_reply_to: e.in_reply_to,
+            references: e.references,
+            from_address: e.from,
+            attachments,
+            cloud_uploads: extra.cloud,
+            ..Default::default()
+        };
+        self.show_draft_composer(m, prefill, inline, sender);
+    }
+
+    /// The editor for a draft, tied to it so saving or sending replaces it.
+    fn show_draft_composer(
+        &mut self,
+        m: Message,
+        mut prefill: ComposePrefill,
+        inline: bool,
+        sender: &ComponentSender<Self>,
+    ) {
+        prefill.draft_origin = Some(crate::models::DraftOrigin {
+            account_id: m.account_id,
+            folder_id: m.folder_id,
+            path: self.resolve_folder_path(&m).unwrap_or_default(),
+            uid: m.uid,
+        });
         if inline {
             self.attachments.clear();
             self.attachments_loading = false;
@@ -16425,7 +16505,7 @@ impl AppModel {
             }
             removed_ids.push(id);
             self.transfer_tally.total += 1;
-            self.send_to(aid, MailRequest::ExportRaw { token, path: src, uid });
+            self.send_to(aid, MailRequest::ExportRaw { token, path: src, uid, for_reader: false });
         }
         self.transfer_tally.dest_accounts.insert(dest_account);
         self.transfer_tally.dest_folders.insert((dest_account, dest));

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Fixed: a reopened draft lost its From address, Bcc, files and place in
+  the conversation** (#350, reported by pdf). A draft opened in the composer
+  was rebuilt from what the reader showed of it: the To, Cc, subject and
+  text, and nothing else. It is now opened from the draft itself, so it
+  comes back from the address it was written from, with its Bcc recipients,
+  its attachments, its pictures in the text, and the headers that keep a
+  reply in its conversation. Drafts also keep their Bcc header when saved;
+  they used to lose it. Each reopening also added an empty line at the top
+  (#349, reported by amadeusp), and an edited Outbox message gained a second
+  signature. Neither happens now.
 - **Translations:** French (PR #341 by frenchy82) and Russian (PR #338 by
   Ilya Semenkovich) brought up to date with 1.43.0-beta.1.
 - **Fixed: Send with Hylki in GNOME Files went to the stable build when the
