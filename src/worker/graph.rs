@@ -941,12 +941,16 @@ pub(super) async fn run_graph(
                 }
             }
 
-            MailRequest::SaveDraft { message, folder_id, path } => {
-                emit(WorkerEvent::Status(i18n("Saving draft…")));
+            MailRequest::SaveDraft { message, folder_id, path, autosave } => {
+                if autosave.is_none() {
+                    emit(WorkerEvent::Status(i18n("Saving draft…")));
+                }
                 let mut message = OutgoingMessage { sign: false, encrypt: false, ..*message };
                 restore_msgid_case(cache.as_ref(), &mut message);
+                let mut why = String::new();
                 let saved = match build_draft(&account, &message) {
                     Ok(email) => {
+                        let message_id = draft_message_id(&email);
                         let raw = email.formatted();
                         match graph_token(&account, &emit).await {
                             Some(token) => {
@@ -973,27 +977,29 @@ pub(super) async fn run_graph(
                                         {
                                             emit(WorkerEvent::Messages { folder_id, messages });
                                         }
-                                        true
+                                        Some(message_id)
                                     }
                                     Err(e) => {
-                                        emit(WorkerEvent::error(i18n_f("Could not save draft: {e}", &[("e", &(e).to_string())])));
-                                        false
+                                        why = e.to_string();
+                                        None
                                     }
                                 }
                             }
-                            None => false,
+                            None => {
+                                why = i18n("Could not reach the server");
+                                None
+                            }
                         }
                     }
                     Err(e) => {
-                        emit(WorkerEvent::error(i18n_f("Could not save draft: {e}", &[("e", &(e).to_string())])));
-                        false
+                        why = e.to_string();
+                        None
                     }
                 };
                 emit(WorkerEvent::Status(String::new()));
-                if saved {
-                    emit(WorkerEvent::DraftSaved);
-                } else {
-                    emit(WorkerEvent::Unsent(Box::new(message)));
+                match saved {
+                    Some(id) => emit(WorkerEvent::DraftSaved { autosave, message_id: Some(id) }),
+                    None => draft_not_saved(autosave, why, message, &emit),
                 }
             }
 

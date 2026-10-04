@@ -5336,7 +5336,7 @@ msgstr ""
 msgid "Saving draft…"
 msgstr ""
 
-msgid "Could not save draft: {e}"
+msgid "Could not reach the server"
 msgstr ""
 
 msgid "Sending…"
@@ -5366,10 +5366,7 @@ msgstr ""
 msgid "Could not reach the JMAP server: {e}"
 msgstr ""
 
-msgid "Could not save draft: unknown folder"
-msgstr ""
-
-msgid "Could not reach the server"
+msgid "unknown folder"
 msgstr ""
 
 msgid "That folder is not on the server"
@@ -5454,6 +5451,9 @@ msgid "“{subject}” will be sent {when}"
 msgstr ""
 
 msgid "Could not schedule the message."
+msgstr ""
+
+msgid "Could not save draft: {e}"
 msgstr ""
 
 msgid ""

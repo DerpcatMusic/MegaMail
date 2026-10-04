@@ -6057,8 +6057,8 @@ msgstr "Não foi possível eliminar a pasta: {e}"
 msgid "Saving draft…"
 msgstr "A guardar o rascunho…"
 
-msgid "Could not save draft: {e}"
-msgstr "Não foi possível guardar o rascunho: {e}"
+msgid "Could not reach the server"
+msgstr "Não foi possível aceder ao servidor"
 
 msgid "Sending…"
 msgstr "A enviar…"
@@ -6090,11 +6090,9 @@ msgstr ""
 msgid "Could not reach the JMAP server: {e}"
 msgstr "Não foi possível aceder ao servidor JMAP: {e}"
 
-msgid "Could not save draft: unknown folder"
-msgstr "Não foi possível guardar o rascunho: pasta desconhecida"
-
-msgid "Could not reach the server"
-msgstr "Não foi possível aceder ao servidor"
+#, fuzzy
+msgid "unknown folder"
+msgstr "Mostrar cada pasta"
 
 msgid "That folder is not on the server"
 msgstr "Essa pasta não existe no servidor"
@@ -6188,6 +6186,9 @@ msgstr "«{subject}» será enviada {when}"
 #, fuzzy
 msgid "Could not schedule the message."
 msgstr "Não foi possível eliminar a mensagem: {e}"
+
+msgid "Could not save draft: {e}"
+msgstr "Não foi possível guardar o rascunho: {e}"
 
 msgid ""
 "no OpenPGP key of your own for {addr}; generate one under Settings, OpenPGP"
@@ -6346,6 +6347,9 @@ msgstr "A caixa de entrada unificada no modo claro"
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid "Could not save draft: unknown folder"
+#~ msgstr "Não foi possível guardar o rascunho: pasta desconhecida"
 
 #~ msgid ""
 #~ "Could not schedule the message: there is no local store to keep it in."

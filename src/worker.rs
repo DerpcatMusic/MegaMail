@@ -458,6 +458,10 @@ pub enum MailRequest {
         message: Box<OutgoingMessage>,
         folder_id: u32,
         path: String,
+        /// The composer saving it on its own, every so often (#340): its
+        /// id comes back in [`WorkerEvent::DraftSaved`], and a failure is
+        /// quiet, with the composer still open to try again.
+        autosave: Option<u32>,
     },
     /// Re-ask the server for every folder's unread count and answer with one
     /// [`WorkerEvent::FolderUnread`] per folder. Cheap (STATUS only — no message
@@ -689,8 +693,10 @@ pub enum WorkerEvent {
     /// The account's Outbox, whenever it changes (queued, retried, sent or
     /// discarded). Empty means nothing is waiting.
     Outbox { items: Vec<crate::models::OutboxItem> },
-    /// A draft was saved to the Drafts folder.
-    DraftSaved,
+    /// A draft was saved to the Drafts folder, under this Message-ID
+    /// (`None`: an automatic save that did not go through). `autosave`
+    /// echoes the request's.
+    DraftSaved { autosave: Option<u32>, message_id: Option<String> },
     /// A bulk MoveMessages request finished (success or failure) — drives the
     /// bulk-action spinner in the UI.
     BulkComplete,
@@ -2615,14 +2621,17 @@ async fn run_imap(
                 .await;
             }
 
-            MailRequest::SaveDraft { message, folder_id, path } => {
-                emit(WorkerEvent::Status(i18n("Saving draft…")));
+            MailRequest::SaveDraft { message, folder_id, path, autosave } => {
+                if autosave.is_none() {
+                    emit(WorkerEvent::Status(i18n("Saving draft…")));
+                }
                 // A draft is kept as written: signing and encrypting happen
                 // at send time (#133).
                 let mut message = OutgoingMessage { sign: false, encrypt: false, ..*message };
                 restore_msgid_case(cache.as_ref(), &mut message);
                 match build_draft(&account, &message) {
                     Ok(email) => {
+                        let message_id = draft_message_id(&email);
                         let raw = email.formatted();
                         let append_res = {
                             let sess = session.as_mut().unwrap();
@@ -2666,20 +2675,18 @@ async fn run_imap(
                                 // copy it was edited from is now superseded.
                                 drop_superseded_outbox(cache.as_ref(), account_id, &message, &emit);
                                 emit(WorkerEvent::Status(String::new()));
-                                emit(WorkerEvent::DraftSaved);
+                                emit(WorkerEvent::DraftSaved { autosave, message_id: Some(message_id) });
                             }
                             Err(e) => {
                                 emit(WorkerEvent::Status(String::new()));
-                                emit(WorkerEvent::error(i18n_f("Could not save draft: {e}", &[("e", &(e).to_string())])));
-                                emit(WorkerEvent::Unsent(Box::new(message.clone())));
+                                draft_not_saved(autosave, e.to_string(), message.clone(), &emit);
                                 lost = true;
                             }
                         }
                     }
                     Err(e) => {
                         emit(WorkerEvent::Status(String::new()));
-                        emit(WorkerEvent::error(i18n_f("Could not save draft: {e}", &[("e", &(e).to_string())])));
-                        emit(WorkerEvent::Unsent(Box::new(message)));
+                        draft_not_saved(autosave, e.to_string(), message, &emit);
                     }
                 }
             }
@@ -4307,6 +4314,32 @@ pub fn editable_from_raw(raw: &[u8], envelope_rcpts: &[String]) -> EditableMessa
         body_html,
         attachments,
     }
+}
+
+/// The Message-ID a built draft carries, bare, to find it again among the
+/// Drafts folder's messages once it is saved (#340).
+fn draft_message_id(email: &LettreMessage) -> String {
+    email
+        .headers()
+        .get_raw("Message-ID")
+        .unwrap_or_default()
+        .trim()
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .to_string()
+}
+
+/// A draft that could not be saved: said, and handed back to be opened
+/// again (#340), unless the composer was saving it on its own and is
+/// still open, in which case it just tries again later.
+fn draft_not_saved(autosave: Option<u32>, why: String, message: OutgoingMessage, emit: &impl Fn(WorkerEvent)) {
+    if autosave.is_some() {
+        tracing::info!("automatic draft save failed: {why}");
+        emit(WorkerEvent::DraftSaved { autosave, message_id: None });
+        return;
+    }
+    emit(WorkerEvent::error(i18n_f("Could not save draft: {e}", &[("e", &why)])));
+    emit(WorkerEvent::Unsent(Box::new(message)));
 }
 
 /// Rebuild the SMTP envelope stored alongside a queued message.
@@ -9329,7 +9362,9 @@ async fn run_mock(
             | MailRequest::UndoMove { .. } => {
                 emit(WorkerEvent::BulkComplete)
             }
-            MailRequest::SaveDraft { .. } => emit(WorkerEvent::DraftSaved),
+            MailRequest::SaveDraft { autosave, .. } => {
+                emit(WorkerEvent::DraftSaved { autosave, message_id: None })
+            }
             MailRequest::Settle { path, uids } => emit(WorkerEvent::MovesSettled { path, uids }),
             MailRequest::ExportRaw { token, uid, .. } => emit(WorkerEvent::RawExported {
                 token,

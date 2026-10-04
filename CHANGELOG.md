@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Added: messages being written are saved to Drafts as you go** (#340,
+  reported by 7system7). Every 30 seconds while it changes, a message is
+  saved to the Drafts folder in place of its last copy, with the composer
+  left open. Discarding a new message removes its copy. A save that fails is
+  tried again quietly.
 - **Changed: folders inside the Inbox are listed under it** (#345, suggested
   by bstegmaier75). On a server that keeps some folders inside the Inbox
   (`INBOX.Ablage`) and others beside it, the ones inside are now under the

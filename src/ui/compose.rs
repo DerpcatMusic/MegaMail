@@ -360,6 +360,15 @@ pub struct Compose {
     translate_btn: gtk::Button,
     /// A translation is out: the button waits and the body is locked.
     translating: bool,
+    /// Saving on its own (#340): a save on its way, what the last one held
+    /// (a hash of the fields and body), whether the Drafts copy is one only
+    /// these saves made (so Discard removes it), and whether they have
+    /// stopped (the copy could not be found again to replace it).
+    autosaving: bool,
+    autosaved: Option<u64>,
+    autosave_pending: Option<u64>,
+    autosave_made: bool,
+    autosave_off: bool,
     /// The subject as written and as translated with the body, so Show
     /// Original and Show Translation can swap it back and forth (#327).
     tr_subject: Option<(String, String)>,
@@ -492,6 +501,14 @@ pub enum ComposeInput {
     SaveDraft,
     /// The editor content came back — finish saving the draft.
     SaveDraftBody { html: String, text: String, to: String, cc: String, bcc: String, reply_to: String, subject: String, from_account_id: u32, from_alias: Option<String> },
+    /// The automatic save's tick (#340), then, once anything was edited,
+    /// the fields and body read for it.
+    AutoSave,
+    AutoSaveRead,
+    AutoSaveBody { html: String, text: String, to: String, cc: String, bcc: String, reply_to: String, subject: String, from_account_id: u32, from_alias: Option<String> },
+    /// An automatic save came back: whether it went through, and where the
+    /// copy is now, to be replaced by the next save.
+    Autosaved { saved: bool, origin: Option<DraftOrigin> },
     /// Cancel, Escape or the window's close button: closes at once when
     /// nothing was written, else asks first (#290).
     Cancel,
@@ -569,6 +586,12 @@ pub enum ComposeOutput {
     /// This pane is done (cancelled / sent / draft-saved / superseded). Carries
     /// the id so the app tears down the right host.
     Close(u32),
+    /// Save the message to Drafts on the composer's own (#340), leaving it
+    /// open.
+    AutoSave { id: u32, message: Box<OutgoingMessage> },
+    /// Discarded, a new message that only automatic saves put in Drafts:
+    /// take that copy out, and close.
+    DiscardAutosave { id: u32, origin: DraftOrigin },
 }
 
 #[relm4::component(pub)]
@@ -1126,6 +1149,11 @@ impl Component for Compose {
             format_btn,
             translate_btn,
             translating: false,
+            autosaving: false,
+            autosaved: None,
+            autosave_pending: None,
+            autosave_made: false,
+            autosave_off: false,
             tr_subject: None,
             preview_btn,
             preview_content,
@@ -1552,6 +1580,19 @@ impl Component for Compose {
         });
         root.add_controller(key);
 
+        // The message is saved to Drafts on its own every so often while it
+        // changes (#340), so a crash, a lost connection or a closed laptop
+        // costs at most that much. The timer stops with the composer.
+        {
+            let s = sender.input_sender().clone();
+            gtk::glib::timeout_add_seconds_local(AUTOSAVE_SECS, move || {
+                if s.send(ComposeInput::AutoSave).is_err() {
+                    return gtk::glib::ControlFlow::Break;
+                }
+                gtk::glib::ControlFlow::Continue
+            });
+        }
+
         ComponentParts { model, widgets }
     }
 
@@ -1590,7 +1631,16 @@ impl Component for Compose {
             ComposeInput::KeepEditing => self.asking_discard = false,
 
             ComposeInput::Discard => {
-                let _ = sender.output(ComposeOutput::Close(self.compose_id));
+                // A message nobody saved leaves nothing behind, though the
+                // composer saved it on its own meanwhile (#340).
+                match self.draft_origin.clone().filter(|_| self.autosave_made) {
+                    Some(origin) => {
+                        let _ = sender.output(ComposeOutput::DiscardAutosave { id: self.compose_id, origin });
+                    }
+                    None => {
+                        let _ = sender.output(ComposeOutput::Close(self.compose_id));
+                    }
+                }
             }
 
             ComposeInput::SendAt(at) => {
@@ -2627,6 +2677,99 @@ impl Component for Compose {
                 let _ = sender.output(ComposeOutput::SaveDraft(Box::new(out)));
                 let _ = sender.output(ComposeOutput::Close(self.compose_id));
             }
+
+            ComposeInput::AutoSave => {
+                if self.autosave_off || self.autosaving || self.asking_discard || self.translating {
+                    break 'handle;
+                }
+                // Not before anything was written: an untouched reply is
+                // no draft.
+                if self.fields_dirty {
+                    sender.input(ComposeInput::AutoSaveRead);
+                } else {
+                    let s = sender.clone();
+                    self.editor.is_dirty(move |dirty| {
+                        if dirty {
+                            s.input(ComposeInput::AutoSaveRead);
+                        }
+                    });
+                }
+            }
+
+            ComposeInput::AutoSaveRead => {
+                if self.autosaving {
+                    break 'handle;
+                }
+                let to = widgets.to_row.text().trim().to_string();
+                let cc = widgets.cc_row.text().trim().to_string();
+                let bcc = widgets.bcc_row.text().trim().to_string();
+                let reply_to = widgets.reply_to_row.text().trim().to_string();
+                let subject = widgets.subject_row.text().to_string();
+                let idx = widgets.from_row.selected() as usize;
+                let from_account_id = self.accounts.get(idx).map(|a| a.id).unwrap_or(1);
+                let from_alias = self
+                    .chosen_from(widgets)
+                    .unwrap_or_else(|_| self.accounts.get(idx).and_then(|a| a.alias_from.clone()));
+                let s = sender.clone();
+                self.read_body_as(self.format, false, move |html, text| {
+                    s.input(ComposeInput::AutoSaveBody {
+                        html,
+                        text,
+                        to: to.clone(),
+                        cc: cc.clone(),
+                        bcc: bcc.clone(),
+                        reply_to: reply_to.clone(),
+                        subject: subject.clone(),
+                        from_account_id,
+                        from_alias: from_alias.clone(),
+                    });
+                });
+            }
+
+            ComposeInput::AutoSaveBody { html, text, to, cc, bcc, reply_to, subject, from_account_id, from_alias } => {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                (&html, &text, &to, &cc, &bcc, &reply_to, &subject, from_account_id, &from_alias, &self.attachments)
+                    .hash(&mut h);
+                let hash = h.finish();
+                // Unchanged since the last save, or nothing in it at all.
+                let empty = [&to, &cc, &bcc, &subject].iter().all(|f| f.trim().is_empty())
+                    && text.trim().is_empty()
+                    && self.attachments.is_empty();
+                if self.autosaved == Some(hash) || empty || self.autosaving {
+                    break 'handle;
+                }
+                let (html, text) = self.outgoing_body(html, text);
+                let out = self
+                    .build_outgoing(from_account_id, from_alias, to, cc, bcc, reply_to, subject, text, html);
+                self.autosaving = true;
+                self.autosave_pending = Some(hash);
+                let _ = sender.output(ComposeOutput::AutoSave { id: self.compose_id, message: Box::new(out) });
+            }
+
+            ComposeInput::Autosaved { saved, origin } => {
+                self.autosaving = false;
+                let pending = self.autosave_pending.take();
+                if !saved {
+                    // Offline, say: the next tick tries again.
+                    break 'handle;
+                }
+                match origin {
+                    Some(origin) => {
+                        if self.draft_origin.is_none() {
+                            self.autosave_made = true;
+                        }
+                        self.draft_origin = Some(origin);
+                        self.autosaved = pending;
+                    }
+                    // Saved, but not found again to be replaced next time:
+                    // one more save would leave a second copy behind.
+                    None => {
+                        tracing::info!("automatic draft save stopped: the saved copy was not found");
+                        self.autosave_off = true;
+                    }
+                }
+            }
         }
         }
         // Overriding `update_with_view` takes over relm4's default, which
@@ -2635,6 +2778,9 @@ impl Component for Compose {
         self.update_view(widgets, sender);
     }
 }
+
+/// How often an edited message is saved to Drafts on its own (#340).
+const AUTOSAVE_SECS: u32 = 30;
 
 /// An identity's From as the composer writes it out: "Name <address>".
 fn identity_display(a: &ComposeAccount) -> String {

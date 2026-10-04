@@ -6029,8 +6029,8 @@ msgstr "Impossible de supprimer le dossier : {e}"
 msgid "Saving draft…"
 msgstr "Enregistrement du brouillon…"
 
-msgid "Could not save draft: {e}"
-msgstr "Impossible d'enregistrer le brouillon : {e}"
+msgid "Could not reach the server"
+msgstr "Impossible de joindre le serveur"
 
 msgid "Sending…"
 msgstr "Envoi en cours…"
@@ -6059,11 +6059,9 @@ msgstr "La connexion IMAP ne progresse plus"
 msgid "Could not reach the JMAP server: {e}"
 msgstr "Impossible de contacter le serveur JMAP : {e}"
 
-msgid "Could not save draft: unknown folder"
-msgstr "Impossible d'enregistrer le brouillon : dossier inconnu"
-
-msgid "Could not reach the server"
-msgstr "Impossible de joindre le serveur"
+#, fuzzy
+msgid "unknown folder"
+msgstr "Afficher chaque dossier"
 
 msgid "That folder is not on the server"
 msgstr "Ce dossier n'existe pas sur le serveur"
@@ -6159,6 +6157,9 @@ msgstr "« {subject} » sera envoyé {when}"
 #, fuzzy
 msgid "Could not schedule the message."
 msgstr "Impossible de supprimer le message : {e}"
+
+msgid "Could not save draft: {e}"
+msgstr "Impossible d'enregistrer le brouillon : {e}"
 
 msgid ""
 "no OpenPGP key of your own for {addr}; generate one under Settings, OpenPGP"
@@ -6323,6 +6324,9 @@ msgstr "La boîte de réception unifiée en mode clair"
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid "Could not save draft: unknown folder"
+#~ msgstr "Impossible d'enregistrer le brouillon : dossier inconnu"
 
 #~ msgid "Flagged first"
 #~ msgstr "Signalés en premier"

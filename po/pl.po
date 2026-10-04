@@ -6047,8 +6047,8 @@ msgstr "Nie udało się usunąć katalogu: {e}"
 msgid "Saving draft…"
 msgstr "Zapisywanie szkicu…"
 
-msgid "Could not save draft: {e}"
-msgstr "Nie udało się zapisać szkicu: {e}"
+msgid "Could not reach the server"
+msgstr "Nie udało się połączyć z serwerem"
 
 msgid "Sending…"
 msgstr "Wysyłanie…"
@@ -6077,11 +6077,9 @@ msgstr ""
 msgid "Could not reach the JMAP server: {e}"
 msgstr "Nie udało się połączyć z serwerem JMAP: {e}"
 
-msgid "Could not save draft: unknown folder"
-msgstr "Nie udało się zapisać szkicu: nieznany katalog"
-
-msgid "Could not reach the server"
-msgstr "Nie udało się połączyć z serwerem"
+#, fuzzy
+msgid "unknown folder"
+msgstr "Wyświetl poszczególne katalogi"
 
 msgid "That folder is not on the server"
 msgstr "Tego katalogu nie ma na serwerze"
@@ -6178,6 +6176,9 @@ msgstr "Wiadomość „{subject}” zostanie wysłana {when}"
 #, fuzzy
 msgid "Could not schedule the message."
 msgstr "Nie udało się usunąć wiadomości: {e}"
+
+msgid "Could not save draft: {e}"
+msgstr "Nie udało się zapisać szkicu: {e}"
 
 msgid ""
 "no OpenPGP key of your own for {addr}; generate one under Settings, OpenPGP"
@@ -6341,6 +6342,9 @@ msgstr "Zbiorcza skrzynka odbiorcza w jasnym motywie"
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid "Could not save draft: unknown folder"
+#~ msgstr "Nie udało się zapisać szkicu: nieznany katalog"
 
 #~ msgid ""
 #~ "Could not schedule the message: there is no local store to keep it in."

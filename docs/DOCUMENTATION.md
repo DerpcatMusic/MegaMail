@@ -480,6 +480,17 @@ anything reading it did not. The recipient still gets them. In dark mode a
 quoted message that sets its own colors keeps the light ground it was
 designed for.
 
+### Drafts saved as you write
+
+A message being written is saved to the Drafts folder on its own every 30
+seconds while it changes, so a crash or a lost connection costs at most that
+much. Nothing is saved before you have changed anything, so an untouched
+reply leaves no draft. Each save replaces the one before, and **Save Draft**,
+**Send** and **Send Later** replace or remove it as they would a draft you
+saved. **Discard** on a new message removes the copy it left; on a draft you
+had saved before, the last automatic save stays. A save that fails, offline
+say, is tried again at the next one, without a message about it.
+
 ### The From address
 
 The From row lists each account's address and the aliases set up for it.

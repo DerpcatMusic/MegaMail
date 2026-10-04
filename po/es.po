@@ -5999,8 +5999,8 @@ msgstr "No se pudo eliminar la carpeta: {e}"
 msgid "Saving draft…"
 msgstr "Guardando borrador…"
 
-msgid "Could not save draft: {e}"
-msgstr "No se pudo guardar el borrador: {e}"
+msgid "Could not reach the server"
+msgstr "No se pudo contactar con el servidor"
 
 msgid "Sending…"
 msgstr "Enviando…"
@@ -6029,11 +6029,9 @@ msgstr ""
 msgid "Could not reach the JMAP server: {e}"
 msgstr "No se pudo contactar con el servidor JMAP: {e}"
 
-msgid "Could not save draft: unknown folder"
-msgstr "No se pudo guardar el borrador: carpeta desconocida"
-
-msgid "Could not reach the server"
-msgstr "No se pudo contactar con el servidor"
+#, fuzzy
+msgid "unknown folder"
+msgstr "Mostrar cada carpeta"
 
 msgid "That folder is not on the server"
 msgstr "Esa carpeta no está en el servidor"
@@ -6129,6 +6127,9 @@ msgstr "«{subject}» se enviará {when}"
 #, fuzzy
 msgid "Could not schedule the message."
 msgstr "No se pudo eliminar el mensaje: {e}"
+
+msgid "Could not save draft: {e}"
+msgstr "No se pudo guardar el borrador: {e}"
 
 msgid ""
 "no OpenPGP key of your own for {addr}; generate one under Settings, OpenPGP"
@@ -6290,6 +6291,9 @@ msgstr "La bandeja de entrada unificada en modo claro"
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid "Could not save draft: unknown folder"
+#~ msgstr "No se pudo guardar el borrador: carpeta desconocida"
 
 #~ msgid ""
 #~ "Could not schedule the message: there is no local store to keep it in."

@@ -1606,7 +1606,15 @@ pub enum AppMsg {
     /// The composer's Delete Draft: trash the draft it was opened from and
     /// close that composer without saving.
     DeleteDraft { id: u32, origin: crate::models::DraftOrigin },
-    DraftSaved,
+    /// A draft is in the Drafts folder under `message_id` (`None`: an
+    /// automatic save that did not go through). `autosave` is the composer
+    /// that saved it on its own (#340).
+    DraftSaved { account_id: u32, autosave: Option<u32>, message_id: Option<String> },
+    /// A composer saving its message on its own (#340).
+    AutoSaveDraft { id: u32, message: Box<OutgoingMessage> },
+    /// A new message saved only automatically was discarded: the saved copy
+    /// goes too, and the composer closes.
+    DiscardAutosave { id: u32, origin: crate::models::DraftOrigin },
     /// A composer (id) finished — tear down its host (window or inline revealer).
     ComposeClosed(u32),
     /// A composer window's close button: the composer decides, as for
@@ -8646,17 +8654,7 @@ impl SimpleComponent for AppModel {
 
             AppMsg::SaveDraftMessage(out) => {
                 let account_id = out.from_account_id;
-                // Existing Drafts folder, else a default path (worker creates it).
-                let drafts = self
-                    .folders
-                    .get(&account_id)
-                    .and_then(|fs| fs.iter().find(|f| f.kind == FolderKind::Drafts))
-                    .map(|f| (f.id, f.path.clone()))
-                    .or_else(|| {
-                        self.default_folder_path(account_id, FolderKind::Drafts)
-                            .map(|p| (0, p))
-                    });
-                let Some((folder_id, path)) = drafts else {
+                let Some((folder_id, path)) = self.drafts_target(account_id) else {
                     self.notifications.emit(NotifyInput::Push {
                         text: i18n("No Drafts folder available for this account"),
                         error: true,
@@ -8664,7 +8662,24 @@ impl SimpleComponent for AppModel {
                     });
                     return;
                 };
-                self.send_to(account_id, MailRequest::SaveDraft { message: out, folder_id, path });
+                self.send_to(account_id, MailRequest::SaveDraft { message: out, folder_id, path, autosave: None });
+            }
+
+            AppMsg::AutoSaveDraft { id, message } => {
+                let account_id = message.from_account_id;
+                match self.drafts_target(account_id) {
+                    Some((folder_id, path)) => self.send_to(
+                        account_id,
+                        MailRequest::SaveDraft { message, folder_id, path, autosave: Some(id) },
+                    ),
+                    None => self.emit_to_composer(id, ComposeInput::Autosaved { saved: false, origin: None }),
+                }
+            }
+
+            AppMsg::DiscardAutosave { id, origin } => {
+                self.purge_draft(&origin);
+                self.close_compose(id);
+                self.message_list.emit(MessageListInput::ReclaimFocus);
             }
 
             AppMsg::DeleteDraft { id, origin } => {
@@ -8700,9 +8715,22 @@ impl SimpleComponent for AppModel {
                 self.message_list.emit(MessageListInput::ReclaimFocus);
             }
 
-            AppMsg::DraftSaved => {
-                // The Drafts folder reload already reflects the saved draft; the
-                // compose window has closed. No notification (mirrors silent send).
+            AppMsg::DraftSaved { account_id, autosave, message_id } => {
+                // The Drafts folder reload already reflects the saved draft; an
+                // explicit save's composer has closed. No notification (mirrors
+                // silent send). An automatic save tells its composer where the
+                // copy is now, so the next save replaces it (#340).
+                let Some(id) = autosave else { return };
+                let origin = message_id.as_deref().and_then(|mid| self.find_draft(account_id, mid));
+                if !self.composer_exists(id) {
+                    // Sent, saved or closed while this save was on its way:
+                    // the copy it left is not wanted.
+                    if let Some(origin) = &origin {
+                        self.purge_draft(origin);
+                    }
+                    return;
+                }
+                self.emit_to_composer(id, ComposeInput::Autosaved { saved: message_id.is_some(), origin });
             }
 
             AppMsg::ShowcaseComposeClose => {
@@ -14809,6 +14837,53 @@ impl AppModel {
             .map(|f| f.kind)
     }
 
+    /// The Drafts folder a draft of `account_id` is saved to: the existing
+    /// one, else a default path the worker creates.
+    fn drafts_target(&self, account_id: u32) -> Option<(u32, String)> {
+        self.folders
+            .get(&account_id)
+            .and_then(|fs| fs.iter().find(|f| f.kind == FolderKind::Drafts))
+            .map(|f| (f.id, f.path.clone()))
+            .or_else(|| self.default_folder_path(account_id, FolderKind::Drafts).map(|p| (0, p)))
+    }
+
+    /// Where a just-saved draft is, by its Message-ID, among the Drafts
+    /// folder's messages the save has reloaded.
+    fn find_draft(&self, account_id: u32, message_id: &str) -> Option<crate::models::DraftOrigin> {
+        let (folder_id, path) = self.drafts_target(account_id)?;
+        let want = message_id.trim().trim_start_matches('<').trim_end_matches('>');
+        let m = self
+            .message_cache
+            .get(&(account_id, folder_id))?
+            .iter()
+            .find(|m| m.message_id.trim_start_matches('<').trim_end_matches('>').eq_ignore_ascii_case(want))?;
+        Some(crate::models::DraftOrigin { account_id, folder_id, path, uid: m.uid })
+    }
+
+    /// Take a draft out of its folder for good, and list the folder again.
+    fn purge_draft(&self, origin: &crate::models::DraftOrigin) {
+        self.send_to(
+            origin.account_id,
+            MailRequest::PurgeMessages { path: origin.path.clone(), uids: vec![origin.uid] },
+        );
+        self.send_to(
+            origin.account_id,
+            MailRequest::LoadMessages { folder_id: origin.folder_id, path: origin.path.clone() },
+        );
+    }
+
+    fn composer_exists(&self, id: u32) -> bool {
+        self.composers.iter().any(|h| h.id == id) || self.reader_compose.as_ref().is_some_and(|r| r.id == id)
+    }
+
+    fn emit_to_composer(&self, id: u32, input: ComposeInput) {
+        if let Some(h) = self.composers.iter().find(|h| h.id == id) {
+            h.controller.emit(input);
+        } else if let Some(r) = self.reader_compose.as_ref().filter(|r| r.id == id) {
+            r.controller.emit(input);
+        }
+    }
+
     /// Open a draft for editing, from its own bytes (#349, #350): the body
     /// the reader shows has lost the From, the Bcc, the threading headers
     /// and the files. The editor opens once they arrive (see the
@@ -15372,6 +15447,8 @@ impl AppModel {
             .forward(sender.input_sender(), |out| match out {
                 ComposeOutput::Send(msg) => AppMsg::SendMessage(msg),
                 ComposeOutput::SaveDraft(msg) => AppMsg::SaveDraftMessage(msg),
+                ComposeOutput::AutoSave { id, message } => AppMsg::AutoSaveDraft { id, message },
+                ComposeOutput::DiscardAutosave { id, origin } => AppMsg::DiscardAutosave { id, origin },
                 ComposeOutput::DeleteDraft { id, origin } => AppMsg::DeleteDraft { id, origin },
                 ComposeOutput::ToggleWindow(id) => AppMsg::ComposeToggleWindow(id),
                 ComposeOutput::Close(id) => AppMsg::ComposeClosed(id),
@@ -21694,7 +21771,9 @@ fn map_event(account_id: u32, event: WorkerEvent) -> AppMsg {
         WorkerEvent::Unsent(message) => AppMsg::Unsent { account_id, message },
         WorkerEvent::Outbox { items } => AppMsg::OutboxItems { account_id, items },
         WorkerEvent::Notice(text) => AppMsg::Notice(text),
-        WorkerEvent::DraftSaved => AppMsg::DraftSaved,
+        WorkerEvent::DraftSaved { autosave, message_id } => {
+            AppMsg::DraftSaved { account_id, autosave, message_id }
+        }
         WorkerEvent::Status(text) => AppMsg::Status { account_id, text },
         WorkerEvent::Error { text, connectivity } => {
             AppMsg::Error { account_id, text, connectivity }

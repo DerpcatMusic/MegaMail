@@ -2160,13 +2160,17 @@ pub(super) async fn run_jmap(
                 }
             }
 
-            MailRequest::SaveDraft { message, folder_id, path } => {
-                emit(WorkerEvent::Status(i18n("Saving draft…")));
+            MailRequest::SaveDraft { message, folder_id, path, autosave } => {
+                if autosave.is_none() {
+                    emit(WorkerEvent::Status(i18n("Saving draft…")));
+                }
                 let mut message = OutgoingMessage { sign: false, encrypt: false, ..*message };
                 restore_msgid_case(cache.as_ref(), &mut message);
-                let mut saved = false;
+                let mut saved = None;
+                let mut why = String::new();
                 match build_draft(&account, &message) {
                     Ok(email) => {
+                        let message_id = draft_message_id(&email);
                         let raw = email.formatted();
                         if let Some(s) = jmap_session(&account, &mut state, &emit).await {
                             let mailbox_id = state.folders.get(&path).map(|(_, id)| id.clone());
@@ -2181,22 +2185,23 @@ pub(super) async fn run_jmap(
                                             if let Ok(messages) = jmap_load_folder(&s, account_id, folder_id, &path, cache.as_ref(), &mut state).await {
                                                 emit(WorkerEvent::Messages { folder_id, messages });
                                             }
-                                            saved = true;
+                                            saved = Some(message_id);
                                         }
-                                        Err(e) => emit(WorkerEvent::error(i18n_f("Could not save draft: {e}", &[("e", &e)]))),
+                                        Err(e) => why = e,
                                     }
                                 }
-                                None => emit(WorkerEvent::error(i18n("Could not save draft: unknown folder"))),
+                                None => why = i18n("unknown folder"),
                             }
+                        } else {
+                            why = i18n("Could not reach the server");
                         }
                     }
-                    Err(e) => emit(WorkerEvent::error(i18n_f("Could not save draft: {e}", &[("e", &e.to_string())]))),
+                    Err(e) => why = e.to_string(),
                 }
                 emit(WorkerEvent::Status(String::new()));
-                if saved {
-                    emit(WorkerEvent::DraftSaved);
-                } else {
-                    emit(WorkerEvent::Unsent(Box::new(message)));
+                match saved {
+                    Some(id) => emit(WorkerEvent::DraftSaved { autosave, message_id: Some(id) }),
+                    None => draft_not_saved(autosave, why, message, &emit),
                 }
             }
 
