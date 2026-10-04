@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Translations:** French (PR #341 by frenchy82) and Russian (PR #338 by
+  Ilya Semenkovich) brought up to date with 1.43.0-beta.1.
 - **Fixed: Send with Hylki in GNOME Files went to the stable build when the
   beta was installed beside it.** The extension now opens the files in
   whichever Hylki is the default mail app, and the beta takes every
