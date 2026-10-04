@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Added: unread counts can mark only new mail** (#343, suggested by pdf).
+  With Settings → Sidebar → Highlight only new unread mail on (it is off by
+  default), a folder's count is in the accent color only while mail has come
+  in since the folder was last looked at, and grey once it has been, as in
+  Thunderbird. The account circle, All Inboxes and the unified rows follow
+  the folders they count.
 - **Added: Microsoft accounts can sign in with another app registration**
   (#329, suggested by erenoglu). An Advanced row on a Microsoft account's
   page takes a client ID, a tenant, scopes and a redirect URI, so an

@@ -4467,6 +4467,14 @@ msgstr ""
 "Εκ νέου άνοιγμα με τη γραμμή εικονιδίων στην τελευταία κατάσταση. Αν είναι "
 "ανενεργό, κάθε εκκίνηση αρχίζει με την πλήρη πλευρική στήλη."
 
+msgid "Highlight only new unread mail"
+msgstr ""
+
+msgid ""
+"A folder's unread count is in the accent color while mail has arrived since "
+"you last looked at it, and grey once you have, however much is still unread."
+msgstr ""
+
 msgid "Unified"
 msgstr "Ενοποιημένα"
 

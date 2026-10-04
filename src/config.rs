@@ -1280,6 +1280,11 @@ pub(crate) struct PrivacyFile {
     /// default, as are the fold-ups below.
     #[serde(default = "default_on")]
     pub(crate) rail_dots: bool,
+    /// Unread counts in the accent color only for mail that arrived since
+    /// the folder was last looked at; the rest neutral (#343). Off by
+    /// default.
+    #[serde(default)]
+    pub(crate) seen_counts: bool,
     /// Icon rail: the sections folded up by themselves when the sidebar
     /// collapses, one switch each.
     #[serde(default)]
@@ -1576,6 +1581,7 @@ impl Default for PrivacyFile {
             remember_sidebar: true,
             remember_rail: true,
             rail_dots: true,
+            seen_counts: false,
             rail_fold: RailFold::default(),
             app_theme: AppTheme::default(),
             text_scale: default_text_scale(),
@@ -3354,6 +3360,10 @@ struct StateFile {
     /// `app_icon::init_on_startup`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     app_icon: Option<String>,
+    /// Each folder's unread count as of the last time it was looked at
+    /// (#343), keyed "address␟folder path".
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    unread_seen: std::collections::BTreeMap<String, u32>,
 }
 
 fn default_about_height() -> i32 {
@@ -3392,6 +3402,15 @@ fn load_state() -> StateFile {
         .and_then(|t| toml::from_str::<StateFile>(&t).ok())
         .or_else(|| toml::from_str::<StateFile>("").ok())
         .unwrap_or_default()
+}
+
+/// Each folder's unread count when it was last looked at (#343).
+pub fn load_unread_seen() -> std::collections::BTreeMap<String, u32> {
+    load_state().unread_seen
+}
+
+pub fn save_unread_seen(seen: &std::collections::BTreeMap<String, u32>) {
+    update_state(|s| s.unread_seen = seen.clone());
 }
 
 /// Change one thing in state.toml.

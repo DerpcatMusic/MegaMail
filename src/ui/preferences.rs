@@ -139,6 +139,7 @@ pub struct PrefInit {
     pub remember_sidebar: bool,
     pub remember_rail: bool,
     pub rail_dots: bool,
+    pub seen_counts: bool,
     pub rail_fold: crate::config::RailFold,
     /// The reader header's buttons, per side and in order.
     pub reader_toolbar: ReaderToolbar,
@@ -1185,6 +1186,7 @@ pub enum PrefOutput {
     SetRememberSidebar(bool),
     SetRememberRail(bool),
     SetRailDots(bool),
+    SetSeenCounts(bool),
     SetReaderToolbar(ReaderToolbar),
     SetFocusMode(crate::config::FocusMode),
     SetRailFold(crate::config::RailFold),
@@ -2309,6 +2311,17 @@ impl Component for Preferences {
                                                        starts every launch with the full sidebar."),
                                         connect_active_notify[sender] => move |row| {
                                             let _ = sender.output(PrefOutput::SetRememberRail(row.is_active()));
+                                        },
+                                    },
+
+                                    #[name = "seen_counts_row"]
+                                    adw::SwitchRow {
+                                        set_title: &i18n("Highlight only new unread mail"),
+                                        set_subtitle: &i18n("A folder's unread count is in the accent color while \
+                                                       mail has arrived since you last looked at it, and grey \
+                                                       once you have, however much is still unread."),
+                                        connect_active_notify[sender] => move |row| {
+                                            let _ = sender.output(PrefOutput::SetSeenCounts(row.is_active()));
                                         },
                                     },
                                 },
@@ -3764,6 +3777,7 @@ impl Component for Preferences {
         widgets.remember_sidebar_row.set_active(init.remember_sidebar);
         widgets.remember_rail_row.set_active(init.remember_rail);
         widgets.rail_dots_row.set_active(init.rail_dots);
+        widgets.seen_counts_row.set_active(init.seen_counts);
         widgets.rail_fold_row.set_enable_expansion(init.rail_fold.enabled);
         widgets.rail_fold_accounts_row.set_active(init.rail_fold.accounts);
         widgets.rail_fold_all_inboxes_row.set_active(init.rail_fold.all_inboxes);

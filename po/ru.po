@@ -4431,6 +4431,14 @@ msgstr ""
 "Сохранять состояние панели значков при выходе. Если отключено, при каждом "
 "запуске откроется полная боковая панель."
 
+msgid "Highlight only new unread mail"
+msgstr ""
+
+msgid ""
+"A folder's unread count is in the accent color while mail has arrived since "
+"you last looked at it, and grey once you have, however much is still unread."
+msgstr ""
+
 msgid "Unified"
 msgstr "Общие"
 

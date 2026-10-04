@@ -339,6 +339,9 @@ pub struct Sidebar {
     outbox_count: u32,
     /// Total unread across all inboxes, for the "All Inboxes" badge.
     unified_unread: u32,
+    /// The folders whose unread count is new since last looked at, while
+    /// "Highlight only new unread mail" is on (#343); `None` when it is off.
+    fresh: Option<std::collections::HashSet<(u32, u32)>>,
     /// Unread badge labels by (account_id, folder_id), updated in place.
     folder_badges: HashMap<(u32, u32), gtk::Label>,
     /// The "All Inboxes" unread badge label, when shown.
@@ -508,6 +511,10 @@ pub enum SidebarInput {
     SetUnread {
         folders: HashMap<(u32, u32), u32>,
         unified: u32,
+        /// With "Highlight only new unread mail" on (#343): the folders
+        /// with mail come in since they were last looked at. Every other
+        /// count is grey. `None`: every count in the accent color.
+        fresh: Option<std::collections::HashSet<(u32, u32)>>,
     },
     /// A message drag was dropped on a folder row.
     DropOnFolder { account_id: u32, path: String, payload: String },
@@ -742,6 +749,7 @@ impl Component for Sidebar {
             show_contacts: init.show_contacts,
             outbox_count: 0,
             unified_unread: 0,
+            fresh: None,
             folder_badges: HashMap::new(),
             unified_badge: None,
             unified_expanded: init.unified_expanded,
@@ -1294,7 +1302,8 @@ impl Sidebar {
                 self.reveal_account(account_id, &sender);
             }
 
-            SidebarInput::SetUnread { folders, unified } => {
+            SidebarInput::SetUnread { folders, unified, fresh } => {
+                self.fresh = fresh;
                 // Mirror the fresh counts into every row list too, so a
                 // rebuild draws them right (the account folders are done
                 // below).
@@ -1363,6 +1372,7 @@ impl Sidebar {
                     }
                 }
                 self.unified_unread = unified;
+                self.restyle_seen();
                 // Persist the fresh counts into `sections` as well. Otherwise the
                 // next rebuild_normal (e.g. toggling the sidebar collapse) recreates
                 // every badge from the folder unread values captured at the last
@@ -2805,6 +2815,59 @@ impl Sidebar {
                         }
                     },
                 );
+            }
+        }
+        self.restyle_seen();
+    }
+
+    /// Grey the unread counts of mail already looked at (#343): a chip is
+    /// "seen" unless one of the folders it counts has mail new since. With
+    /// the setting off, none is.
+    fn restyle_seen(&self) {
+        let seen = |keys: &mut dyn Iterator<Item = &(u32, u32)>| match &self.fresh {
+            None => false,
+            Some(fresh) => {
+                for k in keys {
+                    if fresh.contains(k) {
+                        return false;
+                    }
+                }
+                true
+            }
+        };
+        let mark = |label: &gtk::Label, on: bool| {
+            if on {
+                label.add_css_class("seen");
+            } else {
+                label.remove_css_class("seen");
+            }
+        };
+        for (key, label) in self
+            .folder_badges
+            .iter()
+            .chain(&self.unified_inbox_badges)
+            .chain(self.filtered_badges.values().flatten())
+            .chain(self.kind_widgets.values().flat_map(|w| &w.row_badges))
+        {
+            mark(label, seen(&mut std::iter::once(key)));
+        }
+        if let Some(label) = &self.unified_badge {
+            mark(label, seen(&mut self.unified_inbox_badges.keys()));
+        }
+        for (slot, badges) in &self.filtered_badges {
+            if let Some(b) = self.filtered_sections.get(slot).and_then(|w| w.badge.as_ref()) {
+                mark(b, seen(&mut badges.keys()));
+            }
+        }
+        for w in self.kind_widgets.values() {
+            if let Some(b) = &w.badge {
+                mark(b, seen(&mut w.row_badges.keys()));
+            }
+        }
+        for section in &self.sections {
+            if let Some(label) = self.account_circle_badges.get(&section.account.id) {
+                let inbox = section.folders.iter().find(|f| f.kind == FolderKind::Inbox).map(|f| (section.account.id, f.id));
+                mark(label, seen(&mut inbox.iter()));
             }
         }
     }

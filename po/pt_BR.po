@@ -4469,6 +4469,14 @@ msgstr ""
 "Ao reabrir, restaura a barra de ícones no último estado usado. Quando "
 "desativado, cada inicialização começa com a barra lateral completa."
 
+msgid "Highlight only new unread mail"
+msgstr ""
+
+msgid ""
+"A folder's unread count is in the accent color while mail has arrived since "
+"you last looked at it, and grey once you have, however much is still unread."
+msgstr ""
+
 msgid "Unified"
 msgstr "Unificadas"
 

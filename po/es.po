@@ -4432,6 +4432,14 @@ msgstr ""
 "Volver a abrir la barra de iconos en el último estado utilizado. Si está "
 "desactivado, cada inicio muestra la barra lateral completa."
 
+msgid "Highlight only new unread mail"
+msgstr ""
+
+msgid ""
+"A folder's unread count is in the accent color while mail has arrived since "
+"you last looked at it, and grey once you have, however much is still unread."
+msgstr ""
+
 msgid "Unified"
 msgstr "Unificado"
 

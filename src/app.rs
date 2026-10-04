@@ -683,6 +683,12 @@ pub struct AppModel {
     tags_expanded_accounts: Vec<String>,
     /// Preference: the icon rail marks unread mail with a dot, not a count.
     rail_dots: bool,
+    /// Preference: unread counts are accented only for mail that came in
+    /// since the folder was last looked at (#343).
+    seen_counts: bool,
+    /// Each folder's unread count when last looked at, keyed as in
+    /// state.toml ("address␟path").
+    unread_seen: std::cell::RefCell<std::collections::BTreeMap<String, u32>>,
     /// Preference: the sections the icon rail folds up when the sidebar
     /// collapses.
     rail_fold: config::RailFold,
@@ -3215,6 +3221,8 @@ impl SimpleComponent for AppModel {
             filtered_expanded_accounts,
             tags_expanded_accounts,
             rail_dots: prefs.rail_dots,
+            seen_counts: prefs.seen_counts,
+            unread_seen: std::cell::RefCell::new(config::load_unread_seen()),
             rail_fold: prefs.rail_fold,
             app_theme: prefs.app_theme,
             text_scale: config::load_text_scale(),
@@ -5943,6 +5951,15 @@ impl SimpleComponent for AppModel {
                     self.drafts_expanded = drafts;
                     self.archive_expanded = archive;
                     self.save_sidebar_state();
+                }
+            }
+
+            AppMsg::Pref(PrefOutput::SetSeenCounts(on)) => {
+                if pref!(self.seen_counts = on) {
+                    // What is unread now counts as looked at: only mail
+                    // from here on is new.
+                    self.unread_seen.borrow_mut().clear();
+                    self.push_unread_counts();
                 }
             }
 
@@ -11094,6 +11111,7 @@ impl AppModel {
             remember_sidebar: self.remember_sidebar,
             remember_rail: self.remember_rail,
             rail_dots: self.rail_dots,
+            seen_counts: self.seen_counts,
             rail_fold: self.rail_fold,
             app_theme: self.app_theme,
             text_scale: self.text_scale,
@@ -12801,12 +12819,53 @@ impl AppModel {
         self.sidebar_anim = Some(anim);
     }
 
+    /// The folders whose unread count has grown since they were last
+    /// looked at (#343). A folder on screen is being looked at, so its mark
+    /// follows its count; elsewhere the mark only comes down, as mail is
+    /// read. A folder never seen before starts with what it has, so turning
+    /// the setting on, or a new account, marks nothing.
+    fn fresh_unread(&self) -> HashSet<(u32, u32)> {
+        let on_screen = |a: u32, f: u32| {
+            self.window.is_visible()
+                && if self.unified {
+                    self.is_unified_target(a, f)
+                } else {
+                    self.selected.as_ref().is_some_and(|s| s.account_id == a && s.folder_id == f)
+                }
+        };
+        let mut seen = self.unread_seen.borrow_mut();
+        let mut changed = false;
+        let mut fresh = HashSet::new();
+        for (&(a, f), &n) in &self.folder_unread {
+            let (Some(email), Some(path)) = (self.email_of(a), self.folder_path(a, f)) else { continue };
+            let key = format!("{email}\u{1f}{path}");
+            let mark = seen.get(&key).copied();
+            let next = match mark {
+                _ if on_screen(a, f) => n,
+                None => n,
+                Some(m) => m.min(n),
+            };
+            if mark != Some(next) {
+                seen.insert(key, next);
+                changed = true;
+            }
+            if n > next {
+                fresh.insert((a, f));
+            }
+        }
+        if changed {
+            config::save_unread_seen(&seen);
+        }
+        fresh
+    }
+
     /// Update the sidebar's unread badges in place (no rebuild), derived from the
     /// loaded message lists. Cheap enough to call on every read/sync.
     fn push_unread_counts(&self) {
         let folders = self.folder_unread.clone();
         let unified = self.unified_unread();
-        self.sidebars_emit(SidebarInput::SetUnread { folders, unified: self.unified_inboxes_unread() });
+        let fresh = self.seen_counts.then(|| self.fresh_unread());
+        self.sidebars_emit(SidebarInput::SetUnread { folders, unified: self.unified_inboxes_unread(), fresh });
         // The counted total is what GNOME shows beside Hylki in Background
         // Apps, so a process with no window still says what it is there for.
         if self.run_in_background.get() {
@@ -13957,6 +14016,9 @@ impl AppModel {
         self.unified = true;
         self.tag_view = None;
         self.selected = None;
+        if self.seen_counts {
+            self.push_unread_counts();
+        }
         self.current = None;
         self.current_thread.clear();
         self.attachments.clear();
@@ -14287,6 +14349,10 @@ impl AppModel {
             folder_id,
             path: path.clone(),
         });
+        // Opening a folder is looking at it (#343).
+        if self.seen_counts {
+            self.push_unread_counts();
+        }
         self.current = None;
         self.current_thread.clear();
         self.show_message(None, false);
@@ -17986,6 +18052,7 @@ impl AppModel {
             remember_sidebar: self.remember_sidebar,
             remember_rail: self.remember_rail,
             rail_dots: self.rail_dots,
+            seen_counts: self.seen_counts,
             rail_fold: self.rail_fold,
             reader_toolbar: self.reader_toolbar.clone(),
             focus: self.focus,

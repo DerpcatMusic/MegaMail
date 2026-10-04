@@ -838,6 +838,17 @@ or the classic icon. An icon set on the launcher some other way, with a menu
 editor or by editing its `.desktop` file, is left alone when Hylki starts;
 Settings says so above the gallery, and picking an icon there replaces it.
 
+### New and seen unread mail
+
+A folder's unread count is in the accent color. With **Settings → Sidebar →
+Highlight only new unread mail** on, it is only while mail has come into the
+folder since you last looked at it; once you have opened the folder, the
+count turns grey, however much is still unread, until more arrives. A folder
+on screen counts as looked at, and so do the inboxes of All Inboxes while it
+is open. Reading mail elsewhere lowers the mark with the count. What was
+unread when the setting was turned on counts as seen. The marks are kept in
+`state.toml`, and the setting is `seen_counts` in `privacy.toml`.
+
 ### Unread count on the app icon
 
 Hylki puts the number of unread inbox messages on its icon in the dock or
