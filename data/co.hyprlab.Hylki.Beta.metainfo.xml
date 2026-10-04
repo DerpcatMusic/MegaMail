@@ -63,6 +63,11 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="1.43.0-beta.2" date="2026-10-03" type="development">
+      <description>
+        <p>Second preview of 1.43.0: choosable columns for the single-line list, translations that keep the message's design, no lost message when an attachment has moved, and fixes for new mail not appearing, nested Inbox folders and sending files from GNOME Files.</p>
+      </description>
+    </release>
     <release version="1.43.0-beta.1" date="2026-10-02" type="development">
       <description>
         <p>First preview of 1.43.0: Microsoft accounts without GNOME Online Accounts, a single-line message list, translating messages, folding messages in a conversation, and fixes for unread state, notifications and list redraws.</p>

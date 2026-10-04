@@ -2,6 +2,29 @@
 
 Hylki (formerly Vireo) is a clean, fast, GNOME-native email client built with Rust and libadwaita for Wayland desktops. Privacy-first: no telemetry, remote content blocked by default, and credentials kept in the system keyring.
 
+## What's new in 1.43.0-beta.2
+
+The second beta previewing 1.43.0.
+
+- **Choose the single-line list's columns** (#334, requested by erenoglu):
+  Settings > Message List > Columns adds Recipients, Correspondents,
+  Importance, Account and Due Date, and column headings sort the list and
+  resize the columns.
+- **A message is no longer lost when an attachment has moved** (#340,
+  reported by 7system7): Send says which file is missing, and a message
+  that cannot be sent or saved opens again.
+- **Translations keep the message's design** (#327, reported by pdf).
+- **Fixed:** new mail sometimes not appearing until the folder was opened
+  again (#336), folders named Inbox or Sent inside an archive taking those
+  roles (#344), Email… in GNOME Files opening no message when a file could
+  not be read (#339), and Send with Hylki going to the stable build when
+  both are installed.
+- **The buttons in a message's header are filled**, as Adwaita draws
+  them (#342, suggested by yioannides).
+- **Translations:** French by [@frenchy82](https://github.com/frenchy82)
+  (#341) and Russian by [@iliasen](https://github.com/iliasen) (#338)
+  brought up to date.
+
 ## What's new in 1.43.0-beta.1
 
 The first beta previewing 1.43.0.
