@@ -26,6 +26,9 @@ pub struct PgpKeys {
     toasts: Option<adw::ToastOverlay>,
     /// A background action (generate, fetch) is running.
     busy: bool,
+    /// Bumped per reload, so a slower, older listing never lands on top
+    /// of a newer one.
+    reload_generation: u64,
 }
 
 #[derive(Debug)]
@@ -51,6 +54,9 @@ pub enum PgpKeysInput {
 pub enum PgpKeysCmd {
     Generated(Result<String, String>),
     Fetched(Result<ImportSummary, String>),
+    /// What an import, delete or trust has to say, if anything.
+    Done(Option<String>),
+    Listed { generation: u64, own: Vec<KeyInfo>, others: Vec<KeyInfo> },
 }
 
 /// The expiry choices offered when generating a key, in combo order.
@@ -164,6 +170,7 @@ impl Component for PgpKeys {
             others_list: others_list.clone(),
             toasts: None,
             busy: false,
+            reload_generation: 0,
         };
         let widgets = view_output!();
         model.toasts = Some(widgets.toasts.clone());
@@ -263,11 +270,15 @@ impl Component for PgpKeys {
                 });
             }
             PgpKeysInput::ImportBytes(bytes) => {
-                match pgp::import_keys(&Gpg::system(), &bytes) {
-                    Ok(s) => self.toast(&import_message(&s)),
-                    Err(e) => self.toast(&i18n_f("Could not import: {e}", &[("e", &e)])),
-                }
-                self.reload(&sender);
+                sender.oneshot_command(async move {
+                    let r = tokio::task::spawn_blocking(move || pgp::import_keys(&Gpg::system(), &bytes))
+                        .await
+                        .unwrap_or_else(|_| Err("task failed".into()));
+                    PgpKeysCmd::Done(Some(match r {
+                        Ok(s) => import_message(&s),
+                        Err(e) => i18n_f("Could not import: {e}", &[("e", &e)]),
+                    }))
+                });
             }
 
             PgpKeysInput::Export(fpr) => {
@@ -281,20 +292,25 @@ impl Component for PgpKeys {
                 let parent = relm4::main_application().active_window();
                 let s = sender.clone();
                 dialog.save(parent.as_ref(), gtk::gio::Cancellable::NONE, move |res| {
-                    if let Ok(file) = res {
-                        if let Some(path) = file.path() {
-                            match pgp::export_public(&Gpg::system(), &fpr) {
-                                Ok(bytes) => {
-                                    if let Err(e) = std::fs::write(&path, bytes) {
-                                        tracing::warn!("could not write key file: {e}");
-                                    }
+                    let Some(path) = res.ok().and_then(|file| file.path()) else {
+                        return;
+                    };
+                    let s = s.clone();
+                    let fpr = fpr.clone();
+                    gtk::glib::spawn_future_local(async move {
+                        let r = gtk::gio::spawn_blocking(move || pgp::export_public(&Gpg::system(), &fpr)).await;
+                        match r {
+                            Ok(Ok(bytes)) => {
+                                if let Err(e) = std::fs::write(&path, bytes) {
+                                    tracing::warn!("could not write key file: {e}");
                                 }
-                                Err(e) => tracing::warn!("could not export key: {e}"),
                             }
-                            // Nothing to say on success beyond the file's existence.
-                            s.input(PgpKeysInput::Refresh);
+                            Ok(Err(e)) => tracing::warn!("could not export key: {e}"),
+                            Err(_) => tracing::warn!("could not export key: task failed"),
                         }
-                    }
+                        // Nothing to say on success beyond the file's existence.
+                        s.input(PgpKeysInput::Refresh);
+                    });
                 });
             }
 
@@ -332,10 +348,12 @@ impl Component for PgpKeys {
                 dialog.present();
             }
             PgpKeysInput::DeleteConfirmed { fingerprint, secret } => {
-                if let Err(e) = pgp::delete_key(&Gpg::system(), &fingerprint, secret) {
-                    self.toast(&i18n_f("Could not delete: {e}", &[("e", &e)]));
-                }
-                self.reload(&sender);
+                sender.oneshot_command(async move {
+                    let r = tokio::task::spawn_blocking(move || pgp::delete_key(&Gpg::system(), &fingerprint, secret))
+                        .await
+                        .unwrap_or_else(|_| Err("task failed".into()));
+                    PgpKeysCmd::Done(r.err().map(|e| i18n_f("Could not delete: {e}", &[("e", &e)])))
+                });
             }
 
             PgpKeysInput::Fetch => {
@@ -417,23 +435,40 @@ impl Component for PgpKeys {
             }
             PgpKeysInput::TrustConfirmed(fpr) => {
                 let signer = self.own.iter().find(|k| k.usable() && k.can_sign).map(|k| k.fingerprint.clone());
-                match pgp::trust_key(&Gpg::system(), &fpr, signer.as_deref()) {
-                    Ok(()) => self.toast(&i18n("Key trusted.")),
-                    Err(e) => self.toast(&i18n_f("Could not sign the key: {e}", &[("e", &e)])),
-                }
-                self.reload(&sender);
+                sender.oneshot_command(async move {
+                    let r = tokio::task::spawn_blocking(move || pgp::trust_key(&Gpg::system(), &fpr, signer.as_deref()))
+                        .await
+                        .unwrap_or_else(|_| Err("task failed".into()));
+                    PgpKeysCmd::Done(Some(match r {
+                        Ok(()) => i18n("Key trusted."),
+                        Err(e) => i18n_f("Could not sign the key: {e}", &[("e", &e)]),
+                    }))
+                });
             }
         }
     }
 
     fn update_cmd(&mut self, message: Self::CommandOutput, sender: ComponentSender<Self>, _root: &Self::Root) {
-        self.busy = false;
         match message {
+            PgpKeysCmd::Listed { generation, own, others } => {
+                if generation == self.reload_generation {
+                    self.show_keys(own, others, &sender);
+                }
+                return;
+            }
             PgpKeysCmd::Generated(Ok(_)) => self.toast(&i18n("Your key is ready.")),
             PgpKeysCmd::Generated(Err(e)) => self.toast(&i18n_f("Could not generate the key: {e}", &[("e", &e)])),
             PgpKeysCmd::Fetched(Ok(s)) => self.toast(&import_message(&s)),
             PgpKeysCmd::Fetched(Err(e)) => self.toast(&i18n_f("No key found: {e}", &[("e", &e)])),
+            PgpKeysCmd::Done(text) => {
+                if let Some(text) = text {
+                    self.toast(&text);
+                }
+                self.reload(&sender);
+                return;
+            }
         }
+        self.busy = false;
         self.reload(&sender);
     }
 }
@@ -445,15 +480,32 @@ impl PgpKeys {
         }
     }
 
-    /// Re-read the keyring and rebuild both lists.
+    /// Re-read the keyring, then rebuild both lists. gpg runs on a worker
+    /// thread: the hidden Settings window does this at startup, and a
+    /// keyring lock left by a stale gpg held the whole app for twenty
+    /// seconds (#316).
     fn reload(&mut self, sender: &ComponentSender<Self>) {
-        let gpg = Gpg::system();
-        self.own = pgp::list_keys(&gpg, true);
-        let own_fprs: Vec<String> = self.own.iter().map(|k| k.fingerprint.clone()).collect();
-        self.others = pgp::list_keys(&gpg, false)
-            .into_iter()
-            .filter(|k| !own_fprs.contains(&k.fingerprint))
-            .collect();
+        self.reload_generation += 1;
+        let generation = self.reload_generation;
+        sender.oneshot_command(async move {
+            let (own, others) = tokio::task::spawn_blocking(|| {
+                let gpg = Gpg::system();
+                let own = pgp::list_keys(&gpg, true);
+                let others = pgp::list_keys(&gpg, false)
+                    .into_iter()
+                    .filter(|k| !own.iter().any(|o| o.fingerprint == k.fingerprint))
+                    .collect();
+                (own, others)
+            })
+            .await
+            .unwrap_or_default();
+            PgpKeysCmd::Listed { generation, own, others }
+        });
+    }
+
+    fn show_keys(&mut self, own: Vec<KeyInfo>, others: Vec<KeyInfo>, sender: &ComponentSender<Self>) {
+        self.own = own;
+        self.others = others;
         for list in [&self.own_list, &self.others_list] {
             while let Some(row) = list.row_at_index(0) {
                 list.remove(&row);

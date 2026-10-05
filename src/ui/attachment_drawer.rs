@@ -733,17 +733,26 @@ impl SimpleComponent for AttachmentDrawer {
             }
             AttachmentDrawerInput::ImportKey(i) => {
                 if let Some(att) = self.item_at(i) {
-                    let (title, body) = match crate::pgp::import_keys(&crate::pgp::Gpg::system(), &att.data) {
-                        Ok(s) if s.imported > 0 => (
-                            i18n("Key imported"),
-                            i18n("The key is in your keyring now. Trust it under Settings, OpenPGP, once you have checked its fingerprint with its owner."),
-                        ),
-                        Ok(_) => (i18n("Already in your keyring"), i18n("That key was imported before.")),
-                        Err(e) => (i18n("Could not import the key"), e),
-                    };
-                    let dialog = adw::MessageDialog::new(self.window().as_ref(), Some(&title), Some(&body));
-                    dialog.add_response("ok", &i18n("OK"));
-                    dialog.present();
+                    // gpg on a worker thread: a stale keyring lock makes it
+                    // wait about ten seconds (#316).
+                    let data = att.data.clone();
+                    let window = self.window();
+                    gtk::glib::spawn_future_local(async move {
+                        let r = gtk::gio::spawn_blocking(move || crate::pgp::import_keys(&crate::pgp::Gpg::system(), &data))
+                            .await
+                            .unwrap_or_else(|_| Err("task failed".into()));
+                        let (title, body) = match r {
+                            Ok(s) if s.imported > 0 => (
+                                i18n("Key imported"),
+                                i18n("The key is in your keyring now. Trust it under Settings, OpenPGP, once you have checked its fingerprint with its owner."),
+                            ),
+                            Ok(_) => (i18n("Already in your keyring"), i18n("That key was imported before.")),
+                            Err(e) => (i18n("Could not import the key"), e),
+                        };
+                        let dialog = adw::MessageDialog::new(window.as_ref(), Some(&title), Some(&body));
+                        dialog.add_response("ok", &i18n("OK"));
+                        dialog.present();
+                    });
                 }
             }
             AttachmentDrawerInput::Download(i) => {

@@ -4145,10 +4145,15 @@ fn read_account(
             .get(widgets.empty_trash_row.selected() as usize)
             .copied()
             .unwrap_or(0),
-        // Row 0 is Automatic; the rest follow PGP_KEY_CHOICES.
+        // Row 0 is Automatic; the rest follow PGP_KEY_CHOICES. Until gpg
+        // has answered, the account keeps the key it had.
         pgp_key: PGP_KEY_CHOICES.with(|c| {
+            let c = c.borrow();
+            if !c.loaded {
+                return c.chosen.clone();
+            }
             let sel = widgets.pgp_key_row.selected() as usize;
-            sel.checked_sub(1).and_then(|i| c.borrow().get(i).map(|k| k.fingerprint.clone()))
+            sel.checked_sub(1).and_then(|i| c.fingerprints.get(i).cloned())
         }),
         in_unified: widgets.in_unified_row.is_active(),
         // Row 0 follows Settings; the rest follow FolderSort::ALL.
@@ -4161,35 +4166,89 @@ fn read_account(
     }
 }
 
+/// The editor's OpenPGP combo (#133): the fingerprints behind its rows, and
+/// the account's key while gpg is still listing.
+struct PgpKeyChoices {
+    /// Row `i + 1` holds `fingerprints[i]`; row 0 is Automatic.
+    fingerprints: Vec<String>,
+    chosen: Option<String>,
+    /// The list for the editor now open has arrived.
+    loaded: bool,
+    /// Bumped per fill, so an answer for an editor since left is dropped.
+    generation: u64,
+}
+
 thread_local! {
-    /// The user's own keys as the editor's OpenPGP combo lists them (#133),
-    /// filled when the editor opens and read when it saves. The combo shows
-    /// labels; this keeps the fingerprints behind them.
-    static PGP_KEY_CHOICES: std::cell::RefCell<Vec<crate::pgp::KeyInfo>> = const { std::cell::RefCell::new(Vec::new()) };
+    static PGP_KEY_CHOICES: std::cell::RefCell<PgpKeyChoices> = const {
+        std::cell::RefCell::new(PgpKeyChoices { fingerprints: Vec::new(), chosen: None, loaded: true, generation: 0 })
+    };
 }
 
 /// Fill the OpenPGP key combo with the user's own keys and select the
 /// account's, or Automatic.
+///
+/// gpg is asked on a worker thread: a keyring lock left by a stale gpg
+/// makes every call wait about ten seconds, which froze the window each
+/// time an editor opened (#316).
 fn fill_pgp_key_row(widgets: &AccountsWindowWidgets, chosen: Option<&str>) {
-    let keys: Vec<crate::pgp::KeyInfo> = if crate::pgp::available() {
-        crate::pgp::list_keys(&crate::pgp::Gpg::system(), true)
-            .into_iter()
-            .filter(|k| k.usable() && k.can_sign)
-            .collect()
-    } else {
-        Vec::new()
-    };
-    let mut labels = vec![i18n("Automatic")];
-    labels.extend(keys.iter().map(|k| format!("{} ({})", k.primary_uid(), crate::pgp::key_display(&k.key_id))));
-    let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
-    widgets.pgp_key_row.set_model(Some(&gtk::StringList::new(&refs)));
-    widgets.pgp_key_row.set_list_factory(Some(&non_ellipsizing_factory()));
-    let selected = chosen
-        .and_then(|f| keys.iter().position(|k| k.fingerprint.eq_ignore_ascii_case(f)))
-        .map(|i| i as u32 + 1)
-        .unwrap_or(0);
-    widgets.pgp_key_row.set_selected(selected);
-    PGP_KEY_CHOICES.with(|c| *c.borrow_mut() = keys);
+    let row = widgets.pgp_key_row.clone();
+    row.set_model(Some(&gtk::StringList::new(&[&i18n("Automatic")])));
+    row.set_list_factory(Some(&non_ellipsizing_factory()));
+    row.set_selected(0);
+    row.set_sensitive(false);
+    let chosen = chosen.map(str::to_string);
+    let generation = PGP_KEY_CHOICES.with(|c| {
+        let mut c = c.borrow_mut();
+        c.fingerprints.clear();
+        c.chosen = chosen.clone();
+        c.loaded = false;
+        c.generation += 1;
+        c.generation
+    });
+    gtk::glib::spawn_future_local(async move {
+        let keys = gtk::gio::spawn_blocking(|| {
+            if !crate::pgp::available() {
+                return Vec::new();
+            }
+            crate::pgp::list_keys(&crate::pgp::Gpg::system(), true)
+                .into_iter()
+                .filter(|k| k.usable() && k.can_sign)
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
+        if PGP_KEY_CHOICES.with(|c| c.borrow().generation) != generation {
+            return;
+        }
+        let mut labels = vec![i18n("Automatic")];
+        let mut fingerprints: Vec<String> = Vec::new();
+        for k in &keys {
+            labels.push(format!("{} ({})", k.primary_uid(), crate::pgp::key_display(&k.key_id)));
+            fingerprints.push(k.fingerprint.clone());
+        }
+        // A chosen key gpg did not list (it failed, or the key went) stays
+        // a row of its own, so saving the editor does not drop it.
+        if let Some(f) = chosen.as_deref() {
+            if !fingerprints.iter().any(|k| k.eq_ignore_ascii_case(f)) {
+                labels.push(crate::pgp::key_display(f));
+                fingerprints.push(f.to_string());
+            }
+        }
+        let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+        row.set_model(Some(&gtk::StringList::new(&refs)));
+        let selected = chosen
+            .as_deref()
+            .and_then(|f| fingerprints.iter().position(|k| k.eq_ignore_ascii_case(f)))
+            .map(|i| i as u32 + 1)
+            .unwrap_or(0);
+        row.set_selected(selected);
+        row.set_sensitive(true);
+        PGP_KEY_CHOICES.with(|c| {
+            let mut c = c.borrow_mut();
+            c.fingerprints = fingerprints;
+            c.loaded = true;
+        });
+    });
 }
 
 /// Auto-empty choices (#140), in combo order: never, then the ages.
