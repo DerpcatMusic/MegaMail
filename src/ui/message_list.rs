@@ -271,7 +271,60 @@ fn unasked_threads(
 /// window, so covering the whole mailbox costs no more than covering a day of
 /// it; what a conversation costs to *open* is bounded separately, by
 /// `THREAD_MEMBER_LIMIT`.
-fn compute_thread_keys<M: std::borrow::Borrow<Message>>(
+/// How many rows a large list puts on screen at once, and adds each time it
+/// is scrolled near the end of them.
+const LIST_WINDOW: usize = 1200;
+
+/// What working out conversations reads of a message: from the message
+/// itself, or from the copy of just these fields that a large list hands to
+/// a background thread.
+trait ThreadFields {
+    fn account_id(&self) -> u32;
+    fn folder_id(&self) -> u32;
+    fn id(&self) -> u32;
+    fn uid(&self) -> u32;
+    fn message_id(&self) -> &str;
+    fn references(&self) -> &str;
+}
+
+impl ThreadFields for Message {
+    fn account_id(&self) -> u32 { self.account_id }
+    fn folder_id(&self) -> u32 { self.folder_id }
+    fn id(&self) -> u32 { self.id }
+    fn uid(&self) -> u32 { self.uid }
+    fn message_id(&self) -> &str { &self.message_id }
+    fn references(&self) -> &str { &self.references }
+}
+
+impl ThreadFields for Rc<Message> {
+    fn account_id(&self) -> u32 { self.as_ref().account_id }
+    fn folder_id(&self) -> u32 { self.as_ref().folder_id }
+    fn id(&self) -> u32 { self.as_ref().id }
+    fn uid(&self) -> u32 { self.as_ref().uid }
+    fn message_id(&self) -> &str { &self.as_ref().message_id }
+    fn references(&self) -> &str { &self.as_ref().references }
+}
+
+/// A message's threading fields, owned, to be worked on off the main loop.
+struct ThreadInput {
+    account_id: u32,
+    folder_id: u32,
+    id: u32,
+    uid: u32,
+    message_id: String,
+    references: String,
+}
+
+impl ThreadFields for ThreadInput {
+    fn account_id(&self) -> u32 { self.account_id }
+    fn folder_id(&self) -> u32 { self.folder_id }
+    fn id(&self) -> u32 { self.id }
+    fn uid(&self) -> u32 { self.uid }
+    fn message_id(&self) -> &str { &self.message_id }
+    fn references(&self) -> &str { &self.references }
+}
+
+fn compute_thread_keys<M: ThreadFields>(
     msgs: &[M],
     links: &[(u32, String, String)],
 ) -> std::collections::HashMap<(u32, u32, u32), (u32, String)> {
@@ -319,22 +372,21 @@ fn compute_thread_keys<M: std::borrow::Borrow<Message>>(
     // A message with its own Message-ID is a real node; one without gets a unique
     // node keyed by folder and uid so it only links through its references (if
     // any). A UID names a message in one folder only (#317).
-    fn self_node(m: &Message) -> Node<'_> {
-        if m.message_id.is_empty() {
-            Node::Uid(m.account_id, m.folder_id, m.uid)
+    fn self_node<M: ThreadFields>(m: &M) -> Node<'_> {
+        if m.message_id().is_empty() {
+            Node::Uid(m.account_id(), m.folder_id(), m.uid())
         } else {
-            Node::Id(m.account_id, &m.message_id)
+            Node::Id(m.account_id(), m.message_id())
         }
     }
 
     let mut forest = Forest::default();
     let mut own = Vec::with_capacity(msgs.len());
     for m in msgs {
-        let m = m.borrow();
         let sn = forest.node(self_node(m));
         own.push(sn);
-        for r in m.references.split_whitespace() {
-            let rn = forest.node(Node::Id(m.account_id, r));
+        for r in m.references().split_whitespace() {
+            let rn = forest.node(Node::Id(m.account_id(), r));
             forest.union(sn, rn);
         }
     }
@@ -353,20 +405,47 @@ fn compute_thread_keys<M: std::borrow::Borrow<Message>>(
     let mut names: HashMap<usize, String> = HashMap::new();
     let mut out = HashMap::with_capacity(msgs.len());
     for (m, sn) in msgs.iter().zip(own) {
-        let m = m.borrow();
         let root = forest.find(sn);
         let name = names.entry(root).or_insert_with(|| match forest.nodes[root] {
             Node::Id(aid, id) => format!("{aid}\u{0}{id}"),
             Node::Uid(aid, folder, uid) => format!("{aid}\u{0}uid{folder}/{uid}"),
         });
-        out.insert(thread_slot(m), (m.account_id, name.clone()));
+        out.insert((m.account_id(), m.folder_id(), m.id()), (m.account_id(), name.clone()));
     }
     out
 }
 
+/// [`SourceThreads`] worked out from `msgs` (in the list's order).
+fn source_threads_of<M: ThreadFields>(msgs: &[M], links: &[(u32, String, String)], pool: bool) -> SourceThreads {
+    let keys = compute_thread_keys(msgs, links);
+    let mut members: std::collections::HashMap<(u32, String), Vec<usize>> = std::collections::HashMap::new();
+    for (i, m) in msgs.iter().enumerate() {
+        if let Some(key) = keys.get(&(m.account_id(), m.folder_id(), m.id())) {
+            members.entry(key.clone()).or_default().push(i);
+        }
+    }
+    SourceThreads { pool, keys, members }
+}
+
+// Short: the map runs to the size of the folder.
+impl std::fmt::Debug for SourceThreads {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SourceThreads({} messages)", self.keys.len())
+    }
+}
+
+/// How many of a large list's newest messages go on screen while its
+/// conversations are worked out (see `MessageList::threads_pending`).
+const PREVIEW_ROWS: usize = 2000;
+
+/// A list at least this long works out its conversations on a background
+/// thread, and keeps its rows until the answer is in; below it, the work is
+/// quick enough to do in place.
+const THREADS_OFF_MAIN: usize = 4000;
+
 /// [`compute_thread_keys`] over everything a list holds, with each
 /// conversation's members as positions in that same slice.
-struct SourceThreads {
+pub struct SourceThreads {
     /// Worked out from the search pool rather than the folder.
     pool: bool,
     keys: std::collections::HashMap<(u32, u32, u32), (u32, String)>,
@@ -544,6 +623,18 @@ pub struct MessageList {
     /// The list is scrolled to its bottom: with the index still streaming
     /// in, the spinner there says more is on its way.
     at_bottom: bool,
+    /// How many rows the view holds: a large list is put on screen a window
+    /// at a time, the rest added as it is scrolled toward its end, so
+    /// tens of thousands of messages (All Archive) never stall the window
+    /// filling a view nobody is looking at. `shown` and the view stay row
+    /// for row the same; `tail` is what follows them.
+    window: usize,
+    tail: Vec<Rc<RowData>>,
+    /// Bumped whenever the source changes, so a background answer about
+    /// conversations (`threads_pending`) is used only for the source it was
+    /// worked out from; and the generation a job is running for.
+    threads_gen: std::cell::Cell<u64>,
+    threads_job: std::cell::Cell<Option<u64>>,
     /// Threads whose replies are sliding shut. The rows stay in the list until
     /// the paired timer fires and drops them — otherwise they'd simply vanish
     /// rather than animate away. (PR #79)
@@ -902,6 +993,10 @@ pub enum MessageListInput {
     RunQueuedRebuild,
     /// The list was scrolled to (or away from) its bottom.
     AtBottom(bool),
+    /// Scrolled near the end of the rows on screen: add the next window.
+    NearEnd,
+    /// A large list's conversations, worked out off the main loop.
+    ThreadsReady { gen: u64, threads: Box<SourceThreads> },
     /// Mark which message is being viewed so it stays highlighted across
     /// rebuilds; `None` clears the selection (e.g. on folder switch).
     SetSelected(Option<u32>),
@@ -1278,6 +1373,10 @@ impl SimpleComponent for MessageList {
             index_complete: true,
             loaded: false,
             at_bottom: false,
+            window: LIST_WINDOW,
+            tail: Vec::new(),
+            threads_gen: std::cell::Cell::new(0),
+            threads_job: std::cell::Cell::new(None),
             collapsing_threads: std::collections::HashMap::new(),
             query: String::new(),
             gravatar: false,
@@ -1353,10 +1452,18 @@ impl SimpleComponent for MessageList {
             let adj = widgets.scroller.vadjustment();
             let input = sender.input_sender().clone();
             let at_bottom = std::rc::Rc::new(std::cell::Cell::new(false));
+            let near = std::rc::Rc::new(std::cell::Cell::new(false));
             let check = move |adj: &gtk::Adjustment| {
                 let bottom = adj.upper() > adj.page_size() && adj.value() + adj.page_size() >= adj.upper() - 1.0;
                 if at_bottom.replace(bottom) != bottom {
                     let _ = input.send(MessageListInput::AtBottom(bottom));
+                }
+                // Two screens from the end, the next rows are added, so
+                // they are there before the scroll reaches them.
+                let close = adj.upper() > adj.page_size()
+                    && adj.value() + adj.page_size() >= adj.upper() - 2.0 * adj.page_size();
+                if near.replace(close) != close && close {
+                    let _ = input.send(MessageListInput::NearEnd);
                 }
             };
             let c = check.clone();
@@ -1405,7 +1512,7 @@ impl SimpleComponent for MessageList {
                 let t = std::time::Instant::now();
                 let n = messages.len();
                 self.all = messages.into_iter().map(Rc::new).collect();
-                self.source_threads.take();
+                self.drop_threads();
                 self.loaded = true;
                 // Keep any active search query: this also fires for a background
                 // re-sync of the folder you're viewing, which shouldn't drop your
@@ -1426,13 +1533,13 @@ impl SimpleComponent for MessageList {
                 }
                 // The list holds the whole folder, so what arrives joins it.
                 if self.all.len() != before {
-                    self.source_threads.take();
+                    self.drop_threads();
                     self.queue_rebuild(true);
                 }
             }
             MessageListInput::SetLoading => {
                 self.all.clear();
-                self.source_threads.take();
+                self.drop_threads();
                 self.loaded = false;
                 self.clear_search();
                 // Queued: when the folder's list follows in the same pass
@@ -1442,6 +1549,7 @@ impl SimpleComponent for MessageList {
             }
             MessageListInput::ResetPaging => {
                 // Folder switch: drop any active search, scrolled to the top.
+                self.window = LIST_WINDOW;
                 self.late_select = None;
                 self.clear_search();
                 self.emitted_thread.clear();
@@ -1451,6 +1559,16 @@ impl SimpleComponent for MessageList {
                 self.index_complete = complete;
             }
             MessageListInput::AtBottom(bottom) => self.at_bottom = bottom,
+            MessageListInput::NearEnd => self.grow_window(LIST_WINDOW),
+            MessageListInput::ThreadsReady { gen, threads } => {
+                if self.threads_job.get() == Some(gen) {
+                    self.threads_job.set(None);
+                }
+                if gen == self.threads_gen.get() && threads.pool == self.searching_pool() {
+                    *self.source_threads.borrow_mut() = Some(std::rc::Rc::new(*threads));
+                    self.queue_rebuild(true);
+                }
+            }
             MessageListInput::AskThreads => {
                 // Only the conversations rows have come to show, and only once
                 // each: the answer arrives as a refresh of those rows, so
@@ -1503,7 +1621,7 @@ impl SimpleComponent for MessageList {
             MessageListInput::SetThreadLinks(links) => {
                 if self.thread_links != links {
                     self.thread_links = links;
-                    self.source_threads.take();
+                    self.drop_threads();
                     if self.threading {
                         self.queue_rebuild(true);
                     }
@@ -1765,7 +1883,7 @@ impl SimpleComponent for MessageList {
             }
             MessageListInput::SetSearchPool(pool) => {
                 self.search_pool = pool.into_iter().map(Rc::new).collect();
-                self.source_threads.take();
+                self.drop_threads();
                 if self.searching() && self.scope == SearchScope::AllFolders {
                     self.rebuild();
                 }
@@ -2198,7 +2316,8 @@ impl SimpleComponent for MessageList {
                 }
                 self.selected_ids.retain(|(_, i)| *i != id);
                 self.all.retain(|m| m.id != id);
-                self.source_threads.take();
+                self.drop_threads();
+                self.tail.retain(|r| r.msg.id != id);
                 let removed_idx = self.shown.iter().position(|m| m.id == id);
                 // Was the row about to go the one holding keyboard focus? If
                 // so, and it isn't the viewed row handled below, focus is
@@ -2248,7 +2367,8 @@ impl SimpleComponent for MessageList {
                 }
                 self.selected_ids.retain(|(_, i)| !set.contains(i));
                 self.all.retain(|m| !set.contains(&m.id));
-                self.source_threads.take();
+                self.drop_threads();
+                self.tail.retain(|r| !set.contains(&r.msg.id));
                 // Where the first removed row sat, so we can re-select in its place.
                 let first_removed = self.shown.iter().position(|m| set.contains(&m.id));
                 let had_focus = self
@@ -2375,6 +2495,10 @@ impl SimpleComponent for MessageList {
                 }
                 self.late_select = None;
                 let asked = key;
+                // A row further down than the window reaches comes on screen.
+                if let Some(at) = self.tail.iter().position(|r| (r.msg.account_id, r.msg.id) == key) {
+                    self.grow_window(at + 1);
+                }
                 // A reply inside a conversation has no row of its own: its
                 // thread head does, and opening that shows the whole thread,
                 // the reply included.
@@ -3037,7 +3161,32 @@ impl MessageList {
             };
             self.shown[idx] = m.clone();
             self.shared.model.update_row(idx, |d| d.msg = m);
+        } else if let Some(row) = self.tail.iter_mut().find(|r| is(&r.msg)) {
+            // Not on screen yet: what it says when it gets there.
+            let mut data = RowData::clone(row);
+            data.msg = match &changed {
+                Some(m) => m.clone(),
+                None => {
+                    let mut m = Message::clone(&data.msg);
+                    change(&mut m);
+                    Rc::new(m)
+                }
+            };
+            *row = Rc::new(data);
         }
+    }
+
+    /// Put up to `n` more rows on screen from the tail.
+    fn grow_window(&mut self, n: usize) {
+        if self.tail.is_empty() {
+            return;
+        }
+        let n = n.min(self.tail.len());
+        let more: Vec<Rc<RowData>> = self.tail.drain(..n).collect();
+        self.shown.extend(more.iter().map(|r| r.msg.clone()));
+        let at = self.shared.model.len();
+        self.shared.model.splice(at, 0, more);
+        self.window = self.shown.len();
     }
 
     /// A message's read or starred state changed: recompute what its
@@ -3186,6 +3335,53 @@ impl MessageList {
         }
     }
 
+    /// The source changed: its conversations are to be worked out again,
+    /// and an answer still on its way from a background thread is stale.
+    fn drop_threads(&self) {
+        self.source_threads.take();
+        self.threads_gen.set(self.threads_gen.get() + 1);
+    }
+
+    /// For a large list whose conversations are not worked out yet: start
+    /// that on a background thread and answer `true`, the rebuild to wait
+    /// for [`MessageListInput::ThreadsReady`]. The rows on screen stay
+    /// meanwhile, and the main loop stays free.
+    fn threads_pending(&self) -> bool {
+        let pool = self.searching_pool();
+        if self.source_threads.borrow().as_ref().is_some_and(|t| t.pool == pool) {
+            return false;
+        }
+        let source = self.active_source();
+        if source.len() < THREADS_OFF_MAIN {
+            return false;
+        }
+        let gen = self.threads_gen.get();
+        if self.threads_job.get() == Some(gen) {
+            return true;
+        }
+        self.threads_job.set(Some(gen));
+        let input: Vec<ThreadInput> = source
+            .iter()
+            .map(|m| ThreadInput {
+                account_id: m.account_id,
+                folder_id: m.folder_id,
+                id: m.id,
+                uid: m.uid,
+                message_id: m.message_id.clone(),
+                references: m.references.clone(),
+            })
+            .collect();
+        let links = self.thread_links.clone();
+        let sender = self.input.clone();
+        std::thread::spawn(move || {
+            let t = std::time::Instant::now();
+            let threads = source_threads_of(&input, &links, pool);
+            tracing::debug!("list: {} messages threaded off the main loop in {:?}", input.len(), t.elapsed());
+            let _ = sender.send(MessageListInput::ThreadsReady { gen, threads: Box::new(threads) });
+        });
+        true
+    }
+
     fn searching_pool(&self) -> bool {
         self.searching() && self.scope == SearchScope::AllFolders && !self.search_pool.is_empty()
     }
@@ -3197,16 +3393,7 @@ impl MessageList {
         if let Some(t) = self.source_threads.borrow().as_ref().filter(|t| t.pool == pool) {
             return t.clone();
         }
-        let source = self.active_source();
-        let keys = compute_thread_keys(source, &self.thread_links);
-        let mut members: std::collections::HashMap<(u32, String), Vec<usize>> =
-            std::collections::HashMap::new();
-        for (i, m) in source.iter().enumerate() {
-            if let Some(key) = keys.get(&thread_slot(m)) {
-                members.entry(key.clone()).or_default().push(i);
-            }
-        }
-        let t = std::rc::Rc::new(SourceThreads { pool, keys, members });
+        let t = std::rc::Rc::new(source_threads_of(self.active_source(), &self.thread_links, pool));
         *self.source_threads.borrow_mut() = Some(t.clone());
         t
     }
@@ -3406,7 +3593,12 @@ impl MessageList {
         let passes = self.filter();
         let source_len = self.active_source().len();
         let mut matches: Vec<Rc<Message>> = self.active_source().iter().filter(|m| passes(m)).cloned().collect();
-        let filtered = matches.len() != source_len;
+        let mut filtered = matches.len() != source_len;
+        // A large list's conversations are worked out on a background
+        // thread (`threads_pending`). Until they are in, its newest messages
+        // go on screen at once, grouped among themselves; the whole list
+        // follows when the answer comes.
+        let preview = self.threading && !filtered && self.threads_pending();
         self.listed_folders = matches.iter().map(|m| (m.account_id, m.folder_id)).collect();
         let graph_in_view = self.listed_folders.iter().any(|(a, _)| self.graph_accounts.contains(a));
         if graph_in_view != self.graph_in_view {
@@ -3420,6 +3612,10 @@ impl MessageList {
             if reversed { order.reverse() } else { order }
         });
         self.total_matches = matches.len();
+        if preview {
+            matches.truncate(PREVIEW_ROWS);
+            filtered = true;
+        }
 
         // Group into conversations by reply headers (Message-ID / In-Reply-To /
         // References) across the whole list, preserving the sort's order of
@@ -3551,6 +3747,19 @@ impl MessageList {
                 }
             }
         }
+        // On screen, the window: as many rows as were before (so a rebuild
+        // does not pull the list back from where it was scrolled), at least
+        // the first window, and far enough to hold the selection.
+        let mut shown = shown;
+        let mut rows = rows;
+        let selected_at = shown
+            .iter()
+            .rposition(|m| self.selected_ids.contains(&(m.account_id, m.id)) || self.selected_id == Some((m.account_id, m.id)))
+            .map_or(0, |i| i + 1);
+        let limit = self.window.max(LIST_WINDOW).max(selected_at).min(rows.len());
+        self.tail = rows.split_off(limit);
+        shown.truncate(limit);
+        self.window = limit.max(LIST_WINDOW);
         self.shown = shown;
         // Only what changed reaches the view: rows that show the same message
         // stay where they are, with whatever they were doing (#323).
@@ -3566,8 +3775,9 @@ impl MessageList {
             s.set_size_request(floor, -1);
         }
         tracing::debug!(
-            "list: rebuild {} rows of {} — sort+group {:?}, model {:?}",
+            "list: rebuild {} rows (+{} to come) of {} — sort+group {:?}, model {:?}",
             self.shown.len(),
+            self.tail.len(),
             self.total_matches,
             t_rows.duration_since(t_rebuild),
             t_rows.elapsed()

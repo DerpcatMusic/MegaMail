@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Fixed: All Archive, and other combined views of very large folders,
+  froze the window** until the desktop offered to force quit. Every
+  account's answer, and every batch a slow one sent, regrouped the whole
+  view on the spot, tens of thousands of messages each time, one after
+  another. Now:
+  - The newest messages go on screen at once.
+  - Conversations are worked out on a background thread, and the whole
+    list follows.
+  - Answers that arrive close together are merged once, and an account still
+    catching up can trigger a merge only every few seconds.
+  - A long list puts its rows on screen a screenful at a time, adding more
+    as it is scrolled toward the end.
 - **Added: messages being written are saved to Drafts as you go** (#340,
   reported by 7system7). Every 30 seconds while it changes, a message is
   saved to the Drafts folder in place of its last copy, with the composer

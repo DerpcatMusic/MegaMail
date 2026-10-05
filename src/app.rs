@@ -1037,6 +1037,12 @@ pub struct AppModel {
     /// The sending identities a JMAP server keeps, per account (#346):
     /// offered as From addresses beside the account's own aliases.
     server_identities: HashMap<u32, Vec<(String, String)>>,
+    /// A merge of the unified view is on its way (`queue_unified_emit`),
+    /// with new slices to merge, and new thread links to hand the list.
+    unified_emit_queued: std::cell::Cell<bool>,
+    unified_dirty: std::cell::Cell<bool>,
+    thread_links_due: std::cell::Cell<bool>,
+    unified_emitted_at: std::cell::Cell<std::time::Instant>,
     /// Gallery items per account inbox, merged for display.
     /// How many attachments the gallery's current query matches, carried
     /// between pages so only the first one pays for the COUNT.
@@ -1610,6 +1616,8 @@ pub enum AppMsg {
     /// automatic save that did not go through). `autosave` is the composer
     /// that saved it on its own (#340).
     DraftSaved { account_id: u32, autosave: Option<u32>, message_id: Option<String> },
+    /// Merge the unified view's slices now (see `queue_unified_emit`).
+    EmitUnified,
     /// A composer saving its message on its own (#340).
     AutoSaveDraft { id: u32, message: Box<OutgoingMessage> },
     /// A new message saved only automatically was discarded: the saved copy
@@ -3404,6 +3412,10 @@ impl SimpleComponent for AppModel {
             showing_outbox: false,
             outbox_by_account: HashMap::new(),
             server_identities: HashMap::new(),
+            unified_emit_queued: std::cell::Cell::new(false),
+            unified_dirty: std::cell::Cell::new(false),
+            thread_links_due: std::cell::Cell::new(false),
+            unified_emitted_at: std::cell::Cell::new(std::time::Instant::now()),
             gallery_total: 0,
             gallery_scan_left: HashMap::new(),
         };
@@ -8662,6 +8674,16 @@ impl SimpleComponent for AppModel {
                 self.send_to(account_id, MailRequest::SaveDraft { message: out, folder_id, path, autosave: None });
             }
 
+            AppMsg::EmitUnified => {
+                self.unified_emit_queued.set(false);
+                if self.thread_links_due.replace(false) {
+                    self.push_thread_links();
+                }
+                if self.unified && self.unified_dirty.replace(false) {
+                    self.emit_unified();
+                }
+            }
+
             AppMsg::AutoSaveDraft { id, message } => {
                 let account_id = message.from_account_id;
                 match self.drafts_target(account_id) {
@@ -10096,7 +10118,15 @@ impl SimpleComponent for AppModel {
                     // assembled, so what was stored is no longer necessarily
                     // the conversation.
                     self.forget_threads(account_id);
-                    self.push_thread_links();
+                    // In a unified view, with the next merge, once for a run
+                    // of answers; a folder's own list takes them now, in the
+                    // same pass as its messages.
+                    if self.unified {
+                        self.thread_links_due.set(true);
+                        self.queue_unified_emit(&sender);
+                    } else {
+                        self.push_thread_links();
+                    }
                     // A sync that brought in a reply also changed how big the
                     // conversations are; the badges have to be counted again
                     // rather than kept from before it (#222).
@@ -10140,7 +10170,11 @@ impl SimpleComponent for AppModel {
                                 .is_some_and(|s| *s == messages);
                         if !same_slice {
                             self.unified_slices.insert((account_id, folder_id), messages);
-                            self.emit_unified();
+                            // Accounts answer one after another, a large or
+                            // slow one in several goes: one merge for the lot
+                            // that lands together, not one each.
+                            self.unified_dirty.set(true);
+                            self.queue_unified_emit(&sender);
                         }
                     }
                 } else if let Some(sel) = self.selected.as_ref() {
@@ -17664,8 +17698,12 @@ impl AppModel {
             .flatten()
             .filter(|m| !(m.message_id.is_empty() && m.references.is_empty()))
             .collect();
-        recent.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-        recent.truncate(THREAD_LINK_LIMIT);
+        // The newest few, picked without sorting the lot: across every
+        // folder held that is hundreds of thousands of messages.
+        if recent.len() > THREAD_LINK_LIMIT {
+            recent.select_nth_unstable_by(THREAD_LINK_LIMIT, |a, b| b.timestamp.cmp(&a.timestamp));
+            recent.truncate(THREAD_LINK_LIMIT);
+        }
         let mut links: Vec<(u32, String, String)> = recent
             .into_iter()
             .map(|m| (m.account_id, m.message_id.clone(), m.references.clone()))
@@ -17703,8 +17741,32 @@ impl AppModel {
     /// Push every account's inbox slice to the list as one date-sorted run. The
     /// slices arrive independently (cache seed, then each account's load), so the
     /// whole merged list is re-emitted each time one of them changes.
+    /// Merge the unified view's slices for the list shortly (and hand it the
+    /// new thread links), once for every answer that lands meanwhile. Each
+    /// merge regroups the whole view, which across accounts can be tens of
+    /// thousands of messages.
+    fn queue_unified_emit(&self, sender: &ComponentSender<Self>) {
+        if self.unified_emit_queued.replace(true) {
+            return;
+        }
+        // Shortly after the first answer, so the rest of a run joins it, and
+        // never sooner after the last merge than the view's size allows: an
+        // account that keeps sending batches (a large folder catching up)
+        // must not keep the window busy regrouping. A second for a small
+        // view, up to five for one of tens of thousands of messages.
+        let size: usize = self.unified_slices.values().map(Vec::len).sum();
+        let gap = std::time::Duration::from_millis((size as u64 / 16).clamp(1000, 5000));
+        let since = self.unified_emitted_at.get().elapsed();
+        let wait = std::time::Duration::from_millis(150).max(gap.saturating_sub(since));
+        let s = sender.input_sender().clone();
+        gtk::glib::timeout_add_local_once(wait, move || {
+            let _ = s.send(AppMsg::EmitUnified);
+        });
+    }
+
     fn emit_unified(&self) {
         let t = std::time::Instant::now();
+        self.unified_emitted_at.set(t);
         let mut merged: Vec<Message> =
             self.unified_slices.values().flatten().cloned().collect();
         merged.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
