@@ -536,6 +536,31 @@ still starts the next item, and pressed twice in a quote it still leaves the
 quote. The setting applies when a composer opens. Markdown, HTML and plain
 text are written as source, where <kbd>Return</kbd> is always a new line.
 
+### The formatting toolbar
+
+The rich text editor's toolbar has bold, italic, underline, strikethrough,
+bulleted and numbered lists, quote, link and Clear formatting, all of which
+survive a switch to Markdown. **Settings → Composing → Expanded formatting
+toolbar** (off by default) adds the rest of what a mail can carry:
+
+- **Paragraph style:** Normal, Heading 1 to 3 and Preformatted. The menu's
+  label names the style the cursor is in.
+- **Font:** Sans Serif, Serif or Monospace. These are generic families, so
+  the recipient's client picks its own font of each kind.
+- **Text color and Highlight:** a palette each, plus Automatic and No
+  highlight to take the color off again. Each button shows the color it last
+  applied.
+- **Decrease and Increase indent.** In a list, Increase indent nests the item
+  under the one above it.
+- **Insert emoji** (also <kbd>Ctrl+.</kbd>) and **Insert picture**, which puts
+  pictures in the message at the cursor, as dropping or pasting them does.
+
+Colors and fonts go out as inline styles, which every mail client keeps.
+Markdown has no words for them, so switching such a message to Markdown or
+plain text leaves them out. The setting applies to composers opened after
+it changes. When the composer is narrow, the toolbar wraps onto a second
+row.
+
 ### Writing in Markdown or HTML
 
 A message can be written in any of four formats, chosen in **Settings →

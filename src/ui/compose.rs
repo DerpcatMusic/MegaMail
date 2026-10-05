@@ -1408,6 +1408,24 @@ impl Component for Compose {
             });
         }
 
+        // HYLKI_SHOWCASE_EDITOR_JS=<file> runs that script in the body three
+        // seconds after the composer opens, and logs the body's HTML a
+        // second later (demo only), to drive the format bar's commands
+        // without a pointer (#358).
+        if let (Some(path), Some(_)) = (std::env::var_os("HYLKI_SHOWCASE_EDITOR_JS"), std::env::var_os("HYLKI_DEMO")) {
+            if let Ok(js) = std::fs::read_to_string(&path) {
+                let ed = model.editor.clone();
+                gtk::glib::timeout_add_seconds_local_once(3, move || {
+                    ed.run_js(&js);
+                    gtk::glib::timeout_add_seconds_local_once(1, move || {
+                        ed.eval("document.body.innerHTML", |html| {
+                            tracing::info!("showcase editor body: {html}");
+                        });
+                    });
+                });
+            }
+        }
+
         // HYLKI_SHOWCASE_ATTACH=<file>[:<file>…] attaches those files a
         // second after the composer opens (demo only), for a capture of the
         // chips (#299); HYLKI_SHOWCASE_ATTACH_SHOT=<png>[:<seconds>]

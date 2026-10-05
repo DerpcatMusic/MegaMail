@@ -6706,7 +6706,7 @@ var g=(e.view&&e.view.getSelection)?e.view.getSelection():null;if(g)g.removeAllR
 else{try{var t=(e.view&&e.view.getSelection)?e.view.getSelection():null;\
 if(t&&String(t).length)return;}catch(_){}}\
 try{window.webkit.messageHandlers.hylki.postMessage('sel:'+k+':'+mo);}catch(_){}}\
-var QS='.vireo-quote-attr,.gmail_quote,blockquote,#divRplyFwdMsg,.yahoo_quoted';\
+var QS='.vireo-quote-attr,.gmail_quote,blockquote:not([style*=\"border: none\"]),#divRplyFwdMsg,.yahoo_quoted';\
 var SIG='.moz-signature,#Signature,.gmail_signature,[class*=\"signature\"]';\
 var QT=window.vireoQT||['Show quoted text','Hide quoted text'];\
 var WROTE=/(wrote|writes|schrieb|a écrit|escribió|escreveu|scrisse|schreef|skrev|kirjoitti|napisał|napsal|írta|написал|написала|έγραψε)\\s*:?$/i;\
@@ -6740,7 +6740,7 @@ if(c>=3)return [bs[j],true];}\
 var w=d.createTreeWalker(d.body,4),n;\
 while((n=w.nextNode())){if(DIV.test(n.textContent)){var pe=n.parentNode;\
 return [pe!==d.body&&pe.textContent.trim()===n.textContent.trim()?pe:n,true];}}\
-q=d.querySelector('blockquote');return q?[q,false]:null;}\
+q=d.querySelector('blockquote:not([style*=\"border: none\"])');return q?[q,false]:null;}\
 function plain(d){var ps=d.querySelectorAll('.vireo-plain');if(!ps.length)return null;\
 var p=ps[ps.length-1],L=p.textContent.split('\\n'),i=L.length-1,qs=0,st=-1;\
 for(var j=0;j<L.length;j++)if(DIV.test(L[j])){st=j;break;}\

@@ -2107,3 +2107,9 @@ textview.console-view text selection {
 .vireo-zoom-chip:active {
   background: alpha(@accent_bg_color, 0.35);
 }
+
+/* The highlight button's "A" on the color last chosen (#358): dark,
+   whatever the theme, since the highlight colors are all light. */
+.format-bar .on-highlight {
+  color: rgba(0, 0, 0, 0.85);
+}

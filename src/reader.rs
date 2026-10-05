@@ -311,6 +311,16 @@ fn walk(node: &Handle, out: &mut Vec<Out>, pre: bool, in_link: bool) {
                 "dl" => push_elem(out, Elem::new("dl"), pre, in_link),
                 "dt" => push_elem(out, Elem::new("dt"), pre, in_link),
                 "dd" => push_elem(out, Elem::new("dd"), pre, in_link),
+                // The Indent of Hylki's composer (and of other WebKit and
+                // Blink editors) is a borderless blockquote, not a quote
+                // (#358).
+                "blockquote"
+                    if attr(&attrs, "style").is_some_and(|s| {
+                        s.replace(' ', "").to_ascii_lowercase().contains("border:none")
+                    }) =>
+                {
+                    push_elem(out, Elem::new("div"), pre, in_link)
+                }
                 "blockquote" => {
                     let mut e = Elem::new("blockquote");
                     if attr(&attrs, "type").is_some_and(|t| t.eq_ignore_ascii_case("cite")) {
