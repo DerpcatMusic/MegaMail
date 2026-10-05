@@ -341,6 +341,11 @@ pub struct AccountConfig {
     /// Use distinct SMTP credentials instead of the IMAP ones.
     #[serde(default)]
     pub smtp_separate: bool,
+    /// A JMAP account that signs in with an API token, sent as a bearer
+    /// token, rather than a username and password: Fastmail's way (#356).
+    /// The token is kept where the password would be.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub jmap_token: bool,
     /// Accept a TLS certificate issued for a different host name than the
     /// one connected to (#246): shared hosting serves mail for many domains
     /// under one certificate in the host's own name. The chain is still
@@ -4177,6 +4182,7 @@ dest_path = "Lists"
             username: "a@b.c".into(),
             password: "SECRET".into(),
             smtp_separate: false,
+            jmap_token: false,
             tls_accept_hostname_mismatch: false,
             security: None,
             smtp_username: String::new(),

@@ -147,6 +147,10 @@ fn origin_of(url: &str) -> &str {
 
 fn jmap_auth(account: &AccountConfig) -> String {
     use base64::Engine;
+    // Fastmail takes an API token, never the account password (#356).
+    if account.jmap_token {
+        return format!("Bearer {}", account.password.trim());
+    }
     let user = if account.username.is_empty() { &account.email } else { &account.username };
     let b64 = base64::engine::general_purpose::STANDARD.encode(format!("{user}:{}", account.password));
     format!("Basic {b64}")
@@ -156,7 +160,7 @@ fn jmap_auth(account: &AccountConfig) -> String {
 fn jmap_err(e: ureq::Error) -> String {
     match e {
         ureq::Error::Status(401, _) => {
-            "the server refused the sign-in (401): check the username and password".to_string()
+            "the server refused the sign-in (401): check the username and password, or the API token".to_string()
         }
         ureq::Error::Status(code, resp) => {
             let body = resp.into_string().unwrap_or_default();
@@ -197,44 +201,20 @@ fn agent() -> ureq::Agent {
 /// the mailbox.
 pub(super) fn jmap_connect(account: &AccountConfig) -> Result<JmapSession, String> {
     let base = jmap_base_url(account);
+    let origin = origin_of(&base).to_string();
     let auth = jmap_auth(account);
-    // The well-known path answers with a redirect to the session resource
-    // (a 307 on Stalwart). Followed by hand, credentials included: ureq
-    // drops the Authorization header when it follows one itself, and the
-    // session then comes back for nobody.
-    let no_follow = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(20))
-        .timeout_read(Duration::from_secs(60))
-        .redirects(0)
-        .build();
-    let mut url = format!("{base}/.well-known/jmap");
-    let mut hops = 0;
-    let v: serde_json::Value = loop {
-        jmap_wire("GET session");
-        let resp = no_follow
-            .get(&url)
-            .set("Authorization", &auth)
-            .set("Accept", "application/json")
-            .call()
-            .map_err(jmap_err);
-        jmap_wired("GET session", &resp);
-        let resp = resp?;
-        if (300..400).contains(&resp.status()) {
-            let Some(next) = resp.header("Location").map(str::to_string) else {
-                return Err(format!("the server redirected ({}) without saying where", resp.status()));
-            };
-            hops += 1;
-            if hops > 5 {
-                return Err("the server keeps redirecting the session request".into());
-            }
-            url = if next.starts_with("http://") || next.starts_with("https://") {
-                next
-            } else {
-                format!("{base}/{}", next.trim_start_matches('/'))
-            };
-            continue;
+    // A server given with a path may be the session resource itself
+    // (Fastmail's is https://api.fastmail.com/jmap/session, #356); when it
+    // is not, the well-known path under it is tried, as for a bare host.
+    let well_known = format!("{base}/.well-known/jmap");
+    let v = if base.len() > origin.len() {
+        match fetch_session(&base, &origin, &auth) {
+            Ok(v) if v["apiUrl"].is_string() => v,
+            Err(e) if e.contains("(401)") => return Err(e),
+            _ => fetch_session(&well_known, &origin, &auth)?,
         }
-        break resp.into_json().map_err(|e| e.to_string())?;
+    } else {
+        fetch_session(&well_known, &origin, &auth)?
     };
     // A server names itself in the session: absolute URLs on the host it
     // was set up with. An account whose server is given as a URL, scheme
@@ -243,11 +223,11 @@ pub(super) fn jmap_connect(account: &AccountConfig) -> Result<JmapSession, Strin
     // so the typed origin stands in for the one the server advertises for
     // itself. Only that one: a URL on another host (Fastmail serves blobs
     // from a separate one) is left alone.
-    let typed_origin = account.imap_host.trim().starts_with("http").then(|| origin_of(&base).to_string());
+    let typed_origin = account.imap_host.trim().starts_with("http").then(|| origin.clone());
     let advertised = v["apiUrl"].as_str().map(|u| origin_of(u).to_string()).unwrap_or_default();
     let absolute = |u: &str| -> String {
         if !(u.starts_with("http://") || u.starts_with("https://")) {
-            return format!("{base}/{}", u.trim_start_matches('/'));
+            return format!("{origin}/{}", u.trim_start_matches('/'));
         }
         match &typed_origin {
             Some(mine) if !advertised.is_empty() && origin_of(u) == advertised => {
@@ -281,6 +261,47 @@ pub(super) fn jmap_connect(account: &AccountConfig) -> Result<JmapSession, Strin
     }
     let quota = v["capabilities"][CAP_QUOTA].is_object();
     Ok(JmapSession { api_url, download_url, upload_url, event_source_url, account: account_id, auth, quota })
+}
+
+/// GET the session resource at `url`. A well-known path answers with a
+/// redirect to it (a 307 on Stalwart), followed here by hand, credentials
+/// included: ureq drops the Authorization header when it follows one
+/// itself, and the session then comes back for nobody.
+fn fetch_session(url: &str, origin: &str, auth: &str) -> Result<serde_json::Value, String> {
+    let no_follow = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(20))
+        .timeout_read(Duration::from_secs(60))
+        .redirects(0)
+        .build();
+    let mut url = url.to_string();
+    let mut hops = 0;
+    loop {
+        jmap_wire("GET session");
+        let resp = no_follow
+            .get(&url)
+            .set("Authorization", auth)
+            .set("Accept", "application/json")
+            .call()
+            .map_err(jmap_err);
+        jmap_wired("GET session", &resp);
+        let resp = resp?;
+        if (300..400).contains(&resp.status()) {
+            let Some(next) = resp.header("Location").map(str::to_string) else {
+                return Err(format!("the server redirected ({}) without saying where", resp.status()));
+            };
+            hops += 1;
+            if hops > 5 {
+                return Err("the server keeps redirecting the session request".into());
+            }
+            url = if next.starts_with("http://") || next.starts_with("https://") {
+                next
+            } else {
+                format!("{origin}/{}", next.trim_start_matches('/'))
+            };
+            continue;
+        }
+        return resp.into_json().map_err(|e| e.to_string());
+    }
 }
 
 /// One API request: the method calls, in order, with their responses back
@@ -2402,6 +2423,102 @@ mod tests {
     }
 
     #[test]
+    fn token_accounts_send_a_bearer_token() {
+        let basic = AccountConfig { username: "me@example.org".into(), password: "pw".into(), ..account("mail.example.org", 443) };
+        assert_eq!(jmap_auth(&basic), "Basic bWVAZXhhbXBsZS5vcmc6cHc=");
+        // Fastmail's API token (#356): no username, and the token as typed,
+        // minus stray whitespace from a paste.
+        let token = AccountConfig { jmap_token: true, password: " fmu1-abc \n".into(), ..basic };
+        assert_eq!(jmap_auth(&token), "Bearer fmu1-abc");
+        let url = account("https://api.fastmail.com/jmap/session", 443);
+        assert_eq!(jmap_base_url(&url), "https://api.fastmail.com/jmap/session");
+        assert_eq!(origin_of(&jmap_base_url(&url)), "https://api.fastmail.com");
+    }
+
+    /// An HTTP server on loopback for `requests` requests: answers each by its path
+    /// and hands back what was asked for, with the Authorization header.
+    fn serve(requests: usize, answers: Vec<(&'static str, u16, String)>) -> (String, std::thread::JoinHandle<Vec<(String, String)>>) {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let origin = format!("http://{}", listener.local_addr().expect("addr"));
+        let handle = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            for _ in 0..requests {
+                let Ok((stream, _)) = listener.accept() else { break };
+                let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+                let mut line = String::new();
+                reader.read_line(&mut line).expect("request line");
+                let path = line.split_whitespace().nth(1).unwrap_or("").to_string();
+                let mut auth = String::new();
+                loop {
+                    let mut h = String::new();
+                    if reader.read_line(&mut h).unwrap_or(0) == 0 || h.trim().is_empty() {
+                        break;
+                    }
+                    if let Some(v) = h.strip_prefix("Authorization: ").or_else(|| h.strip_prefix("authorization: ")) {
+                        auth = v.trim().to_string();
+                    }
+                }
+                let (status, body) = answers
+                    .iter()
+                    .find(|(p, _, _)| *p == path)
+                    .map(|(_, s, b)| (*s, b.clone()))
+                    .unwrap_or((404, String::new()));
+                let mut out = stream;
+                let _ = write!(
+                    out,
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                seen.push((path, auth));
+            }
+            seen
+        });
+        (origin, handle)
+    }
+
+    fn session_json() -> String {
+        serde_json::json!({
+            "apiUrl": "/jmap/api/",
+            "downloadUrl": "/jmap/download/{accountId}/{blobId}/{name}?accept={type}",
+            "uploadUrl": "/jmap/upload/{accountId}/",
+            "primaryAccounts": { "urn:ietf:params:jmap:mail": "a1" },
+            "capabilities": { "urn:ietf:params:jmap:mail": {} },
+            "accounts": {},
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn a_session_url_is_used_as_given() {
+        // Fastmail's shape (#356): the session resource named outright, and
+        // signed in to with a bearer token.
+        let (origin, server) = serve(1, vec![("/jmap/session", 200, session_json())]);
+        let acc = AccountConfig {
+            jmap_token: true,
+            password: "fmu1-token".into(),
+            ..account(&format!("{origin}/jmap/session"), 443)
+        };
+        let s = jmap_connect(&acc).expect("session");
+        assert_eq!(s.api_url, format!("{origin}/jmap/api/"));
+        assert_eq!(s.account, "a1");
+        let seen = server.join().expect("server");
+        assert_eq!(seen, vec![("/jmap/session".to_string(), "Bearer fmu1-token".to_string())]);
+    }
+
+    #[test]
+    fn a_path_that_is_no_session_falls_back_to_well_known() {
+        // A server behind a path prefix: the prefix itself is no session, so
+        // the well-known path under it is asked, as before.
+        let (origin, server) = serve(2, vec![("/mail/.well-known/jmap", 200, session_json())]);
+        let acc = AccountConfig { username: "me".into(), password: "pw".into(), ..account(&format!("{origin}/mail"), 443) };
+        let s = jmap_connect(&acc).expect("session");
+        assert_eq!(s.api_url, format!("{origin}/jmap/api/"));
+        let paths: Vec<String> = server.join().expect("server").into_iter().map(|(p, _)| p).collect();
+        assert_eq!(paths, vec!["/mail".to_string(), "/mail/.well-known/jmap".to_string()]);
+    }
+
+    #[test]
     fn origin_is_scheme_host_port() {
         assert_eq!(origin_of("https://mail.example.test/jmap/"), "https://mail.example.test");
         assert_eq!(origin_of("http://127.0.0.1:8080"), "http://127.0.0.1:8080");
@@ -2457,6 +2574,8 @@ mod tests {
             imap_port: 443,
             username: parts.next().unwrap_or_default().into(),
             password: parts.next().unwrap_or_default().into(),
+            // JMAP_LIVE_TOKEN=1: the third field is a bearer token (#356).
+            jmap_token: std::env::var_os("JMAP_LIVE_TOKEN").is_some(),
             ..sample_account()
         };
         let s = jmap_connect(&acc).expect("session");
@@ -2514,6 +2633,8 @@ mod tests {
             imap_port: 443,
             username: parts.next().unwrap_or_default().into(),
             password: parts.next().unwrap_or_default().into(),
+            // JMAP_LIVE_TOKEN=1: the third field is a bearer token (#356).
+            jmap_token: std::env::var_os("JMAP_LIVE_TOKEN").is_some(),
             ..sample_account()
         };
         let s = jmap_connect(&acc).expect("session");
@@ -2540,6 +2661,8 @@ mod tests {
             imap_port: 443,
             username: parts.next().unwrap_or_default().into(),
             password: parts.next().unwrap_or_default().into(),
+            // JMAP_LIVE_TOKEN=1: the third field is a bearer token (#356).
+            jmap_token: std::env::var_os("JMAP_LIVE_TOKEN").is_some(),
             ..sample_account()
         };
         let s = jmap_connect(&acc).expect("session");

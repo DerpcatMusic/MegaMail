@@ -100,6 +100,12 @@ impl Provider {
         self.hint
     }
 
+    /// A JMAP entry whose server takes an API token rather than the
+    /// password (#356).
+    pub(crate) fn wizard_token(&self) -> bool {
+        self.kind == ProviderKind::Jmap && self.brand == "fastmail"
+    }
+
     fn is_password(&self) -> bool {
         matches!(self.kind, ProviderKind::Manual | ProviderKind::Preset | ProviderKind::Jmap)
     }
@@ -141,7 +147,8 @@ pub(crate) const PROVIDERS: &[Provider] = &[
     Provider { label: "Yahoo Mail", brand: "yahoo", kind: ProviderKind::Preset, imap_host: "imap.mail.yahoo.com", imap_port: 993, smtp_host: "smtp.mail.yahoo.com", smtp_port: 465, hint: APP_PW },
     Provider { label: "Proton Mail (Bridge)", brand: "proton", kind: ProviderKind::Preset, imap_host: "127.0.0.1", imap_port: 1143, smtp_host: "127.0.0.1", smtp_port: 1025, hint: i18n_noop("Requires Proton Mail Bridge running locally.") },
     Provider { label: "Fastmail", brand: "fastmail", kind: ProviderKind::Preset, imap_host: "imap.fastmail.com", imap_port: 993, smtp_host: "smtp.fastmail.com", smtp_port: 465, hint: APP_PW },
-    Provider { label: "Stalwart (JMAP)", brand: "stalwart", kind: ProviderKind::Jmap, imap_host: "", imap_port: 443, smtp_host: "", smtp_port: 0, hint: i18n_noop("Enter your Stalwart server's address. Mail is read and sent over JMAP; no SMTP settings are needed.") },
+    Provider { label: "Fastmail (JMAP)", brand: "fastmail", kind: ProviderKind::Jmap, imap_host: "https://api.fastmail.com/jmap/session", imap_port: 443, smtp_host: "", smtp_port: 0, hint: i18n_noop("Signs in with an API token, not your password. Make one in Fastmail's settings, under Privacy & Security, with access to mail and to sending it. Mail is read and sent over JMAP.") },
+    Provider { label: "JMAP Server (Stalwart and others)", brand: "stalwart", kind: ProviderKind::Jmap, imap_host: "", imap_port: 443, smtp_host: "", smtp_port: 0, hint: i18n_noop("Enter your JMAP server's address, or the URL of its session resource. Mail is read and sent over JMAP; no SMTP settings are needed.") },
     Provider { label: "AOL Mail", brand: "aol", kind: ProviderKind::Preset, imap_host: "imap.aol.com", imap_port: 993, smtp_host: "smtp.aol.com", smtp_port: 465, hint: APP_PW },
     Provider { label: "Zoho Mail", brand: "zoho", kind: ProviderKind::Preset, imap_host: "imap.zoho.com", imap_port: 993, smtp_host: "smtp.zoho.com", smtp_port: 465, hint: "" },
     Provider { label: "GMX", brand: "gmx", kind: ProviderKind::Preset, imap_host: "imap.gmx.com", imap_port: 993, smtp_host: "mail.gmx.com", smtp_port: 587, hint: i18n_noop("Enable POP/IMAP access in GMX settings first.") },
@@ -281,6 +288,9 @@ pub enum AccountsInput {
     /// Showcase only (HYLKI_SHOWCASE_EDITOR_DIRTY): type into the open
     /// editor's Label field, the way a capture cannot.
     DebugEditLabel(String),
+    /// Showcase only (HYLKI_SHOWCASE_ACCOUNT=new:<label>): pick the provider
+    /// with that label in the open editor.
+    DebugProvider(String),
     /// The settings sidebar wants to show another category while an editor
     /// is open. The answer (below) says whether anything would be lost.
     LeaveRequest(String),
@@ -1115,6 +1125,15 @@ impl Component for AccountsWindow {
                                 adw::EntryRow { set_title: &i18n("Username") },
                                 #[name = "pass_row"]
                                 adw::PasswordEntryRow { set_title: &i18n("Password") },
+                                // JMAP with a bearer token in place of the
+                                // username and password (#356).
+                                #[name = "jmap_token_row"]
+                                adw::SwitchRow {
+                                    set_title: &i18n("Sign in with an API token"),
+                                    set_subtitle: &i18n("For servers that take a token in place of the password, as Fastmail does."),
+                                    set_visible: false,
+                                    connect_active_notify => AccountsInput::ProtocolChanged,
+                                },
 
                                 // ---- OAuth fields (shown when Authentication is an OAuth option) ----
                                 #[name = "oauth_client_id_row"]
@@ -1890,6 +1909,11 @@ impl Component for AccountsWindow {
                 }
             }
             AccountsInput::DebugEditLabel(text) => widgets.label_row.set_text(&text),
+            AccountsInput::DebugProvider(label) => {
+                if let Some(i) = PROVIDERS.iter().position(|p| p.label == label) {
+                    widgets.provider_row.set_selected(i as u32);
+                }
+            }
 
             AccountsInput::LeaveRequest(page) => {
                 match widgets.nav.visible_page().and_then(|p| p.tag()).as_deref() {
@@ -3718,7 +3742,7 @@ impl AccountsWindow {
         widgets.provider_row.set_subtitle(&hint);
 
         // Server/credential fields (password or Custom-OAuth manual servers).
-        // JMAP is the Stalwart entry's own protocol, not a choice.
+        // JMAP is the JMAP entries' own protocol, not a choice.
         widgets.protocol_row.set_visible(is_password && p.kind != ProviderKind::Jmap);
         widgets.host_row.set_visible(show_servers);
         widgets.port_row.set_visible(show_servers);
@@ -3766,8 +3790,17 @@ impl AccountsWindow {
             widgets.smtp_port_row.set_text(&sp.to_string());
         }
         if p.kind == ProviderKind::Jmap {
+            // Fastmail's session URL comes with its entry; the generic entry
+            // leaves the server to the user, taking back a preset's address.
+            let host = widgets.host_row.text();
+            if !p.imap_host.is_empty() {
+                widgets.host_row.set_text(p.imap_host);
+            } else if PROVIDERS.iter().any(|q| q.kind == ProviderKind::Jmap && !q.imap_host.is_empty() && q.imap_host == host) {
+                widgets.host_row.set_text("");
+            }
             widgets.port_row.set_text("443");
             widgets.smtp_row.set_text("");
+            widgets.jmap_token_row.set_active(p.wizard_token());
         }
         apply_protocol(widgets);
     }
@@ -4081,6 +4114,7 @@ fn read_account(
         Protocol::Jmap => 443,
         _ => 993,
     };
+    let jmap_token = protocol == Protocol::Jmap && widgets.jmap_token_row.is_active();
     AccountConfig {
         name: trimmed(&widgets.name_row),
         email: trimmed(&widgets.email_row),
@@ -4089,9 +4123,15 @@ fn read_account(
         imap_port: trimmed(&widgets.port_row).parse().unwrap_or(default_port),
         smtp_host: trimmed(&widgets.smtp_row),
         smtp_port: trimmed(&widgets.smtp_port_row).parse().unwrap_or(587),
-        username: trimmed(&widgets.user_row),
+        // A token sign-in asks for no username; the address stands in.
+        username: if jmap_token && trimmed(&widgets.user_row).is_empty() {
+            trimmed(&widgets.email_row)
+        } else {
+            trimmed(&widgets.user_row)
+        },
         password: widgets.pass_row.text().to_string(),
         smtp_separate: widgets.smtp_separate_row.is_active(),
+        jmap_token,
         tls_accept_hostname_mismatch: widgets.tls_mismatch_row.is_active(),
         // GNOME Online Accounts' own, carried over from the account edited.
         security: None,
@@ -4343,6 +4383,7 @@ fn fill_editor(widgets: &AccountsWindowWidgets, acc: &AccountConfig) {
     // password providers by server, otherwise "IMAP/POP3 Account").
     widgets.provider_row.set_selected(provider_index_for_account(acc));
     widgets.protocol_row.set_selected(protocol_index(acc.protocol));
+    widgets.jmap_token_row.set_active(acc.jmap_token);
     widgets.host_row.set_text(&acc.imap_host);
     widgets.port_row.set_text(&acc.imap_port.to_string());
     widgets.smtp_row.set_text(&acc.smtp_host);
@@ -4442,6 +4483,7 @@ fn clear_editor(widgets: &AccountsWindowWidgets) {
     widgets.email_row.set_text("");
     widgets.provider_row.set_selected(manual_index());
     widgets.protocol_row.set_selected(0);
+    widgets.jmap_token_row.set_active(false);
     widgets.host_row.set_text("");
     widgets.port_row.set_text("993");
     widgets.smtp_row.set_text("");
@@ -4488,6 +4530,17 @@ fn kind_index(kind: ProviderKind) -> u32 {
         .unwrap_or_else(manual_index)
 }
 
+/// Dropdown index of the JMAP entry for a server: Fastmail's for a Fastmail
+/// address, the generic one for any other.
+fn jmap_index(host: &str) -> u32 {
+    let fastmail = host.to_ascii_lowercase().contains("fastmail");
+    PROVIDERS
+        .iter()
+        .position(|p| p.kind == ProviderKind::Jmap && (p.brand == "fastmail") == fastmail)
+        .map(|i| i as u32)
+        .unwrap_or_else(|| kind_index(ProviderKind::Jmap))
+}
+
 /// Dropdown index of the `Preset` provider whose incoming server matches `host`,
 /// or the manual entry when nothing matches.
 fn preset_index_for_host(host: &str) -> u32 {
@@ -4514,13 +4567,13 @@ fn provider_index_for_account(acc: &AccountConfig) -> u32 {
         return kind_index(kind);
     }
     if acc.protocol == Protocol::Jmap {
-        return kind_index(ProviderKind::Jmap);
+        return jmap_index(&acc.imap_host);
     }
     preset_index_for_host(&acc.imap_host)
 }
 
 /// The Incoming Protocol row's entries, in dropdown order. JMAP is not one:
-/// it comes with the Stalwart entry in the Provider picker.
+/// it comes with the JMAP entries in the Provider picker.
 const PROTOCOLS: [Protocol; 2] = [Protocol::Imap, Protocol::Pop3];
 
 fn protocol_at(idx: u32) -> Protocol {
@@ -4528,7 +4581,7 @@ fn protocol_at(idx: u32) -> Protocol {
 }
 
 /// The protocol the form stands for: the provider's own for one that has
-/// one (Stalwart's JMAP), otherwise the Incoming Protocol row's.
+/// one (the JMAP entries'), otherwise the Incoming Protocol row's.
 fn form_protocol(widgets: &AccountsWindowWidgets) -> Protocol {
     match provider_at(widgets.provider_row.selected()).kind {
         ProviderKind::Jmap => Protocol::Jmap,
@@ -4554,6 +4607,15 @@ fn apply_protocol(widgets: &AccountsWindowWidgets) {
     widgets.smtp_separate_row.set_visible(widgets.protocol_row.is_visible() && !jmap);
     // JMAP runs over a different TLS stack (rustls), which offers no such waiver.
     widgets.tls_mismatch_row.set_visible(widgets.protocol_row.is_visible() && !jmap);
+    // A token stands in for the username and password (#356); the rows
+    // only change where the password is asked for at all.
+    let password_shown = widgets.pass_row.is_visible();
+    widgets.jmap_token_row.set_visible(servers_shown && jmap && password_shown);
+    let token = jmap && widgets.jmap_token_row.is_active();
+    if password_shown {
+        widgets.user_row.set_visible(!token);
+        widgets.pass_row.set_title(&if token { i18n("API Token") } else { i18n("Password") });
+    }
     if jmap {
         widgets.smtp_separate_row.set_active(false);
         widgets.host_row.set_title(&i18n("Server (host name or URL)"));
@@ -4681,8 +4743,9 @@ mod tests {
 
     #[test]
     fn jmap_provider_sets_the_protocol() {
-        let p = PROVIDERS.iter().find(|p| p.kind == ProviderKind::Jmap).expect("a JMAP entry");
+        let p = PROVIDERS.iter().find(|p| p.kind == ProviderKind::Jmap && p.brand != "fastmail").expect("a JMAP entry");
         assert!(p.is_password());
+        assert!(!p.wizard_token());
         assert_eq!(p.wizard_protocol(), Protocol::Jmap);
         assert!(p.imap_host.is_empty(), "a self-hosted server has no preset host");
         // The Incoming Protocol row offers IMAP and POP3 only; a JMAP
@@ -4695,6 +4758,12 @@ mod tests {
         assert_eq!(brand_for_account(&acc), "stalwart");
         let fm = AccountConfig { imap_host: "api.fastmail.com".into(), ..acc };
         assert_eq!(brand_for_account(&fm), "fastmail");
+        // Fastmail's own entry: its session URL, and a token sign-in (#356).
+        let fp = provider_at(provider_index_for_account(&fm));
+        assert_eq!(fp.label, "Fastmail (JMAP)");
+        assert!(fp.wizard_token());
+        assert_eq!(fp.wizard_protocol(), Protocol::Jmap);
+        assert!(fp.imap_host.starts_with("https://api.fastmail.com/"));
     }
 
     #[test]

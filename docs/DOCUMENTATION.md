@@ -59,12 +59,23 @@ does not. Stored on the account as the `security` table in `accounts.toml`.
 ### JMAP (Stalwart, Fastmail)
 
 A JMAP account (RFC 8620 and 8621) reads and sends mail over HTTPS, so it
-needs one server address and no SMTP settings. Pick **Stalwart (JMAP)** in
-the Provider list, or any provider and **JMAP** as the Incoming Protocol,
-and enter the server: a host name (`mail.example.org`, reached over HTTPS
-on 443, or the port in the Port row) or a full URL. Hylki reads the session
-resource at `/.well-known/jmap` and takes the API, download, upload and
-push addresses from it.
+needs one server address and no SMTP settings. The Provider list has two
+JMAP entries:
+
+- **Fastmail (JMAP)** fills in Fastmail's session URL and signs in with an
+  API token rather than the account password. Make the token in Fastmail's
+  settings, under Privacy & Security, with access to mail and to sending
+  it, and enter it in the API Token row.
+- **JMAP Server (Stalwart and others)** takes the server as a host name
+  (`mail.example.org`, reached over HTTPS on 443, or the port in the Port
+  row) or a full URL, and signs in with the username and password. Turn on
+  **Sign in with an API token** for a server that takes a token instead.
+
+For a host name, Hylki reads the session resource at `/.well-known/jmap`.
+A URL with a path is tried as the session resource itself
+(`https://api.fastmail.com/jmap/session`), then as a prefix with
+`/.well-known/jmap` under it. The API, download, upload and push addresses
+come from the session.
 
 A server names itself in that session, with the host it was set up with.
 When the address is entered as a URL with its scheme (`http://10.0.0.5:8080`,
@@ -86,9 +97,11 @@ learns from. The server's sending identities are offered in the composer's
 From row (see [The From address](#the-from-address)), and an alias has no
 SMTP settings of its own.
 
-Tested against Stalwart; Fastmail speaks the same standard but has not been
-tried by hand. In `accounts.toml` the account has `protocol = "jmap"` and
-the server in `imap_host`.
+Tested against Stalwart, with a password and with a bearer token; Fastmail
+speaks the same standard but has not been tried by hand. In `accounts.toml`
+the account has `protocol = "jmap"`, the server in `imap_host`, and
+`jmap_token = true` when it signs in with a token, which the keyring keeps
+where a password would be.
 
 ### Folder order
 

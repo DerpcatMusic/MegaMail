@@ -1562,6 +1562,9 @@ pub enum AppMsg {
     /// Showcase only (HYLKI_SHOWCASE_EDITOR_DIRTY): change the open account
     /// editor, so leaving an edited one can be captured.
     ShowcaseDirtyEditor,
+    /// Showcase only (HYLKI_SHOWCASE_ACCOUNT=new[:<provider>]): open a blank
+    /// account editor, on that provider when one is named.
+    ShowcaseNewAccount(Option<String>),
     Reply,
     ReplyAll,
     Forward,
@@ -5083,6 +5086,14 @@ impl SimpleComponent for AppModel {
                 // HYLKI_SHOWCASE_ACCOUNT=N opens account N's editor a beat
                 // after the Settings window (with HYLKI_SHOWCASE_SETTINGS),
                 // so the editor itself can be captured.
+                // `new[:<provider label>]` opens a blank editor instead.
+                if let Some(rest) = std::env::var("HYLKI_SHOWCASE_ACCOUNT").ok().and_then(|v| v.strip_prefix("new").map(str::to_string)) {
+                    let provider = rest.strip_prefix(':').map(str::to_string);
+                    let s = sender.clone();
+                    gtk::glib::timeout_add_seconds_local_once(5, move || {
+                        s.input(AppMsg::ShowcaseNewAccount(provider.clone()));
+                    });
+                }
                 if let Some(Ok(n)) = std::env::var("HYLKI_SHOWCASE_ACCOUNT").ok().map(|v| v.parse::<u32>()) {
                     let s = sender.clone();
                     gtk::glib::timeout_add_seconds_local_once(5, move || {
@@ -9642,6 +9653,14 @@ impl SimpleComponent for AppModel {
                 }
             }
 
+            AppMsg::ShowcaseNewAccount(provider) => {
+                if let Some(acc) = &self.accounts_win {
+                    acc.emit(crate::ui::accounts::AccountsInput::AddAccount);
+                    if let Some(label) = provider {
+                        acc.emit(crate::ui::accounts::AccountsInput::DebugProvider(label));
+                    }
+                }
+            }
             AppMsg::ShowcaseDirtyEditor => {
                 if let Some(acc) = &self.accounts_win {
                     acc.emit(crate::ui::accounts::AccountsInput::DebugEditLabel(
@@ -21015,6 +21034,7 @@ fn demo_account_configs() -> Vec<AccountConfig> {
         // without one, and the demo's private bus has no keyring to ask.
         password: "demo".into(),
         smtp_separate: false,
+        jmap_token: false,
         tls_accept_hostname_mismatch: false,
         security: None,
         smtp_username: String::new(),
