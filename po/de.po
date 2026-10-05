@@ -139,6 +139,9 @@ msgstr "Anhänge"
 msgid "Toggle sidebar"
 msgstr "Seitenleiste ein- oder ausblenden"
 
+msgid "Keyboard Shortcuts"
+msgstr "Tastenkombinationen"
+
 msgid "Date (Newest first)"
 msgstr "Datum (Neueste zuerst)"
 
@@ -269,18 +272,15 @@ msgstr "Statusleiste anzeigen"
 msgid "Console"
 msgstr "Konsole"
 
-msgid "Keyboard Shortcuts"
-msgstr "Tastenkombinationen"
-
 msgid "About"
 msgstr "Über Hylki"
 
 msgid "Remove Tags"
 msgstr "Tags entfernen"
 
+#, fuzzy
 msgid ""
-"Single-key shortcuts are switched off. Turn them on in Settings → System & "
-"Appearance."
+"Single-key shortcuts are switched off. Turn them on in Settings → System."
 msgstr ""
 "Einzeltasten-Kürzel sind deaktiviert. Aktivieren Sie sie unter Einstellungen "
 "→ System & Erscheinungsbild."
@@ -851,8 +851,15 @@ msgstr ""
 msgid "Remove every tag"
 msgstr "Alle Tags entfernen"
 
-msgid "Everything else"
-msgstr "Weitere Aktionen"
+msgid "Print the message you are reading"
+msgstr "Drucken Sie die Nachricht, die Sie lesen"
+
+msgid "Preview it as a PDF first"
+msgstr "Vorschau als PDF zuerst"
+
+#, fuzzy
+msgid "Writing"
+msgstr "Schreiben:"
 
 msgid "Compose"
 msgstr "Verfassen"
@@ -863,17 +870,33 @@ msgstr "Senden Sie die Nachricht, die Sie schreiben"
 msgid "Back out of a reply and return to the list"
 msgstr "Zurück aus einer Antwort und zurück zur Liste"
 
+msgid "Emoji chooser, at the cursor"
+msgstr ""
+
+msgid "New paragraph (Return starts a new line, unless Settings swaps them)"
+msgstr ""
+
+msgid "Bold, italic, underline"
+msgstr ""
+
+#, fuzzy
+msgid "Preview the highlighted attachment"
+msgstr "Anhänge ausblenden"
+
+msgid "Previous or next in the gallery's preview"
+msgstr ""
+
+msgid "Close the gallery's preview"
+msgstr ""
+
+msgid "Everything else"
+msgstr "Weitere Aktionen"
+
 msgid "Undo the last action, or the last edit while you are writing"
 msgstr "Letzte Aktion oder Bearbeitung rückgängig machen"
 
 msgid "Redo it (Ctrl+Y does the same)"
 msgstr "Wiederholen (auch mit Strg+Y)"
-
-msgid "Print the message you are reading"
-msgstr "Drucken Sie die Nachricht, die Sie lesen"
-
-msgid "Preview it as a PDF first"
-msgstr "Vorschau als PDF zuerst"
 
 msgid "Reveal the status bar (also: long-press Refresh)"
 msgstr "Statusleiste anzeigen (auch: Aktualisieren lange drücken)"
@@ -889,6 +912,9 @@ msgstr "Nachrichtenansicht vergrößern oder verkleinern"
 
 msgid "Message zoom back to the default"
 msgstr "Nachrichtenansicht auf Standardgröße zurücksetzen"
+
+msgid "Search the Settings window, when it is open"
+msgstr ""
 
 msgid "Console mode (when enabled in Settings)"
 msgstr "Konsolenmodus (wenn in Einstellungen aktiviert)"
@@ -1306,12 +1332,27 @@ msgstr ""
 "Geben Sie die OAuth-Endpunkte Ihres Providers ein und melden Sie sich dann "
 "an."
 
+#, fuzzy
+msgid ""
+"Enter your JMAP server's address, or the URL of its session resource. Mail "
+"is read and sent over JMAP; no SMTP settings are needed."
+msgstr ""
+"Geben Sie die Adresse Ihres Stalwart-Servers ein. Mail wird gelesen und über "
+"JMAP gesendet; es sind keine SMTP-Einstellungen erforderlich."
+
 msgid "Sign in with your browser — no password needed."
 msgstr "Melden Sie sich mit Ihrem Browser an - kein Passwort erforderlich."
 
 msgid "Requires Proton Mail Bridge running locally."
 msgstr "Benötigt Proton Mail Bridge, die lokal läuft."
 
+msgid ""
+"Signs in with an API token, not your password. Make one in Fastmail's "
+"settings, under Privacy & Security, with access to mail and to sending it. "
+"Mail is read and sent over JMAP."
+msgstr ""
+
+#, fuzzy
 msgid ""
 "Enter your Stalwart server's address. Mail is read and sent over JMAP; no "
 "SMTP settings are needed."
@@ -1493,6 +1534,14 @@ msgstr "Benutzername"
 
 msgid "Password"
 msgstr "Passwort"
+
+#, fuzzy
+msgid "Sign in with an API token"
+msgstr "Im Browser anmelden"
+
+msgid ""
+"For servers that take a token in place of the password, as Fastmail does."
+msgstr ""
 
 msgid "OAuth Client ID"
 msgstr "OAuth-Client-ID"
@@ -1888,6 +1937,10 @@ msgstr "Versendet über dieses Konto"
 msgid "Remove this alias"
 msgstr "Entfernen Sie diesen Alias"
 
+msgid ""
+"Kept on the server; change it through your provider's webmail interface."
+msgstr ""
+
 msgid "Display name (optional)"
 msgstr "Anzeigename (optional)"
 
@@ -1955,6 +2008,9 @@ msgid "After {n} day"
 msgid_plural "After {n} days"
 msgstr[0] "Nach {n} Tag"
 msgstr[1] "Nach {n} Tagen"
+
+msgid "API Token"
+msgstr ""
 
 #. A JMAP server is one address, and it sends the mail
 #. itself: no SMTP rows.
@@ -2911,6 +2967,9 @@ msgstr ""
 msgid "Could not translate"
 msgstr "Nachricht konnte nicht mit Tag versehen werden: {e}"
 
+msgid "Cannot send with OpenPGP"
+msgstr "Kann nicht mit OpenPGP senden"
+
 #, fuzzy
 msgid "An attachment is missing"
 msgstr "{n} Anhang"
@@ -2919,9 +2978,6 @@ msgid ""
 "Hylki cannot read {names}. It was moved or deleted after it was attached. "
 "Remove it, or attach it again from where it is now."
 msgstr ""
-
-msgid "Cannot send with OpenPGP"
-msgstr "Kann nicht mit OpenPGP senden"
 
 #, fuzzy
 msgid "Check the From address"
@@ -3609,22 +3665,6 @@ msgstr "Diese Nachricht wurde nicht überprüft."
 msgid "That key is no longer in your keyring."
 msgstr "Dieser Schlüssel ist nicht mehr in Ihrem Schlüsselring."
 
-msgid "Trust this key?"
-msgstr "Vertrauen Sie diesem Schlüssel?"
-
-msgid ""
-"Compare the fingerprint with the one {uid} gives you in person or over "
-"another channel. Trusting a key you have not checked lets an impostor's "
-"signature pass as theirs."
-msgstr ""
-"Vergleichen Sie den Fingerabdruck mit dem, den {uid} Ihnen persönlich oder "
-"über einen anderen Kanal gibt. Wenn Sie einem Schlüssel vertrauen, den Sie "
-"nicht überprüft haben, kann die Unterschrift eines Betrügers als seine "
-"übergeben werden."
-
-msgid "Trust"
-msgstr "Vertrauen"
-
 msgid "Key trusted."
 msgstr "Schlüssel als vertrauenswürdig markiert."
 
@@ -3710,6 +3750,22 @@ msgstr "Vorschautext ausblenden"
 
 msgid "Save Image"
 msgstr "Bild speichern"
+
+msgid "Trust this key?"
+msgstr "Vertrauen Sie diesem Schlüssel?"
+
+msgid ""
+"Compare the fingerprint with the one {uid} gives you in person or over "
+"another channel. Trusting a key you have not checked lets an impostor's "
+"signature pass as theirs."
+msgstr ""
+"Vergleichen Sie den Fingerabdruck mit dem, den {uid} Ihnen persönlich oder "
+"über einen anderen Kanal gibt. Wenn Sie einem Schlüssel vertrauen, den Sie "
+"nicht überprüft haben, kann die Unterschrift eines Betrügers als seine "
+"übergeben werden."
+
+msgid "Trust"
+msgstr "Vertrauen"
 
 msgid "The sender's key was imported from the message."
 msgstr "Der Schlüssel des Absenders wurde aus der Nachricht importiert."
@@ -5039,6 +5095,24 @@ msgstr ""
 "Abstand vor dem nächsten. Wenn deaktiviert, beginnt sie eine neue Zeile im "
 "selben Absatz. Umschalt+Eingabe bewirkt jeweils das Gegenteil."
 
+#, fuzzy
+msgid "Formatting toolbar"
+msgstr "Ganz ohne Formatierung"
+
+msgid ""
+"Whether a new message shows the extra tools (paragraph styles, fonts, "
+"colors, indents, emoji and pictures). The chevron in the toolbar shows or "
+"hides them at any time."
+msgstr ""
+
+#, fuzzy
+msgid "Always collapsed"
+msgstr "Absender immer zulassen"
+
+#, fuzzy
+msgid "Always expanded"
+msgstr "Absender immer zulassen"
+
 msgid "Write messages in"
 msgstr "Nachrichten schreiben als"
 
@@ -5593,6 +5667,41 @@ msgstr "Mit Formatierung einfügen"
 msgid "Paste as Plain Text"
 msgstr "Als reinen Text einfügen"
 
+msgid "Normal"
+msgstr ""
+
+#, fuzzy
+msgid "Heading 1"
+msgstr "Lesen"
+
+#, fuzzy
+msgid "Heading 2"
+msgstr "Lesen"
+
+#, fuzzy
+msgid "Heading 3"
+msgstr "Lesen"
+
+#, fuzzy
+msgid "Preformatted"
+msgstr "Datumsformat"
+
+msgid "Sans Serif"
+msgstr ""
+
+msgid "Serif"
+msgstr ""
+
+#, fuzzy
+msgid "Monospace"
+msgstr "Monospace-Schrift"
+
+msgid "Paragraph style"
+msgstr ""
+
+msgid "Font"
+msgstr ""
+
 msgid "Bold"
 msgstr "Fett"
 
@@ -5605,22 +5714,62 @@ msgstr "Unterstreichen"
 msgid "Strikethrough"
 msgstr "Durchstreichen"
 
+#, fuzzy
+msgid "Text color"
+msgstr "Tagfarbe"
+
+msgid "Highlight"
+msgstr ""
+
+msgid "No highlight"
+msgstr ""
+
 msgid "Bulleted list"
 msgstr "Aufzählungsliste"
 
 msgid "Numbered list"
 msgstr "Nummerierte Liste"
 
-#. Adwaita has no blockquote glyph; the indent icon reads as "quote".
+msgid "Decrease indent"
+msgstr ""
+
+msgid "Increase indent"
+msgstr ""
+
+#. Adwaita has no blockquote glyph; the bubble with its quote marks
+#. reads as one.
 msgid "Quote"
 msgstr "Zitat"
 
-#. `LINK` is a sentinel command (handled specially); the icon is real.
 msgid "Insert link"
 msgstr "Link einfügen"
 
+#, fuzzy
+msgid "Insert emoji"
+msgstr "Link einfügen"
+
+#, fuzzy
+msgid "Insert picture"
+msgstr "In Text einfügen"
+
 msgid "Clear formatting"
 msgstr "Formatierung entfernen"
+
+#, fuzzy
+msgid "Fewer formatting tools"
+msgstr "Formatierung entfernen"
+
+#, fuzzy
+msgid "More formatting tools"
+msgstr "Ganz ohne Formatierung"
+
+#, fuzzy
+msgid "Pictures"
+msgstr "Bild"
+
+#, fuzzy
+msgid "Insert Picture"
+msgstr "Wählen Sie ein Bild"
 
 msgid "Insert Link"
 msgstr "Link einfügen"

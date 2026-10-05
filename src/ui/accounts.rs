@@ -100,6 +100,16 @@ impl Provider {
         self.hint
     }
 
+    /// A JMAP entry whose server takes an API token rather than the
+    /// password (#356).
+    pub(crate) fn wizard_token(&self) -> bool {
+        self.kind == ProviderKind::Jmap && self.brand == "fastmail"
+    }
+    /// The generic JMAP entry, as against Fastmail's and Stalwart's.
+    pub(crate) fn wizard_jmap_generic(&self) -> bool {
+        self.kind == ProviderKind::Jmap && self.brand == "mail-jmap"
+    }
+
     fn is_password(&self) -> bool {
         matches!(self.kind, ProviderKind::Manual | ProviderKind::Preset | ProviderKind::Jmap)
     }
@@ -128,19 +138,21 @@ impl Provider {
 const APP_PW: &str = i18n_noop("Requires an app-specific password (not your normal login password).");
 
 /// The Provider dropdown, in display order. The plain IMAP/POP3 entry first
-/// (the default) with custom OAuth under it, the two generic entries
-/// together, then the OAuth providers and the major app-password IMAP
+/// (the default) with custom OAuth and any JMAP server under it, the
+/// generic entries together, then the OAuth providers and the major app-password IMAP
 /// providers. IMAP uses SSL/TLS on 993; SMTP uses
 /// implicit TLS on 465 or STARTTLS on 587.
 pub(crate) const PROVIDERS: &[Provider] = &[
     Provider { label: "IMAP/POP3 Account", brand: "mail", kind: ProviderKind::Manual, imap_host: "", imap_port: 0, smtp_host: "", smtp_port: 0, hint: i18n_noop("Enter your server details manually.") },
     Provider { label: "Custom (OAuth)…", brand: "mail-oauth", kind: ProviderKind::CustomOAuth, imap_host: "", imap_port: 0, smtp_host: "", smtp_port: 0, hint: i18n_noop("Enter your provider's OAuth endpoints, then sign in.") },
+    Provider { label: "JMAP Server", brand: "mail-jmap", kind: ProviderKind::Jmap, imap_host: "", imap_port: 443, smtp_host: "", smtp_port: 0, hint: i18n_noop("Enter your JMAP server's address, or the URL of its session resource. Mail is read and sent over JMAP; no SMTP settings are needed.") },
     Provider { label: "Google (Gmail) — sign in", brand: "gmail", kind: ProviderKind::Google, imap_host: "", imap_port: 0, smtp_host: "", smtp_port: 0, hint: i18n_noop("Sign in with your browser — no password needed.") },
     Provider { label: "Microsoft 365 / Outlook", brand: "outlook", kind: ProviderKind::Microsoft, imap_host: "", imap_port: 0, smtp_host: "", smtp_port: 0, hint: i18n_noop("Sign in with your browser — no password needed.") },
     Provider { label: "iCloud", brand: "icloud", kind: ProviderKind::Preset, imap_host: "imap.mail.me.com", imap_port: 993, smtp_host: "smtp.mail.me.com", smtp_port: 587, hint: APP_PW },
     Provider { label: "Yahoo Mail", brand: "yahoo", kind: ProviderKind::Preset, imap_host: "imap.mail.yahoo.com", imap_port: 993, smtp_host: "smtp.mail.yahoo.com", smtp_port: 465, hint: APP_PW },
     Provider { label: "Proton Mail (Bridge)", brand: "proton", kind: ProviderKind::Preset, imap_host: "127.0.0.1", imap_port: 1143, smtp_host: "127.0.0.1", smtp_port: 1025, hint: i18n_noop("Requires Proton Mail Bridge running locally.") },
     Provider { label: "Fastmail", brand: "fastmail", kind: ProviderKind::Preset, imap_host: "imap.fastmail.com", imap_port: 993, smtp_host: "smtp.fastmail.com", smtp_port: 465, hint: APP_PW },
+    Provider { label: "Fastmail (JMAP)", brand: "fastmail", kind: ProviderKind::Jmap, imap_host: "https://api.fastmail.com/jmap/session", imap_port: 443, smtp_host: "", smtp_port: 0, hint: i18n_noop("Signs in with an API token, not your password. Make one in Fastmail's settings, under Privacy & Security, with access to mail and to sending it. Mail is read and sent over JMAP.") },
     Provider { label: "Stalwart (JMAP)", brand: "stalwart", kind: ProviderKind::Jmap, imap_host: "", imap_port: 443, smtp_host: "", smtp_port: 0, hint: i18n_noop("Enter your Stalwart server's address. Mail is read and sent over JMAP; no SMTP settings are needed.") },
     Provider { label: "AOL Mail", brand: "aol", kind: ProviderKind::Preset, imap_host: "imap.aol.com", imap_port: 993, smtp_host: "smtp.aol.com", smtp_port: 465, hint: APP_PW },
     Provider { label: "Zoho Mail", brand: "zoho", kind: ProviderKind::Preset, imap_host: "imap.zoho.com", imap_port: 993, smtp_host: "smtp.zoho.com", smtp_port: 465, hint: "" },
@@ -243,6 +255,9 @@ pub struct AccountsWindow {
     /// The send-as aliases being edited for the account in the editor (#34).
     /// Committed to the account on Save.
     alias_edits: Vec<AliasConfig>,
+    /// The open account's identities on its JMAP server (#346), shown
+    /// under the aliases and not editable here.
+    server_identities: Vec<(String, String)>,
     /// The account's hidden folders (#239) as the editor holds them: the
     /// saved list, less whatever the user has brought back since opening.
     hidden_edits: Vec<String>,
@@ -281,6 +296,9 @@ pub enum AccountsInput {
     /// Showcase only (HYLKI_SHOWCASE_EDITOR_DIRTY): type into the open
     /// editor's Label field, the way a capture cannot.
     DebugEditLabel(String),
+    /// Showcase only (HYLKI_SHOWCASE_ACCOUNT=new:<label>): pick the provider
+    /// with that label in the open editor.
+    DebugProvider(String),
     /// The settings sidebar wants to show another category while an editor
     /// is open. The answer (below) says whether anything would be lost.
     LeaveRequest(String),
@@ -409,6 +427,9 @@ pub enum AccountsInput {
     /// How much storage an account's server says is in use (#298); shown
     /// when that account's page is the one open.
     Quota { email: String, quota: Option<crate::models::MailboxQuota> },
+    /// The sending identities an account's JMAP server keeps (#346), as
+    /// (name, address): listed under its aliases, read-only.
+    ServerIdentities { email: String, identities: Vec<(String, String)> },
 }
 
 /// One keyword the tag finder proposes as a tag: the tag as it would be
@@ -453,6 +474,8 @@ pub enum AccountsOutput {
     FindTags,
     /// An account's page opened: ask its server for the storage in use.
     WantQuota(String),
+    /// An account's page opened: the identities its server keeps (#346).
+    WantIdentities(String),
     /// The editor was left with nothing changed in it: it is already closed,
     /// and the settings window can show `page` without asking anything.
     LeftEditor(String),
@@ -1115,6 +1138,15 @@ impl Component for AccountsWindow {
                                 adw::EntryRow { set_title: &i18n("Username") },
                                 #[name = "pass_row"]
                                 adw::PasswordEntryRow { set_title: &i18n("Password") },
+                                // JMAP with a bearer token in place of the
+                                // username and password (#356).
+                                #[name = "jmap_token_row"]
+                                adw::SwitchRow {
+                                    set_title: &i18n("Sign in with an API token"),
+                                    set_subtitle: &i18n("For servers that take a token in place of the password, as Fastmail does."),
+                                    set_visible: false,
+                                    connect_active_notify => AccountsInput::ProtocolChanged,
+                                },
 
                                 // ---- OAuth fields (shown when Authentication is an OAuth option) ----
                                 #[name = "oauth_client_id_row"]
@@ -1677,6 +1709,7 @@ impl Component for AccountsWindow {
             goa,
             pending_oauth_refresh: None,
             alias_edits: Vec::new(),
+            server_identities: Vec::new(),
             hidden_edits: Vec::new(),
             alias_editing: None,
             alias_dialog: None,
@@ -1890,6 +1923,11 @@ impl Component for AccountsWindow {
                 }
             }
             AccountsInput::DebugEditLabel(text) => widgets.label_row.set_text(&text),
+            AccountsInput::DebugProvider(label) => {
+                if let Some(i) = PROVIDERS.iter().position(|p| p.label == label) {
+                    widgets.provider_row.set_selected(i as u32);
+                }
+            }
 
             AccountsInput::LeaveRequest(page) => {
                 match widgets.nav.visible_page().and_then(|p| p.tag()).as_deref() {
@@ -1958,6 +1996,7 @@ impl Component for AccountsWindow {
                 self.pending_oauth_refresh = None;
                 self.close_alias_dialog();
                 self.alias_edits.clear();
+                self.server_identities.clear();
                 self.rebuild_alias_list(&widgets.aliases_list, &sender);
                 clear_editor(widgets);
                 self.populate_folder_combos(widgets, None);
@@ -2004,6 +2043,7 @@ impl Component for AccountsWindow {
                 self.pending_oauth_refresh = None;
                 self.close_alias_dialog();
                 self.alias_edits = acc.aliases.clone();
+                self.server_identities.clear();
                 self.rebuild_alias_list(&widgets.aliases_list, &sender);
                 self.hidden_edits = acc.hidden_folders.clone();
                 self.rebuild_hidden_list(widgets, &sender);
@@ -2012,6 +2052,7 @@ impl Component for AccountsWindow {
                 // before it must not show the last account's figure.
                 show_quota(widgets, None);
                 let _ = sender.output(AccountsOutput::WantQuota(acc.email.clone()));
+                let _ = sender.output(AccountsOutput::WantIdentities(acc.email.clone()));
                 // The secrets come from the keyring now, off the main thread,
                 // and land in the fields when they arrive (Save reads the
                 // keyring itself should it come first).
@@ -2899,6 +2940,13 @@ impl Component for AccountsWindow {
                     let _ = sender.output(AccountsOutput::FindTags);
                 }
             }
+            AccountsInput::ServerIdentities { email, identities } => {
+                let open = self.editing.and_then(|i| self.accounts.get(i)).is_some_and(|a| a.email.eq_ignore_ascii_case(&email));
+                if open && self.server_identities != identities {
+                    self.server_identities = identities;
+                    self.rebuild_alias_list(&widgets.aliases_list, &sender);
+                }
+            }
             AccountsInput::Quota { email, quota } => {
                 let open = self.editing.and_then(|i| self.accounts.get(i)).is_some_and(|a| a.email.eq_ignore_ascii_case(&email));
                 if open {
@@ -3101,8 +3149,27 @@ impl AccountsWindow {
         while let Some(child) = list.first_child() {
             list.remove(&child);
         }
+        // The server's identities (#346), less the account's own plain one
+        // (its address, under no name or the account's) and any address an
+        // alias here already sends as.
+        let (own_name, own) = self
+            .editing
+            .and_then(|i| self.accounts.get(i))
+            .map(|a| (a.name.clone(), a.email.clone()))
+            .unwrap_or_default();
+        let server: Vec<&(String, String)> = self
+            .server_identities
+            .iter()
+            .filter(|(name, addr)| {
+                !(addr.eq_ignore_ascii_case(&own)
+                    && (name.is_empty() || name.eq_ignore_ascii_case(addr) || *name == own_name))
+            })
+            .filter(|(_, addr)| {
+                !self.alias_edits.iter().any(|a| split_identity(&a.identity).1.eq_ignore_ascii_case(addr))
+            })
+            .collect();
         // An empty boxed-list draws as a bare frame; hide it until there is a row.
-        list.set_visible(!self.alias_edits.is_empty());
+        list.set_visible(!self.alias_edits.is_empty() || !server.is_empty());
 
         for (i, alias) in self.alias_edits.iter().enumerate() {
             let row = adw::ActionRow::new();
@@ -3129,6 +3196,18 @@ impl AccountsWindow {
             });
             row.add_suffix(&remove);
 
+            list.append(&row);
+        }
+
+        for (name, addr) in server {
+            let row = adw::ActionRow::new();
+            let title = if name.is_empty() || name.eq_ignore_ascii_case(addr) {
+                addr.clone()
+            } else {
+                format!("{name} <{addr}>")
+            };
+            row.set_title(&gtk::glib::markup_escape_text(&title));
+            row.set_subtitle(&i18n("Kept on the server; change it through your provider's webmail interface."));
             list.append(&row);
         }
     }
@@ -3684,8 +3763,8 @@ impl AccountsWindow {
         let p = provider_at(widgets.provider_row.selected());
         let editing_goa = self.editing.and_then(|i| self.accounts.get(i)).filter(|a| a.goa_id.is_some());
         let brand = editing_goa.map(brand_for_account).unwrap_or_else(|| {
-            if matches!(p.kind, ProviderKind::Manual | ProviderKind::Jmap) {
-                manual_brand(form_protocol(widgets), &widgets.host_row.text())
+            if p.kind == ProviderKind::Manual {
+                manual_brand(form_protocol(widgets))
             } else {
                 p.brand
             }
@@ -3718,7 +3797,7 @@ impl AccountsWindow {
         widgets.provider_row.set_subtitle(&hint);
 
         // Server/credential fields (password or Custom-OAuth manual servers).
-        // JMAP is the Stalwart entry's own protocol, not a choice.
+        // JMAP is the JMAP entries' own protocol, not a choice.
         widgets.protocol_row.set_visible(is_password && p.kind != ProviderKind::Jmap);
         widgets.host_row.set_visible(show_servers);
         widgets.port_row.set_visible(show_servers);
@@ -3766,8 +3845,17 @@ impl AccountsWindow {
             widgets.smtp_port_row.set_text(&sp.to_string());
         }
         if p.kind == ProviderKind::Jmap {
+            // Fastmail's session URL comes with its entry; the generic entry
+            // leaves the server to the user, taking back a preset's address.
+            let host = widgets.host_row.text();
+            if !p.imap_host.is_empty() {
+                widgets.host_row.set_text(p.imap_host);
+            } else if PROVIDERS.iter().any(|q| q.kind == ProviderKind::Jmap && !q.imap_host.is_empty() && q.imap_host == host) {
+                widgets.host_row.set_text("");
+            }
             widgets.port_row.set_text("443");
             widgets.smtp_row.set_text("");
+            widgets.jmap_token_row.set_active(p.wizard_token());
         }
         apply_protocol(widgets);
     }
@@ -3895,7 +3983,7 @@ pub(crate) fn provider_factory() -> gtk::SignalListItemFactory {
     factory
 }
 
-fn non_ellipsizing_factory() -> gtk::SignalListItemFactory {
+pub(crate) fn non_ellipsizing_factory() -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
     factory.connect_setup(|_, item| {
         if let Some(item) = item.downcast_ref::<gtk::ListItem>() {
@@ -4081,6 +4169,8 @@ fn read_account(
         Protocol::Jmap => 443,
         _ => 993,
     };
+    let jmap_token = protocol == Protocol::Jmap && widgets.jmap_token_row.is_active();
+    let jmap_generic = provider_at(widgets.provider_row.selected()).wizard_jmap_generic();
     AccountConfig {
         name: trimmed(&widgets.name_row),
         email: trimmed(&widgets.email_row),
@@ -4089,9 +4179,16 @@ fn read_account(
         imap_port: trimmed(&widgets.port_row).parse().unwrap_or(default_port),
         smtp_host: trimmed(&widgets.smtp_row),
         smtp_port: trimmed(&widgets.smtp_port_row).parse().unwrap_or(587),
-        username: trimmed(&widgets.user_row),
+        // A token sign-in asks for no username; the address stands in.
+        username: if jmap_token && trimmed(&widgets.user_row).is_empty() {
+            trimmed(&widgets.email_row)
+        } else {
+            trimmed(&widgets.user_row)
+        },
         password: widgets.pass_row.text().to_string(),
         smtp_separate: widgets.smtp_separate_row.is_active(),
+        jmap_token,
+        jmap_generic,
         tls_accept_hostname_mismatch: widgets.tls_mismatch_row.is_active(),
         // GNOME Online Accounts' own, carried over from the account edited.
         security: None,
@@ -4145,10 +4242,15 @@ fn read_account(
             .get(widgets.empty_trash_row.selected() as usize)
             .copied()
             .unwrap_or(0),
-        // Row 0 is Automatic; the rest follow PGP_KEY_CHOICES.
+        // Row 0 is Automatic; the rest follow PGP_KEY_CHOICES. Until gpg
+        // has answered, the account keeps the key it had.
         pgp_key: PGP_KEY_CHOICES.with(|c| {
+            let c = c.borrow();
+            if !c.loaded {
+                return c.chosen.clone();
+            }
             let sel = widgets.pgp_key_row.selected() as usize;
-            sel.checked_sub(1).and_then(|i| c.borrow().get(i).map(|k| k.fingerprint.clone()))
+            sel.checked_sub(1).and_then(|i| c.fingerprints.get(i).cloned())
         }),
         in_unified: widgets.in_unified_row.is_active(),
         // Row 0 follows Settings; the rest follow FolderSort::ALL.
@@ -4161,35 +4263,89 @@ fn read_account(
     }
 }
 
+/// The editor's OpenPGP combo (#133): the fingerprints behind its rows, and
+/// the account's key while gpg is still listing.
+struct PgpKeyChoices {
+    /// Row `i + 1` holds `fingerprints[i]`; row 0 is Automatic.
+    fingerprints: Vec<String>,
+    chosen: Option<String>,
+    /// The list for the editor now open has arrived.
+    loaded: bool,
+    /// Bumped per fill, so an answer for an editor since left is dropped.
+    generation: u64,
+}
+
 thread_local! {
-    /// The user's own keys as the editor's OpenPGP combo lists them (#133),
-    /// filled when the editor opens and read when it saves. The combo shows
-    /// labels; this keeps the fingerprints behind them.
-    static PGP_KEY_CHOICES: std::cell::RefCell<Vec<crate::pgp::KeyInfo>> = const { std::cell::RefCell::new(Vec::new()) };
+    static PGP_KEY_CHOICES: std::cell::RefCell<PgpKeyChoices> = const {
+        std::cell::RefCell::new(PgpKeyChoices { fingerprints: Vec::new(), chosen: None, loaded: true, generation: 0 })
+    };
 }
 
 /// Fill the OpenPGP key combo with the user's own keys and select the
 /// account's, or Automatic.
+///
+/// gpg is asked on a worker thread: a keyring lock left by a stale gpg
+/// makes every call wait about ten seconds, which froze the window each
+/// time an editor opened (#316).
 fn fill_pgp_key_row(widgets: &AccountsWindowWidgets, chosen: Option<&str>) {
-    let keys: Vec<crate::pgp::KeyInfo> = if crate::pgp::available() {
-        crate::pgp::list_keys(&crate::pgp::Gpg::system(), true)
-            .into_iter()
-            .filter(|k| k.usable() && k.can_sign)
-            .collect()
-    } else {
-        Vec::new()
-    };
-    let mut labels = vec![i18n("Automatic")];
-    labels.extend(keys.iter().map(|k| format!("{} ({})", k.primary_uid(), crate::pgp::key_display(&k.key_id))));
-    let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
-    widgets.pgp_key_row.set_model(Some(&gtk::StringList::new(&refs)));
-    widgets.pgp_key_row.set_list_factory(Some(&non_ellipsizing_factory()));
-    let selected = chosen
-        .and_then(|f| keys.iter().position(|k| k.fingerprint.eq_ignore_ascii_case(f)))
-        .map(|i| i as u32 + 1)
-        .unwrap_or(0);
-    widgets.pgp_key_row.set_selected(selected);
-    PGP_KEY_CHOICES.with(|c| *c.borrow_mut() = keys);
+    let row = widgets.pgp_key_row.clone();
+    row.set_model(Some(&gtk::StringList::new(&[&i18n("Automatic")])));
+    row.set_list_factory(Some(&non_ellipsizing_factory()));
+    row.set_selected(0);
+    row.set_sensitive(false);
+    let chosen = chosen.map(str::to_string);
+    let generation = PGP_KEY_CHOICES.with(|c| {
+        let mut c = c.borrow_mut();
+        c.fingerprints.clear();
+        c.chosen = chosen.clone();
+        c.loaded = false;
+        c.generation += 1;
+        c.generation
+    });
+    gtk::glib::spawn_future_local(async move {
+        let keys = gtk::gio::spawn_blocking(|| {
+            if !crate::pgp::available() {
+                return Vec::new();
+            }
+            crate::pgp::list_keys(&crate::pgp::Gpg::system(), true)
+                .into_iter()
+                .filter(|k| k.usable() && k.can_sign)
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
+        if PGP_KEY_CHOICES.with(|c| c.borrow().generation) != generation {
+            return;
+        }
+        let mut labels = vec![i18n("Automatic")];
+        let mut fingerprints: Vec<String> = Vec::new();
+        for k in &keys {
+            labels.push(format!("{} ({})", k.primary_uid(), crate::pgp::key_display(&k.key_id)));
+            fingerprints.push(k.fingerprint.clone());
+        }
+        // A chosen key gpg did not list (it failed, or the key went) stays
+        // a row of its own, so saving the editor does not drop it.
+        if let Some(f) = chosen.as_deref() {
+            if !fingerprints.iter().any(|k| k.eq_ignore_ascii_case(f)) {
+                labels.push(crate::pgp::key_display(f));
+                fingerprints.push(f.to_string());
+            }
+        }
+        let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+        row.set_model(Some(&gtk::StringList::new(&refs)));
+        let selected = chosen
+            .as_deref()
+            .and_then(|f| fingerprints.iter().position(|k| k.eq_ignore_ascii_case(f)))
+            .map(|i| i as u32 + 1)
+            .unwrap_or(0);
+        row.set_selected(selected);
+        row.set_sensitive(true);
+        PGP_KEY_CHOICES.with(|c| {
+            let mut c = c.borrow_mut();
+            c.fingerprints = fingerprints;
+            c.loaded = true;
+        });
+    });
 }
 
 /// Auto-empty choices (#140), in combo order: never, then the ages.
@@ -4284,6 +4440,7 @@ fn fill_editor(widgets: &AccountsWindowWidgets, acc: &AccountConfig) {
     // password providers by server, otherwise "IMAP/POP3 Account").
     widgets.provider_row.set_selected(provider_index_for_account(acc));
     widgets.protocol_row.set_selected(protocol_index(acc.protocol));
+    widgets.jmap_token_row.set_active(acc.jmap_token);
     widgets.host_row.set_text(&acc.imap_host);
     widgets.port_row.set_text(&acc.imap_port.to_string());
     widgets.smtp_row.set_text(&acc.smtp_host);
@@ -4383,6 +4540,7 @@ fn clear_editor(widgets: &AccountsWindowWidgets) {
     widgets.email_row.set_text("");
     widgets.provider_row.set_selected(manual_index());
     widgets.protocol_row.set_selected(0);
+    widgets.jmap_token_row.set_active(false);
     widgets.host_row.set_text("");
     widgets.port_row.set_text("993");
     widgets.smtp_row.set_text("");
@@ -4429,6 +4587,29 @@ fn kind_index(kind: ProviderKind) -> u32 {
         .unwrap_or_else(manual_index)
 }
 
+/// Dropdown index of a JMAP account's entry: Fastmail's for a Fastmail
+/// address, the generic one for an account made from it, else Stalwart's.
+fn jmap_index(acc: &AccountConfig) -> u32 {
+    let brand = jmap_brand(acc);
+    PROVIDERS
+        .iter()
+        .position(|p| p.kind == ProviderKind::Jmap && p.brand == brand)
+        .map(|i| i as u32)
+        .unwrap_or_else(|| kind_index(ProviderKind::Jmap))
+}
+
+/// The mark of a JMAP account: Fastmail's, the JMAP tile for one made from
+/// the generic entry, otherwise Stalwart's.
+fn jmap_brand(acc: &AccountConfig) -> &'static str {
+    if acc.imap_host.to_ascii_lowercase().contains("fastmail") {
+        "fastmail"
+    } else if acc.jmap_generic {
+        "mail-jmap"
+    } else {
+        "stalwart"
+    }
+}
+
 /// Dropdown index of the `Preset` provider whose incoming server matches `host`,
 /// or the manual entry when nothing matches.
 fn preset_index_for_host(host: &str) -> u32 {
@@ -4455,13 +4636,13 @@ fn provider_index_for_account(acc: &AccountConfig) -> u32 {
         return kind_index(kind);
     }
     if acc.protocol == Protocol::Jmap {
-        return kind_index(ProviderKind::Jmap);
+        return jmap_index(acc);
     }
     preset_index_for_host(&acc.imap_host)
 }
 
 /// The Incoming Protocol row's entries, in dropdown order. JMAP is not one:
-/// it comes with the Stalwart entry in the Provider picker.
+/// it comes with the JMAP entries in the Provider picker.
 const PROTOCOLS: [Protocol; 2] = [Protocol::Imap, Protocol::Pop3];
 
 fn protocol_at(idx: u32) -> Protocol {
@@ -4469,7 +4650,7 @@ fn protocol_at(idx: u32) -> Protocol {
 }
 
 /// The protocol the form stands for: the provider's own for one that has
-/// one (Stalwart's JMAP), otherwise the Incoming Protocol row's.
+/// one (the JMAP entries'), otherwise the Incoming Protocol row's.
 fn form_protocol(widgets: &AccountsWindowWidgets) -> Protocol {
     match provider_at(widgets.provider_row.selected()).kind {
         ProviderKind::Jmap => Protocol::Jmap,
@@ -4495,6 +4676,15 @@ fn apply_protocol(widgets: &AccountsWindowWidgets) {
     widgets.smtp_separate_row.set_visible(widgets.protocol_row.is_visible() && !jmap);
     // JMAP runs over a different TLS stack (rustls), which offers no such waiver.
     widgets.tls_mismatch_row.set_visible(widgets.protocol_row.is_visible() && !jmap);
+    // A token stands in for the username and password (#356); the rows
+    // only change where the password is asked for at all.
+    let password_shown = widgets.pass_row.is_visible();
+    widgets.jmap_token_row.set_visible(servers_shown && jmap && password_shown);
+    let token = jmap && widgets.jmap_token_row.is_active();
+    if password_shown {
+        widgets.user_row.set_visible(!token);
+        widgets.pass_row.set_title(&if token { i18n("API Token") } else { i18n("Password") });
+    }
     if jmap {
         widgets.smtp_separate_row.set_active(false);
         widgets.host_row.set_title(&i18n("Server (host name or URL)"));
@@ -4514,7 +4704,7 @@ fn brand_for_account(acc: &AccountConfig) -> &'static str {
         return "outlook";
     }
     if acc.protocol == Protocol::Jmap {
-        return manual_brand(Protocol::Jmap, &acc.imap_host);
+        return jmap_brand(acc);
     }
     if let Some(s) = acc.oauth_settings.as_ref().filter(|_| acc.oauth) {
         if s.token_url.contains("googleapis") {
@@ -4539,18 +4729,16 @@ fn brand_for_account(acc: &AccountConfig) -> &'static str {
         return "proton";
     }
     match provider_at(preset_index_for_host(&host)).brand {
-        "mail" => manual_brand(acc.protocol, &host),
+        "mail" => manual_brand(acc.protocol),
         brand => brand,
     }
 }
 
 /// The mark for an account whose servers were entered by hand: its
-/// protocol's tile, or for JMAP the server most likely behind it.
-fn manual_brand(protocol: Protocol, host: &str) -> &'static str {
+/// protocol's tile.
+fn manual_brand(protocol: Protocol) -> &'static str {
     match protocol {
-        // Fastmail speaks JMAP too; anyone else on it is most likely Stalwart.
-        Protocol::Jmap if host.to_ascii_lowercase().contains("fastmail") => "fastmail",
-        Protocol::Jmap => "stalwart",
+        Protocol::Jmap => "mail-jmap",
         Protocol::Pop3 => "mail-pop3",
         _ => "mail",
     }
@@ -4622,8 +4810,9 @@ mod tests {
 
     #[test]
     fn jmap_provider_sets_the_protocol() {
-        let p = PROVIDERS.iter().find(|p| p.kind == ProviderKind::Jmap).expect("a JMAP entry");
+        let p = PROVIDERS.iter().find(|p| p.kind == ProviderKind::Jmap && p.brand == "stalwart").expect("a JMAP entry");
         assert!(p.is_password());
+        assert!(!p.wizard_token());
         assert_eq!(p.wizard_protocol(), Protocol::Jmap);
         assert!(p.imap_host.is_empty(), "a self-hosted server has no preset host");
         // The Incoming Protocol row offers IMAP and POP3 only; a JMAP
@@ -4634,8 +4823,19 @@ mod tests {
         let acc = AccountConfig { protocol: Protocol::Jmap, imap_host: "mail.example.org".into(), ..crate::ui::welcome::blank_account() };
         assert_eq!(provider_at(provider_index_for_account(&acc)).label, p.label);
         assert_eq!(brand_for_account(&acc), "stalwart");
+        // One made from the generic entry keeps to it, under the JMAP tile.
+        let generic = AccountConfig { jmap_generic: true, ..acc.clone() };
+        let gp = provider_at(provider_index_for_account(&generic));
+        assert!(gp.wizard_jmap_generic());
+        assert_eq!(brand_for_account(&generic), "mail-jmap");
         let fm = AccountConfig { imap_host: "api.fastmail.com".into(), ..acc };
         assert_eq!(brand_for_account(&fm), "fastmail");
+        // Fastmail's own entry: its session URL, and a token sign-in (#356).
+        let fp = provider_at(provider_index_for_account(&fm));
+        assert_eq!(fp.label, "Fastmail (JMAP)");
+        assert!(fp.wizard_token());
+        assert_eq!(fp.wizard_protocol(), Protocol::Jmap);
+        assert!(fp.imap_host.starts_with("https://api.fastmail.com/"));
     }
 
     #[test]

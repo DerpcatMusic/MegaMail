@@ -692,6 +692,12 @@ fn push_block(out: &mut String, text: &str) {
     out.push_str(text.trim_end_matches('\n'));
 }
 
+/// Whether a blockquote is WebKit's Indent rather than a quote: it styles
+/// its own as `margin: 0 0 0 40px; border: none; padding: 0px;`.
+fn is_indent(e: &Elem) -> bool {
+    e.attr("style").is_some_and(|s| s.replace(' ', "").to_ascii_lowercase().contains("border:none"))
+}
+
 /// One block element as Markdown.
 fn block(e: &Elem) -> String {
     match e.name.as_str() {
@@ -711,6 +717,9 @@ fn block(e: &Elem) -> String {
             let fence = if text.contains("```") { "````" } else { "```" };
             format!("{fence}{lang}\n{text}\n{fence}")
         }
+        // The composer's Indent is a blockquote too, with no border (#358):
+        // an indent, which plain text and Markdown leave as the paragraphs.
+        "blockquote" if is_indent(e) => blocks(&e.children),
         "blockquote" => prefix_lines(&blocks(&e.children), "> "),
         "ul" | "ol" => list(e),
         "li" => blocks(&e.children),
@@ -1445,5 +1454,14 @@ mod tests {
         let out = pretty_html("<p>one</p><p>two</p><pre><code>a\nb</code></pre>");
         assert!(out.lines().count() >= 3, "{out}");
         has(&out, "<pre><code>a\nb</code></pre>");
+    }
+
+    #[test]
+    fn an_indent_is_not_a_quote() {
+        // The composer's Indent (#358) keeps its words, without the "> " a
+        // quote gets.
+        let html = "<blockquote style=\"margin: 0 0 0 40px; border: none; padding: 0px;\"><p>tail</p></blockquote>\
+                    <blockquote><p>quoted</p></blockquote>";
+        assert_eq!(html_to_text(html), "tail\n\n> quoted");
     }
 }

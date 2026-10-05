@@ -139,6 +139,9 @@ msgstr "Mellékletek"
 msgid "Toggle sidebar"
 msgstr "Oldalsáv ki/bekapcsolása"
 
+msgid "Keyboard Shortcuts"
+msgstr "Billentyűparancsok"
+
 msgid "Date (Newest first)"
 msgstr "Dátum (legújabb elöl)"
 
@@ -268,18 +271,15 @@ msgstr "Állapotsáv megjelenítése"
 msgid "Console"
 msgstr "Konzol"
 
-msgid "Keyboard Shortcuts"
-msgstr "Billentyűparancsok"
-
 msgid "About"
 msgstr "Névjegy"
 
 msgid "Remove Tags"
 msgstr "Címkék eltávolítása"
 
+#, fuzzy
 msgid ""
-"Single-key shortcuts are switched off. Turn them on in Settings → System & "
-"Appearance."
+"Single-key shortcuts are switched off. Turn them on in Settings → System."
 msgstr ""
 "Az egybillentyűs gyorsbillentyűk ki vannak kapcsolva. Kapcsolja be őket a "
 "Beállítások → Rendszer és megjelenés menüben."
@@ -836,8 +836,15 @@ msgstr ""
 msgid "Remove every tag"
 msgstr "Minden címke eltávolítása"
 
-msgid "Everything else"
-msgstr "Minden egyéb"
+msgid "Print the message you are reading"
+msgstr "Olvasott üzenet nyomtatása"
+
+msgid "Preview it as a PDF first"
+msgstr "Először PDF-ként való megtekintés"
+
+#, fuzzy
+msgid "Writing"
+msgstr "Írás:"
 
 msgid "Compose"
 msgstr "Levélírás"
@@ -848,6 +855,28 @@ msgstr "Küldd el az éppen írt üzenetet"
 msgid "Back out of a reply and return to the list"
 msgstr "Kilépés a válaszból és visszatérés a listához"
 
+msgid "Emoji chooser, at the cursor"
+msgstr ""
+
+msgid "New paragraph (Return starts a new line, unless Settings swaps them)"
+msgstr ""
+
+msgid "Bold, italic, underline"
+msgstr ""
+
+#, fuzzy
+msgid "Preview the highlighted attachment"
+msgstr "Mellékletek elrejtése"
+
+msgid "Previous or next in the gallery's preview"
+msgstr ""
+
+msgid "Close the gallery's preview"
+msgstr ""
+
+msgid "Everything else"
+msgstr "Minden egyéb"
+
 msgid "Undo the last action, or the last edit while you are writing"
 msgstr ""
 "Visszavonhatja az utolsó műveletet vagy az írás közben végzett utolsó "
@@ -855,12 +884,6 @@ msgstr ""
 
 msgid "Redo it (Ctrl+Y does the same)"
 msgstr "Újra (a Ctrl+Y ugyanezt teszi)"
-
-msgid "Print the message you are reading"
-msgstr "Olvasott üzenet nyomtatása"
-
-msgid "Preview it as a PDF first"
-msgstr "Először PDF-ként való megtekintés"
 
 msgid "Reveal the status bar (also: long-press Refresh)"
 msgstr "Állapotsáv megjelenítése (vagy a Frissítés hosszan lenyomva tartása)"
@@ -876,6 +899,9 @@ msgstr "Üzenet nagyítása vagy kicsinyítése"
 
 msgid "Message zoom back to the default"
 msgstr "Az üzenet nagyítását visszaállítani az alapértelmezett értékre"
+
+msgid "Search the Settings window, when it is open"
+msgstr ""
 
 msgid "Console mode (when enabled in Settings)"
 msgstr "Konzol mód (ha engedélyezve van a Beállításokban)"
@@ -1275,12 +1301,27 @@ msgstr "Adja meg kézzel a kiszolgáló adatait."
 msgid "Enter your provider's OAuth endpoints, then sign in."
 msgstr "Adja meg a szolgáltató OAuth végpontjait, majd jelentkezzen be."
 
+#, fuzzy
+msgid ""
+"Enter your JMAP server's address, or the URL of its session resource. Mail "
+"is read and sent over JMAP; no SMTP settings are needed."
+msgstr ""
+"Adja meg a Stalwart kiszolgáló címét. A levelek olvasása és küldése JMAP-on "
+"keresztül történik; nincs szükség SMTP beállításokra."
+
 msgid "Sign in with your browser — no password needed."
 msgstr "Jelentkezzen be a böngészőben — nincs szükség jelszóra."
 
 msgid "Requires Proton Mail Bridge running locally."
 msgstr "A Proton Mail Bridge helyi futtatása szükséges."
 
+msgid ""
+"Signs in with an API token, not your password. Make one in Fastmail's "
+"settings, under Privacy & Security, with access to mail and to sending it. "
+"Mail is read and sent over JMAP."
+msgstr ""
+
+#, fuzzy
 msgid ""
 "Enter your Stalwart server's address. Mail is read and sent over JMAP; no "
 "SMTP settings are needed."
@@ -1465,6 +1506,14 @@ msgstr "Felhasználónév"
 
 msgid "Password"
 msgstr "Jelszó"
+
+#, fuzzy
+msgid "Sign in with an API token"
+msgstr "Bejelentkezés böngészővel"
+
+msgid ""
+"For servers that take a token in place of the password, as Fastmail does."
+msgstr ""
 
 msgid "OAuth Client ID"
 msgstr "OAuth ügyfélazonosító (Client ID)"
@@ -1856,6 +1905,10 @@ msgstr "Küldés ezen a fiókon keresztül"
 msgid "Remove this alias"
 msgstr "Álnév (alias) eltávolítása"
 
+msgid ""
+"Kept on the server; change it through your provider's webmail interface."
+msgstr ""
+
 msgid "Display name (optional)"
 msgstr "Megjelenítendő név (opcionális)"
 
@@ -1925,6 +1978,9 @@ msgid "After {n} day"
 msgid_plural "After {n} days"
 msgstr[0] "{n} nap múlva"
 msgstr[1] "{n} nap múlva"
+
+msgid "API Token"
+msgstr ""
 
 #. A JMAP server is one address, and it sends the mail
 #. itself: no SMTP rows.
@@ -2891,6 +2947,9 @@ msgstr ""
 msgid "Could not translate"
 msgstr "Az üzenet nem címkézhető: {e}"
 
+msgid "Cannot send with OpenPGP"
+msgstr "Nem lehet küldeni OpenPGP-vel"
+
 #, fuzzy
 msgid "An attachment is missing"
 msgstr "{n} melléklet"
@@ -2899,9 +2958,6 @@ msgid ""
 "Hylki cannot read {names}. It was moved or deleted after it was attached. "
 "Remove it, or attach it again from where it is now."
 msgstr ""
-
-msgid "Cannot send with OpenPGP"
-msgstr "Nem lehet küldeni OpenPGP-vel"
 
 #, fuzzy
 msgid "Check the From address"
@@ -3589,21 +3645,6 @@ msgstr "Ezt az üzenetet még nem ellenőrizték."
 msgid "That key is no longer in your keyring."
 msgstr "Ez a kulcs már nincs a kulcstartóján."
 
-msgid "Trust this key?"
-msgstr "Megbízik ebben a kulcsban?"
-
-msgid ""
-"Compare the fingerprint with the one {uid} gives you in person or over "
-"another channel. Trusting a key you have not checked lets an impostor's "
-"signature pass as theirs."
-msgstr ""
-"Hasonlítsd össze az ujjlenyomatot azzal, amelyet {uid} személyesen vagy más "
-"csatornán keresztül megad neked. Ha megbízol egy olyan kulcsban, amelyet nem "
-"ellenőriztél, akkor egy csaló aláírása is érvényesnek minősülhet."
-
-msgid "Trust"
-msgstr "Hitelesít"
-
 msgid "Key trusted."
 msgstr "A kulcs hitelesítve."
 
@@ -3688,6 +3729,21 @@ msgstr "Elrejtés a preview text"
 
 msgid "Save Image"
 msgstr "Kép mentése"
+
+msgid "Trust this key?"
+msgstr "Megbízik ebben a kulcsban?"
+
+msgid ""
+"Compare the fingerprint with the one {uid} gives you in person or over "
+"another channel. Trusting a key you have not checked lets an impostor's "
+"signature pass as theirs."
+msgstr ""
+"Hasonlítsd össze az ujjlenyomatot azzal, amelyet {uid} személyesen vagy más "
+"csatornán keresztül megad neked. Ha megbízol egy olyan kulcsban, amelyet nem "
+"ellenőriztél, akkor egy csaló aláírása is érvényesnek minősülhet."
+
+msgid "Trust"
+msgstr "Hitelesít"
 
 msgid "The sender's key was imported from the message."
 msgstr "A feladó kulcsa importálva az üzenetből."
@@ -5023,6 +5079,24 @@ msgstr ""
 "kapcsolva, a ENTER lenyomásával ugyanazon bekezdésen belül új sor kezdődik. "
 "A Shift+ENTER billentyűkombinációval mindig a másik művelet történik."
 
+#, fuzzy
+msgid "Formatting toolbar"
+msgstr "Egyáltalán nincs formázás"
+
+msgid ""
+"Whether a new message shows the extra tools (paragraph styles, fonts, "
+"colors, indents, emoji and pictures). The chevron in the toolbar shows or "
+"hides them at any time."
+msgstr ""
+
+#, fuzzy
+msgid "Always collapsed"
+msgstr "Feladó mindig engedélyezve"
+
+#, fuzzy
+msgid "Always expanded"
+msgstr "Feladó mindig engedélyezve"
+
 msgid "Write messages in"
 msgstr "Írj üzeneteket a"
 
@@ -5582,6 +5656,41 @@ msgstr "Beillesztés formázással"
 msgid "Paste as Plain Text"
 msgstr "Beillesztés egyszerű szövegként"
 
+msgid "Normal"
+msgstr ""
+
+#, fuzzy
+msgid "Heading 1"
+msgstr "Olvasás"
+
+#, fuzzy
+msgid "Heading 2"
+msgstr "Olvasás"
+
+#, fuzzy
+msgid "Heading 3"
+msgstr "Olvasás"
+
+#, fuzzy
+msgid "Preformatted"
+msgstr "Dátumformátum"
+
+msgid "Sans Serif"
+msgstr ""
+
+msgid "Serif"
+msgstr ""
+
+#, fuzzy
+msgid "Monospace"
+msgstr "Fix szélességű betűtípus"
+
+msgid "Paragraph style"
+msgstr ""
+
+msgid "Font"
+msgstr ""
+
 msgid "Bold"
 msgstr "Félkövér"
 
@@ -5594,22 +5703,62 @@ msgstr "Aláhúzott"
 msgid "Strikethrough"
 msgstr "Áthúzott"
 
+#, fuzzy
+msgid "Text color"
+msgstr "Kör színe"
+
+msgid "Highlight"
+msgstr ""
+
+msgid "No highlight"
+msgstr ""
+
 msgid "Bulleted list"
 msgstr "Felsorolás"
 
 msgid "Numbered list"
 msgstr "Számozott lista"
 
-#. Adwaita has no blockquote glyph; the indent icon reads as "quote".
+msgid "Decrease indent"
+msgstr ""
+
+msgid "Increase indent"
+msgstr ""
+
+#. Adwaita has no blockquote glyph; the bubble with its quote marks
+#. reads as one.
 msgid "Quote"
 msgstr "Idézet"
 
-#. `LINK` is a sentinel command (handled specially); the icon is real.
 msgid "Insert link"
 msgstr "Hivatkozás beszúrása"
 
+#, fuzzy
+msgid "Insert emoji"
+msgstr "Hivatkozás beszúrása"
+
+#, fuzzy
+msgid "Insert picture"
+msgstr "Beillesztés a szövegbe"
+
 msgid "Clear formatting"
 msgstr "Formázás törlése"
+
+#, fuzzy
+msgid "Fewer formatting tools"
+msgstr "Formázás törlése"
+
+#, fuzzy
+msgid "More formatting tools"
+msgstr "Egyáltalán nincs formázás"
+
+#, fuzzy
+msgid "Pictures"
+msgstr "Kép"
+
+#, fuzzy
+msgid "Insert Picture"
+msgstr "Kép választása"
 
 msgid "Insert Link"
 msgstr "Hivatkozás Beszúrása"
@@ -6559,9 +6708,6 @@ msgstr "Hyprlab"
 #~ "Üzenetek címkézése egy vagy több színes címkével. A címkék IMAP-"
 #~ "kulcsszóként tárolódnak a levelezőkiszolgálón, így a Thunderbird és más "
 #~ "kliensek ugyanazokat a címkéket jelenítik meg."
-
-#~ msgid "Circle color"
-#~ msgstr "Kör színe"
 
 #~ msgid "Optional — shown instead of initials"
 #~ msgstr "Nem kötelező — a monogram helyett jelenik meg"

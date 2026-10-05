@@ -983,6 +983,10 @@ impl Component for Welcome {
                     widgets.port_row.set_title(&if jmap { i18n("Port") } else { i18n("IMAP port") });
                     widgets.smtp_row.set_visible(!jmap);
                     widgets.smtp_port_row.set_visible(!jmap);
+                    // Fastmail over JMAP takes an API token, not the password (#356).
+                    widgets
+                        .pass_row
+                        .set_title(&if p.wizard_token() { i18n("API Token") } else { i18n("Password") });
                     let hint = p.wizard_hint();
                     widgets.hint_lbl.set_visible(!hint.is_empty());
                     widgets.hint_lbl.set_text(&i18n(hint));
@@ -1030,6 +1034,8 @@ impl Component for Welcome {
                     smtp_port: widgets.smtp_port_row.text().trim().parse().unwrap_or(587),
                     username: email,
                     password,
+                    jmap_token: provider.is_some_and(|p| p.wizard_token()),
+                    jmap_generic: provider.is_some_and(|p| p.wizard_jmap_generic()),
                     ..blank_account()
                 };
                 self.test_seq += 1;
@@ -1333,6 +1339,8 @@ pub(crate) fn blank_account() -> AccountConfig {
         username: String::new(),
         password: String::new(),
         smtp_separate: false,
+        jmap_token: false,
+        jmap_generic: false,
         tls_accept_hostname_mismatch: false,
         security: None,
         smtp_username: String::new(),

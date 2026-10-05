@@ -139,6 +139,9 @@ msgstr "Συνημμένα"
 msgid "Toggle sidebar"
 msgstr "Εναλλαγή πλευρικής στήλης"
 
+msgid "Keyboard Shortcuts"
+msgstr "Συντομεύσεις πληκτρολογίου"
+
 msgid "Date (Newest first)"
 msgstr "Ημερομηνία (νεότερα πρώτα)"
 
@@ -271,18 +274,15 @@ msgstr "Εμφάνιση γραμμής κατάστασης"
 msgid "Console"
 msgstr "Κονσόλα"
 
-msgid "Keyboard Shortcuts"
-msgstr "Συντομεύσεις πληκτρολογίου"
-
 msgid "About"
 msgstr "Σχετικά"
 
 msgid "Remove Tags"
 msgstr "Αφαίρεση ετικετών"
 
+#, fuzzy
 msgid ""
-"Single-key shortcuts are switched off. Turn them on in Settings → System & "
-"Appearance."
+"Single-key shortcuts are switched off. Turn them on in Settings → System."
 msgstr ""
 "Οι συντομεύσεις ενός πλήκτρου είναι απενεργοποιημένες. Ενεργοποιήστε τις "
 "στις Ρυθμίσεις → Σύστημα και εμφάνιση."
@@ -849,8 +849,15 @@ msgstr ""
 msgid "Remove every tag"
 msgstr "Αφαίρεση όλων των ετικετών"
 
-msgid "Everything else"
-msgstr "Όλα τα υπόλοιπα"
+msgid "Print the message you are reading"
+msgstr "Εκτύπωση του μηνύματος που διαβάζετε"
+
+msgid "Preview it as a PDF first"
+msgstr "Προεπισκόπηση πρώτα ως PDF"
+
+#, fuzzy
+msgid "Writing"
+msgstr "Σύνταξη:"
 
 msgid "Compose"
 msgstr "Σύνταξη"
@@ -861,6 +868,28 @@ msgstr "Αποστολή του μηνύματος που συντάσσετε"
 msgid "Back out of a reply and return to the list"
 msgstr "Έξοδος από την απάντηση και επιστροφή στη λίστα"
 
+msgid "Emoji chooser, at the cursor"
+msgstr ""
+
+msgid "New paragraph (Return starts a new line, unless Settings swaps them)"
+msgstr ""
+
+msgid "Bold, italic, underline"
+msgstr ""
+
+#, fuzzy
+msgid "Preview the highlighted attachment"
+msgstr "Απόκρυψη συνημμένων"
+
+msgid "Previous or next in the gallery's preview"
+msgstr ""
+
+msgid "Close the gallery's preview"
+msgstr ""
+
+msgid "Everything else"
+msgstr "Όλα τα υπόλοιπα"
+
 msgid "Undo the last action, or the last edit while you are writing"
 msgstr ""
 "Αναίρεση της τελευταίας ενέργειας ή της τελευταίας επεξεργασίας κατά τη "
@@ -868,12 +897,6 @@ msgstr ""
 
 msgid "Redo it (Ctrl+Y does the same)"
 msgstr "Επανάληψη (το Ctrl+Y κάνει το ίδιο)"
-
-msgid "Print the message you are reading"
-msgstr "Εκτύπωση του μηνύματος που διαβάζετε"
-
-msgid "Preview it as a PDF first"
-msgstr "Προεπισκόπηση πρώτα ως PDF"
 
 msgid "Reveal the status bar (also: long-press Refresh)"
 msgstr ""
@@ -890,6 +913,9 @@ msgstr "Μεγέθυνση ή σμίκρυνση του μηνύματος"
 
 msgid "Message zoom back to the default"
 msgstr "Επαναφορά της μεγέθυνσης του μηνύματος στην προεπιλογή"
+
+msgid "Search the Settings window, when it is open"
+msgstr ""
 
 msgid "Console mode (when enabled in Settings)"
 msgstr "Λειτουργία κονσόλας (όταν είναι ενεργοποιημένη στις Ρυθμίσεις)"
@@ -1293,6 +1319,14 @@ msgid "Enter your provider's OAuth endpoints, then sign in."
 msgstr ""
 "Εισαγάγετε τα OAuth endpoints του παρόχου σας και, στη συνέχεια, συνδεθείτε."
 
+#, fuzzy
+msgid ""
+"Enter your JMAP server's address, or the URL of its session resource. Mail "
+"is read and sent over JMAP; no SMTP settings are needed."
+msgstr ""
+"Εισαγάγετε τη διεύθυνση του διακομιστή Stalwart. Η αλληλογραφία διαβάζεται "
+"και αποστέλλεται μέσω JMAP· δεν απαιτούνται ρυθμίσεις SMTP."
+
 msgid "Sign in with your browser — no password needed."
 msgstr ""
 "Συνδεθείτε μέσω του προγράμματος περιήγησής σας — δεν απαιτείται κωδικός "
@@ -1301,6 +1335,13 @@ msgstr ""
 msgid "Requires Proton Mail Bridge running locally."
 msgstr "Απαιτεί το Proton Mail Bridge να εκτελείται τοπικά."
 
+msgid ""
+"Signs in with an API token, not your password. Make one in Fastmail's "
+"settings, under Privacy & Security, with access to mail and to sending it. "
+"Mail is read and sent over JMAP."
+msgstr ""
+
+#, fuzzy
 msgid ""
 "Enter your Stalwart server's address. Mail is read and sent over JMAP; no "
 "SMTP settings are needed."
@@ -1488,6 +1529,14 @@ msgstr "Όνομα χρήστη"
 
 msgid "Password"
 msgstr "Κωδικός πρόσβασης"
+
+#, fuzzy
+msgid "Sign in with an API token"
+msgstr "Σύνδεση με πρόγραμμα περιήγησης"
+
+msgid ""
+"For servers that take a token in place of the password, as Fastmail does."
+msgstr ""
 
 msgid "OAuth Client ID"
 msgstr "Αναγνωριστικό πελάτη OAuth"
@@ -1883,6 +1932,10 @@ msgstr "Αποστολή μέσω αυτού του λογαριασμού"
 msgid "Remove this alias"
 msgstr "Αφαίρεση αυτού του ψευδωνύμου"
 
+msgid ""
+"Kept on the server; change it through your provider's webmail interface."
+msgstr ""
+
 msgid "Display name (optional)"
 msgstr "Εμφανιζόμενο όνομα (προαιρετικό)"
 
@@ -1952,6 +2005,9 @@ msgid "After {n} day"
 msgid_plural "After {n} days"
 msgstr[0] "Μετά από {n} ημέρα"
 msgstr[1] "Μετά από {n} ημέρες"
+
+msgid "API Token"
+msgstr ""
 
 #. A JMAP server is one address, and it sends the mail
 #. itself: no SMTP rows.
@@ -2919,6 +2975,9 @@ msgstr ""
 msgid "Could not translate"
 msgstr "Δεν ήταν δυνατή η προσθήκη ετικέτας στο μήνυμα: {e}"
 
+msgid "Cannot send with OpenPGP"
+msgstr "Δεν είναι δυνατή η αποστολή με OpenPGP"
+
 #, fuzzy
 msgid "An attachment is missing"
 msgstr "{n} συνημμένο"
@@ -2927,9 +2986,6 @@ msgid ""
 "Hylki cannot read {names}. It was moved or deleted after it was attached. "
 "Remove it, or attach it again from where it is now."
 msgstr ""
-
-msgid "Cannot send with OpenPGP"
-msgstr "Δεν είναι δυνατή η αποστολή με OpenPGP"
 
 #, fuzzy
 msgid "Check the From address"
@@ -3606,21 +3662,6 @@ msgstr "Αυτό το μήνυμα δεν έχει ελεγχθεί."
 msgid "That key is no longer in your keyring."
 msgstr "Αυτό το κλειδί δεν βρίσκεται πλέον στην κλειδοθήκη σας."
 
-msgid "Trust this key?"
-msgstr "Να θεωρηθεί έμπιστο αυτό το κλειδί;"
-
-msgid ""
-"Compare the fingerprint with the one {uid} gives you in person or over "
-"another channel. Trusting a key you have not checked lets an impostor's "
-"signature pass as theirs."
-msgstr ""
-"Συγκρίνετε το αποτύπωμα με αυτό που σας δίνει ο/η {uid} αυτοπροσώπως ή μέσω "
-"άλλου καναλιού. Αν εμπιστευτείτε ένα κλειδί που δεν έχετε ελέγξει, η "
-"υπογραφή ενός απατεώνα μπορεί να θεωρηθεί δική του/της."
-
-msgid "Trust"
-msgstr "Ορισμός ως έμπιστου"
-
 msgid "Key trusted."
 msgstr "Το κλειδί ορίστηκε ως έμπιστο."
 
@@ -3706,6 +3747,21 @@ msgstr "Απόκρυψη του κειμένου προεπισκόπησης"
 
 msgid "Save Image"
 msgstr "Αποθήκευση εικόνας"
+
+msgid "Trust this key?"
+msgstr "Να θεωρηθεί έμπιστο αυτό το κλειδί;"
+
+msgid ""
+"Compare the fingerprint with the one {uid} gives you in person or over "
+"another channel. Trusting a key you have not checked lets an impostor's "
+"signature pass as theirs."
+msgstr ""
+"Συγκρίνετε το αποτύπωμα με αυτό που σας δίνει ο/η {uid} αυτοπροσώπως ή μέσω "
+"άλλου καναλιού. Αν εμπιστευτείτε ένα κλειδί που δεν έχετε ελέγξει, η "
+"υπογραφή ενός απατεώνα μπορεί να θεωρηθεί δική του/της."
+
+msgid "Trust"
+msgstr "Ορισμός ως έμπιστου"
 
 msgid "The sender's key was imported from the message."
 msgstr "Το κλειδί του αποστολέα εισήχθη από το μήνυμα."
@@ -5039,6 +5095,24 @@ msgstr ""
 "από την επόμενη. Όταν είναι απενεργοποιημένο, το Return ξεκινά νέα γραμμή "
 "στην ίδια παράγραφο. Το Shift+Return κάνει πάντα το αντίθετο."
 
+#, fuzzy
+msgid "Formatting toolbar"
+msgstr "Χωρίς καμία μορφοποίηση"
+
+msgid ""
+"Whether a new message shows the extra tools (paragraph styles, fonts, "
+"colors, indents, emoji and pictures). The chevron in the toolbar shows or "
+"hides them at any time."
+msgstr ""
+
+#, fuzzy
+msgid "Always collapsed"
+msgstr "Να επιτρέπεται πάντα ο αποστολέας"
+
+#, fuzzy
+msgid "Always expanded"
+msgstr "Να επιτρέπεται πάντα ο αποστολέας"
+
 msgid "Write messages in"
 msgstr "Σύνταξη μηνυμάτων σε"
 
@@ -5597,6 +5671,41 @@ msgstr "Επικόλληση με μορφοποίηση"
 msgid "Paste as Plain Text"
 msgstr "Επικόλληση ως απλό κείμενο"
 
+msgid "Normal"
+msgstr ""
+
+#, fuzzy
+msgid "Heading 1"
+msgstr "Ανάγνωση"
+
+#, fuzzy
+msgid "Heading 2"
+msgstr "Ανάγνωση"
+
+#, fuzzy
+msgid "Heading 3"
+msgstr "Ανάγνωση"
+
+#, fuzzy
+msgid "Preformatted"
+msgstr "Μορφή ημερομηνίας"
+
+msgid "Sans Serif"
+msgstr ""
+
+msgid "Serif"
+msgstr ""
+
+#, fuzzy
+msgid "Monospace"
+msgstr "Γραμματοσειρά σταθερού πλάτους"
+
+msgid "Paragraph style"
+msgstr ""
+
+msgid "Font"
+msgstr ""
+
 msgid "Bold"
 msgstr "Έντονα"
 
@@ -5609,22 +5718,62 @@ msgstr "Υπογράμμιση"
 msgid "Strikethrough"
 msgstr "Διαγράμμιση"
 
+#, fuzzy
+msgid "Text color"
+msgstr "Χρώμα ετικέτας"
+
+msgid "Highlight"
+msgstr ""
+
+msgid "No highlight"
+msgstr ""
+
 msgid "Bulleted list"
 msgstr "Λίστα με κουκκίδες"
 
 msgid "Numbered list"
 msgstr "Αριθμημένη λίστα"
 
-#. Adwaita has no blockquote glyph; the indent icon reads as "quote".
+msgid "Decrease indent"
+msgstr ""
+
+msgid "Increase indent"
+msgstr ""
+
+#. Adwaita has no blockquote glyph; the bubble with its quote marks
+#. reads as one.
 msgid "Quote"
 msgstr "Παράθεση"
 
-#. `LINK` is a sentinel command (handled specially); the icon is real.
 msgid "Insert link"
 msgstr "Εισαγωγή συνδέσμου"
 
+#, fuzzy
+msgid "Insert emoji"
+msgstr "Εισαγωγή συνδέσμου"
+
+#, fuzzy
+msgid "Insert picture"
+msgstr "Εισαγωγή στο κείμενο"
+
 msgid "Clear formatting"
 msgstr "Εκκαθάριση μορφοποίησης"
+
+#, fuzzy
+msgid "Fewer formatting tools"
+msgstr "Εκκαθάριση μορφοποίησης"
+
+#, fuzzy
+msgid "More formatting tools"
+msgstr "Χωρίς καμία μορφοποίηση"
+
+#, fuzzy
+msgid "Pictures"
+msgstr "Εικόνα"
+
+#, fuzzy
+msgid "Insert Picture"
+msgstr "Επιλογή εικόνας"
 
 msgid "Insert Link"
 msgstr "Εισαγωγή συνδέσμου"

@@ -27,11 +27,14 @@
     <file>icons/scalable/actions/edit-copy-symbolic.svg</file>
     <file>icons/scalable/actions/emblem-important-symbolic.svg</file>
     <file>icons/scalable/actions/eye-open-negative-filled-symbolic.svg</file>
+    <file>icons/scalable/actions/face-smile-symbolic.svg</file>
     <file>icons/scalable/actions/filter-folder-symbolic.svg</file>
     <file>icons/scalable/actions/filter-symbolic.svg</file>
     <file>icons/scalable/actions/folder-download-symbolic.svg</file>
     <file>icons/scalable/actions/folder-symbolic.svg</file>
+    <file>icons/scalable/actions/format-indent-less-symbolic.svg</file>
     <file>icons/scalable/actions/format-indent-more-symbolic.svg</file>
+    <file>icons/scalable/actions/format-quote-symbolic.svg</file>
     <file>icons/scalable/actions/format-text-bold-symbolic.svg</file>
     <file>icons/scalable/actions/format-text-italic-symbolic.svg</file>
     <file>icons/scalable/actions/format-text-rich-symbolic.svg</file>
@@ -43,6 +46,7 @@
     <file>icons/scalable/actions/hylki-mail-read-symbolic.svg</file>
     <file>icons/scalable/actions/hylki-non-starred-symbolic.svg</file>
     <file>icons/scalable/actions/image-x-generic-symbolic.svg</file>
+    <file>icons/scalable/actions/insert-image-symbolic.svg</file>
     <file>icons/scalable/actions/insert-link-symbolic.svg</file>
     <file>icons/scalable/actions/list-add-symbolic.svg</file>
     <file>icons/scalable/actions/list-drag-handle-symbolic.svg</file>
@@ -65,6 +69,7 @@
     <file>icons/scalable/actions/package-x-generic-symbolic.svg</file>
     <file>icons/scalable/actions/pan-down-symbolic.svg</file>
     <file>icons/scalable/actions/pan-end-symbolic.svg</file>
+    <file>icons/scalable/actions/pan-start-symbolic.svg</file>
     <file>icons/scalable/actions/pan-up-symbolic.svg</file>
     <file>icons/scalable/actions/preferences-desktop-appearance-symbolic.svg</file>
     <file>icons/scalable/actions/preferences-system-notifications-symbolic.svg</file>

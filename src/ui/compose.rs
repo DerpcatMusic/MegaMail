@@ -342,6 +342,11 @@ pub struct Compose {
     /// OpenPGP (#133): sign the message; encrypt it to every recipient.
     sign: bool,
     encrypt: bool,
+    /// The OpenPGP send check is running on a worker thread.
+    pgp_checking: bool,
+    /// What the last passing OpenPGP check covered (From, key, encrypt,
+    /// recipients); a Send with the same passes straight on.
+    pgp_cleared: Option<Vec<String>>,
     /// Sign was set by hand, so it no longer follows the From account's
     /// default (#267).
     sign_touched: bool,
@@ -434,6 +439,8 @@ struct CloudLink {
 #[derive(Debug)]
 pub enum ComposeInput {
     Send,
+    /// The OpenPGP send check answered, for these inputs.
+    PgpChecked { checked: Vec<String>, result: Result<(), String> },
     /// Send Later (#145): queue for this unix time, then send as usual.
     SendAt(i64),
     /// Open the date-and-time picker.
@@ -1158,6 +1165,8 @@ impl Component for Compose {
             preview_btn,
             preview_content,
             encrypt: false,
+            pgp_checking: false,
+            pgp_cleared: None,
             send_at,
             cloud_accounts: crate::cloud::load_enabled_accounts(),
             drop_zones: None,
@@ -1397,6 +1406,24 @@ impl Component for Compose {
             gtk::glib::timeout_add_seconds_local_once(2, move || {
                 s.input(ComposeInput::CloudPicked(vec![std::path::PathBuf::from("/tmp/Q3 report.pdf")]));
             });
+        }
+
+        // HYLKI_SHOWCASE_EDITOR_JS=<file> runs that script in the body three
+        // seconds after the composer opens, and logs the body's HTML a
+        // second later (demo only), to drive the format bar's commands
+        // without a pointer (#358).
+        if let (Some(path), Some(_)) = (std::env::var_os("HYLKI_SHOWCASE_EDITOR_JS"), std::env::var_os("HYLKI_DEMO")) {
+            if let Ok(js) = std::fs::read_to_string(&path) {
+                let ed = model.editor.clone();
+                gtk::glib::timeout_add_seconds_local_once(3, move || {
+                    ed.run_js(&js);
+                    gtk::glib::timeout_add_seconds_local_once(1, move || {
+                        ed.eval("document.body.innerHTML", |html| {
+                            tracing::info!("showcase editor body: {html}");
+                        });
+                    });
+                });
+            }
         }
 
         // HYLKI_SHOWCASE_ATTACH=<file>[:<file>…] attaches those files a
@@ -2543,6 +2570,25 @@ impl Component for Compose {
                     widgets.sign_btn.set_active(true);
                 }
             }
+            ComposeInput::PgpChecked { checked, result } => {
+                self.pgp_checking = false;
+                match result {
+                    Ok(()) => {
+                        self.pgp_cleared = Some(checked);
+                        sender.input(ComposeInput::Send);
+                    }
+                    Err(problem) => {
+                        let parent = widgets.to_row.root().and_downcast::<gtk::Window>();
+                        let dialog = adw::MessageDialog::new(
+                            parent.as_ref(),
+                            Some(&i18n("Cannot send with OpenPGP")),
+                            Some(&problem),
+                        );
+                        dialog.add_response("ok", &i18n("OK"));
+                        dialog.present();
+                    }
+                }
+            }
             ComposeInput::Send => {
                 let to = widgets.to_row.text().trim().to_string();
                 if to.is_empty() {
@@ -2579,23 +2625,31 @@ impl Component for Compose {
                 let subject = widgets.subject_row.text().to_string();
                 let idx = widgets.from_row.selected() as usize;
                 // OpenPGP (#133): say what is missing before anything leaves.
+                // gpg answers on a worker thread, since a stale keyring lock
+                // makes it wait about ten seconds (#316); its answer sends
+                // again, and passes here when nothing has changed since.
                 if self.sign || self.encrypt {
                     let from = self.accounts.get(idx);
-                    let problem = pgp_send_check(
-                        from.map(|a| a.email.as_str()).unwrap_or(""),
-                        from.and_then(|a| a.pgp_key.as_deref()),
-                        &[to.as_str(), cc.as_str(), bcc.as_str()],
-                        self.encrypt,
-                    );
-                    if let Err(problem) = problem {
-                        let parent = widgets.to_row.root().and_downcast::<gtk::Window>();
-                        let dialog = adw::MessageDialog::new(
-                            parent.as_ref(),
-                            Some(&i18n("Cannot send with OpenPGP")),
-                            Some(&problem),
-                        );
-                        dialog.add_response("ok", &i18n("OK"));
-                        dialog.present();
+                    let from_email = from.map(|a| a.email.clone()).unwrap_or_default();
+                    let key = from.and_then(|a| a.pgp_key.clone());
+                    let encrypt = self.encrypt;
+                    let fields = vec![to.clone(), cc.clone(), bcc.clone()];
+                    let mut checked = vec![from_email.clone(), key.clone().unwrap_or_default(), encrypt.to_string()];
+                    checked.extend(fields.iter().cloned());
+                    if self.pgp_cleared.take().as_ref() != Some(&checked) {
+                        if !self.pgp_checking {
+                            self.pgp_checking = true;
+                            let s = sender.clone();
+                            gtk::glib::spawn_future_local(async move {
+                                let result = gtk::gio::spawn_blocking(move || {
+                                    let fields: Vec<&str> = fields.iter().map(String::as_str).collect();
+                                    pgp_send_check(&from_email, key.as_deref(), &fields, encrypt)
+                                })
+                                .await
+                                .unwrap_or_else(|_| Err("task failed".into()));
+                                s.input(ComposeInput::PgpChecked { checked, result });
+                            });
+                        }
                         break 'handle;
                     }
                 }

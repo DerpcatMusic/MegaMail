@@ -341,6 +341,16 @@ pub struct AccountConfig {
     /// Use distinct SMTP credentials instead of the IMAP ones.
     #[serde(default)]
     pub smtp_separate: bool,
+    /// A JMAP account that signs in with an API token, sent as a bearer
+    /// token, rather than a username and password: Fastmail's way (#356).
+    /// The token is kept where the password would be.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub jmap_token: bool,
+    /// A JMAP account set up from the generic JMAP entry rather than
+    /// Stalwart's: marked by the JMAP tile, not Stalwart's logo. Off for
+    /// the accounts made before the two were apart, all of them Stalwart's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub jmap_generic: bool,
     /// Accept a TLS certificate issued for a different host name than the
     /// one connected to (#246): shared hosting serves mail for many domains
     /// under one certificate in the host's own name. The chain is still
@@ -1235,6 +1245,11 @@ pub(crate) struct PrivacyFile {
     /// does whichever this does not.
     #[serde(default)]
     pub(crate) return_paragraph: bool,
+    /// Whether the composer's format bar starts with its extra tools shown
+    /// (paragraph styles, fonts, colors, indents, emoji and pictures, #358)
+    /// rather than behind its chevron, the default.
+    #[serde(default)]
+    pub(crate) toolbar_expanded: bool,
     /// New messages start as plain text, without formatting (#180). Kept
     /// written so a version that predates `compose_format` still opens its
     /// composer the way this one was left.
@@ -1570,6 +1585,7 @@ impl Default for PrivacyFile {
             single_card_default_applied: false,
             paste_plain: true,
             return_paragraph: false,
+            toolbar_expanded: false,
             compose_plain: false,
             compose_format: None,
             reply_position: ReplyPosition::default(),
@@ -4177,6 +4193,8 @@ dest_path = "Lists"
             username: "a@b.c".into(),
             password: "SECRET".into(),
             smtp_separate: false,
+            jmap_token: false,
+            jmap_generic: false,
             tls_accept_hostname_mismatch: false,
             security: None,
             smtp_username: String::new(),

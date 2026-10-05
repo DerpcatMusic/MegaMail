@@ -59,12 +59,25 @@ does not. Stored on the account as the `security` table in `accounts.toml`.
 ### JMAP (Stalwart, Fastmail)
 
 A JMAP account (RFC 8620 and 8621) reads and sends mail over HTTPS, so it
-needs one server address and no SMTP settings. Pick **Stalwart (JMAP)** in
-the Provider list, or any provider and **JMAP** as the Incoming Protocol,
-and enter the server: a host name (`mail.example.org`, reached over HTTPS
-on 443, or the port in the Port row) or a full URL. Hylki reads the session
-resource at `/.well-known/jmap` and takes the API, download, upload and
-push addresses from it.
+needs one server address and no SMTP settings. The Provider list has three
+JMAP entries:
+
+- **Fastmail (JMAP)** fills in Fastmail's session URL and signs in with an
+  API token rather than the account password. Make the token in Fastmail's
+  settings, under Privacy & Security, with access to mail and to sending
+  it, and enter it in the API Token row.
+- **Stalwart (JMAP)** and **JMAP Server** take the server as a host name
+  (`mail.example.org`, reached over HTTPS on 443, or the port in the Port
+  row) or a full URL, and sign in with the username and password. Turn on
+  **Sign in with an API token** for a server that takes a token instead.
+  They differ only in the account's mark: Stalwart's logo, or a red JMAP
+  tile.
+
+For a host name, Hylki reads the session resource at `/.well-known/jmap`.
+A URL with a path is tried as the session resource itself
+(`https://api.fastmail.com/jmap/session`), then as a prefix with
+`/.well-known/jmap` under it. The API, download, upload and push addresses
+come from the session.
 
 A server names itself in that session, with the host it was set up with.
 When the address is entered as a URL with its scheme (`http://10.0.0.5:8080`,
@@ -86,9 +99,12 @@ learns from. The server's sending identities are offered in the composer's
 From row (see [The From address](#the-from-address)), and an alias has no
 SMTP settings of its own.
 
-Tested against Stalwart; Fastmail speaks the same standard but has not been
-tried by hand. In `accounts.toml` the account has `protocol = "jmap"` and
-the server in `imap_host`.
+Tested against Stalwart, with a password and with a bearer token; Fastmail
+speaks the same standard but has not been tried by hand. In `accounts.toml`
+the account has `protocol = "jmap"`, the server in `imap_host`, and
+`jmap_token = true` when it signs in with a token, which the keyring keeps
+where a password would be. An account made from the JMAP Server entry has
+`jmap_generic = true`.
 
 ### Folder order
 
@@ -506,7 +522,9 @@ does not know is up to the server: many refuse it, or rewrite it.
 A JMAP account lists the identities the server keeps for it as well, so an
 alias made in the webmail is in the From row without setting it up again.
 The message is sent as the identity with its address, or as a catch-all
-identity for its domain (`*@example.org`) when there is one.
+identity for its domain (`*@example.org`) when there is one. The account's
+page in Settings shows them under Send-as aliases, read-only: they are
+changed where the server keeps them.
 
 ### Return and Shift+Return
 
@@ -517,6 +535,33 @@ Return starts a new paragraph** swaps the two. In a list <kbd>Return</kbd>
 still starts the next item, and pressed twice in a quote it still leaves the
 quote. The setting applies when a composer opens. Markdown, HTML and plain
 text are written as source, where <kbd>Return</kbd> is always a new line.
+
+### The formatting toolbar
+
+The rich text editor's toolbar has bold, italic, underline, strikethrough,
+bulleted and numbered lists, quote, link and Clear formatting, all of which
+survive a switch to Markdown. The chevron after them shows or hides the
+rest of what a mail can carry:
+
+- **Paragraph style:** Normal, Heading 1 to 3 and Preformatted. The menu's
+  label names the style the cursor is in.
+- **Font:** Sans Serif, Serif or Monospace. These are generic families, so
+  the recipient's client picks its own font of each kind.
+- **Text color and Highlight:** a palette each, plus Automatic and No
+  highlight to take the color off again. Each button shows the color it last
+  applied.
+- **Decrease and Increase indent.** In a list, Increase indent nests the item
+  under the one above it.
+- **Insert emoji** (also <kbd>Ctrl+.</kbd>) and **Insert picture**, which puts
+  pictures in the message at the cursor, as dropping or pasting them does.
+
+Colors and fonts go out as inline styles, which every mail client keeps.
+Markdown has no words for them, so switching such a message to Markdown or
+plain text leaves them out. **Settings → Composing → Formatting toolbar**
+says whether a new message starts with these tools shown (Always expanded)
+or hidden behind the chevron (Always collapsed, the default); the chevron
+changes it for the message at hand. When the composer is narrow, the
+toolbar wraps onto a second row.
 
 ### Writing in Markdown or HTML
 

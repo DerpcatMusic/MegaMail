@@ -133,6 +133,9 @@ msgstr ""
 msgid "Toggle sidebar"
 msgstr ""
 
+msgid "Keyboard Shortcuts"
+msgstr ""
+
 msgid "Date (Newest first)"
 msgstr ""
 
@@ -255,9 +258,6 @@ msgstr ""
 msgid "Console"
 msgstr ""
 
-msgid "Keyboard Shortcuts"
-msgstr ""
-
 msgid "About"
 msgstr ""
 
@@ -265,8 +265,7 @@ msgid "Remove Tags"
 msgstr ""
 
 msgid ""
-"Single-key shortcuts are switched off. Turn them on in Settings → System & "
-"Appearance."
+"Single-key shortcuts are switched off. Turn them on in Settings → System."
 msgstr ""
 
 msgid "Your tags"
@@ -783,7 +782,13 @@ msgstr ""
 msgid "Remove every tag"
 msgstr ""
 
-msgid "Everything else"
+msgid "Print the message you are reading"
+msgstr ""
+
+msgid "Preview it as a PDF first"
+msgstr ""
+
+msgid "Writing"
 msgstr ""
 
 msgid "Compose"
@@ -795,16 +800,31 @@ msgstr ""
 msgid "Back out of a reply and return to the list"
 msgstr ""
 
+msgid "Emoji chooser, at the cursor"
+msgstr ""
+
+msgid "New paragraph (Return starts a new line, unless Settings swaps them)"
+msgstr ""
+
+msgid "Bold, italic, underline"
+msgstr ""
+
+msgid "Preview the highlighted attachment"
+msgstr ""
+
+msgid "Previous or next in the gallery's preview"
+msgstr ""
+
+msgid "Close the gallery's preview"
+msgstr ""
+
+msgid "Everything else"
+msgstr ""
+
 msgid "Undo the last action, or the last edit while you are writing"
 msgstr ""
 
 msgid "Redo it (Ctrl+Y does the same)"
-msgstr ""
-
-msgid "Print the message you are reading"
-msgstr ""
-
-msgid "Preview it as a PDF first"
 msgstr ""
 
 msgid "Reveal the status bar (also: long-press Refresh)"
@@ -820,6 +840,9 @@ msgid "Message zoom in or out"
 msgstr ""
 
 msgid "Message zoom back to the default"
+msgstr ""
+
+msgid "Search the Settings window, when it is open"
 msgstr ""
 
 msgid "Console mode (when enabled in Settings)"
@@ -1200,10 +1223,21 @@ msgstr ""
 msgid "Enter your provider's OAuth endpoints, then sign in."
 msgstr ""
 
+msgid ""
+"Enter your JMAP server's address, or the URL of its session resource. Mail "
+"is read and sent over JMAP; no SMTP settings are needed."
+msgstr ""
+
 msgid "Sign in with your browser — no password needed."
 msgstr ""
 
 msgid "Requires Proton Mail Bridge running locally."
+msgstr ""
+
+msgid ""
+"Signs in with an API token, not your password. Make one in Fastmail's "
+"settings, under Privacy & Security, with access to mail and to sending it. "
+"Mail is read and sent over JMAP."
 msgstr ""
 
 msgid ""
@@ -1361,6 +1395,13 @@ msgid "Username"
 msgstr ""
 
 msgid "Password"
+msgstr ""
+
+msgid "Sign in with an API token"
+msgstr ""
+
+msgid ""
+"For servers that take a token in place of the password, as Fastmail does."
 msgstr ""
 
 msgid "OAuth Client ID"
@@ -1697,6 +1738,10 @@ msgstr ""
 msgid "Remove this alias"
 msgstr ""
 
+msgid ""
+"Kept on the server; change it through your provider's webmail interface."
+msgstr ""
+
 msgid "Display name (optional)"
 msgstr ""
 
@@ -1762,6 +1807,9 @@ msgid "After {n} day"
 msgid_plural "After {n} days"
 msgstr[0] ""
 msgstr[1] ""
+
+msgid "API Token"
+msgstr ""
 
 #. A JMAP server is one address, and it sends the mail
 #. itself: no SMTP rows.
@@ -2609,15 +2657,15 @@ msgstr ""
 msgid "Could not translate"
 msgstr ""
 
+msgid "Cannot send with OpenPGP"
+msgstr ""
+
 msgid "An attachment is missing"
 msgstr ""
 
 msgid ""
 "Hylki cannot read {names}. It was moved or deleted after it was attached. "
 "Remove it, or attach it again from where it is now."
-msgstr ""
-
-msgid "Cannot send with OpenPGP"
 msgstr ""
 
 msgid "Check the From address"
@@ -3253,18 +3301,6 @@ msgstr ""
 msgid "That key is no longer in your keyring."
 msgstr ""
 
-msgid "Trust this key?"
-msgstr ""
-
-msgid ""
-"Compare the fingerprint with the one {uid} gives you in person or over "
-"another channel. Trusting a key you have not checked lets an impostor's "
-"signature pass as theirs."
-msgstr ""
-
-msgid "Trust"
-msgstr ""
-
 msgid "Key trusted."
 msgstr ""
 
@@ -3343,6 +3379,18 @@ msgid "Hide quoted text"
 msgstr ""
 
 msgid "Save Image"
+msgstr ""
+
+msgid "Trust this key?"
+msgstr ""
+
+msgid ""
+"Compare the fingerprint with the one {uid} gives you in person or over "
+"another channel. Trusting a key you have not checked lets an impostor's "
+"signature pass as theirs."
+msgstr ""
+
+msgid "Trust"
 msgstr ""
 
 msgid "The sender's key was imported from the message."
@@ -4456,6 +4504,21 @@ msgid ""
 "always does the other."
 msgstr ""
 
+msgid "Formatting toolbar"
+msgstr ""
+
+msgid ""
+"Whether a new message shows the extra tools (paragraph styles, fonts, "
+"colors, indents, emoji and pictures). The chevron in the toolbar shows or "
+"hides them at any time."
+msgstr ""
+
+msgid "Always collapsed"
+msgstr ""
+
+msgid "Always expanded"
+msgstr ""
+
 msgid "Write messages in"
 msgstr ""
 
@@ -4923,6 +4986,36 @@ msgstr ""
 msgid "Paste as Plain Text"
 msgstr ""
 
+msgid "Normal"
+msgstr ""
+
+msgid "Heading 1"
+msgstr ""
+
+msgid "Heading 2"
+msgstr ""
+
+msgid "Heading 3"
+msgstr ""
+
+msgid "Preformatted"
+msgstr ""
+
+msgid "Sans Serif"
+msgstr ""
+
+msgid "Serif"
+msgstr ""
+
+msgid "Monospace"
+msgstr ""
+
+msgid "Paragraph style"
+msgstr ""
+
+msgid "Font"
+msgstr ""
+
 msgid "Bold"
 msgstr ""
 
@@ -4935,21 +5028,54 @@ msgstr ""
 msgid "Strikethrough"
 msgstr ""
 
+msgid "Text color"
+msgstr ""
+
+msgid "Highlight"
+msgstr ""
+
+msgid "No highlight"
+msgstr ""
+
 msgid "Bulleted list"
 msgstr ""
 
 msgid "Numbered list"
 msgstr ""
 
-#. Adwaita has no blockquote glyph; the indent icon reads as "quote".
+msgid "Decrease indent"
+msgstr ""
+
+msgid "Increase indent"
+msgstr ""
+
+#. Adwaita has no blockquote glyph; the bubble with its quote marks
+#. reads as one.
 msgid "Quote"
 msgstr ""
 
-#. `LINK` is a sentinel command (handled specially); the icon is real.
 msgid "Insert link"
 msgstr ""
 
+msgid "Insert emoji"
+msgstr ""
+
+msgid "Insert picture"
+msgstr ""
+
 msgid "Clear formatting"
+msgstr ""
+
+msgid "Fewer formatting tools"
+msgstr ""
+
+msgid "More formatting tools"
+msgstr ""
+
+msgid "Pictures"
+msgstr ""
+
+msgid "Insert Picture"
 msgstr ""
 
 msgid "Insert Link"

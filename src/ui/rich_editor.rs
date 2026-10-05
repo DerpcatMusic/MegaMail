@@ -16,7 +16,7 @@ pub struct RichEditor {
     webview: webkit6::WebView,
     /// The formatting commands, hidden while a message is composed as plain
     /// text (#180) or as source — the row they sit in stays either way.
-    toolbar_commands: gtk::Box,
+    toolbar_commands: adw::WrapBox,
     /// The far end of that row, where a host puts controls of its own (the
     /// composer's format chooser and preview toggle).
     toolbar_end: gtk::Box,
@@ -529,27 +529,23 @@ impl RichEditor {
             webview.add_controller(drop);
         }
 
-        let (toolbar, toolbar_commands, toolbar_end, block_buttons) = build_toolbar(&webview);
-        // `fmtState` in PASTE_SCRIPT posts a string of the block kinds the
-        // caret sits in: `q` quote, `u` bulleted list, `o` numbered list.
-        // A set toggle also means a click on it leaves that block instead of
-        // opening another (issue #137, EmmanuelP's follow-up).
-        ucm.connect_script_message_received(Some("hylkiFormat"), move |_, value| {
-            let state = value.to_str().to_string();
-            for (key, button) in &block_buttons {
-                let on = state.contains(*key);
-                if button.is_active() != on {
-                    button.set_active(on);
-                }
-            }
-        });
-
         // The editor and (later) its preview are pages of one stack, so a
         // preview swaps in without the editor document being torn down and
         // rebuilt — which would cost the undo history and the caret.
         let stack = gtk::Stack::new();
         stack.set_vexpand(true);
         stack.add_named(&webview, Some("edit"));
+
+        let expanded = crate::config::load_privacy().toolbar_expanded;
+        let (toolbar, toolbar_commands, toolbar_end, bar_state) = build_toolbar(&webview, &stack, &attach_cb, expanded);
+        // `fmtState` in PASTE_SCRIPT posts where the caret is: the block
+        // kinds it sits in (`q` quote, `u` bulleted list, `o` numbered
+        // list), its paragraph style and its font. A set toggle also means a
+        // click on it leaves that block instead of opening another (issue
+        // #137, EmmanuelP's follow-up).
+        ucm.connect_script_message_received(Some("hylkiFormat"), move |_, value| {
+            bar_state.update(&value.to_str());
+        });
 
         let frame = gtk::Frame::new(None);
         frame.set_vexpand(true);
@@ -1195,75 +1191,312 @@ pub fn is_inline_image(path: &std::path::Path) -> bool {
     inline_mime(&gtk::gio::File::for_path(path)).is_some()
 }
 
-/// The format bar, plus the block-kind toggles keyed the way `fmtState` in
-/// PASTE_SCRIPT reports them (`q` quote, `u` bulleted list, `o` numbered
-/// list), so the state handler can light the right one.
+/// What the format bar shows of where the caret is: the block toggles,
+/// keyed the way `fmtState` in PASTE_SCRIPT reports them (`q` quote, `u`
+/// bulleted list, `o` numbered list), and the paragraph-style and font
+/// menus, whose labels name the caret's block and font (#358).
+struct ToolbarState {
+    toggles: Vec<(char, gtk::ToggleButton)>,
+    style: gtk::MenuButton,
+    font: gtk::MenuButton,
+}
+
+impl ToolbarState {
+    /// Follow a `fmtState` report: `<toggles>|<block tag>|<font kind>`.
+    fn update(&self, report: &str) {
+        let mut parts = report.split('|');
+        let toggles = parts.next().unwrap_or("");
+        for (key, button) in &self.toggles {
+            let on = toggles.contains(*key);
+            if button.is_active() != on {
+                button.set_active(on);
+            }
+        }
+        let block = parts.next().unwrap_or("");
+        let style = BLOCK_STYLES.iter().find(|(tag, _)| *tag == block).map_or(BLOCK_STYLES[0].1, |(_, l)| *l);
+        self.style.set_label(&i18n(style));
+        let font = parts.next().unwrap_or("");
+        let font = FONTS.iter().find(|(kind, _, _)| *kind == font).map_or(FONTS[0].2, |(_, _, l)| *l);
+        self.font.set_label(&i18n(font));
+    }
+}
+
+/// The paragraph styles (#358): the `formatBlock` tag and its name.
+const BLOCK_STYLES: &[(&str, &str)] = &[
+    ("p", i18n_noop("Normal")),
+    ("h1", i18n_noop("Heading 1")),
+    ("h2", i18n_noop("Heading 2")),
+    ("h3", i18n_noop("Heading 3")),
+    ("pre", i18n_noop("Preformatted")),
+];
+
+/// The font families (#358): the kind `fmtState` reports, the CSS family,
+/// and its name. Generic families, so the recipient's own fonts stand in.
+const FONTS: &[(&str, &str, &str)] = &[
+    ("sans", "sans-serif", i18n_noop("Sans Serif")),
+    ("serif", "serif", i18n_noop("Serif")),
+    ("mono", "monospace", i18n_noop("Monospace")),
+];
+
+/// Text colors (#358), dark enough to read on the white most mail is read
+/// on, and light enough to read on a dark composer.
+const TEXT_COLORS: &[&str] = &["#e01b24", "#e66100", "#c88800", "#26a269", "#1c71d8", "#813d9c", "#865e3c", "#77767b"];
+
+/// Highlight colors (#358): the light shades, so black text stays readable.
+const HIGHLIGHT_COLORS: &[&str] = &["#f9f06b", "#ffbe6f", "#f66151", "#dc8add", "#99c1f1", "#8ff0a4", "#cdab8f", "#deddda"];
+
+/// One command of the format bar: a flat icon button that never takes the
+/// focus, so the editor keeps its selection.
+fn bar_button(icon: &str, tip: &str) -> gtk::Button {
+    let btn = gtk::Button::from_icon_name(icon);
+    btn.set_tooltip_text(Some(i18n(tip).as_str()));
+    btn.set_can_focus(false);
+    btn.add_css_class("flat");
+    btn
+}
+
+/// Run `js` in the editor, the caret first put back where it was when a
+/// menu of the bar opened, and give the editor the focus again.
+fn run_restored(webview: &gtk::glib::WeakRef<webkit6::WebView>, js: &str) {
+    if let Some(wv) = webview.upgrade() {
+        exec(&wv, &format!("window.__hylkiRestore&&window.__hylkiRestore();{js}"));
+        wv.grab_focus();
+    }
+}
+
+/// A menu of the bar. Opening it keeps the caret, which the popover's own
+/// focus would otherwise cost the document.
+fn bar_menu(webview: &webkit6::WebView, tip: &str, content: &impl IsA<gtk::Widget>) -> (gtk::MenuButton, gtk::Popover) {
+    let popover = gtk::Popover::new();
+    popover.set_child(Some(content));
+    popover.add_css_class("menu");
+    let weak = webview.downgrade();
+    popover.connect_show(move |_| {
+        if let Some(wv) = weak.upgrade() {
+            exec(&wv, "window.__hylkiSave&&window.__hylkiSave()");
+        }
+    });
+    let btn = gtk::MenuButton::new();
+    btn.set_popover(Some(&popover));
+    btn.set_tooltip_text(Some(i18n(tip).as_str()));
+    btn.set_can_focus(false);
+    btn.add_css_class("flat");
+    (btn, popover)
+}
+
+/// A list of menu items, each running its command in the editor.
+fn menu_items(webview: &webkit6::WebView, popover: &gtk::glib::WeakRef<gtk::Popover>, items: &[(String, String, Option<&str>)]) -> gtk::Box {
+    let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    for (label, js, class) in items {
+        let text = gtk::Label::new(Some(label));
+        text.set_xalign(0.0);
+        if let Some(c) = class {
+            text.add_css_class(c);
+        }
+        let item = gtk::Button::new();
+        item.set_child(Some(&text));
+        item.add_css_class("flat");
+        let (weak, pop, js) = (webview.downgrade(), popover.clone(), js.clone());
+        item.connect_clicked(move |_| {
+            if let Some(p) = pop.upgrade() {
+                p.popdown();
+            }
+            run_restored(&weak, &js);
+        });
+        list.append(&item);
+    }
+    list
+}
+
+/// A color menu (#358): a clearing item, then the palette. `cmd` is the
+/// editing command (`foreColor`, `hiliteColor`), and `glyph` the button's
+/// face, repainted with the color last chosen.
+fn color_menu(
+    webview: &webkit6::WebView,
+    tip: &str,
+    clear: &str,
+    cmd: &'static str,
+    none: &'static str,
+    palette: &'static [&'static str],
+    (glyph, repaint): (gtk::Widget, std::rc::Rc<dyn Fn()>),
+    chosen: std::rc::Rc<std::cell::RefCell<Option<gtk::gdk::RGBA>>>,
+) -> gtk::MenuButton {
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    let grid = gtk::Grid::new();
+    grid.set_row_spacing(2);
+    grid.set_column_spacing(2);
+    let (btn, popover) = bar_menu(webview, tip, &content);
+    btn.set_child(Some(&glyph));
+    let weak_pop = popover.downgrade();
+    let reset = gtk::Button::with_label(&i18n(clear));
+    reset.add_css_class("flat");
+    {
+        let (weak, pop, repaint, chosen) = (webview.downgrade(), weak_pop.clone(), repaint.clone(), chosen.clone());
+        reset.connect_clicked(move |_| {
+            if let Some(p) = pop.upgrade() {
+                p.popdown();
+            }
+            *chosen.borrow_mut() = None;
+            repaint();
+            run_restored(&weak, &format!("window.__hylkiStyled('{cmd}','{none}')"));
+        });
+    }
+    content.append(&reset);
+    for (i, color) in palette.iter().enumerate() {
+        let swatch = gtk::Button::new();
+        swatch.set_child(Some(&crate::ui::context_menu::swatch_widget(color, true)));
+        swatch.add_css_class("flat");
+        swatch.set_tooltip_text(Some(color));
+        let (weak, pop, repaint, chosen) = (webview.downgrade(), weak_pop.clone(), repaint.clone(), chosen.clone());
+        swatch.connect_clicked(move |_| {
+            if let Some(p) = pop.upgrade() {
+                p.popdown();
+            }
+            *chosen.borrow_mut() = gtk::gdk::RGBA::parse(*color).ok();
+            repaint();
+            run_restored(&weak, &format!("window.__hylkiStyled('{cmd}','{color}')"));
+        });
+        grid.attach(&swatch, (i % 4) as i32, (i / 4) as i32, 1, 1);
+    }
+    content.append(&grid);
+    btn
+}
+
+/// The face of a color button: an "A" over a bar in the color last chosen
+/// (text color), or an "A" on it (highlight). With none chosen, the bar
+/// takes the text's own color and the highlight is left out. Returns the
+/// face and what repaints it.
+fn color_glyph(
+    highlight: bool,
+    chosen: std::rc::Rc<std::cell::RefCell<Option<gtk::gdk::RGBA>>>,
+) -> (gtk::Widget, std::rc::Rc<dyn Fn()>) {
+    let area = gtk::DrawingArea::new();
+    area.set_content_width(18);
+    area.set_content_height(18);
+    let letter = gtk::Label::new(Some("A"));
+    letter.add_css_class("heading");
+    let face = gtk::Overlay::new();
+    face.set_child(Some(&area));
+    face.add_overlay(&letter);
+    face.set_valign(gtk::Align::Center);
+    if !highlight {
+        letter.set_valign(gtk::Align::Start);
+        letter.set_margin_top(-2);
+    }
+    {
+        let chosen = chosen.clone();
+        area.set_draw_func(move |area, cr, w, h| {
+            let fg = area.color();
+            let (w, h) = (w as f64, h as f64);
+            let pick = *chosen.borrow();
+            match (highlight, pick) {
+                (true, Some(c)) => {
+                    cr.set_source_rgba(c.red().into(), c.green().into(), c.blue().into(), 1.0);
+                    cr.rectangle(0.0, 0.0, w, h);
+                    let _ = cr.fill();
+                }
+                (true, None) => {
+                    cr.set_source_rgba(fg.red().into(), fg.green().into(), fg.blue().into(), 0.5);
+                    cr.set_line_width(1.0);
+                    cr.rectangle(0.5, 0.5, w - 1.0, h - 1.0);
+                    let _ = cr.stroke();
+                }
+                (false, c) => {
+                    let c = c.unwrap_or(fg);
+                    cr.set_source_rgba(c.red().into(), c.green().into(), c.blue().into(), 1.0);
+                    cr.rectangle(2.0, h - 3.0, w - 4.0, 3.0);
+                    let _ = cr.fill();
+                }
+            }
+        });
+    }
+    // The letter is dark on a highlight, whatever the theme.
+    let repaint: std::rc::Rc<dyn Fn()> = {
+        let (area, letter) = (area.clone(), letter.clone());
+        std::rc::Rc::new(move || {
+            area.queue_draw();
+            if highlight && chosen.borrow().is_some() {
+                letter.add_css_class("on-highlight");
+            } else {
+                letter.remove_css_class("on-highlight");
+            }
+        })
+    };
+    (face.upcast(), repaint)
+}
+
+/// The format bar: the character styles, lists, quote, link and Clear
+/// formatting, all of which Markdown can say, then a chevron that shows
+/// paragraph styles and fonts, colors, indents, emoji and pictures (#358),
+/// shown from the start when `expanded`. Its groups wrap onto a second row
+/// in a narrow composer.
 fn build_toolbar(
     webview: &webkit6::WebView,
-) -> (gtk::Box, gtk::Box, gtk::Box, Vec<(char, gtk::ToggleButton)>) {
+    anchor: &gtk::Stack,
+    attach_cb: &std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn(std::path::PathBuf)>>>>,
+    expanded: bool,
+) -> (gtk::Box, adw::WrapBox, gtk::Box, ToolbarState) {
     let bar = gtk::Box::new(gtk::Orientation::Horizontal, 2);
     bar.add_css_class("toolbar");
     bar.add_css_class("format-bar");
     // The formatting commands sit in a group of their own, so a host can
     // hide them (a message written as source has no use for them) while the
     // row itself stays — the format chooser lives at its far end.
-    let group = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+    let group = adw::WrapBox::new();
+    group.set_child_spacing(10);
+    group.set_line_spacing(2);
+    group.set_hexpand(true);
+    // The end box expands too, so it stays at the right when the commands
+    // are hidden (a source format); the group still gets its natural width
+    // first.
     let end = gtk::Box::new(gtk::Orientation::Horizontal, 2);
     end.set_hexpand(true);
     end.set_halign(gtk::Align::End);
+    end.set_valign(gtk::Align::Start);
+    let cluster = || gtk::Box::new(gtk::Orientation::Horizontal, 2);
 
-    // (icon, tooltip, execCommand snippet, block-state key). The three block
-    // commands are toggles: the document reports whether the caret is inside
-    // one, and each command both opens and leaves its block (the lists
-    // through execCommand's own toggling, the quote through __hylkiQuote).
-    let commands: &[(&str, &str, &str, Option<char>)] = &[
-        ("format-text-bold-symbolic", i18n_noop("Bold"), "document.execCommand('bold')", None),
-        ("format-text-italic-symbolic", i18n_noop("Italic"), "document.execCommand('italic')", None),
-        ("format-text-underline-symbolic", i18n_noop("Underline"), "document.execCommand('underline')", None),
-        ("format-text-strikethrough-symbolic", i18n_noop("Strikethrough"), "document.execCommand('strikeThrough')", None),
-        ("SEP", "", "", None),
-        ("view-list-bullet-symbolic", i18n_noop("Bulleted list"), "document.execCommand('insertUnorderedList')", Some('u')),
-        ("view-list-ordered-symbolic", i18n_noop("Numbered list"), "document.execCommand('insertOrderedList')", Some('o')),
-        // Adwaita has no blockquote glyph; the indent icon reads as "quote".
-        ("format-indent-more-symbolic", i18n_noop("Quote"), "window.__hylkiQuote()", Some('q')),
-        // `LINK` is a sentinel command (handled specially); the icon is real.
-        ("insert-link-symbolic", i18n_noop("Insert link"), "LINK", None),
-        ("SEP", "", "", None),
-        ("edit-clear-symbolic", i18n_noop("Clear formatting"), "document.execCommand('removeFormat')", None),
-    ];
+    // Paragraph style and font, each a menu whose label follows the caret.
+    let styles = cluster();
+    let style_items: Vec<(String, String, Option<&str>)> = BLOCK_STYLES
+        .iter()
+        .map(|(tag, label)| {
+            let class = match *tag {
+                "h1" => Some("title-2"),
+                "h2" => Some("title-3"),
+                "h3" => Some("heading"),
+                "pre" => Some("monospace"),
+                _ => None,
+            };
+            (i18n(label), format!("window.__hylkiBlock('{tag}')"), class)
+        })
+        .collect();
+    let style_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let (style, style_pop) = bar_menu(webview, i18n_noop("Paragraph style"), &style_box);
+    style_box.append(&menu_items(webview, &style_pop.downgrade(), &style_items));
+    style.set_label(&i18n(BLOCK_STYLES[0].1));
+    style.set_always_show_arrow(true);
+    let font_items: Vec<(String, String, Option<&str>)> = FONTS
+        .iter()
+        .map(|(_, family, label)| {
+            let class = (*family == "monospace").then_some("monospace");
+            (i18n(label), format!("window.__hylkiStyled('fontName','{family}')"), class)
+        })
+        .collect();
+    let font_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let (font, font_pop) = bar_menu(webview, i18n_noop("Font"), &font_box);
+    font_box.append(&menu_items(webview, &font_pop.downgrade(), &font_items));
+    font.set_label(&i18n(FONTS[0].2));
+    font.set_always_show_arrow(true);
+    styles.append(&style);
+    styles.append(&font);
 
-    let mut toggles = Vec::new();
-    for (icon, tip, cmd, key) in commands {
-        if *icon == "SEP" {
-            group.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-            continue;
-        }
-        let btn: gtk::Button = match key {
-            // A toggle shows the pressed look while the caret is in its
-            // block. The click flips it at once and the document's next
-            // state report settles it, so it never sticks wrong.
-            Some(k) => {
-                let t = gtk::ToggleButton::new();
-                t.set_icon_name(icon);
-                toggles.push((*k, t.clone()));
-                t.upcast()
-            }
-            None => gtk::Button::from_icon_name(icon),
-        };
-        btn.set_tooltip_text(Some(i18n(tip).as_str()));
-        // Don't take focus, so the editor keeps its selection.
-        btn.set_can_focus(false);
-        btn.add_css_class("flat");
-        // Weak: the format-state handler the view's content manager owns
-        // reaches these buttons, so a strong view here would be a cycle.
-        if *cmd == "LINK" {
-            let weak = webview.downgrade();
-            btn.connect_clicked(move |b| {
-                if let Some(wv) = weak.upgrade() {
-                    prompt_link(&wv, b);
-                }
-            });
-        } else {
+    // (icon, tooltip, execCommand snippet).
+    let simple = |cluster: &gtk::Box, commands: &[(&str, &str, &str)]| {
+        for (icon, tip, cmd) in commands {
+            let btn = bar_button(icon, tip);
+            // Weak: the format-state handler the view's content manager
+            // owns reaches these buttons, so a strong view here would be a
+            // cycle.
             let weak = webview.downgrade();
             let cmd = cmd.to_string();
             btn.connect_clicked(move |_| {
@@ -1271,12 +1504,242 @@ fn build_toolbar(
                     exec(&wv, &cmd);
                 }
             });
+            cluster.append(&btn);
         }
-        group.append(&btn);
+    };
+
+    let chars = cluster();
+    simple(&chars, &[
+        ("format-text-bold-symbolic", i18n_noop("Bold"), "document.execCommand('bold')"),
+        ("format-text-italic-symbolic", i18n_noop("Italic"), "document.execCommand('italic')"),
+        ("format-text-underline-symbolic", i18n_noop("Underline"), "document.execCommand('underline')"),
+        ("format-text-strikethrough-symbolic", i18n_noop("Strikethrough"), "document.execCommand('strikeThrough')"),
+    ]);
+    group.append(&chars);
+
+    let colors = cluster();
+    let text_chosen = std::rc::Rc::new(std::cell::RefCell::new(None));
+    colors.append(&color_menu(
+        webview,
+        i18n_noop("Text color"),
+        i18n_noop("Automatic"),
+        "foreColor",
+        "inherit",
+        TEXT_COLORS,
+        color_glyph(false, text_chosen.clone()),
+        text_chosen,
+    ));
+    let hl_chosen = std::rc::Rc::new(std::cell::RefCell::new(None));
+    colors.append(&color_menu(
+        webview,
+        i18n_noop("Highlight"),
+        i18n_noop("No highlight"),
+        "hiliteColor",
+        "transparent",
+        HIGHLIGHT_COLORS,
+        color_glyph(true, hl_chosen.clone()),
+        hl_chosen,
+    ));
+
+    // The block commands are toggles: the document reports whether the
+    // caret is inside one, and each command both opens and leaves its block
+    // (the lists through execCommand's own toggling, the quote through
+    // __hylkiQuote). A toggle shows the pressed look while the caret is in
+    // its block; the click flips it at once and the document's next state
+    // report settles it, so it never sticks wrong.
+    let mut toggles = Vec::new();
+    let toggle = |icon: &str, tip: &str, cmd: &str, key: char, toggles: &mut Vec<(char, gtk::ToggleButton)>| {
+        let t = gtk::ToggleButton::new();
+        t.set_icon_name(icon);
+        t.set_tooltip_text(Some(i18n(tip).as_str()));
+        t.set_can_focus(false);
+        t.add_css_class("flat");
+        let weak = webview.downgrade();
+        let cmd = cmd.to_string();
+        t.connect_clicked(move |_| {
+            if let Some(wv) = weak.upgrade() {
+                exec(&wv, &cmd);
+            }
+        });
+        toggles.push((key, t.clone()));
+        t
+    };
+    let lists = cluster();
+    lists.append(&toggle("view-list-bullet-symbolic", i18n_noop("Bulleted list"), "document.execCommand('insertUnorderedList')", 'u', &mut toggles));
+    lists.append(&toggle("view-list-ordered-symbolic", i18n_noop("Numbered list"), "document.execCommand('insertOrderedList')", 'o', &mut toggles));
+    group.append(&lists);
+    // Inside a list, indenting nests the items under the one above.
+    let indents = cluster();
+    simple(&indents, &[
+        ("format-indent-less-symbolic", i18n_noop("Decrease indent"), "window.__hylkiIndent(false)"),
+        ("format-indent-more-symbolic", i18n_noop("Increase indent"), "window.__hylkiIndent(true)"),
+    ]);
+
+    let inserts = cluster();
+    // Adwaita has no blockquote glyph; the bubble with its quote marks
+    // reads as one.
+    inserts.append(&toggle("format-quote-symbolic", i18n_noop("Quote"), "window.__hylkiQuote()", 'q', &mut toggles));
+    let link = bar_button("insert-link-symbolic", i18n_noop("Insert link"));
+    {
+        let weak = webview.downgrade();
+        link.connect_clicked(move |b| {
+            if let Some(wv) = weak.upgrade() {
+                prompt_link(&wv, b);
+            }
+        });
     }
+    inserts.append(&link);
+    group.append(&inserts);
+    let media = cluster();
+    let emoji = bar_button("face-smile-symbolic", i18n_noop("Insert emoji"));
+    {
+        let (weak, anchor) = (webview.downgrade(), anchor.downgrade());
+        emoji.connect_clicked(move |_| {
+            if let (Some(wv), Some(anchor)) = (weak.upgrade(), anchor.upgrade()) {
+                show_emoji_chooser(&wv, &anchor);
+            }
+        });
+    }
+    media.append(&emoji);
+    let picture = bar_button("insert-image-symbolic", i18n_noop("Insert picture"));
+    {
+        let (weak, cb) = (webview.downgrade(), attach_cb.clone());
+        picture.connect_clicked(move |b| {
+            let Some(wv) = weak.upgrade() else { return };
+            pick_pictures(&wv, b, &cb);
+        });
+    }
+    media.append(&picture);
+
+    let tail = cluster();
+    simple(&tail, &[("edit-clear-symbolic", i18n_noop("Clear formatting"), "document.execCommand('removeFormat')")]);
+    group.append(&tail);
+
+    // The rest (#358) behind a chevron, after everything above so showing
+    // them moves nothing: paragraph style and font, colors, indents, emoji
+    // and pictures. They slide out from the chevron, which rides along to
+    // their end, and slide back into it. Settings → Composing → Formatting
+    // toolbar says how a new message starts; the chevron changes it for
+    // this one.
+    let extras = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    for e in [&styles, &colors, &indents, &media] {
+        extras.append(e);
+    }
+    let reveal = gtk::Revealer::new();
+    reveal.set_transition_type(gtk::RevealerTransitionType::SlideRight);
+    reveal.set_transition_duration(250);
+    reveal.set_child(Some(&extras));
+    // Where the tools do not fit beside the rest, they take the next row.
+    // A growing revealer would start on this row and jump to the next
+    // partway, so this spacer fills the rest of the row for the length of
+    // the slide and the tools slide out on the next row from the start.
+    let breaker = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    breaker.set_visible(false);
+    // A folded revealer is still a child of the bar, and the bar's spacing
+    // would show either side of it: it leaves the row once it has closed.
+    {
+        let breaker = breaker.clone();
+        reveal.connect_child_revealed_notify(move |r| {
+            breaker.set_visible(false);
+            if !r.reveals_child() {
+                r.set_visible(false);
+            }
+        });
+    }
+    let more = gtk::ToggleButton::new();
+    more.set_can_focus(false);
+    more.add_css_class("flat");
+    let show_more = {
+        let (reveal, breaker, group, tail, extras) =
+            (reveal.clone(), breaker.clone(), group.clone(), tail.clone(), extras.clone());
+        move |b: &gtk::ToggleButton| {
+            let on = b.is_active();
+            b.set_icon_name(if on { "pan-start-symbolic" } else { "pan-end-symbolic" });
+            b.set_tooltip_text(Some(if on { i18n("Fewer formatting tools") } else { i18n("More formatting tools") }.as_str()));
+            // The room left on the row after Clear formatting, against what
+            // the tools and the chevron need.
+            let gap = 10.0;
+            let row_end = tail.compute_bounds(&group).map_or(0.0, |r| r.x() + r.width());
+            let spare = group.width() as f32 - row_end - gap;
+            let need = extras.measure(gtk::Orientation::Horizontal, -1).1 as f32 + gap + b.width() as f32;
+            if reveal.transition_duration() > 0 && group.width() > 0 && need > spare {
+                breaker.set_size_request((spare - 1.0).max(0.0) as i32, -1);
+                breaker.set_visible(true);
+            }
+            if on {
+                reveal.set_visible(true);
+            }
+            reveal.set_reveal_child(on);
+        }
+    };
+    // How a new message starts: already open, with no slide.
+    reveal.set_transition_duration(0);
+    more.set_active(expanded);
+    show_more(&more);
+    reveal.set_visible(expanded);
+    reveal.set_transition_duration(250);
+    more.connect_toggled(show_more);
+    group.append(&breaker);
+    group.append(&reveal);
+    group.append(&more);
+    // HYLKI_SHOWCASE_TOOLBAR_TOGGLE=<ms>: press the chevron that long after
+    // the bar is built, so frames of the slide can be captured.
+    if let Some(ms) = std::env::var("HYLKI_SHOWCASE_TOOLBAR_TOGGLE").ok().and_then(|v| v.parse::<u64>().ok()) {
+        let more = more.downgrade();
+        gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(ms), move || {
+            if let Some(m) = more.upgrade() {
+                tracing::info!("showcase: chevron pressed");
+                m.set_active(!m.is_active());
+                // HYLKI_SHOWCASE_TOOLBAR_SHOTS=<png prefix>:<ms>,<ms>…
+                // captures the window that long after the press.
+                if let Some((prefix, times)) = std::env::var("HYLKI_SHOWCASE_TOOLBAR_SHOTS").ok().and_then(|v| {
+                    v.rsplit_once(':').map(|(p, t)| (p.to_string(), t.to_string()))
+                }) {
+                    for t in times.split(',').filter_map(|t| t.parse::<u64>().ok()) {
+                        let (root, path) = (m.root(), format!("{prefix}{t}.png"));
+                        gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(t), move || {
+                            if let Some(r) = root {
+                                crate::app::showcase_capture(r.upcast_ref::<gtk::Widget>(), &path);
+                            }
+                        });
+                    }
+                }
+            }
+        });
+    }
+
     bar.append(&group);
     bar.append(&end);
-    (bar, group, end, toggles)
+    (bar, group, end, ToolbarState { toggles, style, font })
+}
+
+/// Choose pictures to put in the message at the caret (#358), the way a
+/// drop or a paste puts them there: a file too big to carry in the body,
+/// or not a picture, joins the attachments instead.
+fn pick_pictures(
+    webview: &webkit6::WebView,
+    anchor: &gtk::Button,
+    attach_cb: &std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn(std::path::PathBuf)>>>>,
+) {
+    exec(webview, "window.__hylkiSave&&window.__hylkiSave()");
+    let filter = gtk::FileFilter::new();
+    filter.set_name(Some(&i18n("Pictures")));
+    filter.add_mime_type("image/*");
+    let filters = gtk::gio::ListStore::new::<gtk::FileFilter>();
+    filters.append(&filter);
+    let dialog = gtk::FileDialog::builder().title(i18n("Insert Picture")).filters(&filters).build();
+    let parent = anchor.root().and_downcast::<gtk::Window>();
+    let (weak, cb) = (webview.downgrade(), attach_cb.clone());
+    dialog.open_multiple(parent.as_ref(), gtk::gio::Cancellable::NONE, move |res| {
+        let Some(wv) = weak.upgrade() else { return };
+        let Ok(list) = res else { return };
+        let files: Vec<gtk::gio::File> = (0..list.n_items())
+            .filter_map(|i| list.item(i).and_downcast::<gtk::gio::File>())
+            .collect();
+        exec(&wv, "window.__hylkiRestore&&window.__hylkiRestore()");
+        deliver_files(&wv, &files, None, &cb);
+        wv.grab_focus();
+    });
 }
 
 /// Prompt for a URL and turn the current selection into a link.
@@ -1567,15 +2030,38 @@ const PASTE_SCRIPT: &str = r#"<script>
     var n = sel.rangeCount ? sel.anchorNode : null;
     return n && n.nodeType === 3 ? n.parentNode : n;
   }
+  /* WebKit's Indent wraps the paragraph in a blockquote of its own, with
+     no border: an indent, not a quote, for the Quote toggle and for Enter
+     twice (#358). */
+  function isIndent(b){
+    return !!(b.style && b.style.borderStyle === 'none' && b.style.marginLeft);
+  }
+  function quoteOf(el){
+    var b = el && el.closest ? el.closest('blockquote') : null;
+    while(b && isIndent(b)){
+      b = b.parentElement ? b.parentElement.closest('blockquote') : null;
+    }
+    return b;
+  }
+  /* The caret's font, by the generic family it falls under. */
+  function fontKind(el){
+    var f = '';
+    try{ f = getComputedStyle(el).fontFamily.toLowerCase(); }catch(_){}
+    if(/mono/.test(f)) return 'mono';
+    if(/(^|,)\s*"?serif/.test(f) || (/serif/.test(f) && !/sans/.test(f))) return 'serif';
+    return 'sans';
+  }
   function fmtState(){
     var el = caretBlock();
-    var q = !!(el && el.closest && el.closest('blockquote'));
-    var ul = false, ol = false;
+    var q = !!quoteOf(el);
+    var ul = false, ol = false, block = '';
     try{
       ul = document.queryCommandState('insertUnorderedList');
       ol = document.queryCommandState('insertOrderedList');
+      block = String(document.queryCommandValue('formatBlock') || '').toLowerCase();
     }catch(_){}
-    var s = (q ? 'q' : '') + (ul ? 'u' : '') + (ol ? 'o' : '');
+    var s = (q ? 'q' : '') + (ul ? 'u' : '') + (ol ? 'o' : '')
+      + '|' + block + '|' + (el && el.nodeType === 1 ? fontKind(el) : 'sans');
     if(s === lastFmt) return;
     lastFmt = s;
     try{ window.webkit.messageHandlers.hylkiFormat.postMessage(s); }catch(_){}
@@ -1587,11 +2073,46 @@ const PASTE_SCRIPT: &str = r#"<script>
      else it quotes the paragraph. The list buttons toggle on their own. */
   window.__hylkiQuote = function(){
     var el = caretBlock();
-    if(el && el.closest && el.closest('blockquote')){
+    if(quoteOf(el)){
       document.execCommand('outdent');
     }else{
       document.execCommand('formatBlock', false, 'blockquote');
     }
+    fmtState();
+  };
+  /* The format bar's menus take the focus while they are open, and the
+     caret with it: kept when one opens, put back before its command. */
+  var saved = null;
+  window.__hylkiSave = function(){
+    var sel = getSelection();
+    saved = sel.rangeCount && document.body.contains(sel.anchorNode) ? sel.getRangeAt(0).cloneRange() : null;
+  };
+  window.__hylkiRestore = function(){
+    if(!saved) return;
+    var sel = getSelection();
+    sel.removeAllRanges();
+    sel.addRange(saved);
+    saved = null;
+  };
+  /* Paragraph styles (#358): a heading, preformatted text or a plain
+     paragraph. */
+  window.__hylkiBlock = function(tag){
+    document.execCommand('formatBlock', false, tag);
+    fmtState();
+  };
+  /* Font and colors (#358) as inline styles, which every mail client
+     keeps; WebKit's own markup is a <font> tag otherwise. Only for these
+     commands: Bold and the rest stay the plain tags Markdown maps. */
+  window.__hylkiStyled = function(cmd, value){
+    document.execCommand('styleWithCSS', false, true);
+    document.execCommand(cmd, false, value);
+    document.execCommand('styleWithCSS', false, false);
+    fmtState();
+  };
+  /* Indent and outdent (#358). In a list they nest the item under the one
+     above, or bring it back out. */
+  window.__hylkiIndent = function(more){
+    document.execCommand(more ? 'indent' : 'outdent');
     fmtState();
   };
   /* Return breaks the line, or with `__hylkiReturnParagraph` set starts a
@@ -1621,7 +2142,7 @@ const PASTE_SCRIPT: &str = r#"<script>
       enterInQuote = false;
       return;
     }
-    var inQuote = !!el.closest('blockquote');
+    var inQuote = !!quoteOf(el);
     if(!e.shiftKey && inQuote && enterInQuote && sel.isCollapsed){
       e.preventDefault();
       document.execCommand('outdent');

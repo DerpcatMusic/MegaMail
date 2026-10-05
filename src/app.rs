@@ -981,6 +981,7 @@ pub struct AppModel {
     paste_plain: bool,
     /// Return starts a new paragraph in the composer; off, a new line.
     return_paragraph: bool,
+    toolbar_expanded: bool,
     /// New messages start as plain text (#180).
     compose_format: crate::config::ComposeFormat,
     /// Where the split reply opens in the reading pane (#212).
@@ -1562,6 +1563,9 @@ pub enum AppMsg {
     /// Showcase only (HYLKI_SHOWCASE_EDITOR_DIRTY): change the open account
     /// editor, so leaving an edited one can be captured.
     ShowcaseDirtyEditor,
+    /// Showcase only (HYLKI_SHOWCASE_ACCOUNT=new[:<provider>]): open a blank
+    /// account editor, on that provider when one is named.
+    ShowcaseNewAccount(Option<String>),
     Reply,
     ReplyAll,
     Forward,
@@ -1581,6 +1585,9 @@ pub enum AppMsg {
     /// Settings opened this account's page: ask its server how much
     /// storage is in use (#298).
     WantQuota(String),
+    /// Settings opened this account's page: the identities its JMAP server
+    /// keeps, from the last connect (#346).
+    WantIdentities(String),
     /// The server's answer, for the account's Settings page.
     QuotaFound { account_id: u32, quota: Option<crate::models::MailboxQuota> },
     /// A keyword re-sync (#166) changed the cached keywords of these folders.
@@ -3384,6 +3391,7 @@ impl SimpleComponent for AppModel {
             compose_default_from: prefs.compose_default_from,
             paste_plain: prefs.paste_plain,
             return_paragraph: prefs.return_paragraph,
+            toolbar_expanded: prefs.toolbar_expanded,
             compose_format: config::load_compose_format(),
             reply_position: prefs.reply_position,
             signature_position: prefs.signature_position,
@@ -5080,9 +5088,36 @@ impl SimpleComponent for AppModel {
                         s.input(AppMsg::Pref(PrefOutput::SetTheme(id.clone())));
                     });
                 }
+                // HYLKI_SHOWCASE_SHORTCUTS=<height> opens the shortcut list at
+                // 4 s, that tall, so all of it fits a capture (with
+                // HYLKI_SHOWCASE_TOP).
+                if let Some(h) = std::env::var("HYLKI_SHOWCASE_SHORTCUTS").ok().and_then(|v| v.parse::<i32>().ok()) {
+                    let s = sender.clone();
+                    gtk::glib::timeout_add_seconds_local_once(4, move || {
+                        s.input(AppMsg::ShowShortcuts);
+                    });
+                    gtk::glib::timeout_add_seconds_local_once(5, move || {
+                        let tops = gtk::Window::toplevels();
+                        if let Some(w) = (0..tops.n_items())
+                            .filter_map(|i| tops.item(i))
+                            .filter_map(|o| o.downcast::<adw::Window>().ok())
+                            .find(|w| w.is_visible() && w.title().is_some_and(|t| t == i18n("Keyboard Shortcuts")))
+                        {
+                            w.set_default_size(420, h);
+                        }
+                    });
+                }
                 // HYLKI_SHOWCASE_ACCOUNT=N opens account N's editor a beat
                 // after the Settings window (with HYLKI_SHOWCASE_SETTINGS),
                 // so the editor itself can be captured.
+                // `new[:<provider label>]` opens a blank editor instead.
+                if let Some(rest) = std::env::var("HYLKI_SHOWCASE_ACCOUNT").ok().and_then(|v| v.strip_prefix("new").map(str::to_string)) {
+                    let provider = rest.strip_prefix(':').map(str::to_string);
+                    let s = sender.clone();
+                    gtk::glib::timeout_add_seconds_local_once(5, move || {
+                        s.input(AppMsg::ShowcaseNewAccount(provider.clone()));
+                    });
+                }
                 if let Some(Ok(n)) = std::env::var("HYLKI_SHOWCASE_ACCOUNT").ok().map(|v| v.parse::<u32>()) {
                     let s = sender.clone();
                     gtk::glib::timeout_add_seconds_local_once(5, move || {
@@ -6691,6 +6726,13 @@ impl SimpleComponent for AppModel {
                     // What was pulled in (a reply from Sent, an archived part)
                     // may carry attachments of its own.
                     self.load_thread_attachments();
+                    // The same cache may know more than the row's badge was
+                    // told when it asked (#351).
+                    self.message_list.emit(MessageListInput::ConversationSize {
+                        account_id,
+                        id: message_id,
+                        size: self.current_thread.len(),
+                    });
                 }
             }
 
@@ -8204,6 +8246,10 @@ impl SimpleComponent for AppModel {
                 pref!(self.return_paragraph = on);
             }
 
+            AppMsg::Pref(PrefOutput::SetToolbarExpanded(on)) => {
+                pref!(self.toolbar_expanded = on);
+            }
+
             AppMsg::Pref(PrefOutput::SetSpellcheck(on)) => {
                 if pref!(self.spellcheck = on) {
                     // Takes effect in already-open composers too: the shared
@@ -9635,6 +9681,14 @@ impl SimpleComponent for AppModel {
                 }
             }
 
+            AppMsg::ShowcaseNewAccount(provider) => {
+                if let Some(acc) = &self.accounts_win {
+                    acc.emit(crate::ui::accounts::AccountsInput::AddAccount);
+                    if let Some(label) = provider {
+                        acc.emit(crate::ui::accounts::AccountsInput::DebugProvider(label));
+                    }
+                }
+            }
             AppMsg::ShowcaseDirtyEditor => {
                 if let Some(acc) = &self.accounts_win {
                     acc.emit(crate::ui::accounts::AccountsInput::DebugEditLabel(
@@ -9660,7 +9714,19 @@ impl SimpleComponent for AppModel {
             }
 
             AppMsg::ServerIdentities { account_id, identities } => {
+                if let (Some(email), Some(a)) = (self.email_of(account_id), &self.accounts_win) {
+                    a.emit(crate::ui::accounts::AccountsInput::ServerIdentities { email, identities: identities.clone() });
+                }
                 self.server_identities.insert(account_id, identities);
+            }
+            AppMsg::WantIdentities(email) => {
+                let Some(id) = self.accounts.iter().find(|a| a.email.eq_ignore_ascii_case(&email)).map(|a| a.id) else {
+                    return;
+                };
+                let identities = self.server_identities.get(&id).cloned().unwrap_or_default();
+                if let Some(a) = &self.accounts_win {
+                    a.emit(crate::ui::accounts::AccountsInput::ServerIdentities { email, identities });
+                }
             }
 
             AppMsg::SetAccount(account) => {
@@ -11161,6 +11227,7 @@ impl AppModel {
             compose_default_from: self.compose_default_from.clone(),
             paste_plain: self.paste_plain,
             return_paragraph: self.return_paragraph,
+            toolbar_expanded: self.toolbar_expanded,
             // Both are written: the boolean is what an older version reads.
             compose_plain: self.compose_format == config::ComposeFormat::Plain,
             compose_format: Some(self.compose_format),
@@ -11330,7 +11397,7 @@ impl AppModel {
         self.shortcuts_win = Some(self.build_shortcuts_window());
     }
 
-    /// A plain window listing every single-key shortcut.
+    /// A plain window listing every keyboard shortcut.
     fn build_shortcuts_window(&self) -> adw::Window {
         let win = adw::Window::builder()
             .transient_for(&self.window)
@@ -11348,7 +11415,7 @@ impl AppModel {
 
         if !self.single_key.get() {
             let off = gtk::Label::new(Some(
-                i18n("Single-key shortcuts are switched off. Turn them on in Settings → System & Appearance.").as_str(),
+                i18n("Single-key shortcuts are switched off. Turn them on in Settings → System.").as_str(),
             ));
             off.add_css_class("dim-label");
             off.set_wrap(true);
@@ -18231,6 +18298,7 @@ impl AppModel {
             compose_default_from: self.compose_default_from.clone(),
             paste_plain: self.paste_plain,
             return_paragraph: self.return_paragraph,
+            toolbar_expanded: self.toolbar_expanded,
             spellcheck: self.spellcheck,
             spellcheck_langs: self.spellcheck_langs.clone(),
             app_theme: self.app_theme,
@@ -18385,6 +18453,7 @@ impl AppModel {
                 AccountsOutput::SetTags(tags) => AppMsg::SetTags(tags),
                 AccountsOutput::FindTags => AppMsg::FindTags,
                 AccountsOutput::WantQuota(email) => AppMsg::WantQuota(email),
+                AccountsOutput::WantIdentities(email) => AppMsg::WantIdentities(email),
                 AccountsOutput::LeftEditor(page) => AppMsg::SettingsLeaveEditor { page, ask: false },
                 AccountsOutput::LeaveNeedsPrompt(page) => {
                     AppMsg::SettingsLeaveEditor { page, ask: true }
@@ -20863,7 +20932,7 @@ const SHORTCUT_HELP: &[(&str, &[(&str, &str)])] = &[
             ("h  or  ←  or  u", i18n_noop("Back to the message list")),
             ("w", i18n_noop("Next message in the conversation")),
             ("b", i18n_noop("Previous message in the conversation")),
-            ("/", i18n_noop("Search")),
+            ("/  or  Ctrl+F", i18n_noop("Search")),
         ],
     ),
     (
@@ -20873,35 +20942,52 @@ const SHORTCUT_HELP: &[(&str, &[(&str, &str)])] = &[
             ("R  or  Ctrl+Shift+R", i18n_noop("Reply to all")),
             ("f", i18n_noop("Forward")),
             ("a", i18n_noop("Archive")),
-            ("d", i18n_noop("Delete")),
+            ("d  or  Delete", i18n_noop("Delete")),
             ("!", i18n_noop("Mark as spam")),
             ("s", i18n_noop("Star or unstar")),
             ("m", i18n_noop("Mark read or unread")),
             ("x", i18n_noop("Select this row (for a bulk action)")),
             ("1 … 9", i18n_noop("Add or remove a tag (the first nine, in Settings order)")),
             ("0", i18n_noop("Remove every tag")),
+            ("Ctrl+U", i18n_noop("View Source")),
+            ("Ctrl+P", i18n_noop("Print the message you are reading")),
+            ("Ctrl+Shift+P", i18n_noop("Preview it as a PDF first")),
+        ],
+    ),
+    (
+        i18n_noop("Writing"),
+        &[
+            ("c  or  Ctrl+N", i18n_noop("Compose")),
+            ("Ctrl+Enter", i18n_noop("Send the message you are writing")),
+            ("Esc", i18n_noop("Back out of a reply and return to the list")),
+            ("Ctrl+.  or  Ctrl+;", i18n_noop("Emoji chooser, at the cursor")),
+            ("Shift+Return", i18n_noop("New paragraph (Return starts a new line, unless Settings swaps them)")),
+            ("Ctrl+B  /  Ctrl+I  /  Ctrl+U", i18n_noop("Bold, italic, underline")),
+        ],
+    ),
+    (
+        i18n_noop("Attachments"),
+        &[
+            ("Space  or  Enter", i18n_noop("Preview the highlighted attachment")),
+            ("←  /  →", i18n_noop("Previous or next in the gallery's preview")),
+            ("Esc", i18n_noop("Close the gallery's preview")),
         ],
     ),
     (
         i18n_noop("Everything else"),
         &[
-            ("c  or  Ctrl+N", i18n_noop("Compose")),
-            ("Ctrl+U", i18n_noop("View Source")),
-            ("Ctrl+Enter", i18n_noop("Send the message you are writing")),
-            ("Esc", i18n_noop("Back out of a reply and return to the list")),
             ("Ctrl+Z", i18n_noop("Undo the last action, or the last edit while you are writing")),
             ("Ctrl+Shift+Z", i18n_noop("Redo it (Ctrl+Y does the same)")),
-            ("Ctrl+P", i18n_noop("Print the message you are reading")),
-            ("Ctrl+Shift+P", i18n_noop("Preview it as a PDF first")),
             ("Ctrl+Shift+S", i18n_noop("Reveal the status bar (also: long-press Refresh)")),
             ("Ctrl+Shift+A", i18n_noop("Show or hide the accounts in the sidebar")),
             ("Ctrl+Shift+F", i18n_noop("Focus Mode on or off")),
             ("Ctrl++  /  Ctrl+-", i18n_noop("Message zoom in or out")),
             ("Ctrl+0", i18n_noop("Message zoom back to the default")),
+            ("Ctrl+F", i18n_noop("Search the Settings window, when it is open")),
             ("Ctrl+Shift+C", i18n_noop("Console mode (when enabled in Settings)")),
             ("Ctrl+W", i18n_noop("Close the window (background sync keeps running)")),
             ("Ctrl+Q", i18n_noop("Quit Hylki entirely")),
-            ("?", i18n_noop("This list")),
+            ("?  or  Ctrl+?  or  F1", i18n_noop("This list")),
         ],
     ),
 ];
@@ -21008,6 +21094,8 @@ fn demo_account_configs() -> Vec<AccountConfig> {
         // without one, and the demo's private bus has no keyring to ask.
         password: "demo".into(),
         smtp_separate: false,
+        jmap_token: false,
+        jmap_generic: false,
         tls_accept_hostname_mismatch: false,
         security: None,
         smtp_username: String::new(),
@@ -23225,8 +23313,8 @@ mod tests {
             .flat_map(|(_, keys)| keys.iter().map(|(key, _)| *key))
             .collect();
         for key in [
-            "j  or  ↓", "r  or  Ctrl+R", "R  or  Ctrl+Shift+R", "c  or  Ctrl+N", "Ctrl+U", "a", "d", "w", "b",
-            "x", "?", "1 … 9", "0",
+            "j  or  ↓", "r  or  Ctrl+R", "R  or  Ctrl+Shift+R", "c  or  Ctrl+N", "Ctrl+U", "a", "d  or  Delete", "w", "b",
+            "x", "?  or  Ctrl+?  or  F1", "1 … 9", "0", "/  or  Ctrl+F", "Ctrl+.  or  Ctrl+;",
         ] {
             assert!(documented.contains(&key), "{key} is not in the reference");
         }

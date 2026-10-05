@@ -125,6 +125,9 @@ pub struct MessageView {
     /// message: later renders of the same thread (bodies streaming in, a theme
     /// flip) carry a no-scroll stamp so the reader's place is kept.
     did_autoscroll: bool,
+    /// That auto-scroll was spent on a lone message, before the rest of its
+    /// conversation (a sent original, an archived part) was found.
+    autoscroll_lone: bool,
     /// The wrapper document's last reported scroll anchor: the topmost card at
     /// the viewport top and the offset into it. A re-render replaces the whole
     /// document (scroll resets to 0) and can reflow everything above — an
@@ -1016,6 +1019,8 @@ pub enum MessageViewInput {
     PgpFetchKey { account_id: u32, id: u32 },
     /// The popover's "Trust this key": vouch for the signing key.
     PgpTrustKey { account_id: u32, id: u32 },
+    /// The trust dialog was answered with Trust.
+    PgpTrustConfirmed { account_id: u32, id: u32, fingerprint: String },
     /// A key action finished: what to say, and whether to re-verify.
     PgpDone { account_id: u32, id: u32, result: Result<String, String> },
     /// The WebView finished loading the current document — reveal it.
@@ -2004,6 +2009,7 @@ impl Component for MessageView {
             cover: None,
             shown_fingerprint: None,
             did_autoscroll: false,
+            autoscroll_lone: false,
             saved_anchor: None,
             anchor_gutter: false,
             drafts_view: false,
@@ -2926,38 +2932,30 @@ impl Component for MessageView {
                 let crate::models::PgpSignature::Good { signer, key_id, .. } = &pgp.signature else {
                     return;
                 };
-                let gpg = crate::pgp::Gpg::system();
-                let Some(key) = crate::pgp::key_by_fingerprint(&gpg, key_id) else {
-                    let _ = sender.output(MessageViewOutput::Notice(i18n("That key is no longer in your keyring.")));
-                    return;
-                };
+                // gpg on a worker thread: a stale keyring lock makes it
+                // wait about ten seconds (#316).
+                let signer = signer.clone();
+                let key_id = key_id.clone();
                 let parent = self.webview.root().and_downcast::<gtk::Window>();
-                let dialog = adw::MessageDialog::new(
-                    parent.as_ref(),
-                    Some(&i18n("Trust this key?")),
-                    Some(&i18n_f(
-                        "Compare the fingerprint with the one {uid} gives you in person or over another channel. \
-                         Trusting a key you have not checked lets an impostor's signature pass as theirs.",
-                        &[("uid", signer)],
-                    )),
-                );
-                let fpr_label = gtk::Label::new(Some(&key.fingerprint_display()));
-                fpr_label.add_css_class("monospace");
-                fpr_label.set_wrap(true);
-                fpr_label.set_selectable(true);
-                fpr_label.set_justify(gtk::Justification::Center);
-                dialog.set_extra_child(Some(&fpr_label));
-                dialog.add_response("cancel", &i18n("Cancel"));
-                dialog.add_response("trust", &i18n("Trust"));
-                dialog.set_response_appearance("trust", adw::ResponseAppearance::Suggested);
-                dialog.set_default_response(Some("cancel"));
                 let s = sender.clone();
-                let fpr = key.fingerprint.clone();
-                dialog.connect_response(None, move |_, resp| {
-                    if resp != "trust" {
+                gtk::glib::spawn_future_local(async move {
+                    let key = gtk::gio::spawn_blocking(move || crate::pgp::key_by_fingerprint(&crate::pgp::Gpg::system(), &key_id))
+                        .await
+                        .ok()
+                        .flatten();
+                    let Some(key) = key else {
+                        let _ = s.output(MessageViewOutput::Notice(i18n("That key is no longer in your keyring.")));
                         return;
-                    }
-                    let result = crate::pgp::trust_key(&crate::pgp::Gpg::system(), &fpr, None)
+                    };
+                    confirm_trust(parent.as_ref(), &signer, &key, s, account_id, id);
+                });
+            }
+            MessageViewInput::PgpTrustConfirmed { account_id, id, fingerprint } => {
+                let input = sender.input_sender().clone();
+                sender.oneshot_command(async move {
+                    let result = tokio::task::spawn_blocking(move || crate::pgp::trust_key(&crate::pgp::Gpg::system(), &fingerprint, None))
+                        .await
+                        .unwrap_or_else(|_| Err("task failed".into()))
                         .map(|()| i18n("Key trusted."))
                         .map_err(|e| {
                             if e.contains("secret key") || e.contains("default") {
@@ -2966,9 +2964,8 @@ impl Component for MessageView {
                                 e
                             }
                         });
-                    s.input(MessageViewInput::PgpDone { account_id, id, result });
+                    let _ = input.send(MessageViewInput::PgpDone { account_id, id, result });
                 });
-                dialog.present();
             }
             MessageViewInput::PgpDone { account_id, id, result } => {
                 match result {
@@ -3594,6 +3591,13 @@ impl MessageView {
         // spinner there is nothing to see.
         let fade = self.webview_ready && !self.loading;
         let html = self.document_html(dark);
+        // A message painted alone that has since grown into a conversation
+        // gets the conversation's open scroll, unless the reader has been
+        // scrolled meanwhile: otherwise it stays at the top, on the oldest
+        // part, often the user's own sent original (#351).
+        if self.did_autoscroll && self.autoscroll_lone && self.thread.len() > 1 && self.saved_anchor.is_none() {
+            self.did_autoscroll = false;
+        }
         // Only a conversation's first document may auto-scroll to the unread
         // mark; every later render of the same thread (bodies streaming in, a
         // theme change) is stamped no-scroll so the reader's place is kept.
@@ -3659,6 +3663,7 @@ impl MessageView {
             1,
         );
         self.did_autoscroll = true;
+        self.autoscroll_lone = self.thread.len() <= 1;
         let n = self.seq.get().wrapping_add(1);
         self.seq.set(n);
         self.load_after_paint(html, format!("https://hylki.localhost/message/{n}"), fade);
@@ -5194,6 +5199,44 @@ fn default_image_name(mime: &str) -> String {
 /// Get the sender's key into the keyring (#133): the Autocrypt key the
 /// message carried first, then WKD and the keyservers by address and by the
 /// key id the signature named. Runs off the main thread (network).
+/// Ask before vouching for a signing key: the fingerprint to compare, and
+/// Trust or Cancel.
+fn confirm_trust(
+    parent: Option<&gtk::Window>,
+    signer: &str,
+    key: &crate::pgp::KeyInfo,
+    sender: ComponentSender<MessageView>,
+    account_id: u32,
+    id: u32,
+) {
+    let dialog = adw::MessageDialog::new(
+        parent,
+        Some(&i18n("Trust this key?")),
+        Some(&i18n_f(
+            "Compare the fingerprint with the one {uid} gives you in person or over another channel. \
+             Trusting a key you have not checked lets an impostor's signature pass as theirs.",
+            &[("uid", signer)],
+        )),
+    );
+    let fpr_label = gtk::Label::new(Some(&key.fingerprint_display()));
+    fpr_label.add_css_class("monospace");
+    fpr_label.set_wrap(true);
+    fpr_label.set_selectable(true);
+    fpr_label.set_justify(gtk::Justification::Center);
+    dialog.set_extra_child(Some(&fpr_label));
+    dialog.add_response("cancel", &i18n("Cancel"));
+    dialog.add_response("trust", &i18n("Trust"));
+    dialog.set_response_appearance("trust", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("cancel"));
+    let fingerprint = key.fingerprint.clone();
+    dialog.connect_response(None, move |_, resp| {
+        if resp == "trust" {
+            sender.input(MessageViewInput::PgpTrustConfirmed { account_id, id, fingerprint: fingerprint.clone() });
+        }
+    });
+    dialog.present();
+}
+
 fn fetch_sender_key(pgp: &crate::models::PgpStatus) -> Result<String, String> {
     let gpg = crate::pgp::Gpg::system();
     if let Some(b64) = &pgp.autocrypt {
@@ -6663,7 +6706,7 @@ var g=(e.view&&e.view.getSelection)?e.view.getSelection():null;if(g)g.removeAllR
 else{try{var t=(e.view&&e.view.getSelection)?e.view.getSelection():null;\
 if(t&&String(t).length)return;}catch(_){}}\
 try{window.webkit.messageHandlers.hylki.postMessage('sel:'+k+':'+mo);}catch(_){}}\
-var QS='.vireo-quote-attr,.gmail_quote,blockquote,#divRplyFwdMsg,.yahoo_quoted';\
+var QS='.vireo-quote-attr,.gmail_quote,blockquote:not([style*=\"border: none\"]),#divRplyFwdMsg,.yahoo_quoted';\
 var SIG='.moz-signature,#Signature,.gmail_signature,[class*=\"signature\"]';\
 var QT=window.vireoQT||['Show quoted text','Hide quoted text'];\
 var WROTE=/(wrote|writes|schrieb|a écrit|escribió|escreveu|scrisse|schreef|skrev|kirjoitti|napisał|napsal|írta|написал|написала|έγραψε)\\s*:?$/i;\
@@ -6697,7 +6740,7 @@ if(c>=3)return [bs[j],true];}\
 var w=d.createTreeWalker(d.body,4),n;\
 while((n=w.nextNode())){if(DIV.test(n.textContent)){var pe=n.parentNode;\
 return [pe!==d.body&&pe.textContent.trim()===n.textContent.trim()?pe:n,true];}}\
-q=d.querySelector('blockquote');return q?[q,false]:null;}\
+q=d.querySelector('blockquote:not([style*=\"border: none\"])');return q?[q,false]:null;}\
 function plain(d){var ps=d.querySelectorAll('.vireo-plain');if(!ps.length)return null;\
 var p=ps[ps.length-1],L=p.textContent.split('\\n'),i=L.length-1,qs=0,st=-1;\
 for(var j=0;j<L.length;j++)if(DIV.test(L[j])){st=j;break;}\

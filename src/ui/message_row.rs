@@ -214,10 +214,17 @@ impl RowItem {
 
     /// New data for the same message: the row showing it, if any, follows.
     fn set_data(&self, data: Rc<RowData>) {
-        self.imp().data.replace(Some(data));
+        let old = self.imp().data.replace(Some(data.clone()));
         let row = self.imp().row.borrow().upgrade();
         if let Some(row) = row {
             row.refresh();
+            // Thread links arriving can give a kept row's conversation a new
+            // key. A row is not bound again for that, so its size is asked
+            // for here, as binding would, or the badge never comes (#351).
+            let moved = old.is_some_and(|o| o.meta.group != data.meta.group);
+            if let (true, Some(group), Some(shared)) = (moved, data.meta.group.clone(), row.shared()) {
+                shared.want(group);
+            }
         }
     }
 }

@@ -364,6 +364,17 @@ fn run(gpg: &Gpg, args: &[&str], input: &[u8], detached_sig: Option<&[u8]>) -> R
         return Run { detail: Some("gpg: no output".into()), ..Default::default() };
     };
     let stderr = String::from_utf8_lossy(&output.stderr);
+    // A lock left by a gpg or keyboxd that is no longer serving it makes
+    // every call wait about ten seconds and then fail (#316); say so at a
+    // level the exported log keeps.
+    if let Some(line) = stderr.lines().find(|l| l.contains("waiting for lock")) {
+        tracing::warn!(
+            target: "hylki::pgp",
+            "gpg {} waited on a keyring lock: {}",
+            args.last().copied().unwrap_or(""),
+            line.trim_start_matches("gpg: ").trim()
+        );
+    }
     let mut status_lines = Vec::new();
     let mut detail = None;
     for line in stderr.lines() {

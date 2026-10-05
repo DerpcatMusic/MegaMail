@@ -89,6 +89,8 @@ impl GoaMailAccount {
             },
             password,
             smtp_separate: self.smtp_separate,
+            jmap_token: false,
+            jmap_generic: false,
             tls_accept_hostname_mismatch: false,
             security: Some(self.security.clone()),
             smtp_username: self.smtp_user.clone(),
