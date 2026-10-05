@@ -6,7 +6,7 @@ msgstr ""
 "Project-Id-Version: hylki\n"
 "Report-Msgid-Bugs-To: https://github.com/hyprlab/hylki/issues\n"
 "POT-Creation-Date: \n"
-"PO-Revision-Date: 2026-10-03 11:39+0200\n"
+"PO-Revision-Date: 2026-10-04 17:34+0200\n"
 "Last-Translator: cartes <cartes341@free.fr>\n"
 "Language-Team: French\n"
 "Language: fr\n"
@@ -154,9 +154,8 @@ msgstr "Objet (A–Z)"
 msgid "Unread first"
 msgstr "Non lus en premier"
 
-#, fuzzy
 msgid "Starred first"
-msgstr "Non lus en premier"
+msgstr "Favoris en premier"
 
 msgid "Create Folder"
 msgstr "Créer un dossier"
@@ -961,36 +960,32 @@ msgstr "Nom (Z à A)"
 msgid "Full Path"
 msgstr "Chemin complet"
 
-#, fuzzy
 msgid "Sender"
-msgstr "Expéditeurs"
+msgstr "Expéditeur"
 
-#, fuzzy
 msgid "Recipients"
-msgstr "Masquer les destinataires"
+msgstr "Destinataires"
 
 msgid "Correspondents"
-msgstr ""
+msgstr "Correspondants"
 
 msgid "Subject"
 msgstr "Objet"
 
-#, fuzzy
 msgid "Attachment"
-msgstr "Pièces jointes"
+msgstr "Pièce jointe"
 
-#, fuzzy
 msgid "Importance"
-msgstr "Importer la clé"
+msgstr "Importance"
 
 msgid "Account"
 msgstr "Compte"
 
 msgid "Due Date"
-msgstr ""
+msgstr "Date d'échéance"
 
 msgid "Date"
-msgstr ""
+msgstr "Date"
 
 msgid "Spam"
 msgstr "Spam"
@@ -1510,9 +1505,8 @@ msgstr ""
 msgid "Sign in with another app registration"
 msgstr ""
 
-#, fuzzy
 msgid "Client ID"
-msgstr "ID client OAuth"
+msgstr ""
 
 msgid "Tenant (common, organizations, consumers or an ID)"
 msgstr ""
@@ -1523,9 +1517,8 @@ msgstr ""
 msgid "Sign In with Browser"
 msgstr "Se connecter via le navigateur"
 
-#, fuzzy
 msgid "Sign In"
-msgstr "Connexion"
+msgstr ""
 
 msgid ""
 "Google and Microsoft sign-in use GNOME Online Accounts.\n"
@@ -1810,9 +1803,8 @@ msgstr ""
 "Saisissez d'abord un ID client (et les points de terminaison pour un "
 "fournisseur personnalisé)"
 
-#, fuzzy
 msgid "Complete the sign-in in the window that opened."
-msgstr "Impossible d'enregistrer la connexion dans le trousseau de clés : {e}"
+msgstr ""
 
 msgid "Opening browser… complete sign-in there."
 msgstr "Ouverture du navigateur… terminez la connexion à partir de là."
@@ -2844,9 +2836,8 @@ msgstr "Plus"
 msgid "Show Cc, Bcc and Reply-To"
 msgstr "Afficher Cc, Cci et Répondre à"
 
-#, fuzzy
 msgid "Type a From address"
-msgstr "Adresse de l'expéditeur"
+msgstr ""
 
 msgid "Choose from your addresses"
 msgstr ""
@@ -2909,21 +2900,22 @@ msgstr "Écrivez d'abord quelque chose, ou sélectionnez le texte à traduire."
 msgid "Could not translate"
 msgstr "Impossible de traduire"
 
-#, fuzzy
 msgid "An attachment is missing"
-msgstr "{n} pièce jointe"
+msgstr "Une pièce jointe est manquante"
 
 msgid ""
 "Hylki cannot read {names}. It was moved or deleted after it was attached. "
 "Remove it, or attach it again from where it is now."
 msgstr ""
+"Hylki ne peut pas lire {names}. Le fichier a été déplacé ou supprimé après "
+"avoir été joint. Retirez-le, ou joignez-le à nouveau depuis son emplacement "
+"actuel."
 
 msgid "Cannot send with OpenPGP"
 msgstr "Impossible d'envoyer avec OpenPGP"
 
-#, fuzzy
 msgid "Check the From address"
-msgstr "Adresse de l'expéditeur"
+msgstr ""
 
 msgid "The From has to be one address, such as Ann <ann@example.com>."
 msgstr ""
@@ -2990,10 +2982,11 @@ msgstr "Choisissez une heure ultérieure à maintenant."
 
 msgid "The file was moved or deleted. Attach it again from where it is now."
 msgstr ""
+"Le fichier a été déplacé ou supprimé. Joignez-le à nouveau depuis son "
+"emplacement actuel."
 
-#, fuzzy
 msgid "Not found"
-msgstr "Non affiché"
+msgstr "Non trouvé"
 
 msgid "Contacts"
 msgstr "Contacts"
@@ -3261,9 +3254,8 @@ msgstr ""
 "• Mettre à jour « xdg-desktop-portal » et vous reconnecter peut résoudre "
 "l'ouverture directe des liens"
 
-#, fuzzy
 msgid "me"
-msgstr "Nom"
+msgstr "moi"
 
 msgid "Choose which folders to search"
 msgstr "Choisir les dossiers dans lesquels rechercher"
@@ -3296,17 +3288,17 @@ msgid "Mark All as Unread"
 msgstr "Marquer tout comme non lu"
 
 msgid "Due"
-msgstr ""
+msgstr "Échéance"
 
 msgid "Drag to resize, double-click for the usual width"
 msgstr ""
+"Faites glisser pour redimensionner, double-cliquez pour la largeur habituelle"
 
 msgid "High importance"
-msgstr ""
+msgstr "Importance haute"
 
-#, fuzzy
 msgid "Low importance"
-msgstr "Clé importée"
+msgstr "Importance basse"
 
 msgid "Mark as read"
 msgstr "Marquer comme lu"
@@ -4028,16 +4020,14 @@ msgstr "Non affiché"
 msgid "Drop a button here to hide it"
 msgstr "Déposez un bouton ici pour le masquer"
 
-#, fuzzy
 msgid "Shown"
-msgstr "Afficher"
+msgstr "Affiché"
 
 msgid "Left to right"
-msgstr ""
+msgstr "De gauche à droite"
 
-#, fuzzy
 msgid "Drop a column here to hide it"
-msgstr "Déposez un bouton ici pour le masquer"
+msgstr "Déposez une colonne ici pour la masquer"
 
 msgid "Senders"
 msgstr "Expéditeurs"
@@ -4703,7 +4693,7 @@ msgstr ""
 "messages reste ouverte après que le curseur l'a quittée."
 
 msgid "Columns"
-msgstr ""
+msgstr "Colonnes"
 
 msgid ""
 "What a message shows when the layout is displayed in one line format. Drag "
@@ -4713,12 +4703,15 @@ msgid ""
 msgstr ""
 
 msgid "Column headings"
-msgstr ""
+msgstr "En-têtes de colonnes"
 
 msgid ""
 "Names the columns above the list. Click one to sort the list by it, and "
 "again to reverse the order."
 msgstr ""
+"Nomme les colonnes au-dessus de la liste. Cliquez sur l'une d'elles pour "
+"trier la liste selon cette colonne, et cliquez à nouveau pour inverser "
+"l'ordre."
 
 msgid "Group messages by conversation"
 msgstr "Grouper les messages par conversation"
@@ -4762,13 +4755,10 @@ msgstr ""
 msgid "Fold earlier messages"
 msgstr "Replier les messages précédents"
 
-#, fuzzy
 msgid ""
 "Which messages of a conversation open folded to their sender and first "
 "lines. The newest always opens, and a click on a folded message opens it."
 msgstr ""
-"Quels messages d'une conversation s'ouvrent repliés sur une seule ligne. Le "
-"plus récent est toujours déplié, et un clic sur un message replié le déplie."
 
 msgid "Show your own replies in the message list"
 msgstr "Afficher vos propres réponses dans la liste des messages"
@@ -6054,9 +6044,8 @@ msgstr "La connexion IMAP ne progresse plus"
 msgid "Could not reach the JMAP server: {e}"
 msgstr "Impossible de contacter le serveur JMAP : {e}"
 
-#, fuzzy
 msgid "unknown folder"
-msgstr "Afficher chaque dossier"
+msgstr ""
 
 msgid "That folder is not on the server"
 msgstr "Ce dossier n'existe pas sur le serveur"
@@ -6149,9 +6138,8 @@ msgstr "Échec de l'envoi : {e}"
 msgid "“{subject}” will be sent {when}"
 msgstr "« {subject} » sera envoyé {when}"
 
-#, fuzzy
 msgid "Could not schedule the message."
-msgstr "Impossible de supprimer le message : {e}"
+msgstr "Impossible de programmer le message."
 
 msgid "Could not save draft: {e}"
 msgstr "Impossible d'enregistrer le brouillon : {e}"
@@ -6328,6 +6316,26 @@ msgstr "Hyprlab"
 #~ "Chaque message sur plusieurs lignes, ou sur une seule ligne en colonnes. "
 #~ "Le mode Automatique utilise une seule ligne lorsque la liste est élargie, "
 #~ "et plusieurs lignes lorsqu'elle est étroite."
+
+#~ msgid ""
+#~ "What a message shows when the list is on one line, from left to right. "
+#~ "Drag the columns into the order you want, or out of the list. The subject "
+#~ "always stays. Due Date appears only in lists with Microsoft 365 mail. "
+#~ "Changes apply at once."
+#~ msgstr ""
+#~ "Ce que montre un message lorsque la liste tient sur une seule ligne, de "
+#~ "gauche à droite. Faites glisser les colonnes dans l'ordre souhaité, ou "
+#~ "hors de la liste. L'objet reste toujours affiché. La date d'échéance "
+#~ "n'apparaît que dans les listes avec une messagerie Microsoft 365. Les "
+#~ "modifications s'appliquent immédiatement."
+
+#~ msgid ""
+#~ "Which messages of a conversation open folded to one line. The newest "
+#~ "always opens, and a click on a folded message opens it."
+#~ msgstr ""
+#~ "Quels messages d'une conversation s'ouvrent repliés sur une seule ligne. "
+#~ "Le plus récent est toujours déplié, et un clic sur un message replié le "
+#~ "déplie."
 
 #~ msgid "Could not save draft: unknown folder"
 #~ msgstr "Impossible d'enregistrer le brouillon : dossier inconnu"
@@ -6568,6 +6576,9 @@ msgstr "Hyprlab"
 #~ msgstr ""
 #~ "Où classer les e-mails correspondants ; ou les laisser dans la boîte de "
 #~ "réception et se contenter de les marquer"
+
+#~ msgid "From address"
+#~ msgstr "Adresse de l'expéditeur"
 
 #~ msgid "From name"
 #~ msgstr "Nom de l'expéditeur"
