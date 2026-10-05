@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **Fixed: the window stopped responding for about twenty seconds after
+  start** (#316, reported by wil-m). A GnuPG keyring lock left behind by a
+  gpg or keyboxd that had stopped serving it makes every gpg call wait about
+  ten seconds and then fail. The hidden Settings window read the keyring at
+  startup, and an account's settings did each time they opened, on the
+  thread that draws the window. All of Hylki's own gpg calls now run in the
+  background, and the log says when gpg waited on a lock.
+- **Fixed: opening a reply showed your own sent original at the top**
+  (#351, reported by amadeusp). The reply was shown alone first, and when
+  the original joined from Sent the conversation stayed scrolled to the
+  top. It now opens on the first unread or newest message, as a
+  conversation opened whole does. The row's conversation count is also
+  asked for again when it missed a part, after its conversation was
+  regrouped or when the reader finds more than the row knew of.
 - **Fixed: the dock badge lost the unread count after the screen was
   locked** (#353, PR #354 by Isaac). Ubuntu Dock and Dash to Dock start
   afresh at every unlock and show the notification count until an app sends
