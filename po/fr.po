@@ -5078,7 +5078,7 @@ msgstr ""
 "espace avant le suivant. Désactivé, Entrée commence une nouvelle ligne dans "
 "le même paragraphe. Maj+Entrée fait toujours l'autre action."
 
-msgid "Expanded formatting toolbar"
+msgid "Expanded rich text formatting toolbar"
 msgstr ""
 
 msgid ""

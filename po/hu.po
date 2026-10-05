@@ -5079,7 +5079,7 @@ msgstr ""
 "kapcsolva, a ENTER lenyomásával ugyanazon bekezdésen belül új sor kezdődik. "
 "A Shift+ENTER billentyűkombinációval mindig a másik művelet történik."
 
-msgid "Expanded formatting toolbar"
+msgid "Expanded rich text formatting toolbar"
 msgstr ""
 
 msgid ""

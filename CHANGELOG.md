@@ -2,11 +2,11 @@
 
 ## Unreleased
 
-- **Added: an expanded formatting toolbar** (#358, requested by urkos101).
-  **Settings → Composing → Expanded formatting toolbar**, off by default,
-  adds paragraph styles (headings and preformatted text), fonts, text and
-  highlight colors, indent and outdent (which nest list items), and buttons
-  for emoji and pictures. The default toolbar keeps to what Markdown can
+- **Added: an expanded rich text formatting toolbar** (#358, requested by
+  urkos101). **Settings → Composing → Expanded rich text formatting
+  toolbar**, off by default, adds paragraph styles (headings and
+  preformatted text), fonts, text and highlight colors, indent and outdent
+  (which nest list items), and buttons for emoji and pictures. The default toolbar keeps to what Markdown can
   say, and Quote has a quote-mark icon of its own. The toolbar wraps onto a
   second row in a narrow composer. An indented paragraph is not mistaken for
   a quote, in the composer, in the reader or in the plain-text part.

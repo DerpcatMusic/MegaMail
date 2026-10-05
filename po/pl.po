@@ -5112,7 +5112,7 @@ msgstr ""
 "rozpoczyna nowy wiersz w tym samym akapicie. Shift+Enter zawsze działa "
 "odwrotnie."
 
-msgid "Expanded formatting toolbar"
+msgid "Expanded rich text formatting toolbar"
 msgstr ""
 
 msgid ""

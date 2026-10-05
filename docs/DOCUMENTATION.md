@@ -540,8 +540,9 @@ text are written as source, where <kbd>Return</kbd> is always a new line.
 
 The rich text editor's toolbar has bold, italic, underline, strikethrough,
 bulleted and numbered lists, quote, link and Clear formatting, all of which
-survive a switch to Markdown. **Settings → Composing → Expanded formatting
-toolbar** (off by default) adds the rest of what a mail can carry:
+survive a switch to Markdown. **Settings → Composing → Expanded rich text
+formatting toolbar** (off by default) adds the rest of what a mail can
+carry:
 
 - **Paragraph style:** Normal, Heading 1 to 3 and Preformatted. The menu's
   label names the style the cursor is in.

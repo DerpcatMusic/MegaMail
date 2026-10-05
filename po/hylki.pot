@@ -4504,7 +4504,7 @@ msgid ""
 "always does the other."
 msgstr ""
 
-msgid "Expanded formatting toolbar"
+msgid "Expanded rich text formatting toolbar"
 msgstr ""
 
 msgid ""

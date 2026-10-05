@@ -5095,7 +5095,7 @@ msgstr ""
 "από την επόμενη. Όταν είναι απενεργοποιημένο, το Return ξεκινά νέα γραμμή "
 "στην ίδια παράγραφο. Το Shift+Return κάνει πάντα το αντίθετο."
 
-msgid "Expanded formatting toolbar"
+msgid "Expanded rich text formatting toolbar"
 msgstr ""
 
 msgid ""

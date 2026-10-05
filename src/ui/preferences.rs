@@ -3126,7 +3126,7 @@ impl Component for Preferences {
 
                                     #[name = "rich_toolbar_row"]
                                     adw::SwitchRow {
-                                        set_title: &i18n("Expanded formatting toolbar"),
+                                        set_title: &i18n("Expanded rich text formatting toolbar"),
                                         set_subtitle: &i18n("Adds paragraph styles, fonts, colors, \
                                                        indents, emoji and pictures to the \
                                                        toolbar."),

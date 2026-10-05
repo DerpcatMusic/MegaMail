@@ -5095,7 +5095,7 @@ msgstr ""
 "Abstand vor dem nächsten. Wenn deaktiviert, beginnt sie eine neue Zeile im "
 "selben Absatz. Umschalt+Eingabe bewirkt jeweils das Gegenteil."
 
-msgid "Expanded formatting toolbar"
+msgid "Expanded rich text formatting toolbar"
 msgstr ""
 
 msgid ""

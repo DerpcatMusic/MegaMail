@@ -5047,7 +5047,7 @@ msgstr ""
 "Enter inicia uma nova linha no mesmo parágrafo. Shift+Enter sempre faz o "
 "contrário."
 
-msgid "Expanded formatting toolbar"
+msgid "Expanded rich text formatting toolbar"
 msgstr ""
 
 msgid ""

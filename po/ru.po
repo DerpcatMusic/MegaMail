@@ -5056,7 +5056,7 @@ msgstr ""
 "параметр отключён, Enter выполняет перенос на новую строку в рамках того же "
 "абзаца. Сочетание Shift+Enter всегда выполняет противоположное действие."
 
-msgid "Expanded formatting toolbar"
+msgid "Expanded rich text formatting toolbar"
 msgstr ""
 
 msgid ""

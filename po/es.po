@@ -5062,7 +5062,7 @@ msgstr ""
 "siguiente. Desactivado, Intro inicia una línea nueva en el mismo párrafo. "
 "Mayús+Intro siempre hace lo contrario."
 
-msgid "Expanded formatting toolbar"
+msgid "Expanded rich text formatting toolbar"
 msgstr ""
 
 msgid ""
