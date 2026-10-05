@@ -1617,29 +1617,95 @@ fn build_toolbar(
 
     // The rest (#358) behind a chevron, after everything above so showing
     // them moves nothing: paragraph style and font, colors, indents, emoji
-    // and pictures. Settings → Composing → Formatting toolbar says how a
-    // new message starts; the chevron changes it for this one.
-    let extras = [styles, colors, indents, media];
+    // and pictures. They slide out from the chevron, which rides along to
+    // their end, and slide back into it. Settings → Composing → Formatting
+    // toolbar says how a new message starts; the chevron changes it for
+    // this one.
+    let extras = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    for e in [&styles, &colors, &indents, &media] {
+        extras.append(e);
+    }
+    let reveal = gtk::Revealer::new();
+    reveal.set_transition_type(gtk::RevealerTransitionType::SlideRight);
+    reveal.set_transition_duration(250);
+    reveal.set_child(Some(&extras));
+    // Where the tools do not fit beside the rest, they take the next row.
+    // A growing revealer would start on this row and jump to the next
+    // partway, so this spacer fills the rest of the row for the length of
+    // the slide and the tools slide out on the next row from the start.
+    let breaker = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    breaker.set_visible(false);
+    // A folded revealer is still a child of the bar, and the bar's spacing
+    // would show either side of it: it leaves the row once it has closed.
+    {
+        let breaker = breaker.clone();
+        reveal.connect_child_revealed_notify(move |r| {
+            breaker.set_visible(false);
+            if !r.reveals_child() {
+                r.set_visible(false);
+            }
+        });
+    }
     let more = gtk::ToggleButton::new();
     more.set_can_focus(false);
     more.add_css_class("flat");
     let show_more = {
-        let extras = extras.clone();
+        let (reveal, breaker, group, tail, extras) =
+            (reveal.clone(), breaker.clone(), group.clone(), tail.clone(), extras.clone());
         move |b: &gtk::ToggleButton| {
             let on = b.is_active();
             b.set_icon_name(if on { "pan-start-symbolic" } else { "pan-end-symbolic" });
             b.set_tooltip_text(Some(if on { i18n("Fewer formatting tools") } else { i18n("More formatting tools") }.as_str()));
-            for e in &extras {
-                e.set_visible(on);
+            // The room left on the row after Clear formatting, against what
+            // the tools and the chevron need.
+            let gap = 10.0;
+            let row_end = tail.compute_bounds(&group).map_or(0.0, |r| r.x() + r.width());
+            let spare = group.width() as f32 - row_end - gap;
+            let need = extras.measure(gtk::Orientation::Horizontal, -1).1 as f32 + gap + b.width() as f32;
+            if reveal.transition_duration() > 0 && group.width() > 0 && need > spare {
+                breaker.set_size_request((spare - 1.0).max(0.0) as i32, -1);
+                breaker.set_visible(true);
             }
+            if on {
+                reveal.set_visible(true);
+            }
+            reveal.set_reveal_child(on);
         }
     };
+    // How a new message starts: already open, with no slide.
+    reveal.set_transition_duration(0);
     more.set_active(expanded);
     show_more(&more);
+    reveal.set_visible(expanded);
+    reveal.set_transition_duration(250);
     more.connect_toggled(show_more);
+    group.append(&breaker);
+    group.append(&reveal);
     group.append(&more);
-    for e in &extras {
-        group.append(e);
+    // HYLKI_SHOWCASE_TOOLBAR_TOGGLE=<ms>: press the chevron that long after
+    // the bar is built, so frames of the slide can be captured.
+    if let Some(ms) = std::env::var("HYLKI_SHOWCASE_TOOLBAR_TOGGLE").ok().and_then(|v| v.parse::<u64>().ok()) {
+        let more = more.downgrade();
+        gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(ms), move || {
+            if let Some(m) = more.upgrade() {
+                tracing::info!("showcase: chevron pressed");
+                m.set_active(!m.is_active());
+                // HYLKI_SHOWCASE_TOOLBAR_SHOTS=<png prefix>:<ms>,<ms>…
+                // captures the window that long after the press.
+                if let Some((prefix, times)) = std::env::var("HYLKI_SHOWCASE_TOOLBAR_SHOTS").ok().and_then(|v| {
+                    v.rsplit_once(':').map(|(p, t)| (p.to_string(), t.to_string()))
+                }) {
+                    for t in times.split(',').filter_map(|t| t.parse::<u64>().ok()) {
+                        let (root, path) = (m.root(), format!("{prefix}{t}.png"));
+                        gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(t), move || {
+                            if let Some(r) = root {
+                                crate::app::showcase_capture(r.upcast_ref::<gtk::Widget>(), &path);
+                            }
+                        });
+                    }
+                }
+            }
+        });
     }
 
     bar.append(&group);
