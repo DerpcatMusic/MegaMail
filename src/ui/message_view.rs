@@ -4406,7 +4406,6 @@ impl MessageView {
                body:not(.vireo-conv) .vireo-msg{{border-radius:0;margin:0;}}\
                .vireo-msg.selected{{box-shadow:0 0 0 2px {accent};}}\
                .vireo-fbar{{display:none;}}\
-               .vireo-msg.vireo-folded{{background-image:linear-gradient(rgba(128,128,128,0.07),rgba(128,128,128,0.07));}}\
                .vireo-msg.vireo-folded>.vireo-fbar{{display:flex;align-items:flex-start;gap:12px;\
                  padding:14px 18px;cursor:pointer;user-select:none;}}\
                .vireo-fbar-main{{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:2px;}}\
