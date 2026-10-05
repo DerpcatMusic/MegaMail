@@ -1710,6 +1710,9 @@ msgstr ""
 msgid "Remove this alias"
 msgstr ""
 
+msgid "Kept on the server; change it in your webmail"
+msgstr ""
+
 msgid "Display name (optional)"
 msgstr ""
 

@@ -1908,6 +1908,9 @@ msgstr "Wysyła przez to konto"
 msgid "Remove this alias"
 msgstr "Usuń ten alias"
 
+msgid "Kept on the server; change it in your webmail"
+msgstr ""
+
 msgid "Display name (optional)"
 msgstr "Wyświetlana nazwa (opcjonalnie)"
 

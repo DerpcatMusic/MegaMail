@@ -1884,6 +1884,9 @@ msgstr "Отправляет через эту учётную запись"
 msgid "Remove this alias"
 msgstr "Удалить этот псевдоним"
 
+msgid "Kept on the server; change it in your webmail"
+msgstr ""
+
 msgid "Display name (optional)"
 msgstr "Необязательно. Отображается вместо инициалов."
 

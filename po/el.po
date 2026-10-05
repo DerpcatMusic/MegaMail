@@ -1898,6 +1898,9 @@ msgstr "Αποστολή μέσω αυτού του λογαριασμού"
 msgid "Remove this alias"
 msgstr "Αφαίρεση αυτού του ψευδωνύμου"
 
+msgid "Kept on the server; change it in your webmail"
+msgstr ""
+
 msgid "Display name (optional)"
 msgstr "Εμφανιζόμενο όνομα (προαιρετικό)"
 
