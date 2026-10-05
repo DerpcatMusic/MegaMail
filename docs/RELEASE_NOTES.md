@@ -2,6 +2,38 @@
 
 Hylki (formerly Vireo) is a clean, fast, GNOME-native email client built with Rust and libadwaita for Wayland desktops. Privacy-first: no telemetry, remote content blocked by default, and credentials kept in the system keyring.
 
+## What's new in 1.43.0-beta.3
+
+The third beta previewing 1.43.0.
+
+- **All Archive no longer freezes the window**: large combined views show
+  their newest mail at once and fill in the rest without holding up the
+  window, and a slow account can no longer keep it busy.
+- **Drafts save themselves** every 30 seconds while you write (#340,
+  reported by 7system7), and a reopened draft keeps its From address, Bcc,
+  files and place in the conversation, without gaining empty lines (#349
+  and #350, reported by amadeusp and pdf).
+- **Type any From address** for one message, and replies to a `+tag`
+  address answer from it (#347). JMAP accounts offer the server's
+  identities (#346).
+- **Highlight only new unread mail** (#343, suggested by pdf): an option in
+  Settings > Sidebar keeps a folder's count in the accent color only while
+  mail has come in since you last looked.
+- **Folders inside the Inbox are listed under it** on servers that keep
+  some folders there and some beside it (#345, suggested by bstegmaier75).
+- **Microsoft accounts can sign in with another app registration**, such as
+  one an organization has already approved (#329, suggested by erenoglu).
+- **Translations cover the subject too**, and the composer can show the
+  original again (#327). Folded messages in a conversation show their
+  first lines (#326).
+- **Emoji:** Ctrl+. in the message body inserts the emoji you pick (#348,
+  reported by amadeusp), and the emoji chooser opens at the cursor in every
+  text field.
+- **The dock badge keeps the unread count after the screen is unlocked**
+  (#353, PR #354 by [@thecalamityjoe87](https://github.com/thecalamityjoe87)).
+- **Translations:** French by [@frenchy82](https://github.com/frenchy82)
+  (#352) brought up to date.
+
 ## What's new in 1.43.0-beta.2
 
 The second beta previewing 1.43.0.

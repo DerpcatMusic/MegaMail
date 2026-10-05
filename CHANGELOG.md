@@ -1,5 +1,95 @@
 # Changelog
 
+## 1.43.0-beta.3 — 2026-10-05
+
+The third beta previewing 1.43.0.
+
+- **Fixed: the dock badge lost the unread count after the screen was
+  locked** (#353, PR #354 by Isaac). Ubuntu Dock and Dash to Dock start
+  afresh at every unlock and show the notification count until an app sends
+  its own again, and Hylki skipped sending a count it had sent before. It
+  now sends it again whenever the dock comes back, and on wake, on Refresh
+  and when the window is focused.
+- **Fixed: All Archive, and other combined views of very large folders,
+  froze the window** until the desktop offered to force quit. Every
+  account's answer, and every batch a slow one sent, regrouped the whole
+  view on the spot, tens of thousands of messages each time, one after
+  another. Now:
+  - The newest messages go on screen at once.
+  - Conversations are worked out on a background thread, and the whole
+    list follows.
+  - Answers that arrive close together are merged once, and an account still
+    catching up can trigger a merge only every few seconds.
+  - A long list puts its rows on screen a screenful at a time, adding more
+    as it is scrolled toward the end.
+- **Added: messages being written are saved to Drafts as you go** (#340,
+  reported by 7system7). Every 30 seconds while it changes, a message is
+  saved to the Drafts folder in place of its last copy, with the composer
+  left open. Discarding a new message removes its copy. A save that fails is
+  tried again quietly.
+- **Changed: folders inside the Inbox are listed under it** (#345, suggested
+  by bstegmaier75). On a server that keeps some folders inside the Inbox
+  (`INBOX.Ablage`) and others beside it, the ones inside are now under the
+  Inbox row, which folds them away with its arrow, as Roundcube and Apple
+  Mail show them. Before, they were mixed in with the other folders. A
+  server that keeps every folder inside the Inbox is unchanged.
+- **Added: unread counts can mark only new mail** (#343, suggested by pdf).
+  With Settings → Sidebar → Highlight only new unread mail on (it is off by
+  default), a folder's count is in the accent color only while mail has come
+  in since the folder was last looked at, and grey once it has been, as in
+  Thunderbird. The account circle, All Inboxes and the unified rows follow
+  the folders they count.
+- **Added: Microsoft accounts can sign in with another app registration**
+  (#329, suggested by erenoglu). An Advanced row on a Microsoft account's
+  page takes a client ID, a tenant, scopes and a redirect URI, so an
+  organization that has approved another mail app, such as Evolution, can
+  sign in with that registration. A redirect that is not a `localhost`
+  address signs in in a window of Hylki's, which catches it, rather than in
+  the browser.
+- **Added: the From address can be typed** (#347, suggested by pdf). A pencil
+  on the composer's From row turns it into text, for any name and address on
+  one message without making it an alias; the message still goes through the
+  account chosen. With one address, the row is under More. A reply to mail
+  sent to a `+tag` address of yours starts from that address, and a draft
+  saved from a typed address opens with it.
+- **Added: a JMAP server's identities are offered as From addresses** (#346,
+  suggested by pdf). They are read when the account connects, and a message
+  is sent as the identity with its address, or a catch-all identity for its
+  domain (`*@example.org`), before the first identity is used. A JMAP alias
+  no longer shows SMTP settings, which JMAP does not use.
+- **Added: subjects are translated, and the composer can show the original
+  again** (#327, suggested by pdf). Translating a message translates its
+  subject too, in the heading above it, and Show Original puts
+  it back. In the composer, translating everything you wrote takes the
+  subject with it, except in a reply or forward. Until the text is changed
+  again, the Translate menu offers Show Original and Show Translation, which
+  swap the body and subject back and forth.
+- **Changed: a folded message in a conversation shows its first lines**
+  (#326, suggested by pdf). Under the sender, a folded card now has as many
+  lines of preview as the message list shows, set under Settings → Message
+  List → Preview lines. The subject is left to the conversation's heading
+  above the cards.
+- **Fixed: a reopened draft lost its From address, Bcc, files and place in
+  the conversation** (#350, reported by pdf). A draft opened in the composer
+  was rebuilt from what the reader showed of it: the To, Cc, subject and
+  text, and nothing else. It is now opened from the draft itself, so it
+  comes back from the address it was written from, with its Bcc recipients,
+  its attachments, its pictures in the text, and the headers that keep a
+  reply in its conversation. Drafts also keep their Bcc header when saved;
+  they used to lose it. Each reopening also added an empty line at the top
+  (#349, reported by amadeusp), and an edited Outbox message gained a second
+  signature. Neither happens now.
+- **Fixed: the emoji chosen with Ctrl+. never reached the message** (#348,
+  reported by amadeusp). The chooser that opened belonged to WebKitGTK, which
+  drops the emoji picked in it. The composer now opens GTK's emoji chooser
+  itself, at the cursor, on Ctrl+. or Ctrl+;, and types the emoji where the
+  cursor was.
+- **Changed: the emoji chooser opens at the cursor in every text field.** In
+  the subject, the search fields and the fields in Settings, GTK pointed it at
+  the middle of the field, wherever the cursor was. It now opens under the
+  cursor, from Ctrl+., Ctrl+; or Insert Emoji in the field's menu.
+- **Translations:** French brought up to date (PR #352 by frenchy82).
+
 ## 1.43.0-beta.2 — 2026-10-03
 
 The second beta previewing 1.43.0.

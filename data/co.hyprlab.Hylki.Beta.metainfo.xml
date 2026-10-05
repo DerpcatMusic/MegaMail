@@ -63,6 +63,11 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="1.43.0-beta.3" date="2026-10-05" type="development">
+      <description>
+        <p>Third preview of 1.43.0: drafts that save themselves and reopen whole, any From address, JMAP identities, folders inside the Inbox listed under it, highlighting only new unread mail, Microsoft sign-in with another app registration, translated subjects, and fixes for All Archive freezing, emoji insertion and the dock badge after unlocking.</p>
+      </description>
+    </release>
     <release version="1.43.0-beta.2" date="2026-10-03" type="development">
       <description>
         <p>Second preview of 1.43.0: choosable columns for the single-line list, translations that keep the message's design, no lost message when an attachment has moved, and fixes for new mail not appearing, nested Inbox folders and sending files from GNOME Files.</p>
