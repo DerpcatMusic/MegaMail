@@ -116,7 +116,9 @@
   the middle of the field, wherever the cursor was. It now opens under the
   cursor, from Ctrl+., Ctrl+; or Insert Emoji in the field's menu.
 - **Translations:** French (PRs #341 and #352 by frenchy82) and Russian (PR
-  #338 by Ilya Semenkovich) brought up to date with 1.43.0-beta.2.
+  #338 by Ilya Semenkovich) brought up to date with 1.43.0-beta.2, and
+  Portuguese for Portugal and Brazil (PR #357 by Paulo Fino) with
+  1.43.0-beta.3 and the JMAP sign-in.
 - **Fixed: Send with Hylki in GNOME Files went to the stable build when the
   beta was installed beside it.** The extension now opens the files in
   whichever Hylki is the default mail app, and the beta takes every
