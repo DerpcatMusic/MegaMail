@@ -148,7 +148,7 @@ pub(crate) const PROVIDERS: &[Provider] = &[
     Provider { label: "Proton Mail (Bridge)", brand: "proton", kind: ProviderKind::Preset, imap_host: "127.0.0.1", imap_port: 1143, smtp_host: "127.0.0.1", smtp_port: 1025, hint: i18n_noop("Requires Proton Mail Bridge running locally.") },
     Provider { label: "Fastmail", brand: "fastmail", kind: ProviderKind::Preset, imap_host: "imap.fastmail.com", imap_port: 993, smtp_host: "smtp.fastmail.com", smtp_port: 465, hint: APP_PW },
     Provider { label: "Fastmail (JMAP)", brand: "fastmail", kind: ProviderKind::Jmap, imap_host: "https://api.fastmail.com/jmap/session", imap_port: 443, smtp_host: "", smtp_port: 0, hint: i18n_noop("Signs in with an API token, not your password. Make one in Fastmail's settings, under Privacy & Security, with access to mail and to sending it. Mail is read and sent over JMAP.") },
-    Provider { label: "JMAP Server (Stalwart and others)", brand: "stalwart", kind: ProviderKind::Jmap, imap_host: "", imap_port: 443, smtp_host: "", smtp_port: 0, hint: i18n_noop("Enter your JMAP server's address, or the URL of its session resource. Mail is read and sent over JMAP; no SMTP settings are needed.") },
+    Provider { label: "JMAP Server (Stalwart and others)", brand: "mail-jmap", kind: ProviderKind::Jmap, imap_host: "", imap_port: 443, smtp_host: "", smtp_port: 0, hint: i18n_noop("Enter your JMAP server's address, or the URL of its session resource. Mail is read and sent over JMAP; no SMTP settings are needed.") },
     Provider { label: "AOL Mail", brand: "aol", kind: ProviderKind::Preset, imap_host: "imap.aol.com", imap_port: 993, smtp_host: "smtp.aol.com", smtp_port: 465, hint: APP_PW },
     Provider { label: "Zoho Mail", brand: "zoho", kind: ProviderKind::Preset, imap_host: "imap.zoho.com", imap_port: 993, smtp_host: "smtp.zoho.com", smtp_port: 465, hint: "" },
     Provider { label: "GMX", brand: "gmx", kind: ProviderKind::Preset, imap_host: "imap.gmx.com", imap_port: 993, smtp_host: "mail.gmx.com", smtp_port: 587, hint: i18n_noop("Enable POP/IMAP access in GMX settings first.") },
@@ -4716,12 +4716,11 @@ fn brand_for_account(acc: &AccountConfig) -> &'static str {
 }
 
 /// The mark for an account whose servers were entered by hand: its
-/// protocol's tile, or for JMAP the server most likely behind it.
+/// protocol's tile, Fastmail's mark for a JMAP account on Fastmail.
 fn manual_brand(protocol: Protocol, host: &str) -> &'static str {
     match protocol {
-        // Fastmail speaks JMAP too; anyone else on it is most likely Stalwart.
         Protocol::Jmap if host.to_ascii_lowercase().contains("fastmail") => "fastmail",
-        Protocol::Jmap => "stalwart",
+        Protocol::Jmap => "mail-jmap",
         Protocol::Pop3 => "mail-pop3",
         _ => "mail",
     }
@@ -4805,7 +4804,7 @@ mod tests {
         assert_eq!(protocol_at(99), Protocol::Imap);
         let acc = AccountConfig { protocol: Protocol::Jmap, imap_host: "mail.example.org".into(), ..crate::ui::welcome::blank_account() };
         assert_eq!(provider_at(provider_index_for_account(&acc)).label, p.label);
-        assert_eq!(brand_for_account(&acc), "stalwart");
+        assert_eq!(brand_for_account(&acc), "mail-jmap");
         let fm = AccountConfig { imap_host: "api.fastmail.com".into(), ..acc };
         assert_eq!(brand_for_account(&fm), "fastmail");
         // Fastmail's own entry: its session URL, and a token sign-in (#356).

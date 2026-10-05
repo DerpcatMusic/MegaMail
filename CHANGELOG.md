@@ -8,7 +8,8 @@
 - **Added: Fastmail over JMAP, and any JMAP server** (#356, requested by
   Y4LIT). The Provider list has a Fastmail (JMAP) entry, which fills in
   Fastmail's session URL and signs in with an API token, and the Stalwart
-  entry is now JMAP Server (Stalwart and others). A JMAP account can sign in
+  entry is now JMAP Server (Stalwart and others), marked by a red JMAP
+  tile like the IMAP and OAuth ones. A JMAP account can sign in
   with a bearer token in place of its username and password, and its server
   can be given as the full URL of its session resource.
 - **Fixed: the window stopped responding for about twenty seconds after

@@ -222,9 +222,9 @@ headerbar.rail-header {
 }
 
 /* The tile that marks an account by protocol when it has no provider's
-   logo (brand::mark). Fixed colors, as a provider's logo has: the IMAP blue
-   and the POP3 red take white text, the OAuth yellow dark text, which white
-   would not read on. */
+   logo (brand::mark). Fixed colors, as a provider's logo has: the IMAP blue,
+   the POP3 red and the deeper JMAP red take white text, the OAuth yellow
+   dark text, which white would not read on. */
 .protocol-pill {
   font-size: 0.72em;
   font-weight: 800;
@@ -245,6 +245,11 @@ headerbar.rail-header {
 
 .protocol-pill.pop3 {
   background-color: #e7414a;
+  color: #ffffff;
+}
+
+.protocol-pill.jmap {
+  background-color: #c01c28;
   color: #ffffff;
 }
 
