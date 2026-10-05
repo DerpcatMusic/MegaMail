@@ -137,6 +137,9 @@ msgstr "Вложения"
 msgid "Toggle sidebar"
 msgstr "Показать/скрыть боковую панель"
 
+msgid "Keyboard Shortcuts"
+msgstr "Сочетания клавиш"
+
 msgid "Date (Newest first)"
 msgstr "Дата (сначала новые)"
 
@@ -266,18 +269,15 @@ msgstr "Показать строку состояния"
 msgid "Console"
 msgstr "Консоль"
 
-msgid "Keyboard Shortcuts"
-msgstr "Сочетания клавиш"
-
 msgid "About"
 msgstr "О программе"
 
 msgid "Remove Tags"
 msgstr "Удалить теги"
 
+#, fuzzy
 msgid ""
-"Single-key shortcuts are switched off. Turn them on in Settings → System & "
-"Appearance."
+"Single-key shortcuts are switched off. Turn them on in Settings → System."
 msgstr ""
 "Одноклавишные сочетания отключены. Включите их в меню «Настройки» → «Система "
 "и внешний вид»."
@@ -856,8 +856,15 @@ msgstr "Добавить или удалить тег (первые девять
 msgid "Remove every tag"
 msgstr "Удалить все теги"
 
-msgid "Everything else"
-msgstr "Всё остальное"
+msgid "Print the message you are reading"
+msgstr "Печать открытого сообщения"
+
+msgid "Preview it as a PDF first"
+msgstr "Предпросмотр в формате PDF"
+
+#, fuzzy
+msgid "Writing"
+msgstr "Составление писем:"
 
 msgid "Compose"
 msgstr "Написать"
@@ -868,18 +875,34 @@ msgstr "Отправить создаваемое сообщение"
 msgid "Back out of a reply and return to the list"
 msgstr "Отменить ответ и вернуться к списку"
 
+msgid "Emoji chooser, at the cursor"
+msgstr ""
+
+msgid "New paragraph (Return starts a new line, unless Settings swaps them)"
+msgstr ""
+
+msgid "Bold, italic, underline"
+msgstr ""
+
+#, fuzzy
+msgid "Preview the highlighted attachment"
+msgstr "Скрыть вложения"
+
+msgid "Previous or next in the gallery's preview"
+msgstr ""
+
+msgid "Close the gallery's preview"
+msgstr ""
+
+msgid "Everything else"
+msgstr "Всё остальное"
+
 msgid "Undo the last action, or the last edit while you are writing"
 msgstr ""
 "Отменить последнее действие или последнее изменение при написании письма"
 
 msgid "Redo it (Ctrl+Y does the same)"
 msgstr "Повторить отменённое действие (Ctrl+Y делает то же самое)"
-
-msgid "Print the message you are reading"
-msgstr "Печать открытого сообщения"
-
-msgid "Preview it as a PDF first"
-msgstr "Предпросмотр в формате PDF"
 
 msgid "Reveal the status bar (also: long-press Refresh)"
 msgstr "Показать строку состояния (также: удерживание «Обновить»)"
@@ -895,6 +918,9 @@ msgstr "Увеличить или уменьшить масштаб сообще
 
 msgid "Message zoom back to the default"
 msgstr "Сбросить масштаб сообщения к исходному"
+
+msgid "Search the Settings window, when it is open"
+msgstr ""
 
 msgid "Console mode (when enabled in Settings)"
 msgstr "Консольный режим (если включен в Настройках)"
@@ -1293,6 +1319,14 @@ msgstr "Введите параметры сервера вручную."
 msgid "Enter your provider's OAuth endpoints, then sign in."
 msgstr "Укажите конечные точки OAuth вашего провайдера и войдите."
 
+#, fuzzy
+msgid ""
+"Enter your JMAP server's address, or the URL of its session resource. Mail "
+"is read and sent over JMAP; no SMTP settings are needed."
+msgstr ""
+"Введите адрес вашего сервера Stalwart. Чтение и отправка почты выполняются "
+"по протоколу JMAP, поэтому параметры SMTP не требуются."
+
 msgid "Sign in with your browser — no password needed."
 msgstr "Войдите через браузер — пароль не требуется."
 
@@ -1309,14 +1343,6 @@ msgstr ""
 msgid ""
 "Enter your Stalwart server's address. Mail is read and sent over JMAP; no "
 "SMTP settings are needed."
-msgstr ""
-"Введите адрес вашего сервера Stalwart. Чтение и отправка почты выполняются "
-"по протоколу JMAP, поэтому параметры SMTP не требуются."
-
-#, fuzzy
-msgid ""
-"Enter your JMAP server's address, or the URL of its session resource. Mail "
-"is read and sent over JMAP; no SMTP settings are needed."
 msgstr ""
 "Введите адрес вашего сервера Stalwart. Чтение и отправка почты выполняются "
 "по протоколу JMAP, поэтому параметры SMTP не требуются."

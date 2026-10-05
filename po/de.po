@@ -139,6 +139,9 @@ msgstr "Anhänge"
 msgid "Toggle sidebar"
 msgstr "Seitenleiste ein- oder ausblenden"
 
+msgid "Keyboard Shortcuts"
+msgstr "Tastenkombinationen"
+
 msgid "Date (Newest first)"
 msgstr "Datum (Neueste zuerst)"
 
@@ -269,18 +272,15 @@ msgstr "Statusleiste anzeigen"
 msgid "Console"
 msgstr "Konsole"
 
-msgid "Keyboard Shortcuts"
-msgstr "Tastenkombinationen"
-
 msgid "About"
 msgstr "Über Hylki"
 
 msgid "Remove Tags"
 msgstr "Tags entfernen"
 
+#, fuzzy
 msgid ""
-"Single-key shortcuts are switched off. Turn them on in Settings → System & "
-"Appearance."
+"Single-key shortcuts are switched off. Turn them on in Settings → System."
 msgstr ""
 "Einzeltasten-Kürzel sind deaktiviert. Aktivieren Sie sie unter Einstellungen "
 "→ System & Erscheinungsbild."
@@ -851,8 +851,15 @@ msgstr ""
 msgid "Remove every tag"
 msgstr "Alle Tags entfernen"
 
-msgid "Everything else"
-msgstr "Weitere Aktionen"
+msgid "Print the message you are reading"
+msgstr "Drucken Sie die Nachricht, die Sie lesen"
+
+msgid "Preview it as a PDF first"
+msgstr "Vorschau als PDF zuerst"
+
+#, fuzzy
+msgid "Writing"
+msgstr "Schreiben:"
 
 msgid "Compose"
 msgstr "Verfassen"
@@ -863,17 +870,33 @@ msgstr "Senden Sie die Nachricht, die Sie schreiben"
 msgid "Back out of a reply and return to the list"
 msgstr "Zurück aus einer Antwort und zurück zur Liste"
 
+msgid "Emoji chooser, at the cursor"
+msgstr ""
+
+msgid "New paragraph (Return starts a new line, unless Settings swaps them)"
+msgstr ""
+
+msgid "Bold, italic, underline"
+msgstr ""
+
+#, fuzzy
+msgid "Preview the highlighted attachment"
+msgstr "Anhänge ausblenden"
+
+msgid "Previous or next in the gallery's preview"
+msgstr ""
+
+msgid "Close the gallery's preview"
+msgstr ""
+
+msgid "Everything else"
+msgstr "Weitere Aktionen"
+
 msgid "Undo the last action, or the last edit while you are writing"
 msgstr "Letzte Aktion oder Bearbeitung rückgängig machen"
 
 msgid "Redo it (Ctrl+Y does the same)"
 msgstr "Wiederholen (auch mit Strg+Y)"
-
-msgid "Print the message you are reading"
-msgstr "Drucken Sie die Nachricht, die Sie lesen"
-
-msgid "Preview it as a PDF first"
-msgstr "Vorschau als PDF zuerst"
 
 msgid "Reveal the status bar (also: long-press Refresh)"
 msgstr "Statusleiste anzeigen (auch: Aktualisieren lange drücken)"
@@ -889,6 +912,9 @@ msgstr "Nachrichtenansicht vergrößern oder verkleinern"
 
 msgid "Message zoom back to the default"
 msgstr "Nachrichtenansicht auf Standardgröße zurücksetzen"
+
+msgid "Search the Settings window, when it is open"
+msgstr ""
 
 msgid "Console mode (when enabled in Settings)"
 msgstr "Konsolenmodus (wenn in Einstellungen aktiviert)"
@@ -1306,6 +1332,14 @@ msgstr ""
 "Geben Sie die OAuth-Endpunkte Ihres Providers ein und melden Sie sich dann "
 "an."
 
+#, fuzzy
+msgid ""
+"Enter your JMAP server's address, or the URL of its session resource. Mail "
+"is read and sent over JMAP; no SMTP settings are needed."
+msgstr ""
+"Geben Sie die Adresse Ihres Stalwart-Servers ein. Mail wird gelesen und über "
+"JMAP gesendet; es sind keine SMTP-Einstellungen erforderlich."
+
 msgid "Sign in with your browser — no password needed."
 msgstr "Melden Sie sich mit Ihrem Browser an - kein Passwort erforderlich."
 
@@ -1322,14 +1356,6 @@ msgstr ""
 msgid ""
 "Enter your Stalwart server's address. Mail is read and sent over JMAP; no "
 "SMTP settings are needed."
-msgstr ""
-"Geben Sie die Adresse Ihres Stalwart-Servers ein. Mail wird gelesen und über "
-"JMAP gesendet; es sind keine SMTP-Einstellungen erforderlich."
-
-#, fuzzy
-msgid ""
-"Enter your JMAP server's address, or the URL of its session resource. Mail "
-"is read and sent over JMAP; no SMTP settings are needed."
 msgstr ""
 "Geben Sie die Adresse Ihres Stalwart-Servers ein. Mail wird gelesen und über "
 "JMAP gesendet; es sind keine SMTP-Einstellungen erforderlich."

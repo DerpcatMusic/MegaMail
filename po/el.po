@@ -139,6 +139,9 @@ msgstr "Συνημμένα"
 msgid "Toggle sidebar"
 msgstr "Εναλλαγή πλευρικής στήλης"
 
+msgid "Keyboard Shortcuts"
+msgstr "Συντομεύσεις πληκτρολογίου"
+
 msgid "Date (Newest first)"
 msgstr "Ημερομηνία (νεότερα πρώτα)"
 
@@ -271,18 +274,15 @@ msgstr "Εμφάνιση γραμμής κατάστασης"
 msgid "Console"
 msgstr "Κονσόλα"
 
-msgid "Keyboard Shortcuts"
-msgstr "Συντομεύσεις πληκτρολογίου"
-
 msgid "About"
 msgstr "Σχετικά"
 
 msgid "Remove Tags"
 msgstr "Αφαίρεση ετικετών"
 
+#, fuzzy
 msgid ""
-"Single-key shortcuts are switched off. Turn them on in Settings → System & "
-"Appearance."
+"Single-key shortcuts are switched off. Turn them on in Settings → System."
 msgstr ""
 "Οι συντομεύσεις ενός πλήκτρου είναι απενεργοποιημένες. Ενεργοποιήστε τις "
 "στις Ρυθμίσεις → Σύστημα και εμφάνιση."
@@ -849,8 +849,15 @@ msgstr ""
 msgid "Remove every tag"
 msgstr "Αφαίρεση όλων των ετικετών"
 
-msgid "Everything else"
-msgstr "Όλα τα υπόλοιπα"
+msgid "Print the message you are reading"
+msgstr "Εκτύπωση του μηνύματος που διαβάζετε"
+
+msgid "Preview it as a PDF first"
+msgstr "Προεπισκόπηση πρώτα ως PDF"
+
+#, fuzzy
+msgid "Writing"
+msgstr "Σύνταξη:"
 
 msgid "Compose"
 msgstr "Σύνταξη"
@@ -861,6 +868,28 @@ msgstr "Αποστολή του μηνύματος που συντάσσετε"
 msgid "Back out of a reply and return to the list"
 msgstr "Έξοδος από την απάντηση και επιστροφή στη λίστα"
 
+msgid "Emoji chooser, at the cursor"
+msgstr ""
+
+msgid "New paragraph (Return starts a new line, unless Settings swaps them)"
+msgstr ""
+
+msgid "Bold, italic, underline"
+msgstr ""
+
+#, fuzzy
+msgid "Preview the highlighted attachment"
+msgstr "Απόκρυψη συνημμένων"
+
+msgid "Previous or next in the gallery's preview"
+msgstr ""
+
+msgid "Close the gallery's preview"
+msgstr ""
+
+msgid "Everything else"
+msgstr "Όλα τα υπόλοιπα"
+
 msgid "Undo the last action, or the last edit while you are writing"
 msgstr ""
 "Αναίρεση της τελευταίας ενέργειας ή της τελευταίας επεξεργασίας κατά τη "
@@ -868,12 +897,6 @@ msgstr ""
 
 msgid "Redo it (Ctrl+Y does the same)"
 msgstr "Επανάληψη (το Ctrl+Y κάνει το ίδιο)"
-
-msgid "Print the message you are reading"
-msgstr "Εκτύπωση του μηνύματος που διαβάζετε"
-
-msgid "Preview it as a PDF first"
-msgstr "Προεπισκόπηση πρώτα ως PDF"
 
 msgid "Reveal the status bar (also: long-press Refresh)"
 msgstr ""
@@ -890,6 +913,9 @@ msgstr "Μεγέθυνση ή σμίκρυνση του μηνύματος"
 
 msgid "Message zoom back to the default"
 msgstr "Επαναφορά της μεγέθυνσης του μηνύματος στην προεπιλογή"
+
+msgid "Search the Settings window, when it is open"
+msgstr ""
 
 msgid "Console mode (when enabled in Settings)"
 msgstr "Λειτουργία κονσόλας (όταν είναι ενεργοποιημένη στις Ρυθμίσεις)"
@@ -1293,6 +1319,14 @@ msgid "Enter your provider's OAuth endpoints, then sign in."
 msgstr ""
 "Εισαγάγετε τα OAuth endpoints του παρόχου σας και, στη συνέχεια, συνδεθείτε."
 
+#, fuzzy
+msgid ""
+"Enter your JMAP server's address, or the URL of its session resource. Mail "
+"is read and sent over JMAP; no SMTP settings are needed."
+msgstr ""
+"Εισαγάγετε τη διεύθυνση του διακομιστή Stalwart. Η αλληλογραφία διαβάζεται "
+"και αποστέλλεται μέσω JMAP· δεν απαιτούνται ρυθμίσεις SMTP."
+
 msgid "Sign in with your browser — no password needed."
 msgstr ""
 "Συνδεθείτε μέσω του προγράμματος περιήγησής σας — δεν απαιτείται κωδικός "
@@ -1311,14 +1345,6 @@ msgstr ""
 msgid ""
 "Enter your Stalwart server's address. Mail is read and sent over JMAP; no "
 "SMTP settings are needed."
-msgstr ""
-"Εισαγάγετε τη διεύθυνση του διακομιστή Stalwart. Η αλληλογραφία διαβάζεται "
-"και αποστέλλεται μέσω JMAP· δεν απαιτούνται ρυθμίσεις SMTP."
-
-#, fuzzy
-msgid ""
-"Enter your JMAP server's address, or the URL of its session resource. Mail "
-"is read and sent over JMAP; no SMTP settings are needed."
 msgstr ""
 "Εισαγάγετε τη διεύθυνση του διακομιστή Stalwart. Η αλληλογραφία διαβάζεται "
 "και αποστέλλεται μέσω JMAP· δεν απαιτούνται ρυθμίσεις SMTP."

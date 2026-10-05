@@ -133,6 +133,9 @@ msgstr ""
 msgid "Toggle sidebar"
 msgstr ""
 
+msgid "Keyboard Shortcuts"
+msgstr ""
+
 msgid "Date (Newest first)"
 msgstr ""
 
@@ -255,9 +258,6 @@ msgstr ""
 msgid "Console"
 msgstr ""
 
-msgid "Keyboard Shortcuts"
-msgstr ""
-
 msgid "About"
 msgstr ""
 
@@ -265,8 +265,7 @@ msgid "Remove Tags"
 msgstr ""
 
 msgid ""
-"Single-key shortcuts are switched off. Turn them on in Settings → System & "
-"Appearance."
+"Single-key shortcuts are switched off. Turn them on in Settings → System."
 msgstr ""
 
 msgid "Your tags"
@@ -783,7 +782,13 @@ msgstr ""
 msgid "Remove every tag"
 msgstr ""
 
-msgid "Everything else"
+msgid "Print the message you are reading"
+msgstr ""
+
+msgid "Preview it as a PDF first"
+msgstr ""
+
+msgid "Writing"
 msgstr ""
 
 msgid "Compose"
@@ -795,16 +800,31 @@ msgstr ""
 msgid "Back out of a reply and return to the list"
 msgstr ""
 
+msgid "Emoji chooser, at the cursor"
+msgstr ""
+
+msgid "New paragraph (Return starts a new line, unless Settings swaps them)"
+msgstr ""
+
+msgid "Bold, italic, underline"
+msgstr ""
+
+msgid "Preview the highlighted attachment"
+msgstr ""
+
+msgid "Previous or next in the gallery's preview"
+msgstr ""
+
+msgid "Close the gallery's preview"
+msgstr ""
+
+msgid "Everything else"
+msgstr ""
+
 msgid "Undo the last action, or the last edit while you are writing"
 msgstr ""
 
 msgid "Redo it (Ctrl+Y does the same)"
-msgstr ""
-
-msgid "Print the message you are reading"
-msgstr ""
-
-msgid "Preview it as a PDF first"
 msgstr ""
 
 msgid "Reveal the status bar (also: long-press Refresh)"
@@ -820,6 +840,9 @@ msgid "Message zoom in or out"
 msgstr ""
 
 msgid "Message zoom back to the default"
+msgstr ""
+
+msgid "Search the Settings window, when it is open"
 msgstr ""
 
 msgid "Console mode (when enabled in Settings)"
@@ -1200,6 +1223,11 @@ msgstr ""
 msgid "Enter your provider's OAuth endpoints, then sign in."
 msgstr ""
 
+msgid ""
+"Enter your JMAP server's address, or the URL of its session resource. Mail "
+"is read and sent over JMAP; no SMTP settings are needed."
+msgstr ""
+
 msgid "Sign in with your browser — no password needed."
 msgstr ""
 
@@ -1215,11 +1243,6 @@ msgstr ""
 msgid ""
 "Enter your Stalwart server's address. Mail is read and sent over JMAP; no "
 "SMTP settings are needed."
-msgstr ""
-
-msgid ""
-"Enter your JMAP server's address, or the URL of its session resource. Mail "
-"is read and sent over JMAP; no SMTP settings are needed."
 msgstr ""
 
 msgid "Enable POP/IMAP access in GMX settings first."

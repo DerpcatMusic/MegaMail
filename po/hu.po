@@ -139,6 +139,9 @@ msgstr "Mellékletek"
 msgid "Toggle sidebar"
 msgstr "Oldalsáv ki/bekapcsolása"
 
+msgid "Keyboard Shortcuts"
+msgstr "Billentyűparancsok"
+
 msgid "Date (Newest first)"
 msgstr "Dátum (legújabb elöl)"
 
@@ -268,18 +271,15 @@ msgstr "Állapotsáv megjelenítése"
 msgid "Console"
 msgstr "Konzol"
 
-msgid "Keyboard Shortcuts"
-msgstr "Billentyűparancsok"
-
 msgid "About"
 msgstr "Névjegy"
 
 msgid "Remove Tags"
 msgstr "Címkék eltávolítása"
 
+#, fuzzy
 msgid ""
-"Single-key shortcuts are switched off. Turn them on in Settings → System & "
-"Appearance."
+"Single-key shortcuts are switched off. Turn them on in Settings → System."
 msgstr ""
 "Az egybillentyűs gyorsbillentyűk ki vannak kapcsolva. Kapcsolja be őket a "
 "Beállítások → Rendszer és megjelenés menüben."
@@ -836,8 +836,15 @@ msgstr ""
 msgid "Remove every tag"
 msgstr "Minden címke eltávolítása"
 
-msgid "Everything else"
-msgstr "Minden egyéb"
+msgid "Print the message you are reading"
+msgstr "Olvasott üzenet nyomtatása"
+
+msgid "Preview it as a PDF first"
+msgstr "Először PDF-ként való megtekintés"
+
+#, fuzzy
+msgid "Writing"
+msgstr "Írás:"
 
 msgid "Compose"
 msgstr "Levélírás"
@@ -848,6 +855,28 @@ msgstr "Küldd el az éppen írt üzenetet"
 msgid "Back out of a reply and return to the list"
 msgstr "Kilépés a válaszból és visszatérés a listához"
 
+msgid "Emoji chooser, at the cursor"
+msgstr ""
+
+msgid "New paragraph (Return starts a new line, unless Settings swaps them)"
+msgstr ""
+
+msgid "Bold, italic, underline"
+msgstr ""
+
+#, fuzzy
+msgid "Preview the highlighted attachment"
+msgstr "Mellékletek elrejtése"
+
+msgid "Previous or next in the gallery's preview"
+msgstr ""
+
+msgid "Close the gallery's preview"
+msgstr ""
+
+msgid "Everything else"
+msgstr "Minden egyéb"
+
 msgid "Undo the last action, or the last edit while you are writing"
 msgstr ""
 "Visszavonhatja az utolsó műveletet vagy az írás közben végzett utolsó "
@@ -855,12 +884,6 @@ msgstr ""
 
 msgid "Redo it (Ctrl+Y does the same)"
 msgstr "Újra (a Ctrl+Y ugyanezt teszi)"
-
-msgid "Print the message you are reading"
-msgstr "Olvasott üzenet nyomtatása"
-
-msgid "Preview it as a PDF first"
-msgstr "Először PDF-ként való megtekintés"
 
 msgid "Reveal the status bar (also: long-press Refresh)"
 msgstr "Állapotsáv megjelenítése (vagy a Frissítés hosszan lenyomva tartása)"
@@ -876,6 +899,9 @@ msgstr "Üzenet nagyítása vagy kicsinyítése"
 
 msgid "Message zoom back to the default"
 msgstr "Az üzenet nagyítását visszaállítani az alapértelmezett értékre"
+
+msgid "Search the Settings window, when it is open"
+msgstr ""
 
 msgid "Console mode (when enabled in Settings)"
 msgstr "Konzol mód (ha engedélyezve van a Beállításokban)"
@@ -1275,6 +1301,14 @@ msgstr "Adja meg kézzel a kiszolgáló adatait."
 msgid "Enter your provider's OAuth endpoints, then sign in."
 msgstr "Adja meg a szolgáltató OAuth végpontjait, majd jelentkezzen be."
 
+#, fuzzy
+msgid ""
+"Enter your JMAP server's address, or the URL of its session resource. Mail "
+"is read and sent over JMAP; no SMTP settings are needed."
+msgstr ""
+"Adja meg a Stalwart kiszolgáló címét. A levelek olvasása és küldése JMAP-on "
+"keresztül történik; nincs szükség SMTP beállításokra."
+
 msgid "Sign in with your browser — no password needed."
 msgstr "Jelentkezzen be a böngészőben — nincs szükség jelszóra."
 
@@ -1291,14 +1325,6 @@ msgstr ""
 msgid ""
 "Enter your Stalwart server's address. Mail is read and sent over JMAP; no "
 "SMTP settings are needed."
-msgstr ""
-"Adja meg a Stalwart kiszolgáló címét. A levelek olvasása és küldése JMAP-on "
-"keresztül történik; nincs szükség SMTP beállításokra."
-
-#, fuzzy
-msgid ""
-"Enter your JMAP server's address, or the URL of its session resource. Mail "
-"is read and sent over JMAP; no SMTP settings are needed."
 msgstr ""
 "Adja meg a Stalwart kiszolgáló címét. A levelek olvasása és küldése JMAP-on "
 "keresztül történik; nincs szükség SMTP beállításokra."
