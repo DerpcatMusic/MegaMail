@@ -1313,6 +1313,14 @@ msgstr ""
 
 #, fuzzy
 msgid ""
+"Enter your Stalwart server's address. Mail is read and sent over JMAP; no "
+"SMTP settings are needed."
+msgstr ""
+"Digite o endereço do seu servidor Stalwart. Os emails são lidos e enviados "
+"por JMAP; não é necessário configurar o SMTP."
+
+#, fuzzy
+msgid ""
 "Enter your JMAP server's address, or the URL of its session resource. Mail "
 "is read and sent over JMAP; no SMTP settings are needed."
 msgstr ""

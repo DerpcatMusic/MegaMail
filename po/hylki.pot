@@ -1213,6 +1213,11 @@ msgid ""
 msgstr ""
 
 msgid ""
+"Enter your Stalwart server's address. Mail is read and sent over JMAP; no "
+"SMTP settings are needed."
+msgstr ""
+
+msgid ""
 "Enter your JMAP server's address, or the URL of its session resource. Mail "
 "is read and sent over JMAP; no SMTP settings are needed."
 msgstr ""
