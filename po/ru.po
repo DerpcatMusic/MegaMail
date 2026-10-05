@@ -5056,6 +5056,15 @@ msgstr ""
 "параметр отключён, Enter выполняет перенос на новую строку в рамках того же "
 "абзаца. Сочетание Shift+Enter всегда выполняет противоположное действие."
 
+msgid "Expanded formatting toolbar"
+msgstr ""
+
+msgid ""
+"Adds paragraph styles, fonts, colors, indents, emoji and pictures to the "
+"toolbar. These go beyond what Markdown can say. Applies to messages opened "
+"from now on."
+msgstr ""
+
 msgid "Write messages in"
 msgstr "Составлять сообщения в"
 
@@ -5607,6 +5616,41 @@ msgstr "Вставить с форматированием"
 msgid "Paste as Plain Text"
 msgstr "Вставить как обычный текст"
 
+msgid "Normal"
+msgstr ""
+
+#, fuzzy
+msgid "Heading 1"
+msgstr "Чтение"
+
+#, fuzzy
+msgid "Heading 2"
+msgstr "Чтение"
+
+#, fuzzy
+msgid "Heading 3"
+msgstr "Чтение"
+
+#, fuzzy
+msgid "Preformatted"
+msgstr "Формат даты"
+
+msgid "Sans Serif"
+msgstr ""
+
+msgid "Serif"
+msgstr ""
+
+#, fuzzy
+msgid "Monospace"
+msgstr "Моноширинный шрифт"
+
+msgid "Paragraph style"
+msgstr ""
+
+msgid "Font"
+msgstr ""
+
 msgid "Bold"
 msgstr "Полужирный"
 
@@ -5619,22 +5663,54 @@ msgstr "Подчёркнутый"
 msgid "Strikethrough"
 msgstr "Зачёркнутый"
 
+#, fuzzy
+msgid "Text color"
+msgstr "Цвет тега"
+
+msgid "Highlight"
+msgstr ""
+
+msgid "No highlight"
+msgstr ""
+
 msgid "Bulleted list"
 msgstr "Маркированный список"
 
 msgid "Numbered list"
 msgstr "Нумерованный список"
 
-#. Adwaita has no blockquote glyph; the indent icon reads as "quote".
+msgid "Decrease indent"
+msgstr ""
+
+msgid "Increase indent"
+msgstr ""
+
+#. Adwaita has no blockquote glyph; the bubble with its quote marks
+#. reads as one.
 msgid "Quote"
 msgstr "Цитата"
 
-#. `LINK` is a sentinel command (handled specially); the icon is real.
 msgid "Insert link"
 msgstr "Вставить ссылку"
 
+#, fuzzy
+msgid "Insert emoji"
+msgstr "Вставить ссылку"
+
+#, fuzzy
+msgid "Insert picture"
+msgstr "Вставить в текст"
+
 msgid "Clear formatting"
 msgstr "Очистить форматирование"
+
+#, fuzzy
+msgid "Pictures"
+msgstr "Картинка"
+
+#, fuzzy
+msgid "Insert Picture"
+msgstr "Выбрать картинку"
 
 msgid "Insert Link"
 msgstr "Вставить ссылку"

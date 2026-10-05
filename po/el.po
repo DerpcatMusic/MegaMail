@@ -5095,6 +5095,15 @@ msgstr ""
 "από την επόμενη. Όταν είναι απενεργοποιημένο, το Return ξεκινά νέα γραμμή "
 "στην ίδια παράγραφο. Το Shift+Return κάνει πάντα το αντίθετο."
 
+msgid "Expanded formatting toolbar"
+msgstr ""
+
+msgid ""
+"Adds paragraph styles, fonts, colors, indents, emoji and pictures to the "
+"toolbar. These go beyond what Markdown can say. Applies to messages opened "
+"from now on."
+msgstr ""
+
 msgid "Write messages in"
 msgstr "Σύνταξη μηνυμάτων σε"
 
@@ -5653,6 +5662,41 @@ msgstr "Επικόλληση με μορφοποίηση"
 msgid "Paste as Plain Text"
 msgstr "Επικόλληση ως απλό κείμενο"
 
+msgid "Normal"
+msgstr ""
+
+#, fuzzy
+msgid "Heading 1"
+msgstr "Ανάγνωση"
+
+#, fuzzy
+msgid "Heading 2"
+msgstr "Ανάγνωση"
+
+#, fuzzy
+msgid "Heading 3"
+msgstr "Ανάγνωση"
+
+#, fuzzy
+msgid "Preformatted"
+msgstr "Μορφή ημερομηνίας"
+
+msgid "Sans Serif"
+msgstr ""
+
+msgid "Serif"
+msgstr ""
+
+#, fuzzy
+msgid "Monospace"
+msgstr "Γραμματοσειρά σταθερού πλάτους"
+
+msgid "Paragraph style"
+msgstr ""
+
+msgid "Font"
+msgstr ""
+
 msgid "Bold"
 msgstr "Έντονα"
 
@@ -5665,22 +5709,54 @@ msgstr "Υπογράμμιση"
 msgid "Strikethrough"
 msgstr "Διαγράμμιση"
 
+#, fuzzy
+msgid "Text color"
+msgstr "Χρώμα ετικέτας"
+
+msgid "Highlight"
+msgstr ""
+
+msgid "No highlight"
+msgstr ""
+
 msgid "Bulleted list"
 msgstr "Λίστα με κουκκίδες"
 
 msgid "Numbered list"
 msgstr "Αριθμημένη λίστα"
 
-#. Adwaita has no blockquote glyph; the indent icon reads as "quote".
+msgid "Decrease indent"
+msgstr ""
+
+msgid "Increase indent"
+msgstr ""
+
+#. Adwaita has no blockquote glyph; the bubble with its quote marks
+#. reads as one.
 msgid "Quote"
 msgstr "Παράθεση"
 
-#. `LINK` is a sentinel command (handled specially); the icon is real.
 msgid "Insert link"
 msgstr "Εισαγωγή συνδέσμου"
 
+#, fuzzy
+msgid "Insert emoji"
+msgstr "Εισαγωγή συνδέσμου"
+
+#, fuzzy
+msgid "Insert picture"
+msgstr "Εισαγωγή στο κείμενο"
+
 msgid "Clear formatting"
 msgstr "Εκκαθάριση μορφοποίησης"
+
+#, fuzzy
+msgid "Pictures"
+msgstr "Εικόνα"
+
+#, fuzzy
+msgid "Insert Picture"
+msgstr "Επιλογή εικόνας"
 
 msgid "Insert Link"
 msgstr "Εισαγωγή συνδέσμου"

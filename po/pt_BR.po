@@ -5047,6 +5047,15 @@ msgstr ""
 "Enter inicia uma nova linha no mesmo parágrafo. Shift+Enter sempre faz o "
 "contrário."
 
+msgid "Expanded formatting toolbar"
+msgstr ""
+
+msgid ""
+"Adds paragraph styles, fonts, colors, indents, emoji and pictures to the "
+"toolbar. These go beyond what Markdown can say. Applies to messages opened "
+"from now on."
+msgstr ""
+
 msgid "Write messages in"
 msgstr "Escrever mensagens em"
 
@@ -5598,6 +5607,41 @@ msgstr "Colar com formatação"
 msgid "Paste as Plain Text"
 msgstr "Colar como texto sem formatação"
 
+msgid "Normal"
+msgstr ""
+
+#, fuzzy
+msgid "Heading 1"
+msgstr "Leitura"
+
+#, fuzzy
+msgid "Heading 2"
+msgstr "Leitura"
+
+#, fuzzy
+msgid "Heading 3"
+msgstr "Leitura"
+
+#, fuzzy
+msgid "Preformatted"
+msgstr "Formato da data"
+
+msgid "Sans Serif"
+msgstr ""
+
+msgid "Serif"
+msgstr ""
+
+#, fuzzy
+msgid "Monospace"
+msgstr "Fonte monoespaçada"
+
+msgid "Paragraph style"
+msgstr ""
+
+msgid "Font"
+msgstr ""
+
 msgid "Bold"
 msgstr "Negrito"
 
@@ -5610,22 +5654,54 @@ msgstr "Sublinhado"
 msgid "Strikethrough"
 msgstr "Rasurado"
 
+#, fuzzy
+msgid "Text color"
+msgstr "Cor da etiqueta"
+
+msgid "Highlight"
+msgstr ""
+
+msgid "No highlight"
+msgstr ""
+
 msgid "Bulleted list"
 msgstr "Lista com marcas"
 
 msgid "Numbered list"
 msgstr "Lista numerada"
 
-#. Adwaita has no blockquote glyph; the indent icon reads as "quote".
+msgid "Decrease indent"
+msgstr ""
+
+msgid "Increase indent"
+msgstr ""
+
+#. Adwaita has no blockquote glyph; the bubble with its quote marks
+#. reads as one.
 msgid "Quote"
 msgstr "Citar"
 
-#. `LINK` is a sentinel command (handled specially); the icon is real.
 msgid "Insert link"
 msgstr "Inserir link"
 
+#, fuzzy
+msgid "Insert emoji"
+msgstr "Inserir link"
+
+#, fuzzy
+msgid "Insert picture"
+msgstr "Inserir no texto"
+
 msgid "Clear formatting"
 msgstr "Limpar formatação"
+
+#, fuzzy
+msgid "Pictures"
+msgstr "Imagem"
+
+#, fuzzy
+msgid "Insert Picture"
+msgstr "Escolher uma imagem"
 
 msgid "Insert Link"
 msgstr "Inserir link"

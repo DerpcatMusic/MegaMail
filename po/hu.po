@@ -5079,6 +5079,15 @@ msgstr ""
 "kapcsolva, a ENTER lenyomásával ugyanazon bekezdésen belül új sor kezdődik. "
 "A Shift+ENTER billentyűkombinációval mindig a másik művelet történik."
 
+msgid "Expanded formatting toolbar"
+msgstr ""
+
+msgid ""
+"Adds paragraph styles, fonts, colors, indents, emoji and pictures to the "
+"toolbar. These go beyond what Markdown can say. Applies to messages opened "
+"from now on."
+msgstr ""
+
 msgid "Write messages in"
 msgstr "Írj üzeneteket a"
 
@@ -5638,6 +5647,41 @@ msgstr "Beillesztés formázással"
 msgid "Paste as Plain Text"
 msgstr "Beillesztés egyszerű szövegként"
 
+msgid "Normal"
+msgstr ""
+
+#, fuzzy
+msgid "Heading 1"
+msgstr "Olvasás"
+
+#, fuzzy
+msgid "Heading 2"
+msgstr "Olvasás"
+
+#, fuzzy
+msgid "Heading 3"
+msgstr "Olvasás"
+
+#, fuzzy
+msgid "Preformatted"
+msgstr "Dátumformátum"
+
+msgid "Sans Serif"
+msgstr ""
+
+msgid "Serif"
+msgstr ""
+
+#, fuzzy
+msgid "Monospace"
+msgstr "Fix szélességű betűtípus"
+
+msgid "Paragraph style"
+msgstr ""
+
+msgid "Font"
+msgstr ""
+
 msgid "Bold"
 msgstr "Félkövér"
 
@@ -5650,22 +5694,54 @@ msgstr "Aláhúzott"
 msgid "Strikethrough"
 msgstr "Áthúzott"
 
+#, fuzzy
+msgid "Text color"
+msgstr "Kör színe"
+
+msgid "Highlight"
+msgstr ""
+
+msgid "No highlight"
+msgstr ""
+
 msgid "Bulleted list"
 msgstr "Felsorolás"
 
 msgid "Numbered list"
 msgstr "Számozott lista"
 
-#. Adwaita has no blockquote glyph; the indent icon reads as "quote".
+msgid "Decrease indent"
+msgstr ""
+
+msgid "Increase indent"
+msgstr ""
+
+#. Adwaita has no blockquote glyph; the bubble with its quote marks
+#. reads as one.
 msgid "Quote"
 msgstr "Idézet"
 
-#. `LINK` is a sentinel command (handled specially); the icon is real.
 msgid "Insert link"
 msgstr "Hivatkozás beszúrása"
 
+#, fuzzy
+msgid "Insert emoji"
+msgstr "Hivatkozás beszúrása"
+
+#, fuzzy
+msgid "Insert picture"
+msgstr "Beillesztés a szövegbe"
+
 msgid "Clear formatting"
 msgstr "Formázás törlése"
+
+#, fuzzy
+msgid "Pictures"
+msgstr "Kép"
+
+#, fuzzy
+msgid "Insert Picture"
+msgstr "Kép választása"
 
 msgid "Insert Link"
 msgstr "Hivatkozás Beszúrása"
@@ -6615,9 +6691,6 @@ msgstr "Hyprlab"
 #~ "Üzenetek címkézése egy vagy több színes címkével. A címkék IMAP-"
 #~ "kulcsszóként tárolódnak a levelezőkiszolgálón, így a Thunderbird és más "
 #~ "kliensek ugyanazokat a címkéket jelenítik meg."
-
-#~ msgid "Circle color"
-#~ msgstr "Kör színe"
 
 #~ msgid "Optional — shown instead of initials"
 #~ msgstr "Nem kötelező — a monogram helyett jelenik meg"

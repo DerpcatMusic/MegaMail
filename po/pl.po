@@ -5112,6 +5112,15 @@ msgstr ""
 "rozpoczyna nowy wiersz w tym samym akapicie. Shift+Enter zawsze działa "
 "odwrotnie."
 
+msgid "Expanded formatting toolbar"
+msgstr ""
+
+msgid ""
+"Adds paragraph styles, fonts, colors, indents, emoji and pictures to the "
+"toolbar. These go beyond what Markdown can say. Applies to messages opened "
+"from now on."
+msgstr ""
+
 msgid "Write messages in"
 msgstr "Format pisania wiadomości"
 
@@ -5666,6 +5675,41 @@ msgstr "Wklej z formatowaniem"
 msgid "Paste as Plain Text"
 msgstr "Wklej jako zwykły tekst"
 
+msgid "Normal"
+msgstr ""
+
+#, fuzzy
+msgid "Heading 1"
+msgstr "Czytanie"
+
+#, fuzzy
+msgid "Heading 2"
+msgstr "Czytanie"
+
+#, fuzzy
+msgid "Heading 3"
+msgstr "Czytanie"
+
+#, fuzzy
+msgid "Preformatted"
+msgstr "Format daty"
+
+msgid "Sans Serif"
+msgstr ""
+
+msgid "Serif"
+msgstr ""
+
+#, fuzzy
+msgid "Monospace"
+msgstr "Czcionka o stałej szerokości"
+
+msgid "Paragraph style"
+msgstr ""
+
+msgid "Font"
+msgstr ""
+
 msgid "Bold"
 msgstr "Pogrubienie"
 
@@ -5678,22 +5722,54 @@ msgstr "Podkreślenie"
 msgid "Strikethrough"
 msgstr "Przekreślenie"
 
+#, fuzzy
+msgid "Text color"
+msgstr "Kolor etykiety"
+
+msgid "Highlight"
+msgstr ""
+
+msgid "No highlight"
+msgstr ""
+
 msgid "Bulleted list"
 msgstr "Lista wypunktowana"
 
 msgid "Numbered list"
 msgstr "Lista numerowana"
 
-#. Adwaita has no blockquote glyph; the indent icon reads as "quote".
+msgid "Decrease indent"
+msgstr ""
+
+msgid "Increase indent"
+msgstr ""
+
+#. Adwaita has no blockquote glyph; the bubble with its quote marks
+#. reads as one.
 msgid "Quote"
 msgstr "Cytat"
 
-#. `LINK` is a sentinel command (handled specially); the icon is real.
 msgid "Insert link"
 msgstr "Wstaw odnośnik"
 
+#, fuzzy
+msgid "Insert emoji"
+msgstr "Wstaw odnośnik"
+
+#, fuzzy
+msgid "Insert picture"
+msgstr "Wstaw w treść"
+
 msgid "Clear formatting"
 msgstr "Wyczyść formatowanie"
+
+#, fuzzy
+msgid "Pictures"
+msgstr "Obraz"
+
+#, fuzzy
+msgid "Insert Picture"
+msgstr "Wybierz obraz"
 
 msgid "Insert Link"
 msgstr "Wstaw odnośnik"

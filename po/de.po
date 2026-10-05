@@ -5095,6 +5095,15 @@ msgstr ""
 "Abstand vor dem nächsten. Wenn deaktiviert, beginnt sie eine neue Zeile im "
 "selben Absatz. Umschalt+Eingabe bewirkt jeweils das Gegenteil."
 
+msgid "Expanded formatting toolbar"
+msgstr ""
+
+msgid ""
+"Adds paragraph styles, fonts, colors, indents, emoji and pictures to the "
+"toolbar. These go beyond what Markdown can say. Applies to messages opened "
+"from now on."
+msgstr ""
+
 msgid "Write messages in"
 msgstr "Nachrichten schreiben als"
 
@@ -5649,6 +5658,41 @@ msgstr "Mit Formatierung einfügen"
 msgid "Paste as Plain Text"
 msgstr "Als reinen Text einfügen"
 
+msgid "Normal"
+msgstr ""
+
+#, fuzzy
+msgid "Heading 1"
+msgstr "Lesen"
+
+#, fuzzy
+msgid "Heading 2"
+msgstr "Lesen"
+
+#, fuzzy
+msgid "Heading 3"
+msgstr "Lesen"
+
+#, fuzzy
+msgid "Preformatted"
+msgstr "Datumsformat"
+
+msgid "Sans Serif"
+msgstr ""
+
+msgid "Serif"
+msgstr ""
+
+#, fuzzy
+msgid "Monospace"
+msgstr "Monospace-Schrift"
+
+msgid "Paragraph style"
+msgstr ""
+
+msgid "Font"
+msgstr ""
+
 msgid "Bold"
 msgstr "Fett"
 
@@ -5661,22 +5705,54 @@ msgstr "Unterstreichen"
 msgid "Strikethrough"
 msgstr "Durchstreichen"
 
+#, fuzzy
+msgid "Text color"
+msgstr "Tagfarbe"
+
+msgid "Highlight"
+msgstr ""
+
+msgid "No highlight"
+msgstr ""
+
 msgid "Bulleted list"
 msgstr "Aufzählungsliste"
 
 msgid "Numbered list"
 msgstr "Nummerierte Liste"
 
-#. Adwaita has no blockquote glyph; the indent icon reads as "quote".
+msgid "Decrease indent"
+msgstr ""
+
+msgid "Increase indent"
+msgstr ""
+
+#. Adwaita has no blockquote glyph; the bubble with its quote marks
+#. reads as one.
 msgid "Quote"
 msgstr "Zitat"
 
-#. `LINK` is a sentinel command (handled specially); the icon is real.
 msgid "Insert link"
 msgstr "Link einfügen"
 
+#, fuzzy
+msgid "Insert emoji"
+msgstr "Link einfügen"
+
+#, fuzzy
+msgid "Insert picture"
+msgstr "In Text einfügen"
+
 msgid "Clear formatting"
 msgstr "Formatierung entfernen"
+
+#, fuzzy
+msgid "Pictures"
+msgstr "Bild"
+
+#, fuzzy
+msgid "Insert Picture"
+msgstr "Wählen Sie ein Bild"
 
 msgid "Insert Link"
 msgstr "Link einfügen"

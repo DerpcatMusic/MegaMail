@@ -5062,6 +5062,15 @@ msgstr ""
 "siguiente. Desactivado, Intro inicia una línea nueva en el mismo párrafo. "
 "Mayús+Intro siempre hace lo contrario."
 
+msgid "Expanded formatting toolbar"
+msgstr ""
+
+msgid ""
+"Adds paragraph styles, fonts, colors, indents, emoji and pictures to the "
+"toolbar. These go beyond what Markdown can say. Applies to messages opened "
+"from now on."
+msgstr ""
+
 msgid "Write messages in"
 msgstr "Escribir mensajes en"
 
@@ -5614,6 +5623,41 @@ msgstr "Pegar con formato"
 msgid "Paste as Plain Text"
 msgstr "Pegar como texto sin formato"
 
+msgid "Normal"
+msgstr ""
+
+#, fuzzy
+msgid "Heading 1"
+msgstr "Lectura"
+
+#, fuzzy
+msgid "Heading 2"
+msgstr "Lectura"
+
+#, fuzzy
+msgid "Heading 3"
+msgstr "Lectura"
+
+#, fuzzy
+msgid "Preformatted"
+msgstr "Formato de fecha"
+
+msgid "Sans Serif"
+msgstr ""
+
+msgid "Serif"
+msgstr ""
+
+#, fuzzy
+msgid "Monospace"
+msgstr "Fuente monoespaciada"
+
+msgid "Paragraph style"
+msgstr ""
+
+msgid "Font"
+msgstr ""
+
 msgid "Bold"
 msgstr "Negrita"
 
@@ -5626,22 +5670,54 @@ msgstr "Subrayado"
 msgid "Strikethrough"
 msgstr "Tachado"
 
+#, fuzzy
+msgid "Text color"
+msgstr "Color de la etiqueta"
+
+msgid "Highlight"
+msgstr ""
+
+msgid "No highlight"
+msgstr ""
+
 msgid "Bulleted list"
 msgstr "Lista con viñetas"
 
 msgid "Numbered list"
 msgstr "Lista numerada"
 
-#. Adwaita has no blockquote glyph; the indent icon reads as "quote".
+msgid "Decrease indent"
+msgstr ""
+
+msgid "Increase indent"
+msgstr ""
+
+#. Adwaita has no blockquote glyph; the bubble with its quote marks
+#. reads as one.
 msgid "Quote"
 msgstr "Cita"
 
-#. `LINK` is a sentinel command (handled specially); the icon is real.
 msgid "Insert link"
 msgstr "Insertar enlace"
 
+#, fuzzy
+msgid "Insert emoji"
+msgstr "Insertar enlace"
+
+#, fuzzy
+msgid "Insert picture"
+msgstr "Insertar en el texto"
+
 msgid "Clear formatting"
 msgstr "Borrar formato"
+
+#, fuzzy
+msgid "Pictures"
+msgstr "Imagen"
+
+#, fuzzy
+msgid "Insert Picture"
+msgstr "Elegir una imagen"
 
 msgid "Insert Link"
 msgstr "Insertar enlace"

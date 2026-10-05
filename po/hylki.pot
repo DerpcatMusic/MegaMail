@@ -4504,6 +4504,15 @@ msgid ""
 "always does the other."
 msgstr ""
 
+msgid "Expanded formatting toolbar"
+msgstr ""
+
+msgid ""
+"Adds paragraph styles, fonts, colors, indents, emoji and pictures to the "
+"toolbar. These go beyond what Markdown can say. Applies to messages opened "
+"from now on."
+msgstr ""
+
 msgid "Write messages in"
 msgstr ""
 
@@ -4971,6 +4980,36 @@ msgstr ""
 msgid "Paste as Plain Text"
 msgstr ""
 
+msgid "Normal"
+msgstr ""
+
+msgid "Heading 1"
+msgstr ""
+
+msgid "Heading 2"
+msgstr ""
+
+msgid "Heading 3"
+msgstr ""
+
+msgid "Preformatted"
+msgstr ""
+
+msgid "Sans Serif"
+msgstr ""
+
+msgid "Serif"
+msgstr ""
+
+msgid "Monospace"
+msgstr ""
+
+msgid "Paragraph style"
+msgstr ""
+
+msgid "Font"
+msgstr ""
+
 msgid "Bold"
 msgstr ""
 
@@ -4983,21 +5022,48 @@ msgstr ""
 msgid "Strikethrough"
 msgstr ""
 
+msgid "Text color"
+msgstr ""
+
+msgid "Highlight"
+msgstr ""
+
+msgid "No highlight"
+msgstr ""
+
 msgid "Bulleted list"
 msgstr ""
 
 msgid "Numbered list"
 msgstr ""
 
-#. Adwaita has no blockquote glyph; the indent icon reads as "quote".
+msgid "Decrease indent"
+msgstr ""
+
+msgid "Increase indent"
+msgstr ""
+
+#. Adwaita has no blockquote glyph; the bubble with its quote marks
+#. reads as one.
 msgid "Quote"
 msgstr ""
 
-#. `LINK` is a sentinel command (handled specially); the icon is real.
 msgid "Insert link"
 msgstr ""
 
+msgid "Insert emoji"
+msgstr ""
+
+msgid "Insert picture"
+msgstr ""
+
 msgid "Clear formatting"
+msgstr ""
+
+msgid "Pictures"
+msgstr ""
+
+msgid "Insert Picture"
 msgstr ""
 
 msgid "Insert Link"
