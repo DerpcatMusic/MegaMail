@@ -39,16 +39,16 @@
   no longer shows SMTP settings, which JMAP does not use.
 - **Added: subjects are translated, and the composer can show the original
   again** (#327, suggested by pdf). Translating a message translates its
-  subject too, in the heading and on its folded card, and Show Original puts
+  subject too, in the heading above it, and Show Original puts
   it back. In the composer, translating everything you wrote takes the
   subject with it, except in a reply or forward. Until the text is changed
   again, the Translate menu offers Show Original and Show Translation, which
   swap the body and subject back and forth.
-- **Changed: a folded message in a conversation shows its subject and first
-  lines** (#326, suggested by pdf). Under the sender, a folded card now has
-  the subject and as many lines of preview as the message list shows, so the
-  setting under Settings → Message List → Preview lines decides both. With
-  no preview lines, it shows the sender and subject.
+- **Changed: a folded message in a conversation shows its first lines**
+  (#326, suggested by pdf). Under the sender, a folded card now has as many
+  lines of preview as the message list shows, set under Settings → Message
+  List → Preview lines. The subject is left to the conversation's heading
+  above the cards.
 - **Fixed: a reopened draft lost its From address, Bcc, files and place in
   the conversation** (#350, reported by pdf). A draft opened in the composer
   was rebuilt from what the reader showed of it: the To, Cc, subject and

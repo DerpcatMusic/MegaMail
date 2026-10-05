@@ -419,8 +419,8 @@ answers. **Translate into** is Hylki's own language unless another is chosen.
 A message is translated from the A文 button in its card's actions, or from
 Translate in its right-click menu. The card then shows the translation, with a banner naming the service and the language
 it came from, and **Show Original** in the banner or the menu switches back. The
-subject is translated with it, in the heading above the message and on its
-folded card. A translation is kept for
+subject is translated with it, in the heading above the message. A
+translation is kept for
 the rest of the session, so opening the message again costs nothing more.
 
 What is sent is the message's text, a paragraph or a cell at a time, with
@@ -776,11 +776,10 @@ quoted lines, so an answer written inline always shows in full.
 A click on a message's header in a conversation folds it to a short card: a
 line with the sender's circle and name, then a star, a paper plane or an
 inbox for sent or received, a paperclip when it has files, and the day.
-Under it come the subject and the start of the message, as the message list
-shows them: as many lines of preview as **Settings → Message List → Preview
-lines** asks for, and no subject while Focus Mode hides it. A click on the
-card opens it again; a double-click on the header still opens the message in
-a window of its own.
+Under it comes the start of the message, in as many lines as **Settings →
+Message List → Preview lines** asks for; the subject is the conversation's,
+in the heading above. A click on the card opens it again; a double-click on
+the header still opens the message in a window of its own.
 
 **Settings → Conversations → Fold earlier messages** decides how a
 conversation opens: **Never** shows every message, **Messages already read**
