@@ -536,7 +536,7 @@ impl RichEditor {
         stack.set_vexpand(true);
         stack.add_named(&webview, Some("edit"));
 
-        let expanded = crate::config::load_privacy().rich_toolbar;
+        let expanded = crate::config::load_privacy().toolbar_expanded;
         let (toolbar, toolbar_commands, toolbar_end, bar_state) = build_toolbar(&webview, &stack, &attach_cb, expanded);
         // `fmtState` in PASTE_SCRIPT posts where the caret is: the block
         // kinds it sits in (`q` quote, `u` bulleted list, `o` numbered
@@ -1426,9 +1426,10 @@ fn color_glyph(
 }
 
 /// The format bar: the character styles, lists, quote, link and Clear
-/// formatting, all of which Markdown can say. `expanded` (#358, Settings →
-/// Composing) adds paragraph styles and fonts, colors, indents, emoji and
-/// pictures. Its groups wrap onto a second row in a narrow composer.
+/// formatting, all of which Markdown can say, then a chevron that shows
+/// paragraph styles and fonts, colors, indents, emoji and pictures (#358),
+/// shown from the start when `expanded`. Its groups wrap onto a second row
+/// in a narrow composer.
 fn build_toolbar(
     webview: &webkit6::WebView,
     anchor: &gtk::Stack,
@@ -1488,8 +1489,6 @@ fn build_toolbar(
     font.set_always_show_arrow(true);
     styles.append(&style);
     styles.append(&font);
-    styles.set_visible(expanded);
-    group.append(&styles);
 
     // (icon, tooltip, execCommand snippet).
     let simple = |cluster: &gtk::Box, commands: &[(&str, &str, &str)]| {
@@ -1541,8 +1540,6 @@ fn build_toolbar(
         color_glyph(true, hl_chosen.clone()),
         hl_chosen,
     ));
-    colors.set_visible(expanded);
-    group.append(&colors);
 
     // The block commands are toggles: the document reports whether the
     // caret is inside one, and each command both opens and leaves its block
@@ -1577,8 +1574,6 @@ fn build_toolbar(
         ("format-indent-less-symbolic", i18n_noop("Decrease indent"), "window.__hylkiIndent(false)"),
         ("format-indent-more-symbolic", i18n_noop("Increase indent"), "window.__hylkiIndent(true)"),
     ]);
-    indents.set_visible(expanded);
-    group.append(&indents);
 
     let inserts = cluster();
     // Adwaita has no blockquote glyph; the bubble with its quote marks
@@ -1615,12 +1610,37 @@ fn build_toolbar(
         });
     }
     media.append(&picture);
-    media.set_visible(expanded);
-    group.append(&media);
 
     let tail = cluster();
     simple(&tail, &[("edit-clear-symbolic", i18n_noop("Clear formatting"), "document.execCommand('removeFormat')")]);
     group.append(&tail);
+
+    // The rest (#358) behind a chevron, after everything above so showing
+    // them moves nothing: paragraph style and font, colors, indents, emoji
+    // and pictures. Settings → Composing → Formatting toolbar says how a
+    // new message starts; the chevron changes it for this one.
+    let extras = [styles, colors, indents, media];
+    let more = gtk::ToggleButton::new();
+    more.set_can_focus(false);
+    more.add_css_class("flat");
+    let show_more = {
+        let extras = extras.clone();
+        move |b: &gtk::ToggleButton| {
+            let on = b.is_active();
+            b.set_icon_name(if on { "pan-start-symbolic" } else { "pan-end-symbolic" });
+            b.set_tooltip_text(Some(if on { i18n("Fewer formatting tools") } else { i18n("More formatting tools") }.as_str()));
+            for e in &extras {
+                e.set_visible(on);
+            }
+        }
+    };
+    more.set_active(expanded);
+    show_more(&more);
+    more.connect_toggled(show_more);
+    group.append(&more);
+    for e in &extras {
+        group.append(e);
+    }
 
     bar.append(&group);
     bar.append(&end);

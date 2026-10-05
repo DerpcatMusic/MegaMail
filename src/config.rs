@@ -1245,11 +1245,11 @@ pub(crate) struct PrivacyFile {
     /// does whichever this does not.
     #[serde(default)]
     pub(crate) return_paragraph: bool,
-    /// Whether the composer's format bar adds what Markdown cannot say:
-    /// paragraph styles, fonts, colors, indents, emoji and pictures (#358).
-    /// Off, it keeps to the Markdown-compatible set.
+    /// Whether the composer's format bar starts with its extra tools shown
+    /// (paragraph styles, fonts, colors, indents, emoji and pictures, #358)
+    /// rather than behind its chevron, the default.
     #[serde(default)]
-    pub(crate) rich_toolbar: bool,
+    pub(crate) toolbar_expanded: bool,
     /// New messages start as plain text, without formatting (#180). Kept
     /// written so a version that predates `compose_format` still opens its
     /// composer the way this one was left.
@@ -1585,7 +1585,7 @@ impl Default for PrivacyFile {
             single_card_default_applied: false,
             paste_plain: true,
             return_paragraph: false,
-            rich_toolbar: false,
+            toolbar_expanded: false,
             compose_plain: false,
             compose_format: None,
             reply_position: ReplyPosition::default(),

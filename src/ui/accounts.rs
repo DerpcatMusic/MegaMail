@@ -3983,7 +3983,7 @@ pub(crate) fn provider_factory() -> gtk::SignalListItemFactory {
     factory
 }
 
-fn non_ellipsizing_factory() -> gtk::SignalListItemFactory {
+pub(crate) fn non_ellipsizing_factory() -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
     factory.connect_setup(|_, item| {
         if let Some(item) = item.downcast_ref::<gtk::ListItem>() {

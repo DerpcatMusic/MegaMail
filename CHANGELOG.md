@@ -2,14 +2,16 @@
 
 ## Unreleased
 
-- **Added: an expanded rich text formatting toolbar** (#358, requested by
-  urkos101). **Settings → Composing → Expanded rich text formatting
-  toolbar**, off by default, adds paragraph styles (headings and
-  preformatted text), fonts, text and highlight colors, indent and outdent
-  (which nest list items), and buttons for emoji and pictures. The default toolbar keeps to what Markdown can
-  say, and Quote has a quote-mark icon of its own. The toolbar wraps onto a
-  second row in a narrow composer. An indented paragraph is not mistaken for
-  a quote, in the composer, in the reader or in the plain-text part.
+- **Added: more formatting tools in the composer** (#358, requested by
+  urkos101). A chevron at the end of the formatting toolbar shows paragraph
+  styles (headings and preformatted text), fonts, text and highlight colors,
+  indent and outdent (which nest list items), and buttons for emoji and
+  pictures. **Settings → Composing → Formatting toolbar** says whether a new
+  message starts with them shown or, the default, hidden; the tools that
+  are always there keep to what Markdown can say. Quote has a quote-mark
+  icon of its own, and the toolbar wraps onto a second row in a narrow
+  composer. An indented paragraph is not mistaken for a quote, in the
+  composer, in the reader or in the plain-text part.
 - **Changed: the Keyboard Shortcuts list names every shortcut.** It gains
   the emoji chooser (Ctrl+. or Ctrl+;), Shift+Return, bold, italic and
   underline, Ctrl+F, Delete in the list, Ctrl+P, and the attachment drawer's

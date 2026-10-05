@@ -981,7 +981,7 @@ pub struct AppModel {
     paste_plain: bool,
     /// Return starts a new paragraph in the composer; off, a new line.
     return_paragraph: bool,
-    rich_toolbar: bool,
+    toolbar_expanded: bool,
     /// New messages start as plain text (#180).
     compose_format: crate::config::ComposeFormat,
     /// Where the split reply opens in the reading pane (#212).
@@ -3391,7 +3391,7 @@ impl SimpleComponent for AppModel {
             compose_default_from: prefs.compose_default_from,
             paste_plain: prefs.paste_plain,
             return_paragraph: prefs.return_paragraph,
-            rich_toolbar: prefs.rich_toolbar,
+            toolbar_expanded: prefs.toolbar_expanded,
             compose_format: config::load_compose_format(),
             reply_position: prefs.reply_position,
             signature_position: prefs.signature_position,
@@ -8246,8 +8246,8 @@ impl SimpleComponent for AppModel {
                 pref!(self.return_paragraph = on);
             }
 
-            AppMsg::Pref(PrefOutput::SetRichToolbar(on)) => {
-                pref!(self.rich_toolbar = on);
+            AppMsg::Pref(PrefOutput::SetToolbarExpanded(on)) => {
+                pref!(self.toolbar_expanded = on);
             }
 
             AppMsg::Pref(PrefOutput::SetSpellcheck(on)) => {
@@ -11227,7 +11227,7 @@ impl AppModel {
             compose_default_from: self.compose_default_from.clone(),
             paste_plain: self.paste_plain,
             return_paragraph: self.return_paragraph,
-            rich_toolbar: self.rich_toolbar,
+            toolbar_expanded: self.toolbar_expanded,
             // Both are written: the boolean is what an older version reads.
             compose_plain: self.compose_format == config::ComposeFormat::Plain,
             compose_format: Some(self.compose_format),
@@ -18298,7 +18298,7 @@ impl AppModel {
             compose_default_from: self.compose_default_from.clone(),
             paste_plain: self.paste_plain,
             return_paragraph: self.return_paragraph,
-            rich_toolbar: self.rich_toolbar,
+            toolbar_expanded: self.toolbar_expanded,
             spellcheck: self.spellcheck,
             spellcheck_langs: self.spellcheck_langs.clone(),
             app_theme: self.app_theme,

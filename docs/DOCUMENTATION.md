@@ -540,9 +540,8 @@ text are written as source, where <kbd>Return</kbd> is always a new line.
 
 The rich text editor's toolbar has bold, italic, underline, strikethrough,
 bulleted and numbered lists, quote, link and Clear formatting, all of which
-survive a switch to Markdown. **Settings → Composing → Expanded rich text
-formatting toolbar** (off by default) adds the rest of what a mail can
-carry:
+survive a switch to Markdown. The chevron after them shows or hides the
+rest of what a mail can carry:
 
 - **Paragraph style:** Normal, Heading 1 to 3 and Preformatted. The menu's
   label names the style the cursor is in.
@@ -558,9 +557,11 @@ carry:
 
 Colors and fonts go out as inline styles, which every mail client keeps.
 Markdown has no words for them, so switching such a message to Markdown or
-plain text leaves them out. The setting applies to composers opened after
-it changes. When the composer is narrow, the toolbar wraps onto a second
-row.
+plain text leaves them out. **Settings → Composing → Formatting toolbar**
+says whether a new message starts with these tools shown (Always expanded)
+or hidden behind the chevron (Always collapsed, the default); the chevron
+changes it for the message at hand. When the composer is narrow, the
+toolbar wraps onto a second row.
 
 ### Writing in Markdown or HTML
 

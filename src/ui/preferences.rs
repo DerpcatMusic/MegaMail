@@ -93,7 +93,7 @@ pub struct PrefInit {
     pub compose_default_from: String,
     pub paste_plain: bool,
     pub return_paragraph: bool,
-    pub rich_toolbar: bool,
+    pub toolbar_expanded: bool,
     pub spellcheck: bool,
     pub spellcheck_langs: String,
     pub message_theme: MessageTheme,
@@ -1158,7 +1158,7 @@ pub enum PrefOutput {
     SetComposeDefaultFrom(String),
     SetPastePlain(bool),
     SetReturnParagraph(bool),
-    SetRichToolbar(bool),
+    SetToolbarExpanded(bool),
     SetSpellcheck(bool),
     SetSpellcheckLangs(String),
     SetFetchInterval(u64),
@@ -3124,14 +3124,20 @@ impl Component for Preferences {
                                         },
                                     },
 
-                                    #[name = "rich_toolbar_row"]
-                                    adw::SwitchRow {
-                                        set_title: &i18n("Expanded rich text formatting toolbar"),
-                                        set_subtitle: &i18n("Adds paragraph styles, fonts, colors, \
-                                                       indents, emoji and pictures to the \
-                                                       toolbar."),
-                                        connect_active_notify[sender] => move |row| {
-                                            let _ = sender.output(PrefOutput::SetRichToolbar(row.is_active()));
+                                    #[name = "toolbar_row"]
+                                    adw::ComboRow {
+                                        set_title: &i18n("Formatting toolbar"),
+                                        set_subtitle: &i18n("Whether a new message shows the extra \
+                                                       tools (paragraph styles, fonts, colors, \
+                                                       indents, emoji and pictures). The \
+                                                       chevron in the toolbar shows or hides \
+                                                       them at any time."),
+                                        set_model: Some(&gtk::StringList::new(&[
+                                            &i18n("Always collapsed"),
+                                            &i18n("Always expanded"),
+                                        ])),
+                                        connect_selected_notify[sender] => move |row| {
+                                            let _ = sender.output(PrefOutput::SetToolbarExpanded(row.selected() == 1));
                                         },
                                     },
 
@@ -4067,7 +4073,9 @@ impl Component for Preferences {
         }
         widgets.paste_plain_row.set_active(init.paste_plain);
         widgets.return_paragraph_row.set_active(init.return_paragraph);
-        widgets.rich_toolbar_row.set_active(init.rich_toolbar);
+        // "Always collapsed" in full, not ellipsized beside the description.
+        widgets.toolbar_row.set_factory(Some(&crate::ui::accounts::non_ellipsizing_factory()));
+        widgets.toolbar_row.set_selected(u32::from(init.toolbar_expanded));
         widgets.compose_format_row.set_model(Some(&gtk::StringList::new(&[
             &i18n("Rich text"),
             &i18n("Markdown"),
