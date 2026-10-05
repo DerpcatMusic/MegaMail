@@ -1445,7 +1445,11 @@ fn build_toolbar(
     group.set_child_spacing(10);
     group.set_line_spacing(2);
     group.set_hexpand(true);
+    // The end box expands too, so it stays at the right when the commands
+    // are hidden (a source format); the group still gets its natural width
+    // first.
     let end = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+    end.set_hexpand(true);
     end.set_halign(gtk::Align::End);
     end.set_valign(gtk::Align::Start);
     let cluster = || gtk::Box::new(gtk::Orientation::Horizontal, 2);
