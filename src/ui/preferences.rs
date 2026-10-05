@@ -2599,10 +2599,9 @@ impl Component for Preferences {
                                     #[name = "list_layout_row"]
                                     adw::ComboRow {
                                         set_title: &i18n("Layout"),
-                                        set_subtitle: &i18n("Each message on lines of its own, or on one line \
-                                                       in columns. Automatic uses one line while the list \
-                                                       is dragged wide and lines of their own when it is \
-                                                       narrow."),
+                                        set_subtitle: &i18n("Cards or single lines. Automatic shows cards at \
+                                                       narrow widths and single lines in columns at wider \
+                                                       widths."),
                                         connect_selected_notify[sender] => move |row| {
                                             sender.input(PrefInput::ChangeListLayout(row.selected()));
                                         },
@@ -2696,8 +2695,8 @@ impl Component for Preferences {
                                 add = &adw::PreferencesGroup {
                                     set_title: &i18n("Columns"),
                                     set_description: Some(
-                                        &i18n("What a message shows when the list is on one line, from left \
-                                               to right. Drag the columns into the order you want, or out \
+                                        &i18n("What a message shows when the layout is displayed in one line \
+                                               format. Drag the columns into the order you want, or out \
                                                of the list. The subject always stays. Due Date appears \
                                                only in lists with Microsoft 365 mail. Changes apply at once."),
                                     ),
