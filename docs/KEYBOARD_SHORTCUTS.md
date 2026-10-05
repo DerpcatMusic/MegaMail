@@ -2,7 +2,7 @@
 
 Hylki can be driven from the keyboard without holding a modifier, in the style
 of Gmail and Geary. The scheme is **off by default** (a stray keystroke
-shouldn't archive mail), so switch it on first in **Settings → Message List →
+shouldn't archive mail), so switch it on first in **Settings → System →
 Single-key shortcuts**.
 
 Press **Ctrl+?** (or F1, or *Main Menu → Keyboard Shortcuts*) at any time for
@@ -14,7 +14,7 @@ this list in the app; the same key closes it again.
 | <kbd>k</kbd> <kbd>↑</kbd> | Previous message | <kbd>R</kbd> | Reply to all |
 | <kbd>l</kbd> <kbd>→</kbd> | Open the selected message | <kbd>f</kbd> | Forward |
 | <kbd>h</kbd> <kbd>←</kbd> <kbd>u</kbd> | Back to the message list | <kbd>a</kbd> | Archive |
-| <kbd>w</kbd> | Next message in the conversation | <kbd>d</kbd> | Delete |
+| <kbd>w</kbd> | Next message in the conversation | <kbd>d</kbd> <kbd>Delete</kbd> | Delete |
 | <kbd>b</kbd> | Previous message in the conversation | <kbd>!</kbd> | Mark as spam |
 | <kbd>/</kbd> | Search | <kbd>s</kbd> | Star or unstar |
 | <kbd>c</kbd> | Compose | <kbd>m</kbd> | Mark read or unread |
@@ -53,6 +53,30 @@ pick goes where the cursor was.
 
 <kbd>Ctrl+Shift+F</kbd> turns [Focus Mode](FEATURES.md#the-app) on and off,
 with or without single-key shortcuts.
+
+These work with or without single-key shortcuts too:
+
+| Key | What it does |
+| --- | --- |
+| <kbd>Delete</kbd> <kbd>Backspace</kbd> | Delete the selected messages, with the list focused |
+| <kbd>Ctrl+F</kbd> | Search the message list |
+| <kbd>Ctrl+P</kbd> | Print the message you are reading |
+| <kbd>Ctrl+Shift+P</kbd> | Preview it as a PDF first |
+| <kbd>Ctrl+Z</kbd> | Undo the last action (a move, a delete, a star) |
+| <kbd>Ctrl+Shift+Z</kbd> <kbd>Ctrl+Y</kbd> | Redo it |
+| <kbd>Ctrl+Shift+S</kbd> | Reveal the status bar (also: long-press Refresh) |
+| <kbd>Ctrl+Shift+A</kbd> | Show or hide the accounts in the sidebar |
+| <kbd>Ctrl+Shift+C</kbd> | Console mode, when it is enabled in Settings |
+| <kbd>Ctrl+W</kbd> | Close the window; mail keeps syncing in the background |
+| <kbd>Ctrl+Q</kbd> | Quit Hylki |
+
+In the composer, <kbd>Ctrl+Z</kbd> and <kbd>Ctrl+Shift+Z</kbd> undo and redo
+your typing instead, and <kbd>Ctrl+B</kbd>, <kbd>Ctrl+I</kbd> and
+<kbd>Ctrl+U</kbd> set bold, italic and underline.
+
+In the attachment drawer, <kbd>Space</kbd> or <kbd>Enter</kbd> previews the
+highlighted attachment. In the attachments gallery's preview, <kbd>←</kbd> and
+<kbd>→</kbd> step to the previous and next one, and <kbd>Esc</kbd> closes it.
 
 <kbd>Ctrl+F</kbd> in the Settings window opens its search, and closes it
 again. <kbd>Esc</kbd> closes it too, wherever the focus is in the window,

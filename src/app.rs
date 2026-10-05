@@ -5086,6 +5086,25 @@ impl SimpleComponent for AppModel {
                         s.input(AppMsg::Pref(PrefOutput::SetTheme(id.clone())));
                     });
                 }
+                // HYLKI_SHOWCASE_SHORTCUTS=<height> opens the shortcut list at
+                // 4 s, that tall, so all of it fits a capture (with
+                // HYLKI_SHOWCASE_TOP).
+                if let Some(h) = std::env::var("HYLKI_SHOWCASE_SHORTCUTS").ok().and_then(|v| v.parse::<i32>().ok()) {
+                    let s = sender.clone();
+                    gtk::glib::timeout_add_seconds_local_once(4, move || {
+                        s.input(AppMsg::ShowShortcuts);
+                    });
+                    gtk::glib::timeout_add_seconds_local_once(5, move || {
+                        let tops = gtk::Window::toplevels();
+                        if let Some(w) = (0..tops.n_items())
+                            .filter_map(|i| tops.item(i))
+                            .filter_map(|o| o.downcast::<adw::Window>().ok())
+                            .find(|w| w.is_visible() && w.title().is_some_and(|t| t == i18n("Keyboard Shortcuts")))
+                        {
+                            w.set_default_size(420, h);
+                        }
+                    });
+                }
                 // HYLKI_SHOWCASE_ACCOUNT=N opens account N's editor a beat
                 // after the Settings window (with HYLKI_SHOWCASE_SETTINGS),
                 // so the editor itself can be captured.
@@ -11371,7 +11390,7 @@ impl AppModel {
         self.shortcuts_win = Some(self.build_shortcuts_window());
     }
 
-    /// A plain window listing every single-key shortcut.
+    /// A plain window listing every keyboard shortcut.
     fn build_shortcuts_window(&self) -> adw::Window {
         let win = adw::Window::builder()
             .transient_for(&self.window)
@@ -11389,7 +11408,7 @@ impl AppModel {
 
         if !self.single_key.get() {
             let off = gtk::Label::new(Some(
-                i18n("Single-key shortcuts are switched off. Turn them on in Settings → System & Appearance.").as_str(),
+                i18n("Single-key shortcuts are switched off. Turn them on in Settings → System.").as_str(),
             ));
             off.add_css_class("dim-label");
             off.set_wrap(true);
@@ -20905,7 +20924,7 @@ const SHORTCUT_HELP: &[(&str, &[(&str, &str)])] = &[
             ("h  or  ←  or  u", i18n_noop("Back to the message list")),
             ("w", i18n_noop("Next message in the conversation")),
             ("b", i18n_noop("Previous message in the conversation")),
-            ("/", i18n_noop("Search")),
+            ("/  or  Ctrl+F", i18n_noop("Search")),
         ],
     ),
     (
@@ -20915,35 +20934,52 @@ const SHORTCUT_HELP: &[(&str, &[(&str, &str)])] = &[
             ("R  or  Ctrl+Shift+R", i18n_noop("Reply to all")),
             ("f", i18n_noop("Forward")),
             ("a", i18n_noop("Archive")),
-            ("d", i18n_noop("Delete")),
+            ("d  or  Delete", i18n_noop("Delete")),
             ("!", i18n_noop("Mark as spam")),
             ("s", i18n_noop("Star or unstar")),
             ("m", i18n_noop("Mark read or unread")),
             ("x", i18n_noop("Select this row (for a bulk action)")),
             ("1 … 9", i18n_noop("Add or remove a tag (the first nine, in Settings order)")),
             ("0", i18n_noop("Remove every tag")),
+            ("Ctrl+U", i18n_noop("View Source")),
+            ("Ctrl+P", i18n_noop("Print the message you are reading")),
+            ("Ctrl+Shift+P", i18n_noop("Preview it as a PDF first")),
+        ],
+    ),
+    (
+        i18n_noop("Writing"),
+        &[
+            ("c  or  Ctrl+N", i18n_noop("Compose")),
+            ("Ctrl+Enter", i18n_noop("Send the message you are writing")),
+            ("Esc", i18n_noop("Back out of a reply and return to the list")),
+            ("Ctrl+.  or  Ctrl+;", i18n_noop("Emoji chooser, at the cursor")),
+            ("Shift+Return", i18n_noop("New paragraph (Return starts a new line, unless Settings swaps them)")),
+            ("Ctrl+B  /  Ctrl+I  /  Ctrl+U", i18n_noop("Bold, italic, underline")),
+        ],
+    ),
+    (
+        i18n_noop("Attachments"),
+        &[
+            ("Space  or  Enter", i18n_noop("Preview the highlighted attachment")),
+            ("←  /  →", i18n_noop("Previous or next in the gallery's preview")),
+            ("Esc", i18n_noop("Close the gallery's preview")),
         ],
     ),
     (
         i18n_noop("Everything else"),
         &[
-            ("c  or  Ctrl+N", i18n_noop("Compose")),
-            ("Ctrl+U", i18n_noop("View Source")),
-            ("Ctrl+Enter", i18n_noop("Send the message you are writing")),
-            ("Esc", i18n_noop("Back out of a reply and return to the list")),
             ("Ctrl+Z", i18n_noop("Undo the last action, or the last edit while you are writing")),
             ("Ctrl+Shift+Z", i18n_noop("Redo it (Ctrl+Y does the same)")),
-            ("Ctrl+P", i18n_noop("Print the message you are reading")),
-            ("Ctrl+Shift+P", i18n_noop("Preview it as a PDF first")),
             ("Ctrl+Shift+S", i18n_noop("Reveal the status bar (also: long-press Refresh)")),
             ("Ctrl+Shift+A", i18n_noop("Show or hide the accounts in the sidebar")),
             ("Ctrl+Shift+F", i18n_noop("Focus Mode on or off")),
             ("Ctrl++  /  Ctrl+-", i18n_noop("Message zoom in or out")),
             ("Ctrl+0", i18n_noop("Message zoom back to the default")),
+            ("Ctrl+F", i18n_noop("Search the Settings window, when it is open")),
             ("Ctrl+Shift+C", i18n_noop("Console mode (when enabled in Settings)")),
             ("Ctrl+W", i18n_noop("Close the window (background sync keeps running)")),
             ("Ctrl+Q", i18n_noop("Quit Hylki entirely")),
-            ("?", i18n_noop("This list")),
+            ("?  or  Ctrl+?  or  F1", i18n_noop("This list")),
         ],
     ),
 ];
@@ -23269,8 +23305,8 @@ mod tests {
             .flat_map(|(_, keys)| keys.iter().map(|(key, _)| *key))
             .collect();
         for key in [
-            "j  or  ↓", "r  or  Ctrl+R", "R  or  Ctrl+Shift+R", "c  or  Ctrl+N", "Ctrl+U", "a", "d", "w", "b",
-            "x", "?", "1 … 9", "0",
+            "j  or  ↓", "r  or  Ctrl+R", "R  or  Ctrl+Shift+R", "c  or  Ctrl+N", "Ctrl+U", "a", "d  or  Delete", "w", "b",
+            "x", "?  or  Ctrl+?  or  F1", "1 … 9", "0", "/  or  Ctrl+F", "Ctrl+.  or  Ctrl+;",
         ] {
             assert!(documented.contains(&key), "{key} is not in the reference");
         }

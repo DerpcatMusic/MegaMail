@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Changed: the Keyboard Shortcuts list names every shortcut.** It gains
+  the emoji chooser (Ctrl+. or Ctrl+;), Shift+Return, bold, italic and
+  underline, Ctrl+F, Delete in the list, Ctrl+P, and the attachment drawer's
+  and gallery's keys, in new Writing and Attachments sections. Its note on
+  single-key shortcuts now points to Settings → System, where the switch is.
 - **Added: a JMAP account's server identities are listed in its settings**
   (#346, suggested by pdf). Under Send-as aliases, read-only: they are
   changed where the server keeps them, such as its webmail.
