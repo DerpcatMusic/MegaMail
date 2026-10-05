@@ -1299,8 +1299,15 @@ msgid "Requires Proton Mail Bridge running locally."
 msgstr "Nécessite l'exécution locale de Proton Mail Bridge."
 
 msgid ""
-"Enter your Stalwart server's address. Mail is read and sent over JMAP; no "
-"SMTP settings are needed."
+"Signs in with an API token, not your password. Make one in Fastmail's "
+"settings, under Privacy & Security, with access to mail and to sending it. "
+"Mail is read and sent over JMAP."
+msgstr ""
+
+#, fuzzy
+msgid ""
+"Enter your JMAP server's address, or the URL of its session resource. Mail "
+"is read and sent over JMAP; no SMTP settings are needed."
 msgstr ""
 "Saisissez l'adresse de votre serveur Stalwart. Le courrier est lu et envoyé "
 "via JMAP ; aucun paramètre SMTP n'est nécessaire."
@@ -1483,6 +1490,14 @@ msgstr "Nom d'utilisateur"
 
 msgid "Password"
 msgstr "Mot de passe"
+
+#, fuzzy
+msgid "Sign in with an API token"
+msgstr "Se connecter via le navigateur"
+
+msgid ""
+"For servers that take a token in place of the password, as Fastmail does."
+msgstr ""
 
 msgid "OAuth Client ID"
 msgstr "ID client OAuth"
@@ -1940,6 +1955,9 @@ msgid "After {n} day"
 msgid_plural "After {n} days"
 msgstr[0] "Au bout de {n} jour"
 msgstr[1] "Au bout de {n} jours"
+
+msgid "API Token"
+msgstr ""
 
 #. A JMAP server is one address, and it sends the mail
 #. itself: no SMTP rows.
@@ -2900,6 +2918,9 @@ msgstr "Écrivez d'abord quelque chose, ou sélectionnez le texte à traduire."
 msgid "Could not translate"
 msgstr "Impossible de traduire"
 
+msgid "Cannot send with OpenPGP"
+msgstr "Impossible d'envoyer avec OpenPGP"
+
 msgid "An attachment is missing"
 msgstr "Une pièce jointe est manquante"
 
@@ -2910,9 +2931,6 @@ msgstr ""
 "Hylki ne peut pas lire {names}. Le fichier a été déplacé ou supprimé après "
 "avoir été joint. Retirez-le, ou joignez-le à nouveau depuis son emplacement "
 "actuel."
-
-msgid "Cannot send with OpenPGP"
-msgstr "Impossible d'envoyer avec OpenPGP"
 
 msgid "Check the From address"
 msgstr ""
@@ -3589,22 +3607,6 @@ msgstr "Le message n'est pas encore chargé."
 msgid "That key is no longer in your keyring."
 msgstr "Cette clé ne se trouve plus sur votre trousseau."
 
-msgid "Trust this key?"
-msgstr "Faites-vous confiance à cette clé?"
-
-msgid ""
-"Compare the fingerprint with the one {uid} gives you in person or over "
-"another channel. Trusting a key you have not checked lets an impostor's "
-"signature pass as theirs."
-msgstr ""
-"Comparez l'empreinte digitale avec celle que {uid} vous fournit en personne "
-"ou par un autre moyen. Si vous faites confiance à une clé que vous n'avez "
-"pas vérifiée, vous risquez de valider la signature d'un imposteur comme s'il "
-"s'agissait de la sienne."
-
-msgid "Trust"
-msgstr "Confiance"
-
 msgid "Key trusted."
 msgstr "Clé de confiance."
 
@@ -3686,6 +3688,22 @@ msgstr "Masquer le texte cité"
 
 msgid "Save Image"
 msgstr "Enregistrer l'image"
+
+msgid "Trust this key?"
+msgstr "Faites-vous confiance à cette clé?"
+
+msgid ""
+"Compare the fingerprint with the one {uid} gives you in person or over "
+"another channel. Trusting a key you have not checked lets an impostor's "
+"signature pass as theirs."
+msgstr ""
+"Comparez l'empreinte digitale avec celle que {uid} vous fournit en personne "
+"ou par un autre moyen. Si vous faites confiance à une clé que vous n'avez "
+"pas vérifiée, vous risquez de valider la signature d'un imposteur comme s'il "
+"s'agissait de la sienne."
+
+msgid "Trust"
+msgstr "Confiance"
 
 msgid "The sender's key was imported from the message."
 msgstr "La clé de l'expéditeur a été importée à partir du message."

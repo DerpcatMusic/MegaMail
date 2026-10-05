@@ -1207,8 +1207,14 @@ msgid "Requires Proton Mail Bridge running locally."
 msgstr ""
 
 msgid ""
-"Enter your Stalwart server's address. Mail is read and sent over JMAP; no "
-"SMTP settings are needed."
+"Signs in with an API token, not your password. Make one in Fastmail's "
+"settings, under Privacy & Security, with access to mail and to sending it. "
+"Mail is read and sent over JMAP."
+msgstr ""
+
+msgid ""
+"Enter your JMAP server's address, or the URL of its session resource. Mail "
+"is read and sent over JMAP; no SMTP settings are needed."
 msgstr ""
 
 msgid "Enable POP/IMAP access in GMX settings first."
@@ -1361,6 +1367,13 @@ msgid "Username"
 msgstr ""
 
 msgid "Password"
+msgstr ""
+
+msgid "Sign in with an API token"
+msgstr ""
+
+msgid ""
+"For servers that take a token in place of the password, as Fastmail does."
 msgstr ""
 
 msgid "OAuth Client ID"
@@ -1762,6 +1775,9 @@ msgid "After {n} day"
 msgid_plural "After {n} days"
 msgstr[0] ""
 msgstr[1] ""
+
+msgid "API Token"
+msgstr ""
 
 #. A JMAP server is one address, and it sends the mail
 #. itself: no SMTP rows.
@@ -2609,15 +2625,15 @@ msgstr ""
 msgid "Could not translate"
 msgstr ""
 
+msgid "Cannot send with OpenPGP"
+msgstr ""
+
 msgid "An attachment is missing"
 msgstr ""
 
 msgid ""
 "Hylki cannot read {names}. It was moved or deleted after it was attached. "
 "Remove it, or attach it again from where it is now."
-msgstr ""
-
-msgid "Cannot send with OpenPGP"
 msgstr ""
 
 msgid "Check the From address"
@@ -3253,18 +3269,6 @@ msgstr ""
 msgid "That key is no longer in your keyring."
 msgstr ""
 
-msgid "Trust this key?"
-msgstr ""
-
-msgid ""
-"Compare the fingerprint with the one {uid} gives you in person or over "
-"another channel. Trusting a key you have not checked lets an impostor's "
-"signature pass as theirs."
-msgstr ""
-
-msgid "Trust"
-msgstr ""
-
 msgid "Key trusted."
 msgstr ""
 
@@ -3343,6 +3347,18 @@ msgid "Hide quoted text"
 msgstr ""
 
 msgid "Save Image"
+msgstr ""
+
+msgid "Trust this key?"
+msgstr ""
+
+msgid ""
+"Compare the fingerprint with the one {uid} gives you in person or over "
+"another channel. Trusting a key you have not checked lets an impostor's "
+"signature pass as theirs."
+msgstr ""
+
+msgid "Trust"
 msgstr ""
 
 msgid "The sender's key was imported from the message."

@@ -1313,8 +1313,15 @@ msgid "Requires Proton Mail Bridge running locally."
 msgstr "Benötigt Proton Mail Bridge, die lokal läuft."
 
 msgid ""
-"Enter your Stalwart server's address. Mail is read and sent over JMAP; no "
-"SMTP settings are needed."
+"Signs in with an API token, not your password. Make one in Fastmail's "
+"settings, under Privacy & Security, with access to mail and to sending it. "
+"Mail is read and sent over JMAP."
+msgstr ""
+
+#, fuzzy
+msgid ""
+"Enter your JMAP server's address, or the URL of its session resource. Mail "
+"is read and sent over JMAP; no SMTP settings are needed."
 msgstr ""
 "Geben Sie die Adresse Ihres Stalwart-Servers ein. Mail wird gelesen und über "
 "JMAP gesendet; es sind keine SMTP-Einstellungen erforderlich."
@@ -1493,6 +1500,14 @@ msgstr "Benutzername"
 
 msgid "Password"
 msgstr "Passwort"
+
+#, fuzzy
+msgid "Sign in with an API token"
+msgstr "Im Browser anmelden"
+
+msgid ""
+"For servers that take a token in place of the password, as Fastmail does."
+msgstr ""
 
 msgid "OAuth Client ID"
 msgstr "OAuth-Client-ID"
@@ -1955,6 +1970,9 @@ msgid "After {n} day"
 msgid_plural "After {n} days"
 msgstr[0] "Nach {n} Tag"
 msgstr[1] "Nach {n} Tagen"
+
+msgid "API Token"
+msgstr ""
 
 #. A JMAP server is one address, and it sends the mail
 #. itself: no SMTP rows.
@@ -2911,6 +2929,9 @@ msgstr ""
 msgid "Could not translate"
 msgstr "Nachricht konnte nicht mit Tag versehen werden: {e}"
 
+msgid "Cannot send with OpenPGP"
+msgstr "Kann nicht mit OpenPGP senden"
+
 #, fuzzy
 msgid "An attachment is missing"
 msgstr "{n} Anhang"
@@ -2919,9 +2940,6 @@ msgid ""
 "Hylki cannot read {names}. It was moved or deleted after it was attached. "
 "Remove it, or attach it again from where it is now."
 msgstr ""
-
-msgid "Cannot send with OpenPGP"
-msgstr "Kann nicht mit OpenPGP senden"
 
 #, fuzzy
 msgid "Check the From address"
@@ -3609,22 +3627,6 @@ msgstr "Diese Nachricht wurde nicht überprüft."
 msgid "That key is no longer in your keyring."
 msgstr "Dieser Schlüssel ist nicht mehr in Ihrem Schlüsselring."
 
-msgid "Trust this key?"
-msgstr "Vertrauen Sie diesem Schlüssel?"
-
-msgid ""
-"Compare the fingerprint with the one {uid} gives you in person or over "
-"another channel. Trusting a key you have not checked lets an impostor's "
-"signature pass as theirs."
-msgstr ""
-"Vergleichen Sie den Fingerabdruck mit dem, den {uid} Ihnen persönlich oder "
-"über einen anderen Kanal gibt. Wenn Sie einem Schlüssel vertrauen, den Sie "
-"nicht überprüft haben, kann die Unterschrift eines Betrügers als seine "
-"übergeben werden."
-
-msgid "Trust"
-msgstr "Vertrauen"
-
 msgid "Key trusted."
 msgstr "Schlüssel als vertrauenswürdig markiert."
 
@@ -3710,6 +3712,22 @@ msgstr "Vorschautext ausblenden"
 
 msgid "Save Image"
 msgstr "Bild speichern"
+
+msgid "Trust this key?"
+msgstr "Vertrauen Sie diesem Schlüssel?"
+
+msgid ""
+"Compare the fingerprint with the one {uid} gives you in person or over "
+"another channel. Trusting a key you have not checked lets an impostor's "
+"signature pass as theirs."
+msgstr ""
+"Vergleichen Sie den Fingerabdruck mit dem, den {uid} Ihnen persönlich oder "
+"über einen anderen Kanal gibt. Wenn Sie einem Schlüssel vertrauen, den Sie "
+"nicht überprüft haben, kann die Unterschrift eines Betrügers als seine "
+"übergeben werden."
+
+msgid "Trust"
+msgstr "Vertrauen"
 
 msgid "The sender's key was imported from the message."
 msgstr "Der Schlüssel des Absenders wurde aus der Nachricht importiert."
