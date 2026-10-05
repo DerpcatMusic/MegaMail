@@ -5062,13 +5062,23 @@ msgstr ""
 "siguiente. Desactivado, Intro inicia una línea nueva en el mismo párrafo. "
 "Mayús+Intro siempre hace lo contrario."
 
-msgid "Expanded rich text formatting toolbar"
-msgstr ""
+#, fuzzy
+msgid "Formatting toolbar"
+msgstr "Sin ningún formato"
 
 msgid ""
-"Adds paragraph styles, fonts, colors, indents, emoji and pictures to the "
-"toolbar."
+"Whether a new message shows the extra tools (paragraph styles, fonts, "
+"colors, indents, emoji and pictures). The chevron in the toolbar shows or "
+"hides them at any time."
 msgstr ""
+
+#, fuzzy
+msgid "Always collapsed"
+msgstr "Permitir siempre al remitente"
+
+#, fuzzy
+msgid "Always expanded"
+msgstr "Permitir siempre al remitente"
 
 msgid "Write messages in"
 msgstr "Escribir mensajes en"
@@ -5709,6 +5719,14 @@ msgstr "Insertar en el texto"
 
 msgid "Clear formatting"
 msgstr "Borrar formato"
+
+#, fuzzy
+msgid "Fewer formatting tools"
+msgstr "Borrar formato"
+
+#, fuzzy
+msgid "More formatting tools"
+msgstr "Sin ningún formato"
 
 #, fuzzy
 msgid "Pictures"

@@ -5095,13 +5095,23 @@ msgstr ""
 "Abstand vor dem nächsten. Wenn deaktiviert, beginnt sie eine neue Zeile im "
 "selben Absatz. Umschalt+Eingabe bewirkt jeweils das Gegenteil."
 
-msgid "Expanded rich text formatting toolbar"
-msgstr ""
+#, fuzzy
+msgid "Formatting toolbar"
+msgstr "Ganz ohne Formatierung"
 
 msgid ""
-"Adds paragraph styles, fonts, colors, indents, emoji and pictures to the "
-"toolbar."
+"Whether a new message shows the extra tools (paragraph styles, fonts, "
+"colors, indents, emoji and pictures). The chevron in the toolbar shows or "
+"hides them at any time."
 msgstr ""
+
+#, fuzzy
+msgid "Always collapsed"
+msgstr "Absender immer zulassen"
+
+#, fuzzy
+msgid "Always expanded"
+msgstr "Absender immer zulassen"
 
 msgid "Write messages in"
 msgstr "Nachrichten schreiben als"
@@ -5744,6 +5754,14 @@ msgstr "In Text einfügen"
 
 msgid "Clear formatting"
 msgstr "Formatierung entfernen"
+
+#, fuzzy
+msgid "Fewer formatting tools"
+msgstr "Formatierung entfernen"
+
+#, fuzzy
+msgid "More formatting tools"
+msgstr "Ganz ohne Formatierung"
 
 #, fuzzy
 msgid "Pictures"

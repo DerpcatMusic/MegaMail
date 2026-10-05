@@ -5074,13 +5074,23 @@ msgstr ""
 "Enter inicia uma nova linha no mesmo parágrafo. Shift+Enter faz sempre o "
 "contrário."
 
-msgid "Expanded rich text formatting toolbar"
-msgstr ""
+#, fuzzy
+msgid "Formatting toolbar"
+msgstr "Sem qualquer formatação"
 
 msgid ""
-"Adds paragraph styles, fonts, colors, indents, emoji and pictures to the "
-"toolbar."
+"Whether a new message shows the extra tools (paragraph styles, fonts, "
+"colors, indents, emoji and pictures). The chevron in the toolbar shows or "
+"hides them at any time."
 msgstr ""
+
+#, fuzzy
+msgid "Always collapsed"
+msgstr "Permitir sempre este remetente"
+
+#, fuzzy
+msgid "Always expanded"
+msgstr "Permitir sempre este remetente"
 
 msgid "Write messages in"
 msgstr "Escrever mensagens em"
@@ -5720,6 +5730,14 @@ msgstr "Inserir no texto"
 
 msgid "Clear formatting"
 msgstr "Limpar formatação"
+
+#, fuzzy
+msgid "Fewer formatting tools"
+msgstr "Limpar formatação"
+
+#, fuzzy
+msgid "More formatting tools"
+msgstr "Sem qualquer formatação"
 
 #, fuzzy
 msgid "Pictures"

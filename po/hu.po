@@ -5079,13 +5079,23 @@ msgstr ""
 "kapcsolva, a ENTER lenyomásával ugyanazon bekezdésen belül új sor kezdődik. "
 "A Shift+ENTER billentyűkombinációval mindig a másik művelet történik."
 
-msgid "Expanded rich text formatting toolbar"
-msgstr ""
+#, fuzzy
+msgid "Formatting toolbar"
+msgstr "Egyáltalán nincs formázás"
 
 msgid ""
-"Adds paragraph styles, fonts, colors, indents, emoji and pictures to the "
-"toolbar."
+"Whether a new message shows the extra tools (paragraph styles, fonts, "
+"colors, indents, emoji and pictures). The chevron in the toolbar shows or "
+"hides them at any time."
 msgstr ""
+
+#, fuzzy
+msgid "Always collapsed"
+msgstr "Feladó mindig engedélyezve"
+
+#, fuzzy
+msgid "Always expanded"
+msgstr "Feladó mindig engedélyezve"
 
 msgid "Write messages in"
 msgstr "Írj üzeneteket a"
@@ -5733,6 +5743,14 @@ msgstr "Beillesztés a szövegbe"
 
 msgid "Clear formatting"
 msgstr "Formázás törlése"
+
+#, fuzzy
+msgid "Fewer formatting tools"
+msgstr "Formázás törlése"
+
+#, fuzzy
+msgid "More formatting tools"
+msgstr "Egyáltalán nincs formázás"
 
 #, fuzzy
 msgid "Pictures"

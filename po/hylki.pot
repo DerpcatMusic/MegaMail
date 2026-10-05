@@ -4504,12 +4504,19 @@ msgid ""
 "always does the other."
 msgstr ""
 
-msgid "Expanded rich text formatting toolbar"
+msgid "Formatting toolbar"
 msgstr ""
 
 msgid ""
-"Adds paragraph styles, fonts, colors, indents, emoji and pictures to the "
-"toolbar."
+"Whether a new message shows the extra tools (paragraph styles, fonts, "
+"colors, indents, emoji and pictures). The chevron in the toolbar shows or "
+"hides them at any time."
+msgstr ""
+
+msgid "Always collapsed"
+msgstr ""
+
+msgid "Always expanded"
 msgstr ""
 
 msgid "Write messages in"
@@ -5057,6 +5064,12 @@ msgid "Insert picture"
 msgstr ""
 
 msgid "Clear formatting"
+msgstr ""
+
+msgid "Fewer formatting tools"
+msgstr ""
+
+msgid "More formatting tools"
 msgstr ""
 
 msgid "Pictures"

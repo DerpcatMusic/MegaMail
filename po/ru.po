@@ -5056,13 +5056,23 @@ msgstr ""
 "параметр отключён, Enter выполняет перенос на новую строку в рамках того же "
 "абзаца. Сочетание Shift+Enter всегда выполняет противоположное действие."
 
-msgid "Expanded rich text formatting toolbar"
-msgstr ""
+#, fuzzy
+msgid "Formatting toolbar"
+msgstr "Без форматирования"
 
 msgid ""
-"Adds paragraph styles, fonts, colors, indents, emoji and pictures to the "
-"toolbar."
+"Whether a new message shows the extra tools (paragraph styles, fonts, "
+"colors, indents, emoji and pictures). The chevron in the toolbar shows or "
+"hides them at any time."
 msgstr ""
+
+#, fuzzy
+msgid "Always collapsed"
+msgstr "Всегда разрешать для этого отправителя"
+
+#, fuzzy
+msgid "Always expanded"
+msgstr "Всегда разрешать для этого отправителя"
 
 msgid "Write messages in"
 msgstr "Составлять сообщения в"
@@ -5702,6 +5712,14 @@ msgstr "Вставить в текст"
 
 msgid "Clear formatting"
 msgstr "Очистить форматирование"
+
+#, fuzzy
+msgid "Fewer formatting tools"
+msgstr "Очистить форматирование"
+
+#, fuzzy
+msgid "More formatting tools"
+msgstr "Без форматирования"
 
 #, fuzzy
 msgid "Pictures"

@@ -5095,13 +5095,23 @@ msgstr ""
 "από την επόμενη. Όταν είναι απενεργοποιημένο, το Return ξεκινά νέα γραμμή "
 "στην ίδια παράγραφο. Το Shift+Return κάνει πάντα το αντίθετο."
 
-msgid "Expanded rich text formatting toolbar"
-msgstr ""
+#, fuzzy
+msgid "Formatting toolbar"
+msgstr "Χωρίς καμία μορφοποίηση"
 
 msgid ""
-"Adds paragraph styles, fonts, colors, indents, emoji and pictures to the "
-"toolbar."
+"Whether a new message shows the extra tools (paragraph styles, fonts, "
+"colors, indents, emoji and pictures). The chevron in the toolbar shows or "
+"hides them at any time."
 msgstr ""
+
+#, fuzzy
+msgid "Always collapsed"
+msgstr "Να επιτρέπεται πάντα ο αποστολέας"
+
+#, fuzzy
+msgid "Always expanded"
+msgstr "Να επιτρέπεται πάντα ο αποστολέας"
 
 msgid "Write messages in"
 msgstr "Σύνταξη μηνυμάτων σε"
@@ -5748,6 +5758,14 @@ msgstr "Εισαγωγή στο κείμενο"
 
 msgid "Clear formatting"
 msgstr "Εκκαθάριση μορφοποίησης"
+
+#, fuzzy
+msgid "Fewer formatting tools"
+msgstr "Εκκαθάριση μορφοποίησης"
+
+#, fuzzy
+msgid "More formatting tools"
+msgstr "Χωρίς καμία μορφοποίηση"
 
 #, fuzzy
 msgid "Pictures"

@@ -5112,13 +5112,23 @@ msgstr ""
 "rozpoczyna nowy wiersz w tym samym akapicie. Shift+Enter zawsze działa "
 "odwrotnie."
 
-msgid "Expanded rich text formatting toolbar"
-msgstr ""
+#, fuzzy
+msgid "Formatting toolbar"
+msgstr "Bez żadnego formatowania"
 
 msgid ""
-"Adds paragraph styles, fonts, colors, indents, emoji and pictures to the "
-"toolbar."
+"Whether a new message shows the extra tools (paragraph styles, fonts, "
+"colors, indents, emoji and pictures). The chevron in the toolbar shows or "
+"hides them at any time."
 msgstr ""
+
+#, fuzzy
+msgid "Always collapsed"
+msgstr "Zawsze zezwalaj temu nadawcy"
+
+#, fuzzy
+msgid "Always expanded"
+msgstr "Zawsze zezwalaj temu nadawcy"
 
 msgid "Write messages in"
 msgstr "Format pisania wiadomości"
@@ -5761,6 +5771,14 @@ msgstr "Wstaw w treść"
 
 msgid "Clear formatting"
 msgstr "Wyczyść formatowanie"
+
+#, fuzzy
+msgid "Fewer formatting tools"
+msgstr "Wyczyść formatowanie"
+
+#, fuzzy
+msgid "More formatting tools"
+msgstr "Bez żadnego formatowania"
 
 #, fuzzy
 msgid "Pictures"

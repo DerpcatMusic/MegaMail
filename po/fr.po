@@ -5078,13 +5078,23 @@ msgstr ""
 "espace avant le suivant. Désactivé, Entrée commence une nouvelle ligne dans "
 "le même paragraphe. Maj+Entrée fait toujours l'autre action."
 
-msgid "Expanded rich text formatting toolbar"
-msgstr ""
+#, fuzzy
+msgid "Formatting toolbar"
+msgstr "Aucune mise en forme"
 
 msgid ""
-"Adds paragraph styles, fonts, colors, indents, emoji and pictures to the "
-"toolbar."
+"Whether a new message shows the extra tools (paragraph styles, fonts, "
+"colors, indents, emoji and pictures). The chevron in the toolbar shows or "
+"hides them at any time."
 msgstr ""
+
+#, fuzzy
+msgid "Always collapsed"
+msgstr "Toujours autoriser cet expéditeur"
+
+#, fuzzy
+msgid "Always expanded"
+msgstr "Toujours autoriser cet expéditeur"
 
 msgid "Write messages in"
 msgstr "Rédiger les messages en"
@@ -5726,6 +5736,14 @@ msgstr "Insérer dans le texte"
 
 msgid "Clear formatting"
 msgstr "Effacer la mise en forme"
+
+#, fuzzy
+msgid "Fewer formatting tools"
+msgstr "Effacer la mise en forme"
+
+#, fuzzy
+msgid "More formatting tools"
+msgstr "Aucune mise en forme"
 
 #, fuzzy
 msgid "Pictures"
