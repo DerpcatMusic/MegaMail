@@ -6691,6 +6691,13 @@ impl SimpleComponent for AppModel {
                     // What was pulled in (a reply from Sent, an archived part)
                     // may carry attachments of its own.
                     self.load_thread_attachments();
+                    // The same cache may know more than the row's badge was
+                    // told when it asked (#351).
+                    self.message_list.emit(MessageListInput::ConversationSize {
+                        account_id,
+                        id: message_id,
+                        size: self.current_thread.len(),
+                    });
                 }
             }
 

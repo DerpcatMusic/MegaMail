@@ -824,6 +824,9 @@ pub enum MessageListInput {
     /// conversation: ask again about the ones on screen (#222). What the rows
     /// say stays until the answers arrive.
     RecheckThreadSummaries(u32),
+    /// The reader assembled this message's conversation from the cache, at
+    /// this size: a row that counts fewer asks again (#351).
+    ConversationSize { account_id: u32, id: u32, size: usize },
     /// Whether a conversation's row speaks for the newest message anywhere in
     /// the account, the replies you sent included (#236).
     SetThreadRowNewest(bool),
@@ -1656,6 +1659,26 @@ impl SimpleComponent for MessageList {
                 self.recheck_accounts.insert(account_id);
                 if self.rebuild_queued.is_none() {
                     self.recheck_bound_rows();
+                }
+            }
+            MessageListInput::ConversationSize { account_id, id, size } => {
+                if !self.threading || size < 2 {
+                    return;
+                }
+                let key = (account_id, id);
+                let row = self
+                    .shown
+                    .iter()
+                    .position(|m| (m.account_id, m.id) == key)
+                    .or_else(|| {
+                        let head = self.thread_head_for(key)?;
+                        self.shown.iter().position(|m| (m.account_id, m.id) == head)
+                    })
+                    .and_then(|pos| self.shared.model.row(pos));
+                let Some(row) = row.filter(|r| r.meta.count < size) else { return };
+                if let Some(group) = row.meta.group.clone() {
+                    self.asked_threads.remove(&group);
+                    self.shared.want(group);
                 }
             }
             MessageListInput::SetThreadRowNewest(on) => {
