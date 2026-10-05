@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Added: a JMAP account's server identities are listed in its settings**
+  (#346, suggested by pdf). Under Send-as aliases, read-only: they are
+  changed where the server keeps them, such as its webmail.
 - **Added: Fastmail over JMAP, and any JMAP server** (#356, requested by
   Y4LIT). The Provider list has a Fastmail (JMAP) entry, which fills in
   Fastmail's session URL and signs in with an API token, and the Stalwart

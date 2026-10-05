@@ -519,7 +519,9 @@ does not know is up to the server: many refuse it, or rewrite it.
 A JMAP account lists the identities the server keeps for it as well, so an
 alias made in the webmail is in the From row without setting it up again.
 The message is sent as the identity with its address, or as a catch-all
-identity for its domain (`*@example.org`) when there is one.
+identity for its domain (`*@example.org`) when there is one. The account's
+page in Settings shows them under Send-as aliases, read-only: they are
+changed where the server keeps them.
 
 ### Return and Shift+Return
 

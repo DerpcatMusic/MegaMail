@@ -1584,6 +1584,9 @@ pub enum AppMsg {
     /// Settings opened this account's page: ask its server how much
     /// storage is in use (#298).
     WantQuota(String),
+    /// Settings opened this account's page: the identities its JMAP server
+    /// keeps, from the last connect (#346).
+    WantIdentities(String),
     /// The server's answer, for the account's Settings page.
     QuotaFound { account_id: u32, quota: Option<crate::models::MailboxQuota> },
     /// A keyword re-sync (#166) changed the cached keywords of these folders.
@@ -9686,7 +9689,19 @@ impl SimpleComponent for AppModel {
             }
 
             AppMsg::ServerIdentities { account_id, identities } => {
+                if let (Some(email), Some(a)) = (self.email_of(account_id), &self.accounts_win) {
+                    a.emit(crate::ui::accounts::AccountsInput::ServerIdentities { email, identities: identities.clone() });
+                }
                 self.server_identities.insert(account_id, identities);
+            }
+            AppMsg::WantIdentities(email) => {
+                let Some(id) = self.accounts.iter().find(|a| a.email.eq_ignore_ascii_case(&email)).map(|a| a.id) else {
+                    return;
+                };
+                let identities = self.server_identities.get(&id).cloned().unwrap_or_default();
+                if let Some(a) = &self.accounts_win {
+                    a.emit(crate::ui::accounts::AccountsInput::ServerIdentities { email, identities });
+                }
             }
 
             AppMsg::SetAccount(account) => {
@@ -18411,6 +18426,7 @@ impl AppModel {
                 AccountsOutput::SetTags(tags) => AppMsg::SetTags(tags),
                 AccountsOutput::FindTags => AppMsg::FindTags,
                 AccountsOutput::WantQuota(email) => AppMsg::WantQuota(email),
+                AccountsOutput::WantIdentities(email) => AppMsg::WantIdentities(email),
                 AccountsOutput::LeftEditor(page) => AppMsg::SettingsLeaveEditor { page, ask: false },
                 AccountsOutput::LeaveNeedsPrompt(page) => {
                     AppMsg::SettingsLeaveEditor { page, ask: true }

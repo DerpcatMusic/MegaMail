@@ -250,6 +250,9 @@ pub struct AccountsWindow {
     /// The send-as aliases being edited for the account in the editor (#34).
     /// Committed to the account on Save.
     alias_edits: Vec<AliasConfig>,
+    /// The open account's identities on its JMAP server (#346), shown
+    /// under the aliases and not editable here.
+    server_identities: Vec<(String, String)>,
     /// The account's hidden folders (#239) as the editor holds them: the
     /// saved list, less whatever the user has brought back since opening.
     hidden_edits: Vec<String>,
@@ -419,6 +422,9 @@ pub enum AccountsInput {
     /// How much storage an account's server says is in use (#298); shown
     /// when that account's page is the one open.
     Quota { email: String, quota: Option<crate::models::MailboxQuota> },
+    /// The sending identities an account's JMAP server keeps (#346), as
+    /// (name, address): listed under its aliases, read-only.
+    ServerIdentities { email: String, identities: Vec<(String, String)> },
 }
 
 /// One keyword the tag finder proposes as a tag: the tag as it would be
@@ -463,6 +469,8 @@ pub enum AccountsOutput {
     FindTags,
     /// An account's page opened: ask its server for the storage in use.
     WantQuota(String),
+    /// An account's page opened: the identities its server keeps (#346).
+    WantIdentities(String),
     /// The editor was left with nothing changed in it: it is already closed,
     /// and the settings window can show `page` without asking anything.
     LeftEditor(String),
@@ -1696,6 +1704,7 @@ impl Component for AccountsWindow {
             goa,
             pending_oauth_refresh: None,
             alias_edits: Vec::new(),
+            server_identities: Vec::new(),
             hidden_edits: Vec::new(),
             alias_editing: None,
             alias_dialog: None,
@@ -1982,6 +1991,7 @@ impl Component for AccountsWindow {
                 self.pending_oauth_refresh = None;
                 self.close_alias_dialog();
                 self.alias_edits.clear();
+                self.server_identities.clear();
                 self.rebuild_alias_list(&widgets.aliases_list, &sender);
                 clear_editor(widgets);
                 self.populate_folder_combos(widgets, None);
@@ -2028,6 +2038,7 @@ impl Component for AccountsWindow {
                 self.pending_oauth_refresh = None;
                 self.close_alias_dialog();
                 self.alias_edits = acc.aliases.clone();
+                self.server_identities.clear();
                 self.rebuild_alias_list(&widgets.aliases_list, &sender);
                 self.hidden_edits = acc.hidden_folders.clone();
                 self.rebuild_hidden_list(widgets, &sender);
@@ -2036,6 +2047,7 @@ impl Component for AccountsWindow {
                 // before it must not show the last account's figure.
                 show_quota(widgets, None);
                 let _ = sender.output(AccountsOutput::WantQuota(acc.email.clone()));
+                let _ = sender.output(AccountsOutput::WantIdentities(acc.email.clone()));
                 // The secrets come from the keyring now, off the main thread,
                 // and land in the fields when they arrive (Save reads the
                 // keyring itself should it come first).
@@ -2923,6 +2935,13 @@ impl Component for AccountsWindow {
                     let _ = sender.output(AccountsOutput::FindTags);
                 }
             }
+            AccountsInput::ServerIdentities { email, identities } => {
+                let open = self.editing.and_then(|i| self.accounts.get(i)).is_some_and(|a| a.email.eq_ignore_ascii_case(&email));
+                if open && self.server_identities != identities {
+                    self.server_identities = identities;
+                    self.rebuild_alias_list(&widgets.aliases_list, &sender);
+                }
+            }
             AccountsInput::Quota { email, quota } => {
                 let open = self.editing.and_then(|i| self.accounts.get(i)).is_some_and(|a| a.email.eq_ignore_ascii_case(&email));
                 if open {
@@ -3125,8 +3144,27 @@ impl AccountsWindow {
         while let Some(child) = list.first_child() {
             list.remove(&child);
         }
+        // The server's identities (#346), less the account's own plain one
+        // (its address, under no name or the account's) and any address an
+        // alias here already sends as.
+        let (own_name, own) = self
+            .editing
+            .and_then(|i| self.accounts.get(i))
+            .map(|a| (a.name.clone(), a.email.clone()))
+            .unwrap_or_default();
+        let server: Vec<&(String, String)> = self
+            .server_identities
+            .iter()
+            .filter(|(name, addr)| {
+                !(addr.eq_ignore_ascii_case(&own)
+                    && (name.is_empty() || name.eq_ignore_ascii_case(addr) || *name == own_name))
+            })
+            .filter(|(_, addr)| {
+                !self.alias_edits.iter().any(|a| split_identity(&a.identity).1.eq_ignore_ascii_case(addr))
+            })
+            .collect();
         // An empty boxed-list draws as a bare frame; hide it until there is a row.
-        list.set_visible(!self.alias_edits.is_empty());
+        list.set_visible(!self.alias_edits.is_empty() || !server.is_empty());
 
         for (i, alias) in self.alias_edits.iter().enumerate() {
             let row = adw::ActionRow::new();
@@ -3153,6 +3191,18 @@ impl AccountsWindow {
             });
             row.add_suffix(&remove);
 
+            list.append(&row);
+        }
+
+        for (name, addr) in server {
+            let row = adw::ActionRow::new();
+            let title = if name.is_empty() || name.eq_ignore_ascii_case(addr) {
+                addr.clone()
+            } else {
+                format!("{name} <{addr}>")
+            };
+            row.set_title(&gtk::glib::markup_escape_text(&title));
+            row.set_subtitle(&i18n("Kept on the server; change it in your webmail"));
             list.append(&row);
         }
     }
