@@ -10150,6 +10150,7 @@ pub(super) fn sample_account() -> AccountConfig {
         password: String::new(),
         smtp_separate: false,
         jmap_token: false,
+        jmap_generic: false,
         tls_accept_hostname_mismatch: false,
         security: None,
         smtp_username: String::new(),

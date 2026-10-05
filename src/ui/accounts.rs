@@ -105,6 +105,10 @@ impl Provider {
     pub(crate) fn wizard_token(&self) -> bool {
         self.kind == ProviderKind::Jmap && self.brand == "fastmail"
     }
+    /// The generic JMAP entry, as against Fastmail's and Stalwart's.
+    pub(crate) fn wizard_jmap_generic(&self) -> bool {
+        self.kind == ProviderKind::Jmap && self.brand == "mail-jmap"
+    }
 
     fn is_password(&self) -> bool {
         matches!(self.kind, ProviderKind::Manual | ProviderKind::Preset | ProviderKind::Jmap)
@@ -148,7 +152,8 @@ pub(crate) const PROVIDERS: &[Provider] = &[
     Provider { label: "Proton Mail (Bridge)", brand: "proton", kind: ProviderKind::Preset, imap_host: "127.0.0.1", imap_port: 1143, smtp_host: "127.0.0.1", smtp_port: 1025, hint: i18n_noop("Requires Proton Mail Bridge running locally.") },
     Provider { label: "Fastmail", brand: "fastmail", kind: ProviderKind::Preset, imap_host: "imap.fastmail.com", imap_port: 993, smtp_host: "smtp.fastmail.com", smtp_port: 465, hint: APP_PW },
     Provider { label: "Fastmail (JMAP)", brand: "fastmail", kind: ProviderKind::Jmap, imap_host: "https://api.fastmail.com/jmap/session", imap_port: 443, smtp_host: "", smtp_port: 0, hint: i18n_noop("Signs in with an API token, not your password. Make one in Fastmail's settings, under Privacy & Security, with access to mail and to sending it. Mail is read and sent over JMAP.") },
-    Provider { label: "JMAP Server (Stalwart and others)", brand: "mail-jmap", kind: ProviderKind::Jmap, imap_host: "", imap_port: 443, smtp_host: "", smtp_port: 0, hint: i18n_noop("Enter your JMAP server's address, or the URL of its session resource. Mail is read and sent over JMAP; no SMTP settings are needed.") },
+    Provider { label: "Stalwart (JMAP)", brand: "stalwart", kind: ProviderKind::Jmap, imap_host: "", imap_port: 443, smtp_host: "", smtp_port: 0, hint: i18n_noop("Enter your Stalwart server's address. Mail is read and sent over JMAP; no SMTP settings are needed.") },
+    Provider { label: "JMAP Server", brand: "mail-jmap", kind: ProviderKind::Jmap, imap_host: "", imap_port: 443, smtp_host: "", smtp_port: 0, hint: i18n_noop("Enter your JMAP server's address, or the URL of its session resource. Mail is read and sent over JMAP; no SMTP settings are needed.") },
     Provider { label: "AOL Mail", brand: "aol", kind: ProviderKind::Preset, imap_host: "imap.aol.com", imap_port: 993, smtp_host: "smtp.aol.com", smtp_port: 465, hint: APP_PW },
     Provider { label: "Zoho Mail", brand: "zoho", kind: ProviderKind::Preset, imap_host: "imap.zoho.com", imap_port: 993, smtp_host: "smtp.zoho.com", smtp_port: 465, hint: "" },
     Provider { label: "GMX", brand: "gmx", kind: ProviderKind::Preset, imap_host: "imap.gmx.com", imap_port: 993, smtp_host: "mail.gmx.com", smtp_port: 587, hint: i18n_noop("Enable POP/IMAP access in GMX settings first.") },
@@ -3758,8 +3763,8 @@ impl AccountsWindow {
         let p = provider_at(widgets.provider_row.selected());
         let editing_goa = self.editing.and_then(|i| self.accounts.get(i)).filter(|a| a.goa_id.is_some());
         let brand = editing_goa.map(brand_for_account).unwrap_or_else(|| {
-            if matches!(p.kind, ProviderKind::Manual | ProviderKind::Jmap) {
-                manual_brand(form_protocol(widgets), &widgets.host_row.text())
+            if p.kind == ProviderKind::Manual {
+                manual_brand(form_protocol(widgets))
             } else {
                 p.brand
             }
@@ -4165,6 +4170,7 @@ fn read_account(
         _ => 993,
     };
     let jmap_token = protocol == Protocol::Jmap && widgets.jmap_token_row.is_active();
+    let jmap_generic = provider_at(widgets.provider_row.selected()).wizard_jmap_generic();
     AccountConfig {
         name: trimmed(&widgets.name_row),
         email: trimmed(&widgets.email_row),
@@ -4182,6 +4188,7 @@ fn read_account(
         password: widgets.pass_row.text().to_string(),
         smtp_separate: widgets.smtp_separate_row.is_active(),
         jmap_token,
+        jmap_generic,
         tls_accept_hostname_mismatch: widgets.tls_mismatch_row.is_active(),
         // GNOME Online Accounts' own, carried over from the account edited.
         security: None,
@@ -4580,15 +4587,27 @@ fn kind_index(kind: ProviderKind) -> u32 {
         .unwrap_or_else(manual_index)
 }
 
-/// Dropdown index of the JMAP entry for a server: Fastmail's for a Fastmail
-/// address, the generic one for any other.
-fn jmap_index(host: &str) -> u32 {
-    let fastmail = host.to_ascii_lowercase().contains("fastmail");
+/// Dropdown index of a JMAP account's entry: Fastmail's for a Fastmail
+/// address, the generic one for an account made from it, else Stalwart's.
+fn jmap_index(acc: &AccountConfig) -> u32 {
+    let brand = jmap_brand(acc);
     PROVIDERS
         .iter()
-        .position(|p| p.kind == ProviderKind::Jmap && (p.brand == "fastmail") == fastmail)
+        .position(|p| p.kind == ProviderKind::Jmap && p.brand == brand)
         .map(|i| i as u32)
         .unwrap_or_else(|| kind_index(ProviderKind::Jmap))
+}
+
+/// The mark of a JMAP account: Fastmail's, the JMAP tile for one made from
+/// the generic entry, otherwise Stalwart's.
+fn jmap_brand(acc: &AccountConfig) -> &'static str {
+    if acc.imap_host.to_ascii_lowercase().contains("fastmail") {
+        "fastmail"
+    } else if acc.jmap_generic {
+        "mail-jmap"
+    } else {
+        "stalwart"
+    }
 }
 
 /// Dropdown index of the `Preset` provider whose incoming server matches `host`,
@@ -4617,7 +4636,7 @@ fn provider_index_for_account(acc: &AccountConfig) -> u32 {
         return kind_index(kind);
     }
     if acc.protocol == Protocol::Jmap {
-        return jmap_index(&acc.imap_host);
+        return jmap_index(acc);
     }
     preset_index_for_host(&acc.imap_host)
 }
@@ -4685,7 +4704,7 @@ fn brand_for_account(acc: &AccountConfig) -> &'static str {
         return "outlook";
     }
     if acc.protocol == Protocol::Jmap {
-        return manual_brand(Protocol::Jmap, &acc.imap_host);
+        return jmap_brand(acc);
     }
     if let Some(s) = acc.oauth_settings.as_ref().filter(|_| acc.oauth) {
         if s.token_url.contains("googleapis") {
@@ -4710,16 +4729,15 @@ fn brand_for_account(acc: &AccountConfig) -> &'static str {
         return "proton";
     }
     match provider_at(preset_index_for_host(&host)).brand {
-        "mail" => manual_brand(acc.protocol, &host),
+        "mail" => manual_brand(acc.protocol),
         brand => brand,
     }
 }
 
 /// The mark for an account whose servers were entered by hand: its
-/// protocol's tile, Fastmail's mark for a JMAP account on Fastmail.
-fn manual_brand(protocol: Protocol, host: &str) -> &'static str {
+/// protocol's tile.
+fn manual_brand(protocol: Protocol) -> &'static str {
     match protocol {
-        Protocol::Jmap if host.to_ascii_lowercase().contains("fastmail") => "fastmail",
         Protocol::Jmap => "mail-jmap",
         Protocol::Pop3 => "mail-pop3",
         _ => "mail",
@@ -4804,7 +4822,12 @@ mod tests {
         assert_eq!(protocol_at(99), Protocol::Imap);
         let acc = AccountConfig { protocol: Protocol::Jmap, imap_host: "mail.example.org".into(), ..crate::ui::welcome::blank_account() };
         assert_eq!(provider_at(provider_index_for_account(&acc)).label, p.label);
-        assert_eq!(brand_for_account(&acc), "mail-jmap");
+        assert_eq!(brand_for_account(&acc), "stalwart");
+        // One made from the generic entry keeps to it, under the JMAP tile.
+        let generic = AccountConfig { jmap_generic: true, ..acc.clone() };
+        let gp = provider_at(provider_index_for_account(&generic));
+        assert!(gp.wizard_jmap_generic());
+        assert_eq!(brand_for_account(&generic), "mail-jmap");
         let fm = AccountConfig { imap_host: "api.fastmail.com".into(), ..acc };
         assert_eq!(brand_for_account(&fm), "fastmail");
         // Fastmail's own entry: its session URL, and a token sign-in (#356).

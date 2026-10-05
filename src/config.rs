@@ -346,6 +346,11 @@ pub struct AccountConfig {
     /// The token is kept where the password would be.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub jmap_token: bool,
+    /// A JMAP account set up from the generic JMAP entry rather than
+    /// Stalwart's: marked by the JMAP tile, not Stalwart's logo. Off for
+    /// the accounts made before the two were apart, all of them Stalwart's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub jmap_generic: bool,
     /// Accept a TLS certificate issued for a different host name than the
     /// one connected to (#246): shared hosting serves mail for many domains
     /// under one certificate in the host's own name. The chain is still
@@ -4183,6 +4188,7 @@ dest_path = "Lists"
             password: "SECRET".into(),
             smtp_separate: false,
             jmap_token: false,
+            jmap_generic: false,
             tls_accept_hostname_mismatch: false,
             security: None,
             smtp_username: String::new(),

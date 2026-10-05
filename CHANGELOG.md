@@ -7,11 +7,11 @@
   changed where the server keeps them, such as its webmail.
 - **Added: Fastmail over JMAP, and any JMAP server** (#356, requested by
   Y4LIT). The Provider list has a Fastmail (JMAP) entry, which fills in
-  Fastmail's session URL and signs in with an API token, and the Stalwart
-  entry is now JMAP Server (Stalwart and others), marked by a red JMAP
-  tile like the IMAP and OAuth ones. A JMAP account can sign in
-  with a bearer token in place of its username and password, and its server
-  can be given as the full URL of its session resource.
+  Fastmail's session URL and signs in with an API token, and a JMAP Server
+  entry, marked by a red JMAP tile like the IMAP and OAuth ones, for servers
+  other than Fastmail and Stalwart. A JMAP account can sign in with a bearer
+  token in place of its username and password, and its server can be given
+  as the full URL of its session resource.
 - **Fixed: the window stopped responding for about twenty seconds after
   start** (#316, reported by wil-m). A GnuPG keyring lock left behind by a
   gpg or keyboxd that had stopped serving it makes every gpg call wait about

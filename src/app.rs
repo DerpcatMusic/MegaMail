@@ -21051,6 +21051,7 @@ fn demo_account_configs() -> Vec<AccountConfig> {
         password: "demo".into(),
         smtp_separate: false,
         jmap_token: false,
+        jmap_generic: false,
         tls_accept_hostname_mismatch: false,
         security: None,
         smtp_username: String::new(),

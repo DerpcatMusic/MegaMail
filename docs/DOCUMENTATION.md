@@ -59,17 +59,19 @@ does not. Stored on the account as the `security` table in `accounts.toml`.
 ### JMAP (Stalwart, Fastmail)
 
 A JMAP account (RFC 8620 and 8621) reads and sends mail over HTTPS, so it
-needs one server address and no SMTP settings. The Provider list has two
+needs one server address and no SMTP settings. The Provider list has three
 JMAP entries:
 
 - **Fastmail (JMAP)** fills in Fastmail's session URL and signs in with an
   API token rather than the account password. Make the token in Fastmail's
   settings, under Privacy & Security, with access to mail and to sending
   it, and enter it in the API Token row.
-- **JMAP Server (Stalwart and others)** takes the server as a host name
+- **Stalwart (JMAP)** and **JMAP Server** take the server as a host name
   (`mail.example.org`, reached over HTTPS on 443, or the port in the Port
-  row) or a full URL, and signs in with the username and password. Turn on
+  row) or a full URL, and sign in with the username and password. Turn on
   **Sign in with an API token** for a server that takes a token instead.
+  They differ only in the account's mark: Stalwart's logo, or a red JMAP
+  tile.
 
 For a host name, Hylki reads the session resource at `/.well-known/jmap`.
 A URL with a path is tried as the session resource itself
@@ -101,7 +103,8 @@ Tested against Stalwart, with a password and with a bearer token; Fastmail
 speaks the same standard but has not been tried by hand. In `accounts.toml`
 the account has `protocol = "jmap"`, the server in `imap_host`, and
 `jmap_token = true` when it signs in with a token, which the keyring keeps
-where a password would be.
+where a password would be. An account made from the JMAP Server entry has
+`jmap_generic = true`.
 
 ### Folder order
 
