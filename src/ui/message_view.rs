@@ -125,6 +125,9 @@ pub struct MessageView {
     /// message: later renders of the same thread (bodies streaming in, a theme
     /// flip) carry a no-scroll stamp so the reader's place is kept.
     did_autoscroll: bool,
+    /// That auto-scroll was spent on a lone message, before the rest of its
+    /// conversation (a sent original, an archived part) was found.
+    autoscroll_lone: bool,
     /// The wrapper document's last reported scroll anchor: the topmost card at
     /// the viewport top and the offset into it. A re-render replaces the whole
     /// document (scroll resets to 0) and can reflow everything above — an
@@ -2006,6 +2009,7 @@ impl Component for MessageView {
             cover: None,
             shown_fingerprint: None,
             did_autoscroll: false,
+            autoscroll_lone: false,
             saved_anchor: None,
             anchor_gutter: false,
             drafts_view: false,
@@ -3587,6 +3591,13 @@ impl MessageView {
         // spinner there is nothing to see.
         let fade = self.webview_ready && !self.loading;
         let html = self.document_html(dark);
+        // A message painted alone that has since grown into a conversation
+        // gets the conversation's open scroll, unless the reader has been
+        // scrolled meanwhile: otherwise it stays at the top, on the oldest
+        // part, often the user's own sent original (#351).
+        if self.did_autoscroll && self.autoscroll_lone && self.thread.len() > 1 && self.saved_anchor.is_none() {
+            self.did_autoscroll = false;
+        }
         // Only a conversation's first document may auto-scroll to the unread
         // mark; every later render of the same thread (bodies streaming in, a
         // theme change) is stamped no-scroll so the reader's place is kept.
@@ -3652,6 +3663,7 @@ impl MessageView {
             1,
         );
         self.did_autoscroll = true;
+        self.autoscroll_lone = self.thread.len() <= 1;
         let n = self.seq.get().wrapping_add(1);
         self.seq.set(n);
         self.load_after_paint(html, format!("https://hylki.localhost/message/{n}"), fade);
