@@ -2,6 +2,28 @@
 
 Hylki (formerly Vireo) is a clean, fast, GNOME-native email client built with Rust and libadwaita for Wayland desktops. Privacy-first: no telemetry, remote content blocked by default, and credentials kept in the system keyring.
 
+## What's new in 1.43.0-beta.4
+
+The fourth beta previewing 1.43.0.
+
+- **More formatting tools in the composer** (#358, requested by urkos101):
+  a chevron at the end of the toolbar shows paragraph styles, fonts, text
+  and highlight colors, indents, emoji and pictures. Settings > Composing >
+  Formatting toolbar says whether a new message starts with them shown.
+- **Fastmail over JMAP** (#356, requested by Y4LIT): a Fastmail (JMAP)
+  entry signs in with an API token, and a JMAP Server entry takes any other
+  server, by host name or session URL.
+- **A JMAP account's server identities** are listed in its settings,
+  read-only (#346, suggested by pdf).
+- **No more freeze after start** when a GnuPG keyring lock was left behind
+  (#316, reported by wil-m).
+- **A reply opens on the reply**, not on your own sent original above it
+  (#351, reported by amadeusp).
+- **The Keyboard Shortcuts list names every shortcut**, the emoji chooser
+  included.
+- **Translations:** Portuguese for Portugal and Brazil by
+  [@somepaulo](https://github.com/somepaulo) (#357) brought up to date.
+
 ## What's new in 1.43.0-beta.3
 
 The third beta previewing 1.43.0.

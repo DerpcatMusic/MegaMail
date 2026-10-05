@@ -1,5 +1,51 @@
 # Changelog
 
+## 1.43.0-beta.4 — 2026-10-05
+
+The fourth beta previewing 1.43.0.
+
+- **Fixed: the window stopped responding for about twenty seconds after
+  start** (#316, reported by wil-m). A GnuPG keyring lock left behind by a
+  gpg or keyboxd that had stopped serving it makes every gpg call wait about
+  ten seconds and then fail. The hidden Settings window read the keyring at
+  startup, and an account's settings did each time they opened, on the
+  thread that draws the window. All of Hylki's own gpg calls now run in the
+  background, and the log says when gpg waited on a lock.
+- **Fixed: opening a reply showed your own sent original at the top**
+  (#351, reported by amadeusp). The reply was shown alone first, and when
+  the original joined from Sent the conversation stayed scrolled to the
+  top. It now opens on the first unread or newest message, as a
+  conversation opened whole does. The row's conversation count is also
+  asked for again when it missed a part, after its conversation was
+  regrouped or when the reader finds more than the row knew of.
+- **Added: Fastmail over JMAP, and any JMAP server** (#356, requested by
+  Y4LIT). The Provider list has a Fastmail (JMAP) entry, which fills in
+  Fastmail's session URL and signs in with an API token, and a JMAP Server
+  entry, marked by a red JMAP tile like the IMAP and OAuth ones, for servers
+  other than Fastmail and Stalwart. A JMAP account can sign in with a bearer
+  token in place of its username and password, and its server can be given
+  as the full URL of its session resource.
+- **Added: a JMAP account's server identities are listed in its settings**
+  (#346, suggested by pdf). Under Send-as aliases, read-only: they are
+  changed where the server keeps them, such as its webmail.
+- **Added: more formatting tools in the composer** (#358, requested by
+  urkos101). A chevron at the end of the formatting toolbar shows paragraph
+  styles (headings and preformatted text), fonts, text and highlight colors,
+  indent and outdent (which nest list items), and buttons for emoji and
+  pictures. **Settings → Composing → Formatting toolbar** says whether a new
+  message starts with them shown or, the default, hidden; the tools that
+  are always there keep to what Markdown can say. Quote has a quote-mark
+  icon of its own, and the toolbar wraps onto a second row in a narrow
+  composer. An indented paragraph is not mistaken for a quote, in the
+  composer, in the reader or in the plain-text part.
+- **Changed: the Keyboard Shortcuts list names every shortcut.** It gains
+  the emoji chooser (Ctrl+. or Ctrl+;), Shift+Return, bold, italic and
+  underline, Ctrl+F, Delete in the list, Ctrl+P, and the attachment drawer's
+  and gallery's keys, in new Writing and Attachments sections. Its note on
+  single-key shortcuts now points to Settings → System, where the switch is.
+- **Translations:** Portuguese for Portugal and Brazil (PR #357 by Paulo
+  Fino) brought up to date.
+
 ## 1.43.0-beta.3 — 2026-10-05
 
 The third beta previewing 1.43.0.
