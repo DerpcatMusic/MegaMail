@@ -47,6 +47,10 @@ In the body, <kbd>Return</kbd> starts a new line and <kbd>Shift+Return</kbd>
 a new paragraph; **Settings → Composing → Return starts a new paragraph**
 swaps them. See [Return and Shift+Return](DOCUMENTATION.md#return-and-shiftreturn).
 
+<kbd>Ctrl+.</kbd> or <kbd>Ctrl+;</kbd> opens the emoji chooser at the cursor,
+in the body of a message or in any text field that takes emoji; the emoji you
+pick goes where the cursor was.
+
 <kbd>Ctrl+Shift+F</kbd> turns [Focus Mode](FEATURES.md#the-app) on and off,
 with or without single-key shortcuts.
 

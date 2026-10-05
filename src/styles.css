@@ -606,6 +606,12 @@ flowbox.attach-flow > flowboxchild {
   font-weight: 700;
 }
 
+/* "Highlight only new unread mail" (#343): a count already looked at. */
+.unread-badge.seen {
+  background: alpha(currentColor, 0.14);
+  color: inherit;
+}
+
 /* Compact-rail variant: a smaller chip pinned to an icon/pill corner via an
    overlay, so unread counts stay visible when the sidebar is icon-only. The
    ring in the sidebar's background color separates it from the icon beneath. */

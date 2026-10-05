@@ -17,12 +17,14 @@ shows. Want to join them? See [CONTRIBUTING.md](CONTRIBUTING.md).
 - [**Isaac**](https://github.com/thecalamityjoe87) ([#31](https://github.com/hyprlab/hylki/pull/31),
   [#43](https://github.com/hyprlab/hylki/pull/43), [#44](https://github.com/hyprlab/hylki/pull/44),
   [#49](https://github.com/hyprlab/hylki/pull/49), [#63](https://github.com/hyprlab/hylki/pull/63),
-  [#135](https://github.com/hyprlab/hylki/pull/135), [#142](https://github.com/hyprlab/hylki/pull/142)): PDF first-page thumbnails
+  [#135](https://github.com/hyprlab/hylki/pull/135), [#142](https://github.com/hyprlab/hylki/pull/142),
+  [#354](https://github.com/hyprlab/hylki/pull/354)): PDF first-page thumbnails
   in the attachment gallery and drawer, the fix for attachments not opening
   (wrong O_NOFOLLOW constant + portal-based launching), the reader header's
   "To:" line, the preference to always load remote content, the shared
   GNOME-styled right-click context menus, swipe-to-archive/delete on
-  message rows, and the uninstall script.
+  message rows, the uninstall script, and the dock badge coming back after
+  the screen is unlocked.
 - [**Alexander Lubovenko**](https://github.com/typedev) ([#45](https://github.com/hyprlab/hylki/pull/45),
   [#110](https://github.com/hyprlab/hylki/pull/110), [#112](https://github.com/hyprlab/hylki/pull/112),
   [#118](https://github.com/hyprlab/hylki/pull/118),

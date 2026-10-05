@@ -458,6 +458,10 @@ pub enum MailRequest {
         message: Box<OutgoingMessage>,
         folder_id: u32,
         path: String,
+        /// The composer saving it on its own, every so often (#340): its
+        /// id comes back in [`WorkerEvent::DraftSaved`], and a failure is
+        /// quiet, with the composer still open to try again.
+        autosave: Option<u32>,
     },
     /// Re-ask the server for every folder's unread count and answer with one
     /// [`WorkerEvent::FolderUnread`] per folder. Cheap (STATUS only — no message
@@ -477,7 +481,8 @@ pub enum MailRequest {
     Settle { path: String, uids: Vec<u32> },
     /// Moving mail to another account (#265), step one: the message's raw
     /// bytes, answered with [`WorkerEvent::RawExported`] carrying `token`.
-    ExportRaw { token: u64, path: String, uid: u32 },
+    /// `for_reader` when the user is waiting on it: a draft being opened.
+    ExportRaw { token: u64, path: String, uid: u32, for_reader: bool },
     /// Step two, on the receiving account: add `raw` to `path` with its
     /// read and starred state, answered with [`WorkerEvent::RawImported`].
     ImportRaw { token: u64, path: String, raw: Vec<u8>, seen: bool, flagged: bool },
@@ -574,6 +579,10 @@ pub enum WorkerEvent {
     /// `remaining` is how many of its messages are still unscanned.
     AttachmentsScanned { folder_path: String, added: u32, remaining: u32 },
     Account(Account),
+    /// The sending identities a JMAP server keeps for the account (#346):
+    /// `(name, address)`, the address `*@domain` for one that sends as
+    /// anyone at the domain.
+    Identities(Vec<(String, String)>),
     Folders(Vec<Folder>),
     Messages { folder_id: u32, messages: Vec<Message> },
     /// What the server found for the "Message body" filter conditions
@@ -684,8 +693,10 @@ pub enum WorkerEvent {
     /// The account's Outbox, whenever it changes (queued, retried, sent or
     /// discarded). Empty means nothing is waiting.
     Outbox { items: Vec<crate::models::OutboxItem> },
-    /// A draft was saved to the Drafts folder.
-    DraftSaved,
+    /// A draft was saved to the Drafts folder, under this Message-ID
+    /// (`None`: an automatic save that did not go through). `autosave`
+    /// echoes the request's.
+    DraftSaved { autosave: Option<u32>, message_id: Option<String> },
     /// A bulk MoveMessages request finished (success or failure) — drives the
     /// bulk-action spinner in the UI.
     BulkComplete,
@@ -987,6 +998,7 @@ fn is_reader_load(req: &MailRequest) -> bool {
             | MailRequest::LoadBodies { .. }
             | MailRequest::LoadSource { .. }
             | MailRequest::LoadAttachments { download: true, .. }
+            | MailRequest::ExportRaw { for_reader: true, .. }
     )
 }
 
@@ -2008,7 +2020,7 @@ async fn run_imap(
                 emit(WorkerEvent::BulkComplete);
             }
 
-            MailRequest::ExportRaw { token, path, uid } => {
+            MailRequest::ExportRaw { token, path, uid, .. } => {
                 let raw = load_raw_retry(&mut session, &account, &path, uid).await.map_err(|e| e.to_string());
                 emit(WorkerEvent::RawExported { token, raw });
             }
@@ -2609,14 +2621,17 @@ async fn run_imap(
                 .await;
             }
 
-            MailRequest::SaveDraft { message, folder_id, path } => {
-                emit(WorkerEvent::Status(i18n("Saving draft…")));
+            MailRequest::SaveDraft { message, folder_id, path, autosave } => {
+                if autosave.is_none() {
+                    emit(WorkerEvent::Status(i18n("Saving draft…")));
+                }
                 // A draft is kept as written: signing and encrypting happen
                 // at send time (#133).
                 let mut message = OutgoingMessage { sign: false, encrypt: false, ..*message };
                 restore_msgid_case(cache.as_ref(), &mut message);
                 match build_draft(&account, &message) {
                     Ok(email) => {
+                        let message_id = draft_message_id(&email);
                         let raw = email.formatted();
                         let append_res = {
                             let sess = session.as_mut().unwrap();
@@ -2660,20 +2675,18 @@ async fn run_imap(
                                 // copy it was edited from is now superseded.
                                 drop_superseded_outbox(cache.as_ref(), account_id, &message, &emit);
                                 emit(WorkerEvent::Status(String::new()));
-                                emit(WorkerEvent::DraftSaved);
+                                emit(WorkerEvent::DraftSaved { autosave, message_id: Some(message_id) });
                             }
                             Err(e) => {
                                 emit(WorkerEvent::Status(String::new()));
-                                emit(WorkerEvent::error(i18n_f("Could not save draft: {e}", &[("e", &(e).to_string())])));
-                                emit(WorkerEvent::Unsent(Box::new(message.clone())));
+                                draft_not_saved(autosave, e.to_string(), message.clone(), &emit);
                                 lost = true;
                             }
                         }
                     }
                     Err(e) => {
                         emit(WorkerEvent::Status(String::new()));
-                        emit(WorkerEvent::error(i18n_f("Could not save draft: {e}", &[("e", &(e).to_string())])));
-                        emit(WorkerEvent::Unsent(Box::new(message)));
+                        draft_not_saved(autosave, e.to_string(), message, &emit);
                     }
                 }
             }
@@ -4175,26 +4188,41 @@ fn addr_list(header: Option<&mail_parser::Address>) -> String {
 /// A queued message taken apart for editing: the fields a composer needs, plus
 /// its attachments as bytes.
 pub struct EditableMessage {
+    /// The From as written: "Name <address>", or the bare address.
+    pub from: String,
     pub to: String,
     pub cc: String,
     pub bcc: String,
     pub subject: String,
+    /// Threading headers, stored the way an outgoing message carries them:
+    /// without angle brackets, References space-separated.
+    pub in_reply_to: String,
+    pub references: String,
     /// The best body to edit: the HTML alternative when there is one, otherwise
-    /// the plain text escaped into HTML (the composer edits HTML).
+    /// the plain text escaped into HTML (the composer edits HTML). Pictures
+    /// pasted into the text come back as the `data:` URIs they were written as.
     pub body_html: String,
+    /// The files, without the pictures already back in the text.
     pub attachments: Vec<crate::models::Attachment>,
 }
 
-/// Take a queued message apart so it can be edited and sent again.
+/// Take a queued message or a saved draft apart so it can be edited again.
 ///
 /// The stored bytes are the source of truth, but they are not quite the whole
-/// message: lettre strips `Bcc` from what goes on the wire, so those recipients
-/// survive only in the stored envelope. Anything in the envelope that isn't in
-/// To or Cc is therefore a Bcc recipient, and is restored as one.
+/// message: lettre strips `Bcc` from what goes on the wire, so a queued
+/// message's Bcc recipients survive only in the stored envelope. Anything in
+/// the envelope that isn't in To or Cc is therefore a Bcc recipient, and is
+/// restored as one. A draft keeps its `Bcc` header and has no envelope.
 pub fn editable_from_raw(raw: &[u8], envelope_rcpts: &[String]) -> EditableMessage {
-    use mail_parser::MessageParser;
+    use mail_parser::{HeaderValue, MessageParser, MimeHeaders};
 
     let parsed = MessageParser::default().parse(raw);
+    let from = parsed
+        .as_ref()
+        .and_then(|p| p.from())
+        .and_then(|a| a.first())
+        .and_then(|a| Some(format_recipient(a.name().unwrap_or_default(), a.address()?.trim())))
+        .unwrap_or_default();
     let to = parsed.as_ref().map(|p| addr_list(p.to())).unwrap_or_default();
     let cc = parsed.as_ref().map(|p| addr_list(p.cc())).unwrap_or_default();
     let subject = parsed
@@ -4202,23 +4230,47 @@ pub fn editable_from_raw(raw: &[u8], envelope_rcpts: &[String]) -> EditableMessa
         .and_then(|p| p.subject())
         .unwrap_or_default()
         .to_string();
+    let ids = |hv: &HeaderValue| -> String {
+        let strip = |t: &str| t.trim().trim_start_matches('<').trim_end_matches('>').trim().to_string();
+        match hv {
+            HeaderValue::Text(t) => strip(t),
+            HeaderValue::TextList(v) => v.iter().map(|t| strip(t)).collect::<Vec<_>>().join(" "),
+            _ => String::new(),
+        }
+    };
+    let in_reply_to = parsed.as_ref().map(|p| ids(p.in_reply_to())).unwrap_or_default();
+    let references = parsed.as_ref().map(|p| ids(p.references())).unwrap_or_default();
 
     // Whoever is in the envelope but named in neither header was a Bcc.
+    let header_bcc = parsed.as_ref().map(|p| addr_list(p.bcc())).unwrap_or_default();
     let named: Vec<String> = parse_recipients(&to)
         .into_iter()
         .chain(parse_recipients(&cc))
+        .chain(parse_recipients(&header_bcc))
         .map(|(_, addr)| addr.to_lowercase())
         .collect();
-    let bcc = envelope_rcpts
-        .iter()
-        .filter(|addr| !named.contains(&addr.to_lowercase()))
-        .cloned()
+    let bcc = std::iter::once(header_bcc.clone())
+        .filter(|b| !b.is_empty())
+        .chain(
+            envelope_rcpts
+                .iter()
+                .filter(|addr| !named.contains(&addr.to_lowercase()))
+                .cloned(),
+        )
         .collect::<Vec<_>>()
         .join(", ");
 
+    // Pictures pasted into the text went out as `cid:` parts (#113). They
+    // come back into the text, and off the list of files, or the composer
+    // would show a broken image and attach the picture a second time.
+    let mut embedded: Vec<String> = Vec::new();
     let html = parsed
         .as_ref()
-        .and_then(|p| p.body_html(0).map(|b| b.to_string()))
+        .and_then(|p| {
+            let html = p.body_html(0)?;
+            let mut budget = 16 * 1024 * 1024;
+            Some(inline_cid_images(&html, &p.parts, &mut budget, &mut embedded))
+        })
         .unwrap_or_default();
     let body_html = if html.trim().is_empty() {
         let text = parsed
@@ -4235,14 +4287,59 @@ pub fn editable_from_raw(raw: &[u8], envelope_rcpts: &[String]) -> EditableMessa
         html
     };
 
+    let attachments = parsed
+        .as_ref()
+        .map(|p| {
+            attachment_parts(p, raw)
+                .into_iter()
+                .filter(|(id, _)| {
+                    !p.parts
+                        .get(*id)
+                        .and_then(|part| part.content_id())
+                        .is_some_and(|cid| embedded.iter().any(|e| e == cid))
+                })
+                .map(|(_, a)| a)
+                .collect()
+        })
+        .unwrap_or_default();
+
     EditableMessage {
+        from,
         to,
         cc,
         bcc,
         subject,
+        in_reply_to,
+        references,
         body_html,
-        attachments: extract_attachments(raw),
+        attachments,
     }
+}
+
+/// The Message-ID a built draft carries, bare, to find it again among the
+/// Drafts folder's messages once it is saved (#340).
+fn draft_message_id(email: &LettreMessage) -> String {
+    email
+        .headers()
+        .get_raw("Message-ID")
+        .unwrap_or_default()
+        .trim()
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .to_string()
+}
+
+/// A draft that could not be saved: said, and handed back to be opened
+/// again (#340), unless the composer was saving it on its own and is
+/// still open, in which case it just tries again later.
+fn draft_not_saved(autosave: Option<u32>, why: String, message: OutgoingMessage, emit: &impl Fn(WorkerEvent)) {
+    if autosave.is_some() {
+        tracing::info!("automatic draft save failed: {why}");
+        emit(WorkerEvent::DraftSaved { autosave, message_id: None });
+        return;
+    }
+    emit(WorkerEvent::error(i18n_f("Could not save draft: {e}", &[("e", &why)])));
+    emit(WorkerEvent::Unsent(Box::new(message)));
 }
 
 /// Rebuild the SMTP envelope stored alongside a queued message.
@@ -4420,6 +4517,11 @@ fn build_message(
     for (name, addr) in parse_recipients(&msg.bcc) {
         builder = builder.bcc(mailbox(&name, &addr)?);
         recipients += 1;
+    }
+    // A draft is the user's own copy and has to come back with its Bcc
+    // recipients (#350); a sent message never carries them.
+    if draft {
+        builder = builder.keep_bcc();
     }
     if draft && recipients == 0 {
         let envelope = lettre::address::Envelope::new(
@@ -9260,7 +9362,9 @@ async fn run_mock(
             | MailRequest::UndoMove { .. } => {
                 emit(WorkerEvent::BulkComplete)
             }
-            MailRequest::SaveDraft { .. } => emit(WorkerEvent::DraftSaved),
+            MailRequest::SaveDraft { autosave, .. } => {
+                emit(WorkerEvent::DraftSaved { autosave, message_id: None })
+            }
             MailRequest::Settle { path, uids } => emit(WorkerEvent::MovesSettled { path, uids }),
             MailRequest::ExportRaw { token, uid, .. } => emit(WorkerEvent::RawExported {
                 token,
@@ -10209,6 +10313,58 @@ NIL NIL NIL NIL NIL NIL NIL))\r\n";
     /// #336 against a real server: mail appended while the connection is
     /// busy is picked up by the next wait, not left until something else
     /// happens to sync the folder.
+    /// #349, #350 against a real server: a draft saved from an alias with a
+    /// Bcc and a file comes back with all three.
+    /// `IMAP_LIVE=host,port,user,password cargo test live_draft -- --ignored`
+    #[test]
+    #[ignore]
+    fn live_draft_comes_back_whole() {
+        let Ok(spec) = std::env::var("IMAP_LIVE") else { return };
+        let p: Vec<&str> = spec.splitn(4, ',').collect();
+        let account = AccountConfig {
+            imap_host: p[0].into(),
+            imap_port: p[1].parse().expect("port"),
+            username: p[2].into(),
+            password: p[3].into(),
+            security: Some(crate::config::ServerSecurity {
+                imap_starttls: false,
+                imap_accept_invalid_certs: true,
+                ..Default::default()
+            }),
+            ..sample_account()
+        };
+        let file = std::env::temp_dir().join(format!("hylki-350-{}.txt", std::process::id()));
+        std::fs::write(&file, b"notes").expect("write");
+        let subject = format!("hylki-350-{}", std::process::id());
+        let msg = OutgoingMessage {
+            from_alias: Some("Work <work@example.com>".into()),
+            to: "ada@example.com".into(),
+            bcc: "hidden@example.com".into(),
+            subject: subject.clone(),
+            html: "<p>draft text</p>".into(),
+            attachments: vec![file.to_string_lossy().to_string()],
+            in_reply_to: "orig@example.com".into(),
+            ..sample_outgoing()
+        };
+        let raw = build_draft(&account, &msg).expect("builds").formatted();
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let mut sess = connect(&account).await.expect("connect");
+            append_draft(&mut sess, "Drafts", &raw).await.expect("append");
+            let listed = load_messages(7, &mut sess, 1, "Drafts", true, None).await.expect("load");
+            let uid = listed.iter().find(|m| m.subject == subject).expect("listed").uid;
+            let back = load_raw(&mut sess, "Drafts", uid).await.expect("raw");
+            delete_draft(&mut sess, "Drafts", uid).await.ok();
+            let e = editable_from_raw(&back, &[]);
+            assert_eq!(e.from, "Work <work@example.com>");
+            assert_eq!(e.bcc, "hidden@example.com");
+            assert_eq!(e.in_reply_to, "orig@example.com");
+            assert!(e.body_html.contains("draft text"), "{}", e.body_html);
+            assert_eq!(e.attachments.len(), 1);
+        });
+        std::fs::remove_file(&file).ok();
+    }
+
     #[test]
     #[ignore]
     fn live_idle_catches_mail_that_landed_between_commands() {
@@ -10777,6 +10933,41 @@ NIL NIL NIL NIL NIL NIL NIL))\r\n";
         assert_eq!(editable.attachments.len(), 1);
         assert_eq!(editable.attachments[0].name, "report.pdf");
         assert_eq!(editable.attachments[0].data, [0x25, 0x50, 0x44, 0x46, 0x00, 0xff]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #349, #350: a saved draft comes back as it was written: the alias it
+    /// was from, its Bcc, its place in the thread, a picture in the text and
+    /// a file beside it.
+    #[test]
+    fn a_saved_draft_comes_back_whole() {
+        let dir = std::env::temp_dir().join(format!("hylki-draft-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let file = dir.join("notes.txt");
+        std::fs::write(&file, b"notes").expect("write");
+
+        let msg = OutgoingMessage {
+            from_alias: Some("Work <work@example.com>".into()),
+            to: "ada@example.com".into(),
+            bcc: "hidden@example.com".into(),
+            subject: "Re: Plans".into(),
+            html: "<p>see <img src=\"data:image/png;base64,iVBORw0KGgo=\"></p>".into(),
+            attachments: vec![file.to_string_lossy().to_string()],
+            in_reply_to: "Orig@Example.com".into(),
+            references: "first@example.com Orig@Example.com".into(),
+            ..sample_outgoing()
+        };
+        let raw = build_draft(&sample_account(), &msg).expect("builds").formatted();
+        let editable = editable_from_raw(&raw, &[]);
+
+        assert_eq!(editable.from, "Work <work@example.com>");
+        assert_eq!(editable.bcc, "hidden@example.com");
+        assert_eq!(editable.in_reply_to, "Orig@Example.com");
+        assert_eq!(editable.references, "first@example.com Orig@Example.com");
+        assert!(editable.body_html.contains("data:image/png;base64,"), "{}", editable.body_html);
+        assert!(!editable.body_html.contains("cid:"), "{}", editable.body_html);
+        assert_eq!(editable.attachments.len(), 1, "the picture is in the text, not a file");
+        assert_eq!(editable.attachments[0].name, "notes.txt");
         std::fs::remove_dir_all(&dir).ok();
     }
 

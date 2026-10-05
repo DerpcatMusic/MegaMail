@@ -82,7 +82,9 @@ goes through the server's `EmailSubmission`, which files the copy in Sent
 New mail arrives over the server's EventSource push channel when push is
 on for the account, with a poll as the fallback. Marking a message as spam
 or not spam sets the `$junk` and `$notjunk` keywords the server's filter
-learns from.
+learns from. The server's sending identities are offered in the composer's
+From row (see [The From address](#the-from-address)), and an alias has no
+SMTP settings of its own.
 
 Tested against Stalwart; Fastmail speaks the same standard but has not been
 tried by hand. In `accounts.toml` the account has `protocol = "jmap"` and
@@ -91,7 +93,13 @@ the server in `imap_host`.
 ### Folder order
 
 An account's main folders (Inbox, Drafts, Sent, Archive, Junk, Trash) come
-first, in that order, then its custom folders, each under its parent. How
+first, in that order, then its custom folders, each under its parent.
+Folders kept inside the Inbox on the server (`INBOX.Ablage`, `INBOX/Lists`)
+are listed under the Inbox row, with an arrow on it to fold them away, when
+the account has folders outside the Inbox too, as Roundcube and Apple Mail
+show them. A server that keeps every folder inside the Inbox (an `INBOX.`
+prefix, as on Courier and some Dovecot setups) has them under **Folders**
+instead, without the prefix. How
 the custom folders are sorted is chosen in **Settings → Sidebar → Folder
 order**, for every account:
 
@@ -246,6 +254,21 @@ organization's administrator to approve Hylki once for everyone, at
 `https://login.microsoftonline.com/organizations/adminconsent?client_id=01cdc012-c8d8-4d03-822c-76696a01c14e`;
 Hylki shows that link when Microsoft refuses a sign-in for want of approval.
 
+An organization that has approved another mail app's registration, and not
+Hylki's, can sign in with that one instead. The **Advanced** row on the
+account's page takes its **Client ID**, a **Tenant** (`common`,
+`organizations`, `consumers`, or the organization's directory ID or
+domain), the **Scopes** it was approved for and its **Redirect URI**. Empty
+rows keep Hylki's own. Scopes are Graph's short names, space-separated,
+such as `Mail.ReadWrite Mail.Send User.Read`; `offline_access` is added if
+it is missing. Hylki reads and sends mail, so only the mail scopes are used,
+whatever else the list grants. A redirect URI that is not a `localhost`
+address, such as Evolution's
+`https://login.microsoftonline.com/common/oauth2/nativeclient`, makes the
+sign-in run in a window of Hylki's instead of the browser, so the answer
+can be caught; that window keeps nothing once it closes. Evolution's
+registration is `20460e5d-ce91-49af-a3a5-70b6be7486d1` with that redirect.
+
 **Google** signs in through **GNOME Online Accounts**. Add your Google account in
 *GNOME Settings → Online Accounts*, then import it in Hylki. Official builds don't
 bundle a Google OAuth client (Google's secret can't live in a public repo), so
@@ -395,7 +418,9 @@ answers. **Translate into** is Hylki's own language unless another is chosen.
 
 A message is translated from the A文 button in its card's actions, or from
 Translate in its right-click menu. The card then shows the translation, with a banner naming the service and the language
-it came from, and **Show Original** in the banner or the menu switches back. A translation is kept for
+it came from, and **Show Original** in the banner or the menu switches back. The
+subject is translated with it, in the heading above the message. A
+translation is kept for
 the rest of the session, so opening the message again costs nothing more.
 
 What is sent is the message's text, a paragraph or a cell at a time, with
@@ -415,8 +440,12 @@ In the composer, the A文 button beside the format chooser translates what
 you are writing: the selection if there is one, otherwise everything you
 wrote above the quote and signature, which are left as they are. It offers
 the language of the message you are answering first, recognised offline,
-then the one you used last, then every other. The translation replaces your
-text as one edit, so Ctrl+Z gives back what you wrote. It works in rich
+then the one you used last, then every other. When everything is
+translated, the subject is too, unless the message is a reply or a forward,
+whose subject is already the conversation's. The translation replaces your
+text as one edit, so Ctrl+Z gives back what you wrote. Until you change the
+text again, the same menu offers **Show Original**, which puts back what you
+wrote, subject included, and then **Show Translation**. It works in rich
 text, plain text, Markdown and HTML. A message set to be encrypted is never
 sent for translation.
 
@@ -450,6 +479,34 @@ reader shows them for that message, so answering a message does not load
 anything reading it did not. The recipient still gets them. In dark mode a
 quoted message that sets its own colors keeps the light ground it was
 designed for.
+
+### Drafts saved as you write
+
+A message being written is saved to the Drafts folder on its own every 30
+seconds while it changes, so a crash or a lost connection costs at most that
+much. Nothing is saved before you have changed anything, so an untouched
+reply leaves no draft. Each save replaces the one before, and **Save Draft**,
+**Send** and **Send Later** replace or remove it as they would a draft you
+saved. **Discard** on a new message removes the copy it left; on a draft you
+had saved before, the last automatic save stays. A save that fails, offline
+say, is tried again at the next one, without a message about it.
+
+### The From address
+
+The From row lists each account's address and the aliases set up for it.
+Its pencil turns the row into text, where any name and address can be typed
+for this one message, a throwaway address or a `+tag` one, without making
+it an alias; the arrow beside it goes back to the list. The message still
+goes through the account picked in the list, and with one address that row
+appears under **More**. A reply to mail sent to a `+tag` address of one of
+your addresses starts from that address, and a draft saved from a typed
+address opens with it. Whether the server accepts mail from an address it
+does not know is up to the server: many refuse it, or rewrite it.
+
+A JMAP account lists the identities the server keeps for it as well, so an
+alias made in the webmail is in the From row without setting it up again.
+The message is sent as the identity with its address, or as a catch-all
+identity for its domain (`*@example.org`) when there is one.
 
 ### Return and Shift+Return
 
@@ -716,11 +773,13 @@ quoted lines, so an answer written inline always shows in full.
 
 ### Folding messages in a conversation
 
-A click on a message's header in a conversation folds it to one line: the
-sender's circle and name, then a star, a paper plane or an inbox for sent
-or received, a paperclip when it has files, and the day. A click on that
-line opens it again; a double-click on the header still opens the message in
-a window of its own.
+A click on a message's header in a conversation folds it to a short card: a
+line with the sender's circle and name, then a star, a paper plane or an
+inbox for sent or received, a paperclip when it has files, and the day.
+Under it comes the start of the message, in as many lines as **Settings →
+Message List → Preview lines** asks for; the subject is the conversation's,
+in the heading above. A click on the card opens it again; a double-click on
+the header still opens the message in a window of its own.
 
 **Settings → Conversations → Fold earlier messages** decides how a
 conversation opens: **Never** shows every message, **Messages already read**
@@ -794,6 +853,17 @@ launcher: the default, the same envelope on a blue, navy or yellow square,
 or the classic icon. An icon set on the launcher some other way, with a menu
 editor or by editing its `.desktop` file, is left alone when Hylki starts;
 Settings says so above the gallery, and picking an icon there replaces it.
+
+### New and seen unread mail
+
+A folder's unread count is in the accent color. With **Settings → Sidebar →
+Highlight only new unread mail** on, it is only while mail has come into the
+folder since you last looked at it; once you have opened the folder, the
+count turns grey, however much is still unread, until more arrives. A folder
+on screen counts as looked at, and so do the inboxes of All Inboxes while it
+is open. Reading mail elsewhere lowers the mark with the count. What was
+unread when the setting was turned on counts as seen. The marks are kept in
+`state.toml`, and the setting is `seen_counts` in `privacy.toml`.
 
 ### Unread count on the app icon
 

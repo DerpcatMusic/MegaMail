@@ -1,0 +1,92 @@
+//! A provider's sign-in page in a window of Hylki's own (#329), for an OAuth
+//! client registered with a redirect Hylki cannot listen on, such as
+//! Microsoft's `…/oauth2/nativeclient` that Evolution's client uses. The
+//! page runs in a private session with nothing kept afterwards, and the
+//! redirect is caught as the page navigates to it, so it never loads.
+//!
+//! The usual sign-in, with a loopback redirect, stays in the browser
+//! (`oauth::run_flow`).
+
+use adw::prelude::*;
+use webkit6::prelude::*;
+
+use crate::config::OAuthSettings;
+use crate::i18n::i18n;
+use crate::oauth::Authorization;
+
+/// Open the sign-in for `settings` and hand `done` the request and the
+/// authorization code once the provider redirects, or why there is none
+/// (the window was closed, or the provider refused).
+pub fn run(
+    parent: Option<&gtk::Window>,
+    settings: &OAuthSettings,
+    done: impl FnOnce(Result<(Authorization, String), String>) + 'static,
+) {
+    let extra = if settings.token_url.contains("microsoftonline") { "&prompt=select_account" } else { "" };
+    let request = match Authorization::new(settings, settings.redirect_uri.trim(), extra) {
+        Ok(r) => r,
+        Err(e) => return done(Err(e)),
+    };
+    let window = adw::Window::builder()
+        .title(i18n("Sign In"))
+        .default_width(520)
+        .default_height(680)
+        .modal(true)
+        .build();
+    window.set_transient_for(parent);
+    let header = adw::HeaderBar::new();
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&header);
+
+    let session = webkit6::NetworkSession::new_ephemeral();
+    let view = webkit6::WebView::builder().network_session(&session).build();
+    view.set_vexpand(true);
+    toolbar.set_content(Some(&view));
+    window.set_content(Some(&toolbar));
+
+    // `done` runs once: on the redirect, or when the window closes first.
+    let done: std::rc::Rc<std::cell::RefCell<Option<Box<dyn FnOnce(Result<(Authorization, String), String>)>>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(Some(Box::new(done))));
+    let request = std::rc::Rc::new(std::cell::RefCell::new(Some(request)));
+    {
+        let done = done.clone();
+        let request = request.clone();
+        let settings = settings.clone();
+        let window = window.downgrade();
+        view.connect_decide_policy(move |_, decision, kind| {
+            if kind != webkit6::PolicyDecisionType::NavigationAction {
+                return false;
+            }
+            let Some(nav) = decision.downcast_ref::<webkit6::NavigationPolicyDecision>() else { return false };
+            let uri = nav
+                .navigation_action()
+                .and_then(|mut a| a.request())
+                .and_then(|r| r.uri())
+                .map(|u| u.to_string())
+                .unwrap_or_default();
+            let answer = request.borrow().as_ref().and_then(|r| r.answer(&uri, &settings));
+            let Some(answer) = answer else { return false };
+            decision.ignore();
+            if let (Some(cb), Some(req)) = (done.borrow_mut().take(), request.borrow_mut().take()) {
+                cb(answer.map(|code| (req, code)));
+            }
+            if let Some(w) = window.upgrade() {
+                w.close();
+            }
+            true
+        });
+    }
+    {
+        let done = done.clone();
+        window.connect_close_request(move |_| {
+            if let Some(cb) = done.borrow_mut().take() {
+                cb(Err(i18n("The sign-in window was closed.")));
+            }
+            gtk::glib::Propagation::Proceed
+        });
+    }
+    if let Some(url) = request.borrow().as_ref().map(|r| r.url.clone()) {
+        view.load_uri(&url);
+    }
+    window.present();
+}

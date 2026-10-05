@@ -210,6 +210,11 @@ pub struct ComposePrefill {
     /// For a reply: the original's To+Cc, so the composer can answer from the
     /// alias the mail was addressed to (#34). Empty otherwise.
     pub reply_addressed_to: String,
+    /// A From of the user's own making (#347): a draft saved from an address
+    /// that is no identity, or a reply to a `+tag` address. "Name <addr>"
+    /// or a bare address; the composer opens its From as text when this is
+    /// not the identity it selects.
+    pub custom_from: String,
     /// For a new message: the address to send from when the user has chosen
     /// a default identity in Settings (#157). Empty = the account's own
     /// address. Ignored when `reply_addressed_to` names an identity.
@@ -227,6 +232,10 @@ pub struct ComposePrefill {
     /// The quoted original's remote content was not loaded in the reader,
     /// so the editor does not load its pictures either (#295).
     pub block_remote_images: bool,
+    /// The body is a message picked up again as it was written (one the
+    /// worker handed back unsent): it already has its blank line and its
+    /// signature. Drafts and queued messages count as this without it.
+    pub resumed: bool,
 }
 
 /// Everything the compose pane needs to open.
@@ -318,6 +327,8 @@ pub struct Compose {
     /// A compact reply's field rows, revealed by the header button (#154)
     /// or from the start by the preference.
     fields_shown: bool,
+    /// The From is typed, in `custom_from_row`, not picked (#347).
+    custom_from: bool,
     /// The pane is too narrow for the full toolbar: everything but Cancel,
     /// Send and the fields chevron folds into the ⋯ menu (like the reader's
     /// header), so the window controls at the end never leave the canvas.
@@ -349,6 +360,18 @@ pub struct Compose {
     translate_btn: gtk::Button,
     /// A translation is out: the button waits and the body is locked.
     translating: bool,
+    /// Saving on its own (#340): a save on its way, what the last one held
+    /// (a hash of the fields and body), whether the Drafts copy is one only
+    /// these saves made (so Discard removes it), and whether they have
+    /// stopped (the copy could not be found again to replace it).
+    autosaving: bool,
+    autosaved: Option<u64>,
+    autosave_pending: Option<u64>,
+    autosave_made: bool,
+    autosave_off: bool,
+    /// The subject as written and as translated with the body, so Show
+    /// Original and Show Translation can swap it back and forth (#327).
+    tr_subject: Option<(String, String)>,
     preview_btn: gtk::ToggleButton,
     /// The preview toggle's icon-and-label insides, kept only so the label
     /// can be dropped in a pane too narrow to carry it.
@@ -453,12 +476,17 @@ pub enum ComposeInput {
     TranslateMenu,
     /// The quoted message's text came back: show the languages.
     ShowTranslateMenu(String),
+    /// Type the From instead of picking it, or go back to the list (#347).
+    CustomFrom(bool),
+    /// Show Original or Show Translation: the translation was the last
+    /// edit, so it is undone or done again, the subject with it (#327).
+    TranslateToggle { original: bool },
     /// Translate what was written (or the selection) into this language.
     TranslateTo(String),
     /// The editor handed over what is to be translated.
     TranslateBegun { found: String, target: String },
     /// The translation came back, or failed.
-    Translated { result: Result<Vec<String>, String>, how: TranslateHow },
+    Translated { result: Result<Vec<String>, String>, how: TranslateHow, subject: Option<String> },
     /// The body came back for a format change; put it in the new one.
     LoadAs { from: ComposeFormat, to: ComposeFormat, body: String },
     /// Show or hide the rendered preview of a source message.
@@ -473,6 +501,14 @@ pub enum ComposeInput {
     SaveDraft,
     /// The editor content came back — finish saving the draft.
     SaveDraftBody { html: String, text: String, to: String, cc: String, bcc: String, reply_to: String, subject: String, from_account_id: u32, from_alias: Option<String> },
+    /// The automatic save's tick (#340), then, once anything was edited,
+    /// the fields and body read for it.
+    AutoSave,
+    AutoSaveRead,
+    AutoSaveBody { html: String, text: String, to: String, cc: String, bcc: String, reply_to: String, subject: String, from_account_id: u32, from_alias: Option<String> },
+    /// An automatic save came back: whether it went through, and where the
+    /// copy is now, to be replaced by the next save.
+    Autosaved { saved: bool, origin: Option<DraftOrigin> },
     /// Cancel, Escape or the window's close button: closes at once when
     /// nothing was written, else asks first (#290).
     Cancel,
@@ -550,6 +586,12 @@ pub enum ComposeOutput {
     /// This pane is done (cancelled / sent / draft-saved / superseded). Carries
     /// the id so the app tears down the right host.
     Close(u32),
+    /// Save the message to Drafts on the composer's own (#340), leaving it
+    /// open.
+    AutoSave { id: u32, message: Box<OutgoingMessage> },
+    /// Discarded, a new message that only automatic saves put in Drafts:
+    /// take that copy out, and close.
+    DiscardAutosave { id: u32, origin: DraftOrigin },
 }
 
 #[relm4::component(pub)]
@@ -847,6 +889,14 @@ impl Component for Compose {
                                 set_title: &i18n("From"),
                                 connect_selected_notify => ComposeInput::AccountChanged,
                             },
+                            // The From as text (#347): any name and address,
+                            // sent through the account chosen above.
+                            #[name = "custom_from_row"]
+                            adw::EntryRow {
+                                set_title: &i18n("From"),
+                                set_input_purpose: gtk::InputPurpose::Email,
+                                set_visible: false,
+                            },
                             #[name = "to_row"]
                             adw::EntryRow {
                                 set_title: &i18n("To"),
@@ -936,16 +986,18 @@ impl Component for Compose {
 
         // Initial editor content: a blank line to type on, then the
         // signature and the quoted reply/forward (if any), in the order
-        // the setting says (#237). A draft already contains its signature;
-        // don't add another. With Return set to start paragraphs the line
-        // is a paragraph too, so the first Return splits it into two.
-        let mut content = String::from(if crate::config::load_privacy().return_paragraph {
-            "<p><br></p>"
-        } else {
-            "<div><br></div>"
+        // the setting says (#237). A draft or a queued message already has
+        // both and gets neither again: each reopening of a draft used to add
+        // another blank line (#349). With Return set to start paragraphs the
+        // line is a paragraph too, so the first Return splits it into two.
+        let resumed = prefill.resumed || draft_origin.is_some() || outbox_origin.is_some();
+        let mut content = String::from(match (resumed, crate::config::load_privacy().return_paragraph) {
+            (true, _) => "",
+            (false, true) => "<p><br></p>",
+            (false, false) => "<div><br></div>",
         });
         let sig_dashes = crate::config::load_privacy().signature_dashes;
-        let sig = if draft_origin.is_none() && !current_sig.is_empty() {
+        let sig = if !resumed && !current_sig.is_empty() {
             sig_html(&current_sig, sig_dashes)
         } else {
             String::new()
@@ -1084,6 +1136,7 @@ impl Component for Compose {
             compact: compact && !prefill.to.trim().is_empty(),
             decorations,
             fields_shown: crate::config::load_privacy().reply_fields,
+            custom_from: false,
             narrow: false,
             // Files handed in from outside are something to lose: closing
             // asks first, as it would once the user had attached them.
@@ -1096,6 +1149,12 @@ impl Component for Compose {
             format_btn,
             translate_btn,
             translating: false,
+            autosaving: false,
+            autosaved: None,
+            autosave_pending: None,
+            autosave_made: false,
+            autosave_off: false,
+            tr_subject: None,
             preview_btn,
             preview_content,
             encrypt: false,
@@ -1195,11 +1254,18 @@ impl Component for Compose {
             let cc = widgets.cc_row.clone();
             let bcc = widgets.bcc_row.clone();
             let reply_to = widgets.reply_to_row.clone();
+            let from = widgets.from_row.clone();
+            let custom = widgets.custom_from_row.clone();
             let btn = more.clone();
             more.connect_clicked(move |_| {
                 cc.set_visible(true);
                 bcc.set_visible(true);
                 reply_to.set_visible(true);
+                // With one address the From row is hidden; More brings it,
+                // with its pencil for typing another (#347).
+                if !custom.is_visible() {
+                    from.set_visible(true);
+                }
                 btn.set_visible(false);
             });
             widgets.to_row.add_suffix(&more);
@@ -1234,6 +1300,47 @@ impl Component for Compose {
         widgets.from_row.set_factory(Some(&factory));
         widgets.from_row.set_selected(selected as u32);
         widgets.from_row.set_visible(model.accounts.len() > 1);
+        {
+            // The pencil types a From of your own (#347); the custom row's
+            // button goes back to the list.
+            let edit = gtk::Button::from_icon_name("document-edit-symbolic");
+            edit.add_css_class("flat");
+            edit.set_valign(gtk::Align::Center);
+            edit.set_tooltip_text(Some(i18n("Type a From address").as_str()));
+            let s = sender.input_sender().clone();
+            edit.connect_clicked(move |_| {
+                let _ = s.send(ComposeInput::CustomFrom(true));
+            });
+            widgets.from_row.add_suffix(&edit);
+            let back = gtk::Button::from_icon_name("pan-down-symbolic");
+            back.add_css_class("flat");
+            back.set_valign(gtk::Align::Center);
+            back.set_tooltip_text(Some(i18n("Choose from your addresses").as_str()));
+            let s = sender.input_sender().clone();
+            back.connect_clicked(move |_| {
+                let _ = s.send(ComposeInput::CustomFrom(false));
+            });
+            widgets.custom_from_row.add_suffix(&back);
+        }
+        // A From that is none of the identities opens as text (#347).
+        let custom = prefill.custom_from.trim();
+        if !custom.is_empty() {
+            let addr = crate::worker::parse_recipients(custom)
+                .into_iter()
+                .next()
+                .map(|(_, a)| a)
+                .unwrap_or_default();
+            let same = model.accounts.get(selected).is_some_and(|a| same_from(&identity_display(a), custom));
+            // A bare address that is the identity's counts as the identity.
+            let bare = !custom.contains('<')
+                && model.accounts.get(selected).is_some_and(|a| a.email.eq_ignore_ascii_case(&addr));
+            if !same && !bare {
+                model.custom_from = true;
+                widgets.from_row.set_visible(false);
+                widgets.custom_from_row.set_text(custom);
+                widgets.custom_from_row.set_visible(true);
+            }
+        }
 
         widgets.to_row.set_text(&prefill.to);
         widgets.cc_row.set_text(&prefill.cc);
@@ -1473,6 +1580,19 @@ impl Component for Compose {
         });
         root.add_controller(key);
 
+        // The message is saved to Drafts on its own every so often while it
+        // changes (#340), so a crash, a lost connection or a closed laptop
+        // costs at most that much. The timer stops with the composer.
+        {
+            let s = sender.input_sender().clone();
+            gtk::glib::timeout_add_seconds_local(AUTOSAVE_SECS, move || {
+                if s.send(ComposeInput::AutoSave).is_err() {
+                    return gtk::glib::ControlFlow::Break;
+                }
+                gtk::glib::ControlFlow::Continue
+            });
+        }
+
         ComponentParts { model, widgets }
     }
 
@@ -1511,7 +1631,16 @@ impl Component for Compose {
             ComposeInput::KeepEditing => self.asking_discard = false,
 
             ComposeInput::Discard => {
-                let _ = sender.output(ComposeOutput::Close(self.compose_id));
+                // A message nobody saved leaves nothing behind, though the
+                // composer saved it on its own meanwhile (#340).
+                match self.draft_origin.clone().filter(|_| self.autosave_made) {
+                    Some(origin) => {
+                        let _ = sender.output(ComposeOutput::DiscardAutosave { id: self.compose_id, origin });
+                    }
+                    None => {
+                        let _ = sender.output(ComposeOutput::Close(self.compose_id));
+                    }
+                }
             }
 
             ComposeInput::SendAt(at) => {
@@ -1920,6 +2049,24 @@ impl Component for Compose {
                 self.report_history(&sender);
             }
 
+            ComposeInput::CustomFrom(on) => {
+                self.custom_from = on;
+                if on {
+                    // Start from the address that was picked, to edit.
+                    let idx = widgets.from_row.selected() as usize;
+                    let start = self.accounts.get(idx).map(identity_display).unwrap_or_default();
+                    if widgets.custom_from_row.text().trim().is_empty() {
+                        widgets.custom_from_row.set_text(&start);
+                    }
+                    widgets.from_row.set_visible(false);
+                    widgets.custom_from_row.set_visible(true);
+                    widgets.custom_from_row.grab_focus();
+                } else {
+                    widgets.custom_from_row.set_visible(false);
+                    widgets.from_row.set_visible(true);
+                }
+            }
+
             ComposeInput::AccountChanged => {
                 self.follow_account_signing(widgets);
                 // Swap the editor's signature block for the new account's.
@@ -2128,16 +2275,31 @@ impl Component for Compose {
                     break 'handle;
                 }
                 let s = sender.input_sender().clone();
-                self.editor.eval(TR_QUOTE_TEXT, move |text| {
+                let js = format!("JSON.stringify({{q:{TR_QUOTE_TEXT},t:window.__hylkiTrState||''}})");
+                self.editor.eval(&js, move |text| {
                     let _ = s.send(ComposeInput::ShowTranslateMenu(text));
                 });
             }
 
-            ComposeInput::ShowTranslateMenu(quoted) => {
+            ComposeInput::ShowTranslateMenu(found) => {
+                let v: serde_json::Value = serde_json::from_str(&found).unwrap_or_default();
+                let quoted = v["q"].as_str().unwrap_or_default().to_string();
                 let entry = |code: String, label: String| {
                     let s = sender.clone();
                     MenuEntry::new(label, move || s.input(ComposeInput::TranslateTo(code.clone())))
                 };
+                // Back to what was written, or to the translation again,
+                // while the translation is still the last thing done to the
+                // text (#327).
+                let toggle = match v["t"].as_str() {
+                    Some("translated") => Some((i18n("Show Original"), true)),
+                    Some("original") => Some((i18n("Show Translation"), false)),
+                    _ => None,
+                };
+                let toggle = toggle.map(|(label, original)| {
+                    let s = sender.clone();
+                    vec![MenuEntry::new(label, move || s.input(ComposeInput::TranslateToggle { original }))]
+                });
                 // First what the conversation suggests: the language of the
                 // message being answered, then the one last used.
                 let mut first = Vec::new();
@@ -2163,11 +2325,14 @@ impl Component for Compose {
                     .iter()
                     .map(|code| entry(code.to_string(), crate::translate::language_name(code)))
                     .collect();
-                let sections = if first.is_empty() {
+                let mut sections = if first.is_empty() {
                     vec![all]
                 } else {
                     vec![first, vec![MenuEntry::submenu(i18n("Other Languages"), vec![all])]]
                 };
+                if let Some(toggle) = toggle {
+                    sections.insert(0, toggle);
+                }
                 let btn = &self.translate_btn;
                 crate::ui::context_menu::show_context_menu_with_header(
                     btn,
@@ -2239,21 +2404,54 @@ impl Component for Compose {
                     }
                     break 'handle;
                 }
+                // The subject goes too when the whole message is translated,
+                // unless it is a reply's or a forward's: that one is already
+                // in the conversation's language.
+                let subject = widgets.subject_row.text().trim().to_string();
+                let subject = (v["sel"].as_bool() != Some(true)
+                    && !subject.is_empty()
+                    && self.in_reply_to.trim().is_empty()
+                    && !crate::models::is_reply_or_forward_subject(&subject))
+                .then_some(subject);
+                let mut parts = parts;
+                if let Some(subject) = &subject {
+                    parts.push(gtk::glib::markup_escape_text(subject).to_string());
+                }
                 let s = sender.input_sender().clone();
                 std::thread::spawn(move || {
                     let settings = crate::translate::load();
                     let key = crate::translate::load_key(settings.service).unwrap_or_default();
                     let result = crate::translate::translate_parts(&settings, &key, &parts, &target);
-                    let _ = s.send(ComposeInput::Translated { result, how });
+                    let _ = s.send(ComposeInput::Translated { result, how, subject });
                 });
             }
 
-            ComposeInput::Translated { result, how } => {
+            ComposeInput::TranslateToggle { original } => {
+                self.history_step(!original, widgets, &sender);
+                if let Some((written, translated)) = &self.tr_subject {
+                    let (from, to) = if original { (translated, written) } else { (written, translated) };
+                    if widgets.subject_row.text().as_str() == from.as_str() {
+                        widgets.subject_row.set_text(to);
+                    }
+                }
+            }
+
+            ComposeInput::Translated { result, how, subject } => {
                 self.translating = false;
                 self.translate_btn.set_sensitive(true);
                 match result {
                     // One edit, so Ctrl+Z gives back what was written.
-                    Ok(parts) => {
+                    Ok(mut parts) => {
+                        self.tr_subject = None;
+                        if let Some(original) = subject {
+                            let translated = parts.pop().map(|t| {
+                                crate::markdown::plain_text(&t).split_whitespace().collect::<Vec<_>>().join(" ")
+                            });
+                            if let Some(translated) = translated.filter(|t| !t.is_empty()) {
+                                widgets.subject_row.set_text(&translated);
+                                self.tr_subject = Some((original, translated));
+                            }
+                        }
                         let (end, text) = match how {
                             TranslateHow::Rich => (TR_RICH_END, parts.concat()),
                             TranslateHow::Html => (TR_SOURCE_END, parts.concat()),
@@ -2402,7 +2600,16 @@ impl Component for Compose {
                     }
                 }
                 let from_account_id = self.accounts.get(idx).map(|a| a.id).unwrap_or(1);
-                let from_alias = self.accounts.get(idx).and_then(|a| a.alias_from.clone());
+                let from_alias = match self.chosen_from(widgets) {
+                    Ok(from) => from,
+                    Err(why) => {
+                        let parent = widgets.to_row.root().and_downcast::<gtk::Window>();
+                        let dialog = adw::MessageDialog::new(parent.as_ref(), Some(&i18n("Check the From address")), Some(&why));
+                        dialog.add_response("ok", &i18n("OK"));
+                        dialog.present();
+                        break 'handle;
+                    }
+                };
 
                 // Pull the body out of the editor (async), then finish
                 // sending via SendBody. The send-time reader also recuts any
@@ -2442,7 +2649,11 @@ impl Component for Compose {
                 let subject = widgets.subject_row.text().to_string();
                 let idx = widgets.from_row.selected() as usize;
                 let from_account_id = self.accounts.get(idx).map(|a| a.id).unwrap_or(1);
-                let from_alias = self.accounts.get(idx).and_then(|a| a.alias_from.clone());
+                // A draft keeps even a From still being typed: it is checked
+                // when the message is sent.
+                let from_alias = self
+                    .chosen_from(widgets)
+                    .unwrap_or_else(|_| self.accounts.get(idx).and_then(|a| a.alias_from.clone()));
                 let s = sender.clone();
                 self.read_body_as(self.format, false, move |html, text| {
                     s.input(ComposeInput::SaveDraftBody {
@@ -2466,6 +2677,99 @@ impl Component for Compose {
                 let _ = sender.output(ComposeOutput::SaveDraft(Box::new(out)));
                 let _ = sender.output(ComposeOutput::Close(self.compose_id));
             }
+
+            ComposeInput::AutoSave => {
+                if self.autosave_off || self.autosaving || self.asking_discard || self.translating {
+                    break 'handle;
+                }
+                // Not before anything was written: an untouched reply is
+                // no draft.
+                if self.fields_dirty {
+                    sender.input(ComposeInput::AutoSaveRead);
+                } else {
+                    let s = sender.clone();
+                    self.editor.is_dirty(move |dirty| {
+                        if dirty {
+                            s.input(ComposeInput::AutoSaveRead);
+                        }
+                    });
+                }
+            }
+
+            ComposeInput::AutoSaveRead => {
+                if self.autosaving {
+                    break 'handle;
+                }
+                let to = widgets.to_row.text().trim().to_string();
+                let cc = widgets.cc_row.text().trim().to_string();
+                let bcc = widgets.bcc_row.text().trim().to_string();
+                let reply_to = widgets.reply_to_row.text().trim().to_string();
+                let subject = widgets.subject_row.text().to_string();
+                let idx = widgets.from_row.selected() as usize;
+                let from_account_id = self.accounts.get(idx).map(|a| a.id).unwrap_or(1);
+                let from_alias = self
+                    .chosen_from(widgets)
+                    .unwrap_or_else(|_| self.accounts.get(idx).and_then(|a| a.alias_from.clone()));
+                let s = sender.clone();
+                self.read_body_as(self.format, false, move |html, text| {
+                    s.input(ComposeInput::AutoSaveBody {
+                        html,
+                        text,
+                        to: to.clone(),
+                        cc: cc.clone(),
+                        bcc: bcc.clone(),
+                        reply_to: reply_to.clone(),
+                        subject: subject.clone(),
+                        from_account_id,
+                        from_alias: from_alias.clone(),
+                    });
+                });
+            }
+
+            ComposeInput::AutoSaveBody { html, text, to, cc, bcc, reply_to, subject, from_account_id, from_alias } => {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                (&html, &text, &to, &cc, &bcc, &reply_to, &subject, from_account_id, &from_alias, &self.attachments)
+                    .hash(&mut h);
+                let hash = h.finish();
+                // Unchanged since the last save, or nothing in it at all.
+                let empty = [&to, &cc, &bcc, &subject].iter().all(|f| f.trim().is_empty())
+                    && text.trim().is_empty()
+                    && self.attachments.is_empty();
+                if self.autosaved == Some(hash) || empty || self.autosaving {
+                    break 'handle;
+                }
+                let (html, text) = self.outgoing_body(html, text);
+                let out = self
+                    .build_outgoing(from_account_id, from_alias, to, cc, bcc, reply_to, subject, text, html);
+                self.autosaving = true;
+                self.autosave_pending = Some(hash);
+                let _ = sender.output(ComposeOutput::AutoSave { id: self.compose_id, message: Box::new(out) });
+            }
+
+            ComposeInput::Autosaved { saved, origin } => {
+                self.autosaving = false;
+                let pending = self.autosave_pending.take();
+                if !saved {
+                    // Offline, say: the next tick tries again.
+                    break 'handle;
+                }
+                match origin {
+                    Some(origin) => {
+                        if self.draft_origin.is_none() {
+                            self.autosave_made = true;
+                        }
+                        self.draft_origin = Some(origin);
+                        self.autosaved = pending;
+                    }
+                    // Saved, but not found again to be replaced next time:
+                    // one more save would leave a second copy behind.
+                    None => {
+                        tracing::info!("automatic draft save stopped: the saved copy was not found");
+                        self.autosave_off = true;
+                    }
+                }
+            }
         }
         }
         // Overriding `update_with_view` takes over relm4's default, which
@@ -2475,7 +2779,52 @@ impl Component for Compose {
     }
 }
 
+/// How often an edited message is saved to Drafts on its own (#340).
+const AUTOSAVE_SECS: u32 = 30;
+
+/// An identity's From as the composer writes it out: "Name <address>".
+fn identity_display(a: &ComposeAccount) -> String {
+    a.alias_from.clone().unwrap_or_else(|| a.label.clone()).trim().to_string()
+}
+
+/// Whether two Froms name the same person at the same address, however
+/// each is quoted or spaced.
+fn same_from(a: &str, b: &str) -> bool {
+    let one = |s: &str| {
+        crate::worker::parse_recipients(s)
+            .into_iter()
+            .next()
+            .map(|(n, e)| (n.trim().trim_matches('"').to_string(), e.to_lowercase()))
+    };
+    matches!((one(a), one(b)), (Some(x), Some(y)) if x == y)
+}
+
 impl Compose {
+    /// The From to put on the wire: the picked identity's (`None` for the
+    /// account's own), or the one typed in (#347), which has to hold one
+    /// address.
+    fn chosen_from(&self, widgets: &ComposeWidgets) -> Result<Option<String>, String> {
+        let idx = widgets.from_row.selected() as usize;
+        let picked = self.accounts.get(idx).and_then(|a| a.alias_from.clone());
+        if !self.custom_from {
+            return Ok(picked);
+        }
+        let typed = widgets.custom_from_row.text().trim().to_string();
+        let found = crate::worker::parse_recipients(&typed);
+        let [(name, addr)] = found.as_slice() else {
+            return Err(i18n("The From has to be one address, such as Ann <ann@example.com>."));
+        };
+        let at = addr.split_once('@');
+        if at.is_none_or(|(user, host)| user.is_empty() || !host.contains('.') || addr.contains(char::is_whitespace)) {
+            return Err(i18n_f("“{address}” is not an email address.", &[("address", addr)]));
+        }
+        // Left as the picked identity reads: send as that.
+        if self.accounts.get(idx).is_some_and(|a| same_from(&identity_display(a), &typed)) {
+            return Ok(picked);
+        }
+        Ok(Some(if name.trim().is_empty() { addr.clone() } else { format!("{} <{addr}>", name.trim()) }))
+    }
+
     /// Put Sign where the From account's default has it (#267), until the
     /// user has set it by hand. While encrypting it stays on: encrypted
     /// mail is always signed.
@@ -3682,11 +4031,13 @@ window.__hylkiTr=r;b.setAttribute('contenteditable','false');
 return JSON.stringify({parts:p,sel:sel});})()"#;
 
 /// The translation in place of what was taken, as one edit the editor's
-/// undo can take back.
+/// undo can take back. `__hylkiTrState` then follows it for the Translate
+/// menu (#327): "translated", "original" once undone, and nothing once
+/// anything else is done to the text.
 const TR_RICH_END: &str = r#"(function(h){var b=document.body;if(!b)return;b.setAttribute('contenteditable','true');
 var r=window.__hylkiTr;window.__hylkiTr=null;if(!r)return;b.focus();
 var s=getSelection();s.removeAllRanges();s.addRange(r);
-document.execCommand('insertHTML',false,h);window.__hylkiDirty=true;})(ARG)"#;
+document.execCommand('insertHTML',false,h);window.__hylkiDirty=true;window.__hylkiTrState='translated';if(!window.__hylkiTrWatch){window.__hylkiTrWatch=true;document.addEventListener('input',function(e){var st=window.__hylkiTrState;if(!st)return;var k=e.inputType||'';if(k==='historyUndo')window.__hylkiTrState=st==='translated'?'original':'';else if(k==='historyRedo')window.__hylkiTrState=st==='original'?'translated':'';else window.__hylkiTrState='';},true);}})(ARG)"#;
 
 /// The source field's version of [`TR_RICH_BEGIN`]: the selection, else
 /// the text above the quote (and, in Markdown, its "wrote:" line) and the
@@ -3707,7 +4058,7 @@ window.__hylkiTr={a:a,e:e};t.readOnly=true;return JSON.stringify({text:x,sel:sel
 const TR_SOURCE_END: &str = r#"(function(x){var t=document.getElementById('src');if(!t)return;t.readOnly=false;
 var r=window.__hylkiTr;window.__hylkiTr=null;if(!r)return;t.focus();t.setSelectionRange(r.a,r.e);
 if(!document.execCommand('insertText',false,x))t.setRangeText(x,r.a,r.e,'end');
-window.__hylkiDirty=true;t.dispatchEvent(new Event('input'));})(ARG)"#;
+window.__hylkiDirty=true;t.dispatchEvent(new Event('input'));window.__hylkiTrState='translated';if(!window.__hylkiTrWatch){window.__hylkiTrWatch=true;document.addEventListener('input',function(e){var st=window.__hylkiTrState;if(!st)return;var k=e.inputType||'';if(k==='historyUndo')window.__hylkiTrState=st==='translated'?'original':'';else if(k==='historyRedo')window.__hylkiTrState=st==='original'?'translated':'';else window.__hylkiTrState='';},true);}})(ARG)"#;
 
 /// A translation that will not come: unlock the body as it was.
 const TR_CANCEL: &str = r#"(function(){var b=document.body;if(b&&!document.getElementById('src'))b.setAttribute('contenteditable','true');

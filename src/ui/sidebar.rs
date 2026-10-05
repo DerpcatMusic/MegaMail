@@ -287,6 +287,11 @@ pub struct Sidebar {
     /// Per-account custom-row revealers (row order), for animated tree
     /// collapse/expand.
     tree_row_revealers: HashMap<u32, Vec<gtk::Revealer>>,
+    /// The folders inside the Inbox, listed under its row (#345): each
+    /// account's main-list folders in row order, and the revealers of the
+    /// nested ones by row.
+    main_folders: HashMap<u32, Vec<Folder>>,
+    main_row_revealers: HashMap<u32, HashMap<usize, gtk::Revealer>>,
     /// The rebuild freeze-frame Picture and its pending lift timer.
     freeze_frame: Option<gtk::Picture>,
     freeze_timer: std::rc::Rc<std::cell::RefCell<Option<gtk::glib::SourceId>>>,
@@ -339,6 +344,9 @@ pub struct Sidebar {
     outbox_count: u32,
     /// Total unread across all inboxes, for the "All Inboxes" badge.
     unified_unread: u32,
+    /// The folders whose unread count is new since last looked at, while
+    /// "Highlight only new unread mail" is on (#343); `None` when it is off.
+    fresh: Option<std::collections::HashSet<(u32, u32)>>,
     /// Unread badge labels by (account_id, folder_id), updated in place.
     folder_badges: HashMap<(u32, u32), gtk::Label>,
     /// The "All Inboxes" unread badge label, when shown.
@@ -508,6 +516,10 @@ pub enum SidebarInput {
     SetUnread {
         folders: HashMap<(u32, u32), u32>,
         unified: u32,
+        /// With "Highlight only new unread mail" on (#343): the folders
+        /// with mail come in since they were last looked at. Every other
+        /// count is grey. `None`: every count in the accent color.
+        fresh: Option<std::collections::HashSet<(u32, u32)>>,
     },
     /// A message drag was dropped on a folder row.
     DropOnFolder { account_id: u32, path: String, payload: String },
@@ -718,6 +730,8 @@ impl Component for Sidebar {
             tree_collapsed: HashMap::new(),
             tree_chevrons: HashMap::new(),
             tree_row_revealers: HashMap::new(),
+            main_folders: HashMap::new(),
+            main_row_revealers: HashMap::new(),
             freeze_frame: None,
             freeze_timer: std::rc::Rc::new(std::cell::RefCell::new(None)),
             freeze_fade: std::rc::Rc::new(std::cell::RefCell::new(None)),
@@ -742,6 +756,7 @@ impl Component for Sidebar {
             show_contacts: init.show_contacts,
             outbox_count: 0,
             unified_unread: 0,
+            fresh: None,
             folder_badges: HashMap::new(),
             unified_badge: None,
             unified_expanded: init.unified_expanded,
@@ -1294,7 +1309,8 @@ impl Sidebar {
                 self.reveal_account(account_id, &sender);
             }
 
-            SidebarInput::SetUnread { folders, unified } => {
+            SidebarInput::SetUnread { folders, unified, fresh } => {
+                self.fresh = fresh;
                 // Mirror the fresh counts into every row list too, so a
                 // rebuild draws them right (the account folders are done
                 // below).
@@ -1363,6 +1379,7 @@ impl Sidebar {
                     }
                 }
                 self.unified_unread = unified;
+                self.restyle_seen();
                 // Persist the fresh counts into `sections` as well. Otherwise the
                 // next rebuild_normal (e.g. toggling the sidebar collapse) recreates
                 // every badge from the folder unread values captured at the last
@@ -1650,6 +1667,18 @@ impl Sidebar {
     /// a row shows unless some ancestor node is collapsed. Rows are never
     /// removed, so selection indices hold still.
     fn apply_tree_visibility(&self, account_id: u32) {
+        // The folders inside the Inbox, under its row (#345).
+        if let (Some(list), Some(folders), Some(revealers)) = (
+            self.folder_lists.get(&account_id),
+            self.main_folders.get(&account_id),
+            self.main_row_revealers.get(&account_id),
+        ) {
+            let collapsed = self.tree_collapsed.get(&account_id).cloned().unwrap_or_default();
+            for (&i, rev) in revealers {
+                let (Some(row), Some(folder)) = (list.row_at_index(i as i32), folders.get(i)) else { continue };
+                slide_tree_row(&row, rev, hidden_by_collapse(&folder.path, &collapsed));
+            }
+        }
         let (Some(list), Some(folders)) = (
             self.custom_folder_lists.get(&account_id),
             self.custom_folders.get(&account_id),
@@ -1661,33 +1690,9 @@ impl Sidebar {
         for (i, folder) in folders.iter().enumerate() {
             let Some(row) = list.row_at_index(i as i32) else { continue };
             let hidden = hidden_by_collapse(&folder.path, &collapsed);
-            let rev = revealers.and_then(|r| r.get(i));
-            match (hidden, rev) {
-                (false, Some(rev)) => {
-                    // Show the row first, then slide its content open.
-                    row.set_visible(true);
-                    rev.set_reveal_child(true);
-                }
-                (true, Some(rev)) => {
-                    if row.get_visible() {
-                        // Slide closed, then drop the row itself once the
-                        // animation is done — an empty visible row still
-                        // paints its chrome. Skipped if it was re-expanded
-                        // inside the window.
-                        rev.set_reveal_child(false);
-                        let row = row.clone();
-                        let rev = rev.clone();
-                        gtk::glib::timeout_add_local_once(
-                            std::time::Duration::from_millis(220),
-                            move || {
-                                if !rev.reveals_child() {
-                                    row.set_visible(false);
-                                }
-                            },
-                        );
-                    }
-                }
-                (hidden, None) => row.set_visible(!hidden),
+            match revealers.and_then(|r| r.get(i)) {
+                Some(rev) => slide_tree_row(&row, rev, hidden),
+                None => row.set_visible(!hidden),
             }
         }
     }
@@ -1817,6 +1822,8 @@ impl Sidebar {
         self.folder_badges.clear();
         self.tree_chevrons.clear();
         self.tree_row_revealers.clear();
+        self.main_folders.clear();
+        self.main_row_revealers.clear();
         self.unified_badge = None;
         self.unified_revealer = None;
         self.unified_chevron = None;
@@ -2411,29 +2418,93 @@ impl Sidebar {
             // shown; user-created "custom" folders are tucked under a collapsible
             // "Folders" section. `section.folders` is already essential-first, so
             // the essential list holds row indices 0..E and the custom list E..
+            // The folders inside the Inbox go with it, under its row,
+            // when the account nests them (#345).
+            let nest = nests_in_inbox(&section.folders);
             let essential: Vec<&Folder> = section
                 .folders
                 .iter()
-                .filter(|f| f.kind != FolderKind::Custom)
+                .filter(|f| is_main_row(f, nest))
                 .collect();
             let custom: Vec<&Folder> = section
                 .folders
                 .iter()
-                .filter(|f| f.kind == FolderKind::Custom)
+                .filter(|f| !is_main_row(f, nest))
                 .collect();
             let e = essential.len() as i32;
+            let inside: Vec<&Folder> = essential.iter().copied().filter(|f| f.kind == FolderKind::Custom).collect();
+            let collapsed_nodes = self.tree_collapsed.get(&id).cloned().unwrap_or_default();
 
             let list = gtk::ListBox::new();
             list.set_selection_mode(gtk::SelectionMode::Single);
             list.add_css_class("navigation-sidebar");
-            for folder in &essential {
+            for (index, folder) in essential.iter().enumerate() {
                 let icon = filter_icon(section, folder);
+                let nested = folder.kind == FolderKind::Custom;
+                // With folders under the Inbox, every main row has the
+                // expander slot the tree rows have, so their names align:
+                // a chevron on the Inbox and on a nested folder with
+                // sub-folders, a spacer on the rest.
+                let has_children = nest
+                    && !self.collapsed
+                    && match folder.kind {
+                        FolderKind::Inbox => !inside.is_empty(),
+                        FolderKind::Custom => inside.iter().any(|g| path_is_under(&g.path, &folder.path)),
+                        _ => false,
+                    };
+                let lead: Option<gtk::Widget> = if !nest || self.collapsed {
+                    None
+                } else if has_children {
+                    let img = gtk::Image::from_icon_name("pan-end-symbolic");
+                    img.add_css_class("tree-expander-icon");
+                    if !collapsed_nodes.contains(&folder.path) {
+                        img.add_css_class("open");
+                    }
+                    img.set_pixel_size(12);
+                    let btn = gtk::Button::new();
+                    btn.set_child(Some(&img));
+                    btn.add_css_class("flat");
+                    btn.add_css_class("tree-expander");
+                    btn.set_valign(gtk::Align::Center);
+                    btn.set_tooltip_text(Some(i18n("Show or hide sub-folders").as_str()));
+                    let st = sender.input_sender().clone();
+                    let path = folder.path.clone();
+                    btn.connect_clicked(move |_| {
+                        let _ = st.send(SidebarInput::ToggleFolderNode { account_id: id, path: path.clone() });
+                    });
+                    self.tree_chevrons.insert((id, folder.path.clone()), img);
+                    Some(btn.upcast())
+                } else {
+                    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+                    spacer.set_width_request(TREE_EXPANDER_WIDTH);
+                    Some(spacer.upcast())
+                };
+                let depth = if nested { folder_depth(folder, &inside) + 1 } else { 0 };
                 let (row, badge) =
-                    build_folder_row(folder, self.collapsed, 0, None, self.chevrons_left, icon);
-                // The main folders can be put in another order among
-                // themselves; where they sit on the server is not theirs to
-                // change.
-                if !self.collapsed && essential.len() > 1 {
+                    build_folder_row(folder, self.collapsed, depth, lead.as_ref(), self.chevrons_left, icon);
+                if nested {
+                    // Hidden while the Inbox or a parent is folded, as in
+                    // the Folders section.
+                    let hidden = hidden_by_collapse(&folder.path, &collapsed_nodes);
+                    if let Some(content) = row.child() {
+                        row.set_child(gtk::Widget::NONE);
+                        let rev = gtk::Revealer::new();
+                        rev.set_transition_type(gtk::RevealerTransitionType::SlideDown);
+                        rev.set_transition_duration(0);
+                        rev.set_child(Some(&content));
+                        rev.set_reveal_child(!hidden);
+                        row.set_child(Some(&rev));
+                        self.main_row_revealers.entry(id).or_default().insert(index, rev);
+                    }
+                    row.set_visible(!hidden);
+                    if !self.collapsed {
+                        let payload = format!("vireo-folder\t{id}\t{}", folder.path);
+                        row.add_controller(folder_drag_source(&row, payload));
+                    }
+                } else if !self.collapsed && essential.len() > 1 {
+                    // The main folders can be put in another order among
+                    // themselves; where they sit on the server is not
+                    // theirs to change.
                     let payload = format!("vireo-folder-main\t{id}\t{}", folder.path);
                     row.add_controller(folder_drag_source(&row, payload));
                 }
@@ -2461,10 +2532,12 @@ impl Sidebar {
                 &list_line,
                 id,
                 essential.iter().map(|f| (*f).clone()).collect(),
-                Vec::new(),
+                // The folders inside the Inbox take folders dropped on them.
+                inside.iter().map(|f| f.path.clone()).collect(),
                 section.hierarchy.clone(),
                 sender,
             );
+            self.main_folders.insert(id, essential.iter().map(|f| (*f).clone()).collect());
             attach_folder_context_menu(
                 &list,
                 id,
@@ -2486,8 +2559,6 @@ impl Sidebar {
             });
             let mut folders_heading: Option<gtk::Widget> = None;
             if !custom.is_empty() {
-                let collapsed_nodes =
-                    self.tree_collapsed.get(&id).cloned().unwrap_or_default();
                 for folder in &custom {
                     let depth = folder_depth(folder, &custom);
                     // The expander slot (#51): a chevron for folders with
@@ -2805,6 +2876,59 @@ impl Sidebar {
                         }
                     },
                 );
+            }
+        }
+        self.restyle_seen();
+    }
+
+    /// Grey the unread counts of mail already looked at (#343): a chip is
+    /// "seen" unless one of the folders it counts has mail new since. With
+    /// the setting off, none is.
+    fn restyle_seen(&self) {
+        let seen = |keys: &mut dyn Iterator<Item = &(u32, u32)>| match &self.fresh {
+            None => false,
+            Some(fresh) => {
+                for k in keys {
+                    if fresh.contains(k) {
+                        return false;
+                    }
+                }
+                true
+            }
+        };
+        let mark = |label: &gtk::Label, on: bool| {
+            if on {
+                label.add_css_class("seen");
+            } else {
+                label.remove_css_class("seen");
+            }
+        };
+        for (key, label) in self
+            .folder_badges
+            .iter()
+            .chain(&self.unified_inbox_badges)
+            .chain(self.filtered_badges.values().flatten())
+            .chain(self.kind_widgets.values().flat_map(|w| &w.row_badges))
+        {
+            mark(label, seen(&mut std::iter::once(key)));
+        }
+        if let Some(label) = &self.unified_badge {
+            mark(label, seen(&mut self.unified_inbox_badges.keys()));
+        }
+        for (slot, badges) in &self.filtered_badges {
+            if let Some(b) = self.filtered_sections.get(slot).and_then(|w| w.badge.as_ref()) {
+                mark(b, seen(&mut badges.keys()));
+            }
+        }
+        for w in self.kind_widgets.values() {
+            if let Some(b) = &w.badge {
+                mark(b, seen(&mut w.row_badges.keys()));
+            }
+        }
+        for section in &self.sections {
+            if let Some(label) = self.account_circle_badges.get(&section.account.id) {
+                let inbox = section.folders.iter().find(|f| f.kind == FolderKind::Inbox).map(|f| (section.account.id, f.id));
+                mark(label, seen(&mut inbox.iter()));
             }
         }
     }
@@ -4083,7 +4207,10 @@ impl Sidebar {
         self.sections
             .iter()
             .find(|s| s.account.id == account_id)
-            .map(|s| s.folders.iter().filter(|f| f.kind != FolderKind::Custom).count())
+            .map(|s| {
+                let nest = nests_in_inbox(&s.folders);
+                s.folders.iter().filter(|f| is_main_row(f, nest)).count()
+            })
             .unwrap_or(0)
     }
 
@@ -4726,6 +4853,7 @@ pub(crate) fn order_folders(
     sort: crate::config::FolderSort,
 ) -> Vec<Folder> {
     use crate::config::FolderSort;
+    let nest = nests_in_inbox(&folders);
     let rank = |f: &Folder| order.iter().position(|p| *p == f.path);
     let (main, custom): (Vec<Folder>, Vec<Folder>) =
         folders.into_iter().partition(|f| f.kind != FolderKind::Custom);
@@ -4768,13 +4896,25 @@ pub(crate) fn order_folders(
     let mut flat = Vec::with_capacity(custom.len());
     walk(None, &custom, &parents, &sort, &mut flat);
 
+    // The folders inside the Inbox follow it (#345), in their tree order;
+    // the rest of the tree comes after the main folders.
+    let (inside, outside): (Vec<usize>, Vec<usize>) =
+        flat.into_iter().partition(|&i| nest && under_inbox(&custom[i].path));
     let mut main_slots: Vec<Option<Folder>> = main.into_iter().map(Some).collect();
     let mut custom_slots: Vec<Option<Folder>> = custom.into_iter().map(Some).collect();
-    main_order
-        .into_iter()
-        .filter_map(|i| main_slots[i].take())
-        .chain(flat.into_iter().filter_map(|i| custom_slots[i].take()))
-        .collect()
+    let mut out = Vec::with_capacity(main_slots.len() + custom_slots.len());
+    let mut placed = inside.is_empty();
+    for i in main_order {
+        let Some(f) = main_slots[i].take() else { continue };
+        let inbox = f.kind == FolderKind::Inbox;
+        out.push(f);
+        if inbox && !placed {
+            out.extend(inside.iter().filter_map(|&j| custom_slots[j].take()));
+            placed = true;
+        }
+    }
+    out.extend(inside.iter().chain(&outside).filter_map(|&j| custom_slots[j].take()));
+    out
 }
 
 /// One run of siblings in order: those with a `rank` (their place in the
@@ -4822,6 +4962,55 @@ impl Sidebar {
 }
 
 /// Whether a folder row is hidden because some ancestor node is collapsed.
+/// Show a tree row and slide its content open, or slide it closed and
+/// drop the row once the animation is done: an empty visible row still
+/// paints its chrome. The drop is skipped if it was re-expanded meanwhile.
+fn slide_tree_row(row: &gtk::ListBoxRow, rev: &gtk::Revealer, hidden: bool) {
+    if !hidden {
+        row.set_visible(true);
+        rev.set_reveal_child(true);
+    } else if row.get_visible() {
+        rev.set_reveal_child(false);
+        let row = row.clone();
+        let rev = rev.clone();
+        gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(220), move || {
+            if !rev.reveals_child() {
+                row.set_visible(false);
+            }
+        });
+    }
+}
+
+/// Whether `path` is inside the Inbox: `INBOX`, then a separator (#345).
+fn under_inbox(path: &str) -> bool {
+    path.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("INBOX"))
+        && matches!(path.as_bytes().get(5), Some(b'/' | b'.' | b'\\'))
+}
+
+/// Whether an account lists the folders inside its Inbox under the Inbox
+/// row (#345), as Roundcube and Apple Mail do. Only when it has folders
+/// outside the Inbox too: a server that puts every folder inside it (an
+/// `INBOX.` namespace, as on Courier and older Dovecot) keeps them at the
+/// top of the Folders section, where they always were.
+pub(crate) fn nests_in_inbox(folders: &[Folder]) -> bool {
+    let mut custom = folders.iter().filter(|f| f.kind == FolderKind::Custom);
+    let (mut inside, mut outside) = (false, false);
+    for f in custom.by_ref() {
+        if under_inbox(&f.path) {
+            inside = true;
+        } else {
+            outside = true;
+        }
+    }
+    inside && outside
+}
+
+/// A folder listed with the main folders: a main folder, or, when the
+/// account nests them, one inside the Inbox.
+pub(crate) fn is_main_row(f: &Folder, nest: bool) -> bool {
+    f.kind != FolderKind::Custom || (nest && under_inbox(&f.path))
+}
+
 fn hidden_by_collapse(
     path: &str,
     collapsed: &std::collections::HashSet<String>,
@@ -5185,7 +5374,7 @@ mod tests {
     use super::folder_depth;
     use super::hidden_by_collapse;
     use super::parse_move_payload;
-    use super::{folder_drop_zone, order_folders, placed_run, FolderDrop, Hierarchy};
+    use super::{folder_drop_zone, is_main_row, nests_in_inbox, order_folders, placed_run, under_inbox, FolderDrop, Hierarchy};
     use crate::config::FolderSort;
     use crate::models::{Folder, FolderKind};
 
@@ -5364,6 +5553,39 @@ mod tests {
                 "Folder 1", "Folder 2", "Test 3", "Test 2", "Trash",
             ]
         );
+    }
+
+    /// #345: folders inside the Inbox follow it, in their tree, when the
+    /// account has folders outside it too; with every folder inside it (an
+    /// `INBOX.` namespace) nothing moves.
+    #[test]
+    fn folders_inside_the_inbox_follow_it() {
+        let main = |id: u32, path: &str, kind: FolderKind| Folder { kind, ..custom(id, path) };
+        let mixed = vec![
+            main(1, "INBOX", FolderKind::Inbox),
+            main(2, "Sent", FolderKind::Sent),
+            custom(3, "Archiv"),
+            custom(4, "INBOX.Ablage"),
+            custom(5, "INBOX.Mailinglisten"),
+            custom(6, "INBOX.Mailinglisten.KiCad"),
+        ];
+        assert!(nests_in_inbox(&mixed));
+        let shown = order_folders(mixed.clone(), &[], FolderSort::Custom);
+        assert_eq!(
+            paths(&shown),
+            ["INBOX", "INBOX.Ablage", "INBOX.Mailinglisten", "INBOX.Mailinglisten.KiCad", "Sent", "Archiv"]
+        );
+        assert_eq!(shown.iter().filter(|f| is_main_row(f, true)).count(), 5);
+
+        let namespaced = vec![
+            main(1, "INBOX", FolderKind::Inbox),
+            custom(2, "INBOX.Ablage"),
+            custom(3, "INBOX.Archiv"),
+        ];
+        assert!(!nests_in_inbox(&namespaced));
+        assert_eq!(paths(&order_folders(namespaced, &[], FolderSort::Custom)), ["INBOX", "INBOX.Ablage", "INBOX.Archiv"]);
+        // "INBOXES" is not inside the Inbox.
+        assert!(!under_inbox("INBOXES") && under_inbox("inbox/x") && !under_inbox("INBOX"));
     }
 
     fn gmail() -> Hierarchy {

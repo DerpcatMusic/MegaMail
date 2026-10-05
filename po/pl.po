@@ -1516,8 +1516,28 @@ msgstr "Adres URL tokena"
 msgid "Scopes (space-separated)"
 msgstr "Zakresy (rozdzielone spacjami)"
 
+msgid "Advanced"
+msgstr ""
+
+msgid "Sign in with another app registration"
+msgstr ""
+
+#, fuzzy
+msgid "Client ID"
+msgstr "Identyfikator klienta OAuth"
+
+msgid "Tenant (common, organizations, consumers or an ID)"
+msgstr ""
+
+msgid "Redirect URI"
+msgstr ""
+
 msgid "Sign In with Browser"
 msgstr "Zaloguj się w przeglądarce"
+
+#, fuzzy
+msgid "Sign In"
+msgstr "Podpis"
 
 msgid ""
 "Google and Microsoft sign-in use GNOME Online Accounts.\n"
@@ -1802,6 +1822,10 @@ msgid "Enter a client ID (and endpoints for a custom provider) first"
 msgstr ""
 "Najpierw wprowadź identyfikator klienta (oraz punkty końcowe w przypadku "
 "własnego dostawcy)"
+
+#, fuzzy
+msgid "Complete the sign-in in the window that opened."
+msgstr "Nie udało się zapisać danych logowania w bazie kluczy: {e}"
 
 msgid "Opening browser… complete sign-in there."
 msgstr "Otwieranie przeglądarki… Dokończ w niej logowanie."
@@ -2829,6 +2853,12 @@ msgstr "Więcej"
 msgid "Show Cc, Bcc and Reply-To"
 msgstr "Wyświetl pola „DW”, „UDW” i „Odpowiedź do”"
 
+msgid "Type a From address"
+msgstr ""
+
+msgid "Choose from your addresses"
+msgstr ""
+
 msgid "Not signed in"
 msgstr "Nie zalogowano"
 
@@ -2856,6 +2886,14 @@ msgstr "Usuń {name}"
 
 msgid "Typing"
 msgstr "Pisanie"
+
+#, fuzzy
+msgid "Show Original"
+msgstr "Wyświetl odbiorców"
+
+#, fuzzy
+msgid "Show Translation"
+msgstr "Wyświetl rozmowę"
 
 #, fuzzy
 msgid "{language} (the quoted message)"
@@ -2896,6 +2934,16 @@ msgstr ""
 
 msgid "Cannot send with OpenPGP"
 msgstr "Nie można wysłać wiadomości z użyciem OpenPGP"
+
+#, fuzzy
+msgid "Check the From address"
+msgstr "DMARC (czy adres „Od” jest prawdziwy)"
+
+msgid "The From has to be one address, such as Ann <ann@example.com>."
+msgstr ""
+
+msgid "“{address}” is not an email address."
+msgstr ""
 
 msgid "{name} (link)"
 msgstr "{name} (odnośnik)"
@@ -3360,16 +3408,8 @@ msgid "Translated by {service}."
 msgstr "Tłumacze"
 
 #, fuzzy
-msgid "Show Original"
-msgstr "Wyświetl odbiorców"
-
-#, fuzzy
 msgid "Showing the original."
 msgstr "Wyświetlana po najechaniu kursorem"
-
-#, fuzzy
-msgid "Show Translation"
-msgstr "Wyświetl rozmowę"
 
 #, fuzzy
 msgid "This message is in {language}."
@@ -4456,6 +4496,14 @@ msgstr ""
 "stanie. Po wyłączeniu każde uruchomienie zaczyna się z pełnym panelem "
 "bocznym."
 
+msgid "Highlight only new unread mail"
+msgstr ""
+
+msgid ""
+"A folder's unread count is in the accent color while mail has arrived since "
+"you last looked at it, and grey once you have, however much is still unread."
+msgstr ""
+
 msgid "Unified"
 msgstr "Widoki zbiorcze"
 
@@ -4612,9 +4660,8 @@ msgid "Layout"
 msgstr ""
 
 msgid ""
-"Each message on lines of its own, or on one line in columns. Automatic uses "
-"one line while the list is dragged wide and lines of their own when it is "
-"narrow."
+"Cards or single lines. Automatic shows cards at narrow widths and single "
+"lines in columns at wider widths."
 msgstr ""
 
 msgid "Preview lines"
@@ -4697,7 +4744,7 @@ msgid "Columns"
 msgstr ""
 
 msgid ""
-"What a message shows when the list is on one line, from left to right. Drag "
+"What a message shows when the layout is displayed in one line format. Drag "
 "the columns into the order you want, or out of the list. The subject always "
 "stays. Due Date appears only in lists with Microsoft 365 mail. Changes apply "
 "at once."
@@ -4754,8 +4801,8 @@ msgid "Fold earlier messages"
 msgstr "Znajdź w wiadomości"
 
 msgid ""
-"Which messages of a conversation open folded to one line. The newest always "
-"opens, and a click on a folded message opens it."
+"Which messages of a conversation open folded to their sender and first "
+"lines. The newest always opens, and a click on a folded message opens it."
 msgstr ""
 
 msgid "Show your own replies in the message list"
@@ -5699,6 +5746,9 @@ msgstr "Opróżnij katalog spamu…"
 msgid "Edit Tag…"
 msgstr "Modyfikuj etykietę…"
 
+msgid "The sign-in window was closed."
+msgstr ""
+
 msgid "Welcome to Hylki"
 msgstr "Witamy w aplikacji Hylki"
 
@@ -5995,8 +6045,8 @@ msgstr "Nie udało się usunąć katalogu: {e}"
 msgid "Saving draft…"
 msgstr "Zapisywanie szkicu…"
 
-msgid "Could not save draft: {e}"
-msgstr "Nie udało się zapisać szkicu: {e}"
+msgid "Could not reach the server"
+msgstr "Nie udało się połączyć z serwerem"
 
 msgid "Sending…"
 msgstr "Wysyłanie…"
@@ -6025,11 +6075,9 @@ msgstr ""
 msgid "Could not reach the JMAP server: {e}"
 msgstr "Nie udało się połączyć z serwerem JMAP: {e}"
 
-msgid "Could not save draft: unknown folder"
-msgstr "Nie udało się zapisać szkicu: nieznany katalog"
-
-msgid "Could not reach the server"
-msgstr "Nie udało się połączyć z serwerem"
+#, fuzzy
+msgid "unknown folder"
+msgstr "Wyświetl poszczególne katalogi"
 
 msgid "That folder is not on the server"
 msgstr "Tego katalogu nie ma na serwerze"
@@ -6126,6 +6174,9 @@ msgstr "Wiadomość „{subject}” zostanie wysłana {when}"
 #, fuzzy
 msgid "Could not schedule the message."
 msgstr "Nie udało się usunąć wiadomości: {e}"
+
+msgid "Could not save draft: {e}"
+msgstr "Nie udało się zapisać szkicu: {e}"
 
 msgid ""
 "no OpenPGP key of your own for {addr}; generate one under Settings, OpenPGP"
@@ -6289,6 +6340,9 @@ msgstr "Zbiorcza skrzynka odbiorcza w jasnym motywie"
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid "Could not save draft: unknown folder"
+#~ msgstr "Nie udało się zapisać szkicu: nieznany katalog"
 
 #~ msgid ""
 #~ "Could not schedule the message: there is no local store to keep it in."

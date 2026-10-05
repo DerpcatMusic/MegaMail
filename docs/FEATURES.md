@@ -17,6 +17,9 @@ The full list. The [README](../README.md) carries a shorter one.
   service in GNOME Settings pauses it here.
 - **Per-alias SMTP:** each address on an account can send through its own
   server and credentials.
+- **Any From address:** type a name and address for one message, such as a
+  `+tag` address, and replies to a `+tag` address answer from it. A JMAP
+  server's own identities are offered too.
 - **Proton Bridge, Zimbra, iCloud, Mailfence and other awkward servers:**
   STARTTLS with locally signed certificates, a certificate in the hosting
   company's name rather than yours, servers without MOVE, and non-compliant
@@ -106,9 +109,9 @@ The full list. The [README](../README.md) carries a shorter one.
 - **Meeting invitations:** what the meeting is, when it runs in your own
   clock and time zone, where it is and who organised it, with Accept, Maybe,
   Decline and Add to Calendar.
-- **Folding conversations:** a click on a message's header folds it to a
-  single line, and earlier messages can start folded, so a long
-  conversation opens on what is new.
+- **Folding conversations:** a click on a message's header folds it to its
+  sender and first lines, and earlier messages can start folded, so
+  a long conversation opens on what is new.
 - **Translation:** with a DeepL, Google, Microsoft or LibreTranslate key of
   your own, a message is translated in place, and switched back to the
   original with a click. A message in another language can offer it; the

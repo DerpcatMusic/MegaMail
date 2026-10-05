@@ -1378,7 +1378,25 @@ msgstr ""
 msgid "Scopes (space-separated)"
 msgstr ""
 
+msgid "Advanced"
+msgstr ""
+
+msgid "Sign in with another app registration"
+msgstr ""
+
+msgid "Client ID"
+msgstr ""
+
+msgid "Tenant (common, organizations, consumers or an ID)"
+msgstr ""
+
+msgid "Redirect URI"
+msgstr ""
+
 msgid "Sign In with Browser"
+msgstr ""
+
+msgid "Sign In"
 msgstr ""
 
 msgid ""
@@ -1613,6 +1631,9 @@ msgid "Testing…"
 msgstr ""
 
 msgid "Enter a client ID (and endpoints for a custom provider) first"
+msgstr ""
+
+msgid "Complete the sign-in in the window that opened."
 msgstr ""
 
 msgid "Opening browser… complete sign-in there."
@@ -2528,6 +2549,12 @@ msgstr ""
 msgid "Show Cc, Bcc and Reply-To"
 msgstr ""
 
+msgid "Type a From address"
+msgstr ""
+
+msgid "Choose from your addresses"
+msgstr ""
+
 msgid "Not signed in"
 msgstr ""
 
@@ -2552,6 +2579,12 @@ msgid "Remove {name}"
 msgstr ""
 
 msgid "Typing"
+msgstr ""
+
+msgid "Show Original"
+msgstr ""
+
+msgid "Show Translation"
 msgstr ""
 
 msgid "{language} (the quoted message)"
@@ -2585,6 +2618,15 @@ msgid ""
 msgstr ""
 
 msgid "Cannot send with OpenPGP"
+msgstr ""
+
+msgid "Check the From address"
+msgstr ""
+
+msgid "The From has to be one address, such as Ann <ann@example.com>."
+msgstr ""
+
+msgid "“{address}” is not an email address."
 msgstr ""
 
 msgid "{name} (link)"
@@ -3007,13 +3049,7 @@ msgstr ""
 msgid "Translated by {service}."
 msgstr ""
 
-msgid "Show Original"
-msgstr ""
-
 msgid "Showing the original."
-msgstr ""
-
-msgid "Show Translation"
 msgstr ""
 
 msgid "This message is in {language}."
@@ -3968,6 +4004,14 @@ msgid ""
 "the full sidebar."
 msgstr ""
 
+msgid "Highlight only new unread mail"
+msgstr ""
+
+msgid ""
+"A folder's unread count is in the accent color while mail has arrived since "
+"you last looked at it, and grey once you have, however much is still unread."
+msgstr ""
+
 msgid "Unified"
 msgstr ""
 
@@ -4093,9 +4137,8 @@ msgid "Layout"
 msgstr ""
 
 msgid ""
-"Each message on lines of its own, or on one line in columns. Automatic uses "
-"one line while the list is dragged wide and lines of their own when it is "
-"narrow."
+"Cards or single lines. Automatic shows cards at narrow widths and single "
+"lines in columns at wider widths."
 msgstr ""
 
 msgid "Preview lines"
@@ -4160,7 +4203,7 @@ msgid "Columns"
 msgstr ""
 
 msgid ""
-"What a message shows when the list is on one line, from left to right. Drag "
+"What a message shows when the layout is displayed in one line format. Drag "
 "the columns into the order you want, or out of the list. The subject always "
 "stays. Due Date appears only in lists with Microsoft 365 mail. Changes apply "
 "at once."
@@ -4209,8 +4252,8 @@ msgid "Fold earlier messages"
 msgstr ""
 
 msgid ""
-"Which messages of a conversation open folded to one line. The newest always "
-"opens, and a click on a folded message opens it."
+"Which messages of a conversation open folded to their sender and first "
+"lines. The newest always opens, and a click on a folded message opens it."
 msgstr ""
 
 msgid "Show your own replies in the message list"
@@ -5016,6 +5059,9 @@ msgstr ""
 msgid "Edit Tag…"
 msgstr ""
 
+msgid "The sign-in window was closed."
+msgstr ""
+
 msgid "Welcome to Hylki"
 msgstr ""
 
@@ -5288,7 +5334,7 @@ msgstr ""
 msgid "Saving draft…"
 msgstr ""
 
-msgid "Could not save draft: {e}"
+msgid "Could not reach the server"
 msgstr ""
 
 msgid "Sending…"
@@ -5318,10 +5364,7 @@ msgstr ""
 msgid "Could not reach the JMAP server: {e}"
 msgstr ""
 
-msgid "Could not save draft: unknown folder"
-msgstr ""
-
-msgid "Could not reach the server"
+msgid "unknown folder"
 msgstr ""
 
 msgid "That folder is not on the server"
@@ -5406,6 +5449,9 @@ msgid "“{subject}” will be sent {when}"
 msgstr ""
 
 msgid "Could not schedule the message."
+msgstr ""
+
+msgid "Could not save draft: {e}"
 msgstr ""
 
 msgid ""

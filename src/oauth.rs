@@ -216,6 +216,51 @@ pub fn preset(provider: &str) -> Option<Preset> {
     }
 }
 
+/// Hylki's Microsoft sign-in made with another app registration (#329):
+/// its client ID, its tenant (`common`, `organizations`, `consumers`, a
+/// directory ID or domain), its scopes and its redirect. Empty values keep
+/// what `settings` has. Scopes are Graph's short names, as Evolution lists
+/// them; `offline_access` is added when missing, or no refresh token comes
+/// back.
+pub fn microsoft_advanced(settings: &mut OAuthSettings, client_id: &str, tenant: &str, scopes: &str, redirect: &str) {
+    if !client_id.is_empty() {
+        settings.client_id = client_id.to_string();
+    }
+    let tenant = tenant.trim().trim_matches('/');
+    if !tenant.is_empty() && !tenant.contains(['/', '?', '#', ' ']) {
+        settings.auth_url = settings.auth_url.replacen("/common/", &format!("/{tenant}/"), 1);
+        settings.token_url = settings.token_url.replacen("/common/", &format!("/{tenant}/"), 1);
+    }
+    if !scopes.trim().is_empty() {
+        let mut list: Vec<&str> = scopes.split_whitespace().collect();
+        if !list.iter().any(|s| s.eq_ignore_ascii_case("offline_access")) {
+            list.push("offline_access");
+        }
+        settings.scopes = list.join(" ");
+    }
+    settings.redirect_uri = redirect.trim().to_string();
+}
+
+/// [`microsoft_advanced`] read back from a saved account's settings, for
+/// the form: `(client_id, tenant, scopes, redirect)`, each empty where it
+/// is Hylki's own.
+pub fn microsoft_advanced_of(settings: &OAuthSettings) -> (String, String, String, String) {
+    let Some(p) = preset("microsoft") else { return Default::default() };
+    if !settings.token_url.contains("microsoftonline") {
+        return Default::default();
+    }
+    let client = if settings.client_id == MICROSOFT_CLIENT_ID { String::new() } else { settings.client_id.clone() };
+    let tenant = settings
+        .auth_url
+        .strip_prefix("https://login.microsoftonline.com/")
+        .and_then(|rest| rest.split('/').next())
+        .filter(|t| *t != "common")
+        .unwrap_or_default()
+        .to_string();
+    let scopes = if settings.scopes == p.scopes { String::new() } else { settings.scopes.clone() };
+    (client, tenant, scopes, settings.redirect_uri.clone())
+}
+
 /// Resolve a provider's OAuth client credentials `(client_id, client_secret)`,
 /// preferring the user's own over the built-in fallback. Order:
 ///   1. Environment: `HYLKI_GOOGLE_CLIENT_ID` / `HYLKI_GOOGLE_CLIENT_SECRET`
@@ -394,45 +439,88 @@ pub fn run_flow(settings: &OAuthSettings) -> Result<FlowResult, String> {
         "&access_type=offline&prompt=consent"
     };
 
-    // PKCE S256 (RFC 7636 §4.2). With `plain` the challenge *is* the verifier, so
-    // anyone who gets to read the authorization URL — browser history, an
-    // extension, another local process — can redeem a stolen code, which is the
-    // one thing PKCE exists to prevent. RFC 8252 requires S256 of any client that
-    // can compute SHA-256.
-    let entropy = |e| format!("no secure randomness available: {e}");
-    let verifier = crate::rng::token(64).map_err(entropy)?;
-    let state = crate::rng::token(24).map_err(entropy)?;
-    let challenge = pkce_challenge(&verifier);
-    let auth_url = format!(
-        "{base}?response_type=code&client_id={cid}&redirect_uri={redir}&scope={scope}\
-         &code_challenge={chal}&code_challenge_method=S256&state={state}{offline}",
-        base = settings.auth_url,
-        cid = crate::percent::encode(&settings.client_id),
-        redir = crate::percent::encode(&redirect),
-        scope = crate::percent::encode(&settings.scopes),
-        chal = crate::percent::encode(&challenge),
-        state = crate::percent::encode(&state),
-    );
+    let request = Authorization::new(settings, &redirect, offline)?;
 
     // Open the system browser (via the OpenURI portal, so it works in a Flatpak).
-    open_uri(&auth_url);
+    open_uri(&request.url);
 
     // Wait for the redirect (with a timeout so a cancelled sign-in doesn't hang).
-    let code = wait_for_code(&listener, &state).map_err(|e| {
+    let code = wait_for_code(&listener, &request.state).map_err(|e| {
         if microsoft {
             explain_microsoft_refusal(settings, e)
         } else {
             e
         }
     })?;
+    exchange_code(settings, &request, &code)
+}
 
-    // Exchange the code for tokens.
+/// One authorization request: the address to open, and what checks and
+/// redeems its answer.
+pub struct Authorization {
+    pub url: String,
+    pub redirect: String,
+    pub state: String,
+    verifier: String,
+}
+
+impl Authorization {
+    /// `extra` is appended to the query as it is ("&prompt=…").
+    pub fn new(settings: &OAuthSettings, redirect: &str, extra: &str) -> Result<Self, String> {
+        // PKCE S256 (RFC 7636 §4.2). With `plain` the challenge *is* the verifier, so
+        // anyone who gets to read the authorization URL — browser history, an
+        // extension, another local process — can redeem a stolen code, which is the
+        // one thing PKCE exists to prevent. RFC 8252 requires S256 of any client that
+        // can compute SHA-256.
+        let entropy = |e| format!("no secure randomness available: {e}");
+        let verifier = crate::rng::token(64).map_err(entropy)?;
+        let state = crate::rng::token(24).map_err(entropy)?;
+        let challenge = pkce_challenge(&verifier);
+        let url = format!(
+            "{base}?response_type=code&client_id={cid}&redirect_uri={redir}&scope={scope}\
+             &code_challenge={chal}&code_challenge_method=S256&state={st}{extra}",
+            base = settings.auth_url,
+            cid = crate::percent::encode(&settings.client_id),
+            redir = crate::percent::encode(redirect),
+            scope = crate::percent::encode(&settings.scopes),
+            chal = crate::percent::encode(&challenge),
+            st = crate::percent::encode(&state),
+        );
+        Ok(Self { url, redirect: redirect.to_string(), state, verifier })
+    }
+
+    /// For a sign-in in Hylki's own window (#329): the code a navigation
+    /// to `uri` carries, `None` while it is not the redirect, or the
+    /// provider's refusal.
+    pub fn answer(&self, uri: &str, settings: &OAuthSettings) -> Option<Result<String, String>> {
+        let rest = uri.strip_prefix(self.redirect.as_str())?;
+        if !(rest.is_empty() || rest.starts_with('?') || rest.starts_with('#')) {
+            return None;
+        }
+        let line = format!("GET /{rest} HTTP/1.1");
+        let (code, state) = parse_redirect(&line);
+        Some(match code {
+            Some(code) if state.as_deref() == Some(self.state.as_str()) => Ok(code),
+            Some(_) => Err("sign-in state mismatch (possible CSRF)".into()),
+            None => Err(match redirect_error(&line) {
+                Some((error, description)) => {
+                    let first = description.lines().next().unwrap_or("").trim().to_string();
+                    explain_microsoft_refusal(settings, if first.is_empty() { error } else { first })
+                }
+                None => "no authorization code returned".into(),
+            }),
+        })
+    }
+}
+
+/// Redeem an authorization code for the refresh token (blocking).
+pub fn exchange_code(settings: &OAuthSettings, request: &Authorization, code: &str) -> Result<FlowResult, String> {
     let mut form: Vec<(&str, &str)> = vec![
         ("grant_type", "authorization_code"),
-        ("code", &code),
-        ("redirect_uri", &redirect),
+        ("code", code),
+        ("redirect_uri", &request.redirect),
         ("client_id", &settings.client_id),
-        ("code_verifier", &verifier),
+        ("code_verifier", &request.verifier),
     ];
     if !settings.client_secret.is_empty() {
         form.push(("client_secret", &settings.client_secret));
@@ -666,6 +754,42 @@ fn pkce_challenge(verifier: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// #329: Evolution's app registration, typed into the Advanced rows.
+    #[test]
+    fn microsoft_advanced_rows_make_the_sign_in() {
+        let p = preset("microsoft").unwrap();
+        let mut s = OAuthSettings {
+            auth_url: p.auth_url.into(),
+            token_url: p.token_url.into(),
+            client_id: MICROSOFT_CLIENT_ID.into(),
+            scopes: p.scopes.into(),
+            ..Default::default()
+        };
+        assert_eq!(microsoft_advanced_of(&s), Default::default());
+        microsoft_advanced(
+            &mut s,
+            "20460e5d-ce91-49af-a3a5-70b6be7486d1",
+            "organizations",
+            "Mail.ReadWrite Mail.Send User.Read",
+            "https://login.microsoftonline.com/common/oauth2/nativeclient",
+        );
+        assert_eq!(s.client_id, "20460e5d-ce91-49af-a3a5-70b6be7486d1");
+        assert_eq!(s.auth_url, "https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize");
+        assert_eq!(s.token_url, "https://login.microsoftonline.com/organizations/oauth2/v2.0/token");
+        assert_eq!(s.scopes, "Mail.ReadWrite Mail.Send User.Read offline_access");
+        let back = microsoft_advanced_of(&s);
+        assert_eq!(back.1, "organizations");
+        assert_eq!(back.3, "https://login.microsoftonline.com/common/oauth2/nativeclient");
+        // The redirect is caught, with its code and the request's state.
+        let req = Authorization::new(&s, &s.redirect_uri, "").unwrap();
+        assert!(req.url.contains("redirect_uri=https%3A%2F%2Flogin.microsoftonline.com"), "{}", req.url);
+        let ok = format!("{}?code=abc&state={}", s.redirect_uri, req.state);
+        assert_eq!(req.answer(&ok, &s), Some(Ok("abc".into())));
+        assert!(req.answer("https://login.microsoftonline.com/common/oauth2/v2.0/authorize?x", &s).is_none());
+        let refused = format!("{}?error=access_denied&error_description=AADSTS65004%3A+declined", s.redirect_uri);
+        assert!(matches!(req.answer(&refused, &s), Some(Err(_))));
+    }
 
     #[test]
     fn a_refused_redirect_says_why() {

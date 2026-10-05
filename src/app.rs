@@ -683,6 +683,12 @@ pub struct AppModel {
     tags_expanded_accounts: Vec<String>,
     /// Preference: the icon rail marks unread mail with a dot, not a count.
     rail_dots: bool,
+    /// Preference: unread counts are accented only for mail that came in
+    /// since the folder was last looked at (#343).
+    seen_counts: bool,
+    /// Each folder's unread count when last looked at, keyed as in
+    /// state.toml ("address␟path").
+    unread_seen: std::cell::RefCell<std::collections::BTreeMap<String, u32>>,
     /// Preference: the sections the icon rail folds up when the sidebar
     /// collapses.
     rail_fold: config::RailFold,
@@ -1028,6 +1034,15 @@ pub struct AppModel {
     showing_outbox: bool,
     /// Messages waiting to be sent, per account, as last reported by its worker.
     outbox_by_account: HashMap<u32, Vec<crate::models::OutboxItem>>,
+    /// The sending identities a JMAP server keeps, per account (#346):
+    /// offered as From addresses beside the account's own aliases.
+    server_identities: HashMap<u32, Vec<(String, String)>>,
+    /// A merge of the unified view is on its way (`queue_unified_emit`),
+    /// with new slices to merge, and new thread links to hand the list.
+    unified_emit_queued: std::cell::Cell<bool>,
+    unified_dirty: std::cell::Cell<bool>,
+    thread_links_due: std::cell::Cell<bool>,
+    unified_emitted_at: std::cell::Cell<std::time::Instant>,
     /// Gallery items per account inbox, merged for display.
     /// How many attachments the gallery's current query matches, carried
     /// between pages so only the first one pays for the COUNT.
@@ -1082,10 +1097,12 @@ pub struct AppModel {
     /// on the stack.
     undo_action: Option<RelmAction<UndoAction>>,
     redo_action: Option<RelmAction<RedoAction>>,
-    /// A draft awaiting its body before opening in the compose editor.
-    /// A draft whose body is being fetched before its editor opens, and
+    /// A draft whose content is being fetched before its editor opens, and
     /// whether that editor goes in the reading pane (true) or a window.
     pending_draft: Option<(Message, bool, HandOffFiles)>,
+    /// The `ExportRaw` token the pending draft's bytes come back under.
+    /// While it is set, the draft waits for those and not for its body.
+    pending_draft_token: Option<u64>,
     /// A message whose body is being fetched so a reply to it can open with
     /// handed-in files (Send with Hylki → Reply to a Message…).
     pending_reply: Option<(Message, HandOffFiles)>,
@@ -1595,7 +1612,17 @@ pub enum AppMsg {
     /// The composer's Delete Draft: trash the draft it was opened from and
     /// close that composer without saving.
     DeleteDraft { id: u32, origin: crate::models::DraftOrigin },
-    DraftSaved,
+    /// A draft is in the Drafts folder under `message_id` (`None`: an
+    /// automatic save that did not go through). `autosave` is the composer
+    /// that saved it on its own (#340).
+    DraftSaved { account_id: u32, autosave: Option<u32>, message_id: Option<String> },
+    /// Merge the unified view's slices now (see `queue_unified_emit`).
+    EmitUnified,
+    /// A composer saving its message on its own (#340).
+    AutoSaveDraft { id: u32, message: Box<OutgoingMessage> },
+    /// A new message saved only automatically was discarded: the saved copy
+    /// goes too, and the composer closes.
+    DiscardAutosave { id: u32, origin: crate::models::DraftOrigin },
     /// A composer (id) finished — tear down its host (window or inline revealer).
     ComposeClosed(u32),
     /// A composer window's close button: the composer decides, as for
@@ -1694,6 +1721,8 @@ pub enum AppMsg {
     /// The system resumed from sleep — worker IMAP sockets are stale, so
     /// reconnect every account and reload the visible folder.
     SystemResumed,
+    /// The dock may have dropped the launcher badge; send it again.
+    LauncherCountLost,
     /// The network came back after being down: the same reconnect as a wake.
     NetworkBack,
     /// Open the settings window on the user's preferred view (the menu entry).
@@ -1707,6 +1736,8 @@ pub enum AppMsg {
     SettingsLeaveEditor { page: String, ask: bool },
     // Worker events (each carries the account it came from)
     SetAccount(Account),
+    /// A JMAP server's sending identities for an account (#346).
+    ServerIdentities { account_id: u32, identities: Vec<(String, String)> },
     SetFolders { account_id: u32, folders: Vec<Folder> },
     Messages { account_id: u32, folder_id: u32, messages: Vec<Message> },
     /// Showcase: open filter rule `i` in the current Accounts panel.
@@ -3130,6 +3161,7 @@ impl SimpleComponent for AppModel {
             body_cache: crate::ram_cache::RamCache::new(BODY_CACHE_BUDGET),
             sender_cache: HashMap::new(),
             pending_draft: None,
+            pending_draft_token: None,
             pending_reply: None,
             pending_draft_pick: None,
             pending_edit_as_new: None,
@@ -3207,6 +3239,8 @@ impl SimpleComponent for AppModel {
             filtered_expanded_accounts,
             tags_expanded_accounts,
             rail_dots: prefs.rail_dots,
+            seen_counts: prefs.seen_counts,
+            unread_seen: std::cell::RefCell::new(config::load_unread_seen()),
             rail_fold: prefs.rail_fold,
             app_theme: prefs.app_theme,
             text_scale: config::load_text_scale(),
@@ -3379,6 +3413,11 @@ impl SimpleComponent for AppModel {
             showing_contacts: false,
             showing_outbox: false,
             outbox_by_account: HashMap::new(),
+            server_identities: HashMap::new(),
+            unified_emit_queued: std::cell::Cell::new(false),
+            unified_dirty: std::cell::Cell::new(false),
+            thread_links_due: std::cell::Cell::new(false),
+            unified_emitted_at: std::cell::Cell::new(std::time::Instant::now()),
             gallery_total: 0,
             gallery_scan_left: HashMap::new(),
         };
@@ -3435,6 +3474,13 @@ impl SimpleComponent for AppModel {
                 let _ = s.send(AppMsg::SystemResumed);
             }
         });
+        // A dock that has just (re)started holds no badge until we send it.
+        crate::launcher_badge::watch_dock({
+            let s = sender.input_sender().clone();
+            move || {
+                let _ = s.send(AppMsg::LauncherCountLost);
+            }
+        });
         crate::power::watch_network({
             let s = sender.input_sender().clone();
             move || {
@@ -3485,6 +3531,7 @@ impl SimpleComponent for AppModel {
             subject: model.list_show_subject(),
             animate: false,
         });
+        model.message_view.emit(MessageViewInput::SetFoldLook { preview_lines: model.list_preview_lines() });
         model.push_single_line();
         model.message_list.emit(MessageListInput::SetColumns(model.list_columns.clone()));
         model.message_list.emit(MessageListInput::SetHeadings(model.list_headings));
@@ -3802,9 +3849,13 @@ impl SimpleComponent for AppModel {
                 psender.input(AppMsg::PresentComposers);
             });
             app.add_action(&present_compose);
-            model.window.connect_is_active_notify(|w| {
+            let fsender = sender.clone();
+            model.window.connect_is_active_notify(move |w| {
                 if w.is_active() {
                     crate::notify::withdraw_compose_ready();
+                    // Focus comes back after an unlock, when the dock has
+                    // just been rebuilt without the badge.
+                    fsender.input(AppMsg::LauncherCountLost);
                 }
             });
 
@@ -5933,6 +5984,15 @@ impl SimpleComponent for AppModel {
                 }
             }
 
+            AppMsg::Pref(PrefOutput::SetSeenCounts(on)) => {
+                if pref!(self.seen_counts = on) {
+                    // What is unread now counts as looked at: only mail
+                    // from here on is new.
+                    self.unread_seen.borrow_mut().clear();
+                    self.push_unread_counts();
+                }
+            }
+
             AppMsg::Pref(PrefOutput::SetRailDots(on)) => {
                 if pref!(self.rail_dots = on) {
                     self.rebuild_sidebar();
@@ -6849,6 +6909,7 @@ impl SimpleComponent for AppModel {
             }
 
             AppMsg::Refresh => {
+                self.resend_launcher_count();
                 if self.unified {
                     let reqs = self.unified_targets();
                     for (account_id, folder_id, path) in reqs {
@@ -8616,17 +8677,7 @@ impl SimpleComponent for AppModel {
 
             AppMsg::SaveDraftMessage(out) => {
                 let account_id = out.from_account_id;
-                // Existing Drafts folder, else a default path (worker creates it).
-                let drafts = self
-                    .folders
-                    .get(&account_id)
-                    .and_then(|fs| fs.iter().find(|f| f.kind == FolderKind::Drafts))
-                    .map(|f| (f.id, f.path.clone()))
-                    .or_else(|| {
-                        self.default_folder_path(account_id, FolderKind::Drafts)
-                            .map(|p| (0, p))
-                    });
-                let Some((folder_id, path)) = drafts else {
+                let Some((folder_id, path)) = self.drafts_target(account_id) else {
                     self.notifications.emit(NotifyInput::Push {
                         text: i18n("No Drafts folder available for this account"),
                         error: true,
@@ -8634,7 +8685,34 @@ impl SimpleComponent for AppModel {
                     });
                     return;
                 };
-                self.send_to(account_id, MailRequest::SaveDraft { message: out, folder_id, path });
+                self.send_to(account_id, MailRequest::SaveDraft { message: out, folder_id, path, autosave: None });
+            }
+
+            AppMsg::EmitUnified => {
+                self.unified_emit_queued.set(false);
+                if self.thread_links_due.replace(false) {
+                    self.push_thread_links();
+                }
+                if self.unified && self.unified_dirty.replace(false) {
+                    self.emit_unified();
+                }
+            }
+
+            AppMsg::AutoSaveDraft { id, message } => {
+                let account_id = message.from_account_id;
+                match self.drafts_target(account_id) {
+                    Some((folder_id, path)) => self.send_to(
+                        account_id,
+                        MailRequest::SaveDraft { message, folder_id, path, autosave: Some(id) },
+                    ),
+                    None => self.emit_to_composer(id, ComposeInput::Autosaved { saved: false, origin: None }),
+                }
+            }
+
+            AppMsg::DiscardAutosave { id, origin } => {
+                self.purge_draft(&origin);
+                self.close_compose(id);
+                self.message_list.emit(MessageListInput::ReclaimFocus);
             }
 
             AppMsg::DeleteDraft { id, origin } => {
@@ -8665,13 +8743,27 @@ impl SimpleComponent for AppModel {
                     }
                 }
                 self.pending_draft = None;
+                self.pending_draft_token = None;
                 self.close_compose(id);
                 self.message_list.emit(MessageListInput::ReclaimFocus);
             }
 
-            AppMsg::DraftSaved => {
-                // The Drafts folder reload already reflects the saved draft; the
-                // compose window has closed. No notification (mirrors silent send).
+            AppMsg::DraftSaved { account_id, autosave, message_id } => {
+                // The Drafts folder reload already reflects the saved draft; an
+                // explicit save's composer has closed. No notification (mirrors
+                // silent send). An automatic save tells its composer where the
+                // copy is now, so the next save replaces it (#340).
+                let Some(id) = autosave else { return };
+                let origin = message_id.as_deref().and_then(|mid| self.find_draft(account_id, mid));
+                if !self.composer_exists(id) {
+                    // Sent, saved or closed while this save was on its way:
+                    // the copy it left is not wanted.
+                    if let Some(origin) = &origin {
+                        self.purge_draft(origin);
+                    }
+                    return;
+                }
+                self.emit_to_composer(id, ComposeInput::Autosaved { saved: message_id.is_some(), origin });
             }
 
             AppMsg::ShowcaseComposeClose => {
@@ -9461,6 +9553,9 @@ impl SimpleComponent for AppModel {
             }
 
             AppMsg::SystemResumed => {
+                // The dock may have come back from the lock screen without
+                // the badge; nothing else would send it again.
+                self.resend_launcher_count();
                 // logind and the clock check both report the same wake.
                 let now = std::time::Instant::now();
                 if self.last_wake.is_some_and(|t| now - t < std::time::Duration::from_secs(30)) {
@@ -9486,6 +9581,8 @@ impl SimpleComponent for AppModel {
             }
 
             AppMsg::NetworkBack => self.reconnect_workers(&sender),
+
+            AppMsg::LauncherCountLost => self.resend_launcher_count(),
 
             AppMsg::OpenSettings => {
                 // The "opens to" preference decides the first open of the
@@ -9560,6 +9657,10 @@ impl SimpleComponent for AppModel {
                         PrefInput::LeaveEditorTo(page)
                     });
                 }
+            }
+
+            AppMsg::ServerIdentities { account_id, identities } => {
+                self.server_identities.insert(account_id, identities);
             }
 
             AppMsg::SetAccount(account) => {
@@ -9785,6 +9886,20 @@ impl SimpleComponent for AppModel {
             }
 
             AppMsg::RawExported { token, raw } => {
+                if self.pending_draft_token == Some(token) {
+                    self.pending_draft_token = None;
+                    let Some((m, inline, extra)) = self.pending_draft.take() else { return };
+                    match raw {
+                        Ok(raw) => self.compose_from_draft_raw(m, &raw, inline, extra, &sender),
+                        // Offline, say: the body the reader has is still
+                        // better than nothing.
+                        Err(e) => {
+                            tracing::warn!("draft {} could not be fetched whole: {e}", m.uid);
+                            self.open_draft_body(m, inline, extra, &sender);
+                        }
+                    }
+                    return;
+                }
                 let Some(t) = self.transfers.get(&token) else { return };
                 match raw {
                     Ok(raw) => self.send_to(t.dest_account, MailRequest::ImportRaw {
@@ -10022,7 +10137,15 @@ impl SimpleComponent for AppModel {
                     // assembled, so what was stored is no longer necessarily
                     // the conversation.
                     self.forget_threads(account_id);
-                    self.push_thread_links();
+                    // In a unified view, with the next merge, once for a run
+                    // of answers; a folder's own list takes them now, in the
+                    // same pass as its messages.
+                    if self.unified {
+                        self.thread_links_due.set(true);
+                        self.queue_unified_emit(&sender);
+                    } else {
+                        self.push_thread_links();
+                    }
                     // A sync that brought in a reply also changed how big the
                     // conversations are; the badges have to be counted again
                     // rather than kept from before it (#222).
@@ -10066,7 +10189,11 @@ impl SimpleComponent for AppModel {
                                 .is_some_and(|s| *s == messages);
                         if !same_slice {
                             self.unified_slices.insert((account_id, folder_id), messages);
-                            self.emit_unified();
+                            // Accounts answer one after another, a large or
+                            // slow one in several goes: one merge for the lot
+                            // that lands together, not one each.
+                            self.unified_dirty.set(true);
+                            self.queue_unified_emit(&sender);
                         }
                     }
                 } else if let Some(sel) = self.selected.as_ref() {
@@ -10217,7 +10344,10 @@ impl SimpleComponent for AppModel {
                     self.body_cache.insert(k, body.clone());
                 }
                 // If this body was fetched to open a draft, open the editor now.
-                if let Some((pd, inline, extra)) = self.pending_draft.take() {
+                // One waiting for its bytes ignores a body the prefetch sent.
+                if let Some((pd, inline, extra)) =
+                    self.pending_draft.take_if(|_| self.pending_draft_token.is_none())
+                {
                     if pd.account_id == account_id && pd.id == message_id {
                         self.compose_from_draft(pd, body, inline, extra, &sender);
                         return;
@@ -11059,6 +11189,7 @@ impl AppModel {
             remember_sidebar: self.remember_sidebar,
             remember_rail: self.remember_rail,
             rail_dots: self.rail_dots,
+            seen_counts: self.seen_counts,
             rail_fold: self.rail_fold,
             app_theme: self.app_theme,
             text_scale: self.text_scale,
@@ -12766,12 +12897,53 @@ impl AppModel {
         self.sidebar_anim = Some(anim);
     }
 
+    /// The folders whose unread count has grown since they were last
+    /// looked at (#343). A folder on screen is being looked at, so its mark
+    /// follows its count; elsewhere the mark only comes down, as mail is
+    /// read. A folder never seen before starts with what it has, so turning
+    /// the setting on, or a new account, marks nothing.
+    fn fresh_unread(&self) -> HashSet<(u32, u32)> {
+        let on_screen = |a: u32, f: u32| {
+            self.window.is_visible()
+                && if self.unified {
+                    self.is_unified_target(a, f)
+                } else {
+                    self.selected.as_ref().is_some_and(|s| s.account_id == a && s.folder_id == f)
+                }
+        };
+        let mut seen = self.unread_seen.borrow_mut();
+        let mut changed = false;
+        let mut fresh = HashSet::new();
+        for (&(a, f), &n) in &self.folder_unread {
+            let (Some(email), Some(path)) = (self.email_of(a), self.folder_path(a, f)) else { continue };
+            let key = format!("{email}\u{1f}{path}");
+            let mark = seen.get(&key).copied();
+            let next = match mark {
+                _ if on_screen(a, f) => n,
+                None => n,
+                Some(m) => m.min(n),
+            };
+            if mark != Some(next) {
+                seen.insert(key, next);
+                changed = true;
+            }
+            if n > next {
+                fresh.insert((a, f));
+            }
+        }
+        if changed {
+            config::save_unread_seen(&seen);
+        }
+        fresh
+    }
+
     /// Update the sidebar's unread badges in place (no rebuild), derived from the
     /// loaded message lists. Cheap enough to call on every read/sync.
     fn push_unread_counts(&self) {
         let folders = self.folder_unread.clone();
         let unified = self.unified_unread();
-        self.sidebars_emit(SidebarInput::SetUnread { folders, unified: self.unified_inboxes_unread() });
+        let fresh = self.seen_counts.then(|| self.fresh_unread());
+        self.sidebars_emit(SidebarInput::SetUnread { folders, unified: self.unified_inboxes_unread(), fresh });
         // The counted total is what GNOME shows beside Hylki in Background
         // Apps, so a process with no window still says what it is there for.
         if self.run_in_background.get() {
@@ -12791,6 +12963,13 @@ impl AppModel {
     fn push_launcher_count(&self) {
         let count = if self.launcher_count { self.inboxes_unread() } else { 0 };
         crate::launcher_badge::set_count(count);
+    }
+
+    /// Send the launcher badge again even though the count is unchanged, for
+    /// when the dock may have dropped it (a lock, a wake).
+    fn resend_launcher_count(&self) {
+        crate::launcher_badge::resend();
+        self.push_launcher_count();
     }
 
     /// Publish the tray item with the current icon, unread total and mail list.
@@ -13584,6 +13763,8 @@ impl AppModel {
             subject: self.list_show_subject(),
             animate,
         });
+        // A folded card in a conversation shows what a list row does (#326).
+        self.message_view.emit(MessageViewInput::SetFoldLook { preview_lines: self.list_preview_lines() });
     }
 
     /// What Reader View does on each open: Focus Mode's "on" while it holds,
@@ -13917,6 +14098,9 @@ impl AppModel {
         self.unified = true;
         self.tag_view = None;
         self.selected = None;
+        if self.seen_counts {
+            self.push_unread_counts();
+        }
         self.current = None;
         self.current_thread.clear();
         self.attachments.clear();
@@ -14247,6 +14431,10 @@ impl AppModel {
             folder_id,
             path: path.clone(),
         });
+        // Opening a folder is looking at it (#343).
+        if self.seen_counts {
+            self.push_unread_counts();
+        }
         self.current = None;
         self.current_thread.clear();
         self.show_message(None, false);
@@ -14703,13 +14891,76 @@ impl AppModel {
             .map(|f| f.kind)
     }
 
-    /// Open a draft for editing: reuse a cached body if we have one, otherwise
-    /// fetch it and open the editor once it arrives (see the `Body` handler).
-    /// `inline` puts the editor in the reading pane (a selected draft);
-    /// otherwise it gets a window (a draft opened by double-click or Enter).
-    /// `extra` carries files handed in from GNOME Files to attach (or
-    /// upload) on top of the draft's own.
+    /// The Drafts folder a draft of `account_id` is saved to: the existing
+    /// one, else a default path the worker creates.
+    fn drafts_target(&self, account_id: u32) -> Option<(u32, String)> {
+        self.folders
+            .get(&account_id)
+            .and_then(|fs| fs.iter().find(|f| f.kind == FolderKind::Drafts))
+            .map(|f| (f.id, f.path.clone()))
+            .or_else(|| self.default_folder_path(account_id, FolderKind::Drafts).map(|p| (0, p)))
+    }
+
+    /// Where a just-saved draft is, by its Message-ID, among the Drafts
+    /// folder's messages the save has reloaded.
+    fn find_draft(&self, account_id: u32, message_id: &str) -> Option<crate::models::DraftOrigin> {
+        let (folder_id, path) = self.drafts_target(account_id)?;
+        let want = message_id.trim().trim_start_matches('<').trim_end_matches('>');
+        let m = self
+            .message_cache
+            .get(&(account_id, folder_id))?
+            .iter()
+            .find(|m| m.message_id.trim_start_matches('<').trim_end_matches('>').eq_ignore_ascii_case(want))?;
+        Some(crate::models::DraftOrigin { account_id, folder_id, path, uid: m.uid })
+    }
+
+    /// Take a draft out of its folder for good, and list the folder again.
+    fn purge_draft(&self, origin: &crate::models::DraftOrigin) {
+        self.send_to(
+            origin.account_id,
+            MailRequest::PurgeMessages { path: origin.path.clone(), uids: vec![origin.uid] },
+        );
+        self.send_to(
+            origin.account_id,
+            MailRequest::LoadMessages { folder_id: origin.folder_id, path: origin.path.clone() },
+        );
+    }
+
+    fn composer_exists(&self, id: u32) -> bool {
+        self.composers.iter().any(|h| h.id == id) || self.reader_compose.as_ref().is_some_and(|r| r.id == id)
+    }
+
+    fn emit_to_composer(&self, id: u32, input: ComposeInput) {
+        if let Some(h) = self.composers.iter().find(|h| h.id == id) {
+            h.controller.emit(input);
+        } else if let Some(r) = self.reader_compose.as_ref().filter(|r| r.id == id) {
+            r.controller.emit(input);
+        }
+    }
+
+    /// Open a draft for editing, from its own bytes (#349, #350): the body
+    /// the reader shows has lost the From, the Bcc, the threading headers
+    /// and the files. The editor opens once they arrive (see the
+    /// `RawExported` handler). `inline` puts the editor in the reading pane
+    /// (a selected draft); otherwise it gets a window (a draft opened by
+    /// double-click or Enter). `extra` carries files handed in from GNOME
+    /// Files to attach (or upload) on top of the draft's own.
     fn open_draft(&mut self, m: Message, inline: bool, extra: HandOffFiles, sender: &ComponentSender<Self>) {
+        let Some(path) = self.resolve_folder_path(&m) else {
+            self.open_draft_body(m, inline, extra, sender);
+            return;
+        };
+        let token = self.next_transfer;
+        self.next_transfer += 1;
+        self.pending_draft_token = Some(token);
+        self.send_to(m.account_id, MailRequest::ExportRaw { token, path, uid: m.uid, for_reader: true });
+        self.pending_draft = Some((m, inline, extra));
+    }
+
+    /// Open a draft from its body alone, when its bytes can't be had: a
+    /// cached body if there is one, otherwise fetched, with the editor
+    /// opening once it arrives (see the `Body` handler).
+    fn open_draft_body(&mut self, m: Message, inline: bool, extra: HandOffFiles, sender: &ComponentSender<Self>) {
         let body = if !m.body.is_empty() {
             Some(m.body.clone())
         } else {
@@ -14779,11 +15030,17 @@ impl AppModel {
             encrypt: false,
             outbox_origin: Some(id),
             reply_addressed_to: String::new(),
-            from_address: String::new(),
+            from_address: crate::worker::parse_recipients(&editable.from)
+                .into_iter()
+                .next()
+                .map(|(_, addr)| addr)
+                .unwrap_or_default(),
+            custom_from: editable.from,
             send_at: item.send_at,
             cloud_uploads: Vec::new(),
             inline_files: Vec::new(),
             block_remote_images: false,
+            resumed: false,
         };
         // The Outbox stays the folder on screen: its list is still what's listed,
         // so its toolbar has to stay too. Leaving it would strand the user in a
@@ -14833,10 +15090,12 @@ impl AppModel {
                 .as_deref()
                 .map(|f| crate::config::split_identity(f).1)
                 .unwrap_or_default(),
+            custom_from: m.from_alias.clone().unwrap_or_default(),
             send_at: m.send_at,
             cloud_uploads: Vec::new(),
             inline_files: Vec::new(),
             block_remote_images: false,
+            resumed: true,
         };
         self.open_compose(account_id, prefill, sender);
     }
@@ -14854,22 +15113,70 @@ impl AppModel {
         extra: HandOffFiles,
         sender: &ComponentSender<Self>,
     ) {
-        let path = self.resolve_folder_path(&m).unwrap_or_default();
         let prefill = ComposePrefill {
             to: m.to.clone(),
             cc: m.cc.clone(),
             subject: m.subject.clone(),
             body_html,
-            draft_origin: Some(crate::models::DraftOrigin {
-                account_id: m.account_id,
-                folder_id: m.folder_id,
-                path,
-                uid: m.uid,
-            }),
+            from_address: m.from_addr.clone(),
             attachments: extra.attach,
             cloud_uploads: extra.cloud,
             ..Default::default()
         };
+        self.show_draft_composer(m, prefill, inline, sender);
+    }
+
+    /// Open the compose editor on a draft's own bytes: everything it was
+    /// saved with, its files written out for the composer to attach.
+    fn compose_from_draft_raw(
+        &mut self,
+        m: Message,
+        raw: &[u8],
+        inline: bool,
+        extra: HandOffFiles,
+        sender: &ComponentSender<Self>,
+    ) {
+        let e = crate::worker::editable_from_raw(raw, &[]);
+        let mut attachments =
+            stage_attachments(&format!("hylki-draft-{}-{}", m.account_id, m.uid), &e.attachments);
+        attachments.extend(extra.attach);
+        let prefill = ComposePrefill {
+            to: e.to,
+            cc: e.cc,
+            bcc: e.bcc,
+            subject: e.subject,
+            body_html: e.body_html,
+            in_reply_to: e.in_reply_to,
+            references: e.references,
+            from_address: crate::worker::parse_recipients(&e.from)
+                .into_iter()
+                .next()
+                .map(|(_, addr)| addr)
+                .unwrap_or_default(),
+            // Saved from an address that is no identity (#347): it opens
+            // as typed.
+            custom_from: e.from,
+            attachments,
+            cloud_uploads: extra.cloud,
+            ..Default::default()
+        };
+        self.show_draft_composer(m, prefill, inline, sender);
+    }
+
+    /// The editor for a draft, tied to it so saving or sending replaces it.
+    fn show_draft_composer(
+        &mut self,
+        m: Message,
+        mut prefill: ComposePrefill,
+        inline: bool,
+        sender: &ComponentSender<Self>,
+    ) {
+        prefill.draft_origin = Some(crate::models::DraftOrigin {
+            account_id: m.account_id,
+            folder_id: m.folder_id,
+            path: self.resolve_folder_path(&m).unwrap_or_default(),
+            uid: m.uid,
+        });
         if inline {
             self.attachments.clear();
             self.attachments_loading = false;
@@ -15082,6 +15389,28 @@ impl AppModel {
                         alias_from: Some(display),
                     });
                 }
+                // A JMAP server's own identities (#346), unless the account
+                // already lists the address. A catch-all (`*@domain`) is no
+                // address to send from; typing one into From uses it.
+                for (name, addr) in self.server_identities.get(&id).map(Vec::as_slice).unwrap_or_default() {
+                    if addr.starts_with("*@") || identities.iter().any(|i| i.email.eq_ignore_ascii_case(addr)) {
+                        continue;
+                    }
+                    let display = if name.is_empty() || name.eq_ignore_ascii_case(addr) {
+                        addr.clone()
+                    } else {
+                        format!("{name} <{addr}>")
+                    };
+                    identities.push(ComposeAccount {
+                        id,
+                        label: display.clone(),
+                        signature: signature.clone(),
+                        email: addr.clone(),
+                        pgp_key: pgp_key.clone(),
+                        sign_default,
+                        alias_from: Some(display),
+                    });
+                }
                 identities
             })
             .collect();
@@ -15090,15 +15419,42 @@ impl AppModel {
         // For a new message, the default sender chosen in Settings (#157), if
         // it is one of this account's addresses. Otherwise (and when nothing
         // matches) the account's own address.
-        let hay = prefill.reply_addressed_to.to_lowercase();
-        let want = prefill.from_address.trim().to_lowercase();
-        let selected = (!hay.is_empty())
+        // A reply to a `+tag` address of one of the account's identities
+        // (#347) answers from that address, as typed, through the identity.
+        let plus = (prefill.custom_from.trim().is_empty())
             .then(|| {
-                accounts.iter().position(|c| {
-                    c.id == account_id && hay.contains(c.email.to_lowercase().as_str())
+                crate::worker::parse_recipients(&prefill.reply_addressed_to).into_iter().find_map(|(_, addr)| {
+                    let (user, host) = addr.split_once('@')?;
+                    let (base, _tag) = user.split_once('+')?;
+                    let plain = format!("{base}@{host}");
+                    let i = accounts
+                        .iter()
+                        .position(|c| c.id == account_id && c.email.eq_ignore_ascii_case(&plain))?;
+                    let (name, _) = crate::config::split_identity(
+                        &accounts[i].alias_from.clone().unwrap_or_else(|| accounts[i].label.clone()),
+                    );
+                    Some((i, crate::worker::format_recipient(&name, &addr)))
                 })
             })
-            .flatten()
+            .flatten();
+        let mut prefill = prefill;
+        if let Some((_, from)) = &plus {
+            prefill.custom_from = from.clone();
+        }
+        let hay = prefill.reply_addressed_to.to_lowercase();
+        let want = prefill.from_address.trim().to_lowercase();
+        let by_reply = || {
+            (!hay.is_empty())
+                .then(|| {
+                    accounts.iter().position(|c| {
+                        c.id == account_id && hay.contains(c.email.to_lowercase().as_str())
+                    })
+                })
+                .flatten()
+        };
+        let selected = plus
+            .map(|(i, _)| i)
+            .or_else(by_reply)
             .or_else(|| {
                 (!want.is_empty()).then(|| {
                     accounts
@@ -15145,6 +15501,8 @@ impl AppModel {
             .forward(sender.input_sender(), |out| match out {
                 ComposeOutput::Send(msg) => AppMsg::SendMessage(msg),
                 ComposeOutput::SaveDraft(msg) => AppMsg::SaveDraftMessage(msg),
+                ComposeOutput::AutoSave { id, message } => AppMsg::AutoSaveDraft { id, message },
+                ComposeOutput::DiscardAutosave { id, origin } => AppMsg::DiscardAutosave { id, origin },
                 ComposeOutput::DeleteDraft { id, origin } => AppMsg::DeleteDraft { id, origin },
                 ComposeOutput::ToggleWindow(id) => AppMsg::ComposeToggleWindow(id),
                 ComposeOutput::Close(id) => AppMsg::ComposeClosed(id),
@@ -16425,7 +16783,7 @@ impl AppModel {
             }
             removed_ids.push(id);
             self.transfer_tally.total += 1;
-            self.send_to(aid, MailRequest::ExportRaw { token, path: src, uid });
+            self.send_to(aid, MailRequest::ExportRaw { token, path: src, uid, for_reader: false });
         }
         self.transfer_tally.dest_accounts.insert(dest_account);
         self.transfer_tally.dest_folders.insert((dest_account, dest));
@@ -17366,8 +17724,12 @@ impl AppModel {
             .flatten()
             .filter(|m| !(m.message_id.is_empty() && m.references.is_empty()))
             .collect();
-        recent.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-        recent.truncate(THREAD_LINK_LIMIT);
+        // The newest few, picked without sorting the lot: across every
+        // folder held that is hundreds of thousands of messages.
+        if recent.len() > THREAD_LINK_LIMIT {
+            recent.select_nth_unstable_by(THREAD_LINK_LIMIT, |a, b| b.timestamp.cmp(&a.timestamp));
+            recent.truncate(THREAD_LINK_LIMIT);
+        }
         let mut links: Vec<(u32, String, String)> = recent
             .into_iter()
             .map(|m| (m.account_id, m.message_id.clone(), m.references.clone()))
@@ -17405,8 +17767,32 @@ impl AppModel {
     /// Push every account's inbox slice to the list as one date-sorted run. The
     /// slices arrive independently (cache seed, then each account's load), so the
     /// whole merged list is re-emitted each time one of them changes.
+    /// Merge the unified view's slices for the list shortly (and hand it the
+    /// new thread links), once for every answer that lands meanwhile. Each
+    /// merge regroups the whole view, which across accounts can be tens of
+    /// thousands of messages.
+    fn queue_unified_emit(&self, sender: &ComponentSender<Self>) {
+        if self.unified_emit_queued.replace(true) {
+            return;
+        }
+        // Shortly after the first answer, so the rest of a run joins it, and
+        // never sooner after the last merge than the view's size allows: an
+        // account that keeps sending batches (a large folder catching up)
+        // must not keep the window busy regrouping. A second for a small
+        // view, up to five for one of tens of thousands of messages.
+        let size: usize = self.unified_slices.values().map(Vec::len).sum();
+        let gap = std::time::Duration::from_millis((size as u64 / 16).clamp(1000, 5000));
+        let since = self.unified_emitted_at.get().elapsed();
+        let wait = std::time::Duration::from_millis(150).max(gap.saturating_sub(since));
+        let s = sender.input_sender().clone();
+        gtk::glib::timeout_add_local_once(wait, move || {
+            let _ = s.send(AppMsg::EmitUnified);
+        });
+    }
+
     fn emit_unified(&self) {
         let t = std::time::Instant::now();
+        self.unified_emitted_at.set(t);
         let mut merged: Vec<Message> =
             self.unified_slices.values().flatten().cloned().collect();
         merged.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
@@ -17825,6 +18211,7 @@ impl AppModel {
             remember_sidebar: self.remember_sidebar,
             remember_rail: self.remember_rail,
             rail_dots: self.rail_dots,
+            seen_counts: self.seen_counts,
             rail_fold: self.rail_fold,
             reader_toolbar: self.reader_toolbar.clone(),
             focus: self.focus,
@@ -21401,6 +21788,7 @@ fn map_event(account_id: u32, event: WorkerEvent) -> AppMsg {
             AppMsg::ThreadSummaries { account_id, summaries }
         }
         WorkerEvent::Account(a) => AppMsg::SetAccount(a),
+        WorkerEvent::Identities(identities) => AppMsg::ServerIdentities { account_id, identities },
         WorkerEvent::Folders(folders) => AppMsg::SetFolders { account_id, folders },
         WorkerEvent::Messages { folder_id, messages } => {
             AppMsg::Messages { account_id, folder_id, messages }
@@ -21465,7 +21853,9 @@ fn map_event(account_id: u32, event: WorkerEvent) -> AppMsg {
         WorkerEvent::Unsent(message) => AppMsg::Unsent { account_id, message },
         WorkerEvent::Outbox { items } => AppMsg::OutboxItems { account_id, items },
         WorkerEvent::Notice(text) => AppMsg::Notice(text),
-        WorkerEvent::DraftSaved => AppMsg::DraftSaved,
+        WorkerEvent::DraftSaved { autosave, message_id } => {
+            AppMsg::DraftSaved { account_id, autosave, message_id }
+        }
         WorkerEvent::Status(text) => AppMsg::Status { account_id, text },
         WorkerEvent::Error { text, connectivity } => {
             AppMsg::Error { account_id, text, connectivity }

@@ -373,6 +373,8 @@ pub struct Translated {
     pub from: Option<String>,
     pub service: Service,
     pub to: String,
+    /// The subject, translated with the body in the same request.
+    pub subject: Option<String>,
 }
 
 /// The most of a message, in characters of HTML, that is
@@ -400,9 +402,15 @@ pub fn cached(key: &str) -> Option<Translated> {
     DONE.lock().ok()?.as_ref()?.get(key).cloned()
 }
 
-/// Translate a message body (as cached: HTML, or plain text) with the
-/// configured service (blocking; call off the UI thread).
-pub fn translate(settings: &Settings, key: &str, body: &str, cache: &str) -> Result<Translated, String> {
+/// Translate a message body (as cached: HTML, or plain text) and its
+/// subject with the configured service (blocking; call off the UI thread).
+pub fn translate(
+    settings: &Settings,
+    key: &str,
+    body: &str,
+    subject: &str,
+    cache: &str,
+) -> Result<Translated, String> {
     if let Some(t) = cached(cache) {
         return Ok(t);
     }
@@ -415,10 +423,16 @@ pub fn translate(settings: &Settings, key: &str, body: &str, cache: &str) -> Res
     }
     let target = settings.target_language();
     let mut document = body.contains('<').then(|| InPlace::parse(body));
-    let pieces = match &document {
+    let mut pieces = match &document {
         Some(d) => d.pieces.clone(),
         None => chunk(&prepare_blocks(body)),
     };
+    // The subject rides along as one more piece, escaped like the HTML
+    // around it, and comes back off the end.
+    let subject = subject.trim();
+    if !subject.is_empty() {
+        pieces.push(gtk::glib::markup_escape_text(subject).to_string());
+    }
     let total: usize = pieces.iter().map(String::len).sum();
     if total == 0 {
         return Err(i18n("There is no text to translate."));
@@ -426,10 +440,18 @@ pub fn translate(settings: &Settings, key: &str, body: &str, cache: &str) -> Res
     if total > LIMIT {
         return Err(i18n("This message is too long to send for translation."));
     }
-    let (texts, from) = run(settings, key, &pieces, &target)?;
+    let (mut texts, from) = run(settings, key, &pieces, &target)?;
+    let subject = if subject.is_empty() {
+        None
+    } else {
+        texts
+            .pop()
+            .map(|t| crate::markdown::plain_text(&t).split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|t| !t.is_empty())
+    };
     let done = match document.as_mut() {
-        Some(d) => Translated { html: d.fill(&texts), reader: false, from, service, to: target },
-        None => Translated { html: texts.concat(), reader: true, from, service, to: target },
+        Some(d) => Translated { html: d.fill(&texts), reader: false, from, service, to: target, subject },
+        None => Translated { html: texts.concat(), reader: true, from, service, to: target, subject },
     };
     if let Ok(mut g) = DONE.lock() {
         let map = g.get_or_insert_with(HashMap::new);
@@ -929,7 +951,7 @@ fn libre(agent: &ureq::Agent, key: &str, url: &str, texts: &[String], to: &str) 
 pub fn check(settings: &Settings, key: &str) -> Result<(String, String), String> {
     let greeting = if base(&settings.target_language()) == "en" { "Guten Morgen" } else { "Good morning" };
     let probe = format!("{}\u{1f}check", generation());
-    let t = translate(settings, key, &format!("<p>{greeting}</p>"), &probe)?;
+    let t = translate(settings, key, &format!("<p>{greeting}</p>"), "", &probe)?;
     if let Ok(mut g) = DONE.lock() {
         if let Some(map) = g.as_mut() {
             map.remove(&probe);
@@ -985,12 +1007,15 @@ mod tests {
         let Ok(url) = std::env::var("LIBRE_LIVE") else { return };
         let settings = Settings { service: Service::Libre, target: "de".into(), url, ..Default::default() };
         let body = r##"<html><head><style>.hero{color:#c00}</style></head><body><table class="hero"><tr><td style="padding:20px">Good morning, <a href="https://example.com/x">read our news</a> today.</td></tr></table><p>Thank you for your <b>order</b>.</p></body></html>"##;
-        let t = translate(&settings, "", body, "live-libre-test").expect("translated");
+        let t = translate(&settings, "", body, "Good morning", "live-libre-test").expect("translated");
         eprintln!("{}", t.html);
         assert!(!t.reader);
         assert!(t.html.contains("<style>.hero{color:#c00}</style>"));
         assert!(t.html.contains(r#"<td style="padding:20px">"#) && t.html.contains(r#"href="https://example.com/x""#));
         assert!(!t.html.contains("Good morning") && !t.html.contains(RUN_ATTR) && !t.html.contains(ATTRS_ATTR));
+        let subject = t.subject.expect("the subject came back");
+        eprintln!("subject: {subject}");
+        assert!(!subject.is_empty() && subject != "Good morning");
     }
 
     #[test]

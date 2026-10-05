@@ -14,6 +14,7 @@ pub mod contacts_page;
 pub mod context_menu;
 pub mod directories;
 pub mod drop_zones;
+pub mod emoji;
 pub mod folder_picker;
 pub mod grab_pill;
 pub mod icon_picker;
@@ -30,6 +31,7 @@ pub mod print_preview;
 pub mod rich_editor;
 pub mod sidebar;
 pub mod theme_picker;
+pub mod web_signin;
 pub mod welcome;
 
 /// How long Focus Mode's parts take to slide and fade away (and back), in
