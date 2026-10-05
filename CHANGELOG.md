@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Fixed: the dock badge lost the unread count after the screen was
+  locked** (#353, PR #354 by Isaac). Ubuntu Dock and Dash to Dock start
+  afresh at every unlock and show the notification count until an app sends
+  its own again, and Hylki skipped sending a count it had sent before. It
+  now sends it again whenever the dock comes back, and on wake, on Refresh
+  and when the window is focused.
 - **Fixed: All Archive, and other combined views of very large folders,
   froze the window** until the desktop offered to force quit. Every
   account's answer, and every batch a slow one sent, regrouped the whole
