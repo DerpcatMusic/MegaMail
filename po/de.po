@@ -5100,8 +5100,7 @@ msgstr ""
 
 msgid ""
 "Adds paragraph styles, fonts, colors, indents, emoji and pictures to the "
-"toolbar. These go beyond what Markdown can say. Applies to messages opened "
-"from now on."
+"toolbar."
 msgstr ""
 
 msgid "Write messages in"

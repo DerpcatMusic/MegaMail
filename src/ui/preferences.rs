@@ -3129,9 +3129,7 @@ impl Component for Preferences {
                                         set_title: &i18n("Expanded formatting toolbar"),
                                         set_subtitle: &i18n("Adds paragraph styles, fonts, colors, \
                                                        indents, emoji and pictures to the \
-                                                       toolbar. These go beyond what Markdown \
-                                                       can say. Applies to messages opened \
-                                                       from now on."),
+                                                       toolbar."),
                                         connect_active_notify[sender] => move |row| {
                                             let _ = sender.output(PrefOutput::SetRichToolbar(row.is_active()));
                                         },
