@@ -1871,7 +1871,8 @@ msgstr "Küldés ezen a fiókon keresztül"
 msgid "Remove this alias"
 msgstr "Álnév (alias) eltávolítása"
 
-msgid "Kept on the server; change it in your webmail"
+msgid ""
+"Kept on the server; change it through your provider's webmail interface."
 msgstr ""
 
 msgid "Display name (optional)"

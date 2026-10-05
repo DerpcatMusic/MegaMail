@@ -3202,7 +3202,7 @@ impl AccountsWindow {
                 format!("{name} <{addr}>")
             };
             row.set_title(&gtk::glib::markup_escape_text(&title));
-            row.set_subtitle(&i18n("Kept on the server; change it in your webmail"));
+            row.set_subtitle(&i18n("Kept on the server; change it through your provider's webmail interface."));
             list.append(&row);
         }
     }

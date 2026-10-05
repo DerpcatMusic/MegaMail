@@ -1898,7 +1898,8 @@ msgstr "Αποστολή μέσω αυτού του λογαριασμού"
 msgid "Remove this alias"
 msgstr "Αφαίρεση αυτού του ψευδωνύμου"
 
-msgid "Kept on the server; change it in your webmail"
+msgid ""
+"Kept on the server; change it through your provider's webmail interface."
 msgstr ""
 
 msgid "Display name (optional)"
