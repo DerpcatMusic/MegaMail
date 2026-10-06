@@ -6629,10 +6629,11 @@ impl SimpleComponent for AppModel {
                     RowAction::Forward => {
                         self.forward(m, true, &sender);
                     }
-                    // A template's banner (#360): edited where a draft is,
-                    // over the reading pane.
+                    // A template's banner (#360): edited where a new message
+                    // is written.
                     RowAction::EditTemplate => {
-                        self.open_draft(m, true, HandOffFiles::default(), &sender);
+                        let inline = self.compose_inline;
+                        self.open_draft(m, inline, HandOffFiles::default(), &sender);
                     }
                     // Cards only carry the three above; anything else falls
                     // through to the ordinary row behaviour.
@@ -6711,8 +6712,11 @@ impl SimpleComponent for AppModel {
                         let m = self.newest_to_answer(&conversation, m);
                         self.edit_as_new(m, &sender);
                     }
+                    // Edited where a new message is written (#360), from a
+                    // row's menu as from the banner.
                     RowAction::EditTemplate => {
-                        self.open_draft(m, false, HandOffFiles::default(), &sender);
+                        let inline = self.compose_inline;
+                        self.open_draft(m, inline, HandOffFiles::default(), &sender);
                     }
                     RowAction::ToggleStar => {
                         let starred = !m.starred;

@@ -643,13 +643,10 @@ impl Component for Compose {
                         add_css_class: "compose-toolbar",
                         set_show_start_title_buttons: false,
                         set_show_end_title_buttons: false,
-                        // No "Hylki" branding on the compose bar. A template
-                        // being edited says so (#360): its Save does not
-                        // make a draft.
+                        // No "Hylki" branding on the compose bar.
                         #[wrap(Some)]
                         set_title_widget = &gtk::Label {
-                            set_label: &if model.template { i18n("Template") } else { String::new() },
-                            add_css_class: "dim-label",
+                            set_label: "",
                         },
 
                         pack_start = &gtk::Button {

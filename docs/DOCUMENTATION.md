@@ -522,9 +522,11 @@ templates there, Thunderbird among them, sees the same ones.
   or a double-click on it in the list, opens a new message with its
   recipients, subject, text and files, sent from the address it was saved
   with. The template stays as it is.
-- **Edit Template** opens the template itself. **Save Template** puts the
-  changed one back in its place, and nothing is saved on its own while it
-  is open. Sending from it leaves the template in Templates.
+- **Edit Template** opens the template itself, where a new message opens:
+  in the reading pane, or in a window of its own with **Settings →
+  Composing → Compose in the main window** switched off. **Save Template**
+  puts the changed one back in its place, and nothing is saved on its own
+  while it is open. Sending from it leaves the template in Templates.
 - **New Message from Template…**, in the arrow at the end of **New
   Message** (on its right-click menu when the sidebar is folded to icons),
   or <kbd>Ctrl+Shift+N</kbd>, lists every account's templates to start
