@@ -552,6 +552,8 @@ pub enum SidebarOutput {
     ToggleAccountTags(u32),
     /// The "New message" row at the top of the sidebar.
     ComposeRequested,
+    /// Its right-click menu's New Message from Template (#360).
+    ComposeFromTemplateRequested,
     /// The refresh button beside it.
     RefreshRequested,
     /// Long-press on the rail's refresh button: reveal the status bar.
@@ -1967,6 +1969,30 @@ impl Sidebar {
                 hbox.append(&label);
             }
             row.set_child(Some(&hbox));
+            // A right-click offers a template to start from (#360).
+            let right_click = gtk::GestureClick::new();
+            right_click.set_button(gtk::gdk::BUTTON_SECONDARY);
+            let s = sender.clone();
+            right_click.connect_pressed(move |gesture, _, x, y| {
+                let Some(widget) = gesture.widget() else { return };
+                let (blank, from_template) = (s.clone(), s.clone());
+                show_context_menu(
+                    &widget,
+                    x,
+                    y,
+                    vec![vec![
+                        MenuEntry::new(i18n("New Message"), move || {
+                            let _ = blank.output(SidebarOutput::ComposeRequested);
+                        })
+                        .icon("mail-message-new-symbolic"),
+                        MenuEntry::new(i18n("New Message from Template…"), move || {
+                            let _ = from_template.output(SidebarOutput::ComposeFromTemplateRequested);
+                        })
+                        .icon("folder-templates-symbolic"),
+                    ]],
+                );
+            });
+            row.add_controller(right_click);
             list.append(&row);
             let s = sender.clone();
             let quiet = self.quiet.clone();
@@ -4628,11 +4654,15 @@ fn folder_menu_items(
     ];
     // Rules normally only meet mail arriving in the Inbox; from here they
     // can be held up against whatever is already in this folder (#198).
-    // Not on Drafts, Junk or Trash: filing mail *out* of those is never what
-    // a rule about incoming mail meant.
+    // Not on Drafts, Templates, Junk or Trash: filing mail *out* of those is
+    // never what a rule about incoming mail meant.
     let filterable = !matches!(
         f.kind,
-        FolderKind::Drafts | FolderKind::Junk | FolderKind::Trash | FolderKind::Starred
+        FolderKind::Drafts
+            | FolderKind::Templates
+            | FolderKind::Junk
+            | FolderKind::Trash
+            | FolderKind::Starred
     );
     if has_filters && filterable {
         items.push((i18n_noop("Apply Filters"), CtxAction::ApplyFilters {

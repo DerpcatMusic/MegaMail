@@ -507,6 +507,33 @@ saved. **Discard** on a new message removes the copy it left; on a draft you
 had saved before, the last automatic save stays. A save that fails, offline
 say, is tried again at the next one, without a message about it.
 
+### Templates
+
+A template is a message kept to start new ones from. It lives in the
+account's Templates folder, on the server, so another client that keeps
+templates there, Thunderbird among them, sees the same ones.
+
+- **Save as Template**, in the arrow beside **Save Draft**, keeps a copy of
+  the message being written in Templates and leaves the composer open. The
+  copy answers nothing: it carries no reply headers, and a message started
+  from it begins a conversation of its own. An account with no Templates
+  folder gets one the first time.
+- A template opened in the Templates folder has a banner. **Use Template**,
+  or a double-click on it in the list, opens a new message with its
+  recipients, subject, text and files, sent from the address it was saved
+  with. The template stays as it is.
+- **Edit Template** opens the template itself. **Save Template** puts the
+  changed one back in its place, and nothing is saved on its own while it
+  is open. Sending from it leaves the template in Templates.
+- **New Message from Template…**, on the right-click menu of **New
+  Message**, or <kbd>Ctrl+Shift+N</kbd>, lists every account's templates to
+  start from.
+
+A folder called Templates is taken for the role, at the top of the account
+or directly under the Inbox. Nothing on a server marks one otherwise, so a
+folder by another name, "Vorlagen" say, is chosen in the account's
+**Special Folders**, under **Templates**.
+
 ### The From address
 
 The From row lists each account's address and the aliases set up for it.

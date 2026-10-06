@@ -72,6 +72,9 @@ The full list. The [README](../README.md) carries a shorter one.
   if you prefer.
 - **Drafts** that can be saved without a recipient, reopened inline, and
   deleted from the composer.
+- **Templates:** save a message as a template and start new ones from it,
+  from the Templates folder or with Ctrl+Shift+N. Thunderbird's Templates
+  folder is picked up as it is.
 - **Forwarding keeps the attachments:** the original's files are attached to
   the forward, ready to send on. A reply does not repeat them.
 - **Inline images:** dropped, pasted or picked from a file manager, resized

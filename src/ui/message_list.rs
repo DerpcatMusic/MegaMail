@@ -603,6 +603,9 @@ pub struct MessageList {
     /// The list shows Drafts (a folder or the unified row): drafts are
     /// neither read nor unread, so the toggles are not offered.
     in_drafts: bool,
+    /// The list shows a Templates folder (#360): a row's menu offers to use
+    /// or edit the template, not to answer it.
+    in_templates: bool,
     /// Rendered thread membership: message key → conversation key, rebuilt with
     /// the rows. Lets a read-state change on a hidden reply refresh its head.
     msg_thread: std::collections::HashMap<(u32, u32), (u32, String)>,
@@ -987,6 +990,7 @@ pub enum MessageListInput {
     SetInJunk(bool),
     /// The list shows Drafts: read/unread toggles are withheld.
     SetInDrafts(bool),
+    SetInTemplates(bool),
     /// Folder switch: drop any search and scroll back to the top (a plain
     /// `SetMessages` keeps the place, for refreshes).
     ResetPaging,
@@ -1412,6 +1416,7 @@ impl SimpleComponent for MessageList {
             restorable: false,
             in_junk: false,
             in_drafts: false,
+            in_templates: false,
             default_expanded: false,
             msg_thread: std::collections::HashMap::new(),
             thread_members: std::collections::HashMap::new(),
@@ -1861,6 +1866,7 @@ impl SimpleComponent for MessageList {
                     self.sync_look();
                 }
             }
+            MessageListInput::SetInTemplates(on) => self.in_templates = on,
             MessageListInput::ContactPhotosChanged => {
                 // The circles on screen look again; the rest do when shown.
                 self.face_gen += 1;
@@ -2754,16 +2760,23 @@ impl MessageList {
         };
 
         let sections = vec![
-            vec![
-                item(RowAction::Reply, &i18n("Reply"), "mail-reply-sender-symbolic"),
-                item(RowAction::ReplyAll, &i18n("Reply All"), "mail-reply-all-symbolic"),
-                item(RowAction::Forward, &i18n("Forward"), "mail-forward-symbolic"),
-                item(
-                    RowAction::EditAsNew,
-                    &i18n("Edit as New Message"),
-                    "document-edit-symbolic",
-                ),
-            ],
+            if self.in_templates {
+                vec![
+                    item(RowAction::EditAsNew, &i18n("Use Template"), "mail-message-new-symbolic"),
+                    item(RowAction::EditTemplate, &i18n("Edit Template"), "document-edit-symbolic"),
+                ]
+            } else {
+                vec![
+                    item(RowAction::Reply, &i18n("Reply"), "mail-reply-sender-symbolic"),
+                    item(RowAction::ReplyAll, &i18n("Reply All"), "mail-reply-all-symbolic"),
+                    item(RowAction::Forward, &i18n("Forward"), "mail-forward-symbolic"),
+                    item(
+                        RowAction::EditAsNew,
+                        &i18n("Edit as New Message"),
+                        "document-edit-symbolic",
+                    ),
+                ]
+            },
             flag_section,
             tag_section,
             {

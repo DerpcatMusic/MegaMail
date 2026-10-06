@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **Added: templates** (#360, requested by amadeusp). A Templates folder is
+  now a special folder like Drafts and Sent: found by its name, or chosen
+  under **Special Folders** in the account's settings, and listed after
+  Drafts with its own icon. **Save as Template**, beside **Save Draft** in
+  the composer, keeps a copy of the message there as read mail rather than
+  a draft, and makes the folder if the account has none. A template in the
+  reader has a banner with **Use Template**, which starts a new message from
+  a copy of it (as a double-click on it in the list does), and **Edit
+  Template**, which opens the template itself to change and save back.
+  **New Message from Template…**, on the right-click menu of **New Message**
+  or Ctrl+Shift+N, picks one from every account. Templates are left out of
+  conversations, filters and the attachment gallery. Microsoft 365 has no
+  Templates folder of its own: one is made, and a template saved there is
+  moved in from Drafts.
 - **Added: page numbers, the date printed and a wider left margin on
   printed mail** (#359, requested by rsx-xp). **Settings → Reading →
   Printing** puts "Page 2 of 5" (on by default) and the date and time of

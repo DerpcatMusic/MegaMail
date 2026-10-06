@@ -1597,6 +1597,11 @@ impl Component for AccountsWindow {
                                 },
                                 #[name = "folder_drafts_row"]
                                 adw::ComboRow { set_title: &i18n("Drafts") },
+                                // Nothing on a server marks a Templates folder
+                                // (#360): one called Templates is found, any
+                                // other is pointed at here.
+                                #[name = "folder_templates_row"]
+                                adw::ComboRow { set_title: &i18n("Templates") },
                                 #[name = "folder_trash_row"]
                                 adw::ComboRow { set_title: &i18n("Trash") },
                                 #[name = "folder_junk_row"]
@@ -3389,6 +3394,7 @@ impl AccountsWindow {
         for (role, row) in [
             ("sent", &widgets.folder_sent_row),
             ("drafts", &widgets.folder_drafts_row),
+            ("templates", &widgets.folder_templates_row),
             ("trash", &widgets.folder_trash_row),
             ("junk", &widgets.folder_junk_row),
             ("archive", &widgets.folder_archive_row),
@@ -3478,6 +3484,7 @@ impl AccountsWindow {
         for (role, row) in [
             ("sent", &widgets.folder_sent_row),
             ("drafts", &widgets.folder_drafts_row),
+            ("templates", &widgets.folder_templates_row),
             ("trash", &widgets.folder_trash_row),
             ("junk", &widgets.folder_junk_row),
             ("archive", &widgets.folder_archive_row),

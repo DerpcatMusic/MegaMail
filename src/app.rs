@@ -1100,6 +1100,8 @@ pub struct AppModel {
     /// A draft picker waiting for Drafts folders never listed this run
     /// (the hand-off, and the folders still to answer).
     pending_draft_pick: Option<(FileHandOff, HashSet<(u32, u32)>)>,
+    /// The template picker, waiting on these Templates folders' lists.
+    pending_template_pick: Option<HashSet<(u32, u32)>>,
     /// Settings → System → GNOME Files: what handed-in files open into and
     /// what happens over the size limit.
     files_prefs: config::FilesPrefs,
@@ -1418,6 +1420,13 @@ pub enum AppMsg {
     HandOffDraft { hand_off: FileHandOff, draft: Option<Message> },
     /// Show the draft picker with whatever Drafts lists have arrived.
     HandOffDraftPickNow,
+    /// New Message from Template (#360): pick a template to start from,
+    /// once every Templates folder has been listed.
+    NewFromTemplate,
+    /// Show the template picker with whatever Templates lists have arrived.
+    TemplatePickNow,
+    /// The template picker answered (None: a blank message instead).
+    TemplatePicked(Option<Message>),
     /// The reply picker answered (None: a new message instead).
     HandOffReply { hand_off: FileHandOff, message: Option<Message> },
     /// The size check answered: open the composer, attaching or uploading.
@@ -1598,6 +1607,9 @@ pub enum AppMsg {
     /// pre-downloaded — fetch them from the server now.
     SendMessage(Box<OutgoingMessage>),
     SaveDraftMessage(Box<OutgoingMessage>),
+    /// Save a message to the Templates folder (#360): a composer's Save as
+    /// Template, or an edited template saved back.
+    SaveTemplateMessage(Box<OutgoingMessage>),
     /// The composer's Delete Draft: trash the draft it was opened from and
     /// close that composer without saving.
     DeleteDraft { id: u32, origin: crate::models::DraftOrigin },
@@ -3006,6 +3018,7 @@ impl SimpleComponent for AppModel {
             pending_draft_token: None,
             pending_reply: None,
             pending_draft_pick: None,
+            pending_template_pick: None,
             pending_edit_as_new: None,
             pending_forward: None,
             pending_notified_reply: None,
@@ -4707,7 +4720,7 @@ impl SimpleComponent for AppModel {
                 // selected message, to check the composer's grounds (#148).
                 // HYLKI_SHOWCASE_FLIP=dark|light then switches the app theme
                 // at 6 s, to check a live flip re-resolves those grounds.
-                // HYLKI_SHOWCASE_FOLDER=drafts|sent|archive|junk|trash[@<s>]
+                // HYLKI_SHOWCASE_FOLDER=drafts|templates|sent|archive|junk|trash[@<s>]
                 // switches to that folder at 2 s, before the staging's 3 s
                 // selection moves onto its first row, or at the time given.
                 // HYLKI_SHOWCASE_FOCUS=<seconds> switches Focus Mode on at
@@ -4729,6 +4742,7 @@ impl SimpleComponent for AppModel {
                     let (kind, at) = showcase_at(&v, 2);
                     let kind = match kind {
                         "drafts" => Some(FolderKind::Drafts),
+                        "templates" => Some(FolderKind::Templates),
                         "sent" => Some(FolderKind::Sent),
                         "archive" => Some(FolderKind::Archive),
                         "junk" => Some(FolderKind::Junk),
@@ -6392,9 +6406,12 @@ impl SimpleComponent for AppModel {
             }
 
             AppMsg::OpenMessageWindow { message: m, thread } => {
-                // Drafts open in the editor rather than a read-only window.
+                // Drafts open in the editor rather than a read-only window,
+                // and a template opens a new message made from it (#360).
                 if self.is_drafts_folder(m.account_id, m.folder_id) {
                     self.open_draft(m, false, HandOffFiles::default(), &sender);
+                } else if self.folder_kind(m.account_id, m.folder_id) == Some(FolderKind::Templates) {
+                    self.edit_as_new(m, &sender);
                 } else {
                     // Popouts follow the reading pane's display order (#70).
                     let mut thread = thread;
@@ -6612,6 +6629,11 @@ impl SimpleComponent for AppModel {
                     RowAction::Forward => {
                         self.forward(m, true, &sender);
                     }
+                    // A template's banner (#360): edited where a draft is,
+                    // over the reading pane.
+                    RowAction::EditTemplate => {
+                        self.open_draft(m, true, HandOffFiles::default(), &sender);
+                    }
                     // Cards only carry the three above; anything else falls
                     // through to the ordinary row behaviour.
                     other => sender.input(AppMsg::RowAction {
@@ -6688,6 +6710,9 @@ impl SimpleComponent for AppModel {
                     RowAction::EditAsNew => {
                         let m = self.newest_to_answer(&conversation, m);
                         self.edit_as_new(m, &sender);
+                    }
+                    RowAction::EditTemplate => {
+                        self.open_draft(m, false, HandOffFiles::default(), &sender);
                     }
                     RowAction::ToggleStar => {
                         let starred = !m.starred;
@@ -7996,6 +8021,37 @@ impl SimpleComponent for AppModel {
                 }
             }
 
+            AppMsg::NewFromTemplate => {
+                // As the draft picker does: Templates folders not listed this
+                // run are fetched first, and a silent worker gets three
+                // seconds.
+                let mut waiting = HashSet::new();
+                for (account_id, folder) in self.templates_folders() {
+                    if !self.message_cache.contains_key(&(account_id, folder.id)) {
+                        waiting.insert((account_id, folder.id));
+                        self.send_to(account_id, MailRequest::SyncFolder { folder_id: folder.id, path: folder.path.clone() });
+                    }
+                }
+                if waiting.is_empty() {
+                    self.show_template_picker(&sender);
+                } else {
+                    self.pending_template_pick = Some(waiting);
+                    let s = sender.clone();
+                    gtk::glib::timeout_add_seconds_local_once(3, move || s.input(AppMsg::TemplatePickNow));
+                }
+            }
+
+            AppMsg::TemplatePickNow => {
+                if self.pending_template_pick.take().is_some() {
+                    self.show_template_picker(&sender);
+                }
+            }
+
+            AppMsg::TemplatePicked(picked) => match picked {
+                Some(m) => self.edit_as_new(m, &sender),
+                None => sender.input(AppMsg::Compose),
+            },
+
             AppMsg::HandOffDraft { hand_off, draft } => {
                 let target = match draft {
                     Some(m) => HandOffTarget::Draft(m),
@@ -8525,7 +8581,29 @@ impl SimpleComponent for AppModel {
                     });
                     return;
                 };
-                self.send_to(account_id, MailRequest::SaveDraft { message: out, folder_id, path, autosave: None });
+                self.send_to(account_id, MailRequest::SaveDraft { message: out, folder_id, path, autosave: None, template: false });
+            }
+
+            AppMsg::SaveTemplateMessage(out) => {
+                let account_id = out.from_account_id;
+                // An edited template goes back to the folder it was kept in;
+                // a new one, or one now sent from another account, to the
+                // account's Templates folder, which saving makes if need be.
+                let target = out
+                    .draft_origin
+                    .as_ref()
+                    .filter(|o| o.account_id == account_id)
+                    .map(|o| (o.folder_id, o.path.clone()))
+                    .or_else(|| self.templates_target(account_id));
+                let Some((folder_id, path)) = target else {
+                    self.notifications.emit(NotifyInput::Push {
+                        text: i18n("No Templates folder available for this account"),
+                        error: true,
+                        connectivity: false,
+                    });
+                    return;
+                };
+                self.send_to(account_id, MailRequest::SaveDraft { message: out, folder_id, path, autosave: None, template: true });
             }
 
             AppMsg::EmitUnified => {
@@ -8543,7 +8621,7 @@ impl SimpleComponent for AppModel {
                 match self.drafts_target(account_id) {
                     Some((folder_id, path)) => self.send_to(
                         account_id,
-                        MailRequest::SaveDraft { message, folder_id, path, autosave: Some(id) },
+                        MailRequest::SaveDraft { message, folder_id, path, autosave: Some(id), template: false },
                     ),
                     None => self.emit_to_composer(id, ComposeInput::Autosaved { saved: false, origin: None }),
                 }
@@ -9668,6 +9746,7 @@ impl SimpleComponent for AppModel {
                     }
                 }
                 self.folders.insert(account_id, folders);
+                self.push_template_folders();
                 if unchanged {
                     self.push_unread_counts();
                 } else {
@@ -9990,6 +10069,12 @@ impl SimpleComponent for AppModel {
                     waiting.remove(&(account_id, folder_id));
                     if waiting.is_empty() {
                         sender.input(AppMsg::HandOffDraftPickNow);
+                    }
+                }
+                if let Some(waiting) = self.pending_template_pick.as_mut() {
+                    waiting.remove(&(account_id, folder_id));
+                    if waiting.is_empty() {
+                        sender.input(AppMsg::TemplatePickNow);
                     }
                 }
                 if !unchanged {
@@ -13767,7 +13852,10 @@ impl AppModel {
                             .filter(|f| {
                                 !matches!(
                                     f.kind,
-                                    FolderKind::Drafts | FolderKind::Junk | FolderKind::Trash
+                                    FolderKind::Drafts
+                                        | FolderKind::Templates
+                                        | FolderKind::Junk
+                                        | FolderKind::Trash
                                 )
                             })
                             .map(|f| GalleryFolder {
@@ -13890,6 +13978,7 @@ impl AppModel {
         self.message_list.emit(MessageListInput::SetInJunk(false));
         self.message_list
             .emit(MessageListInput::SetInDrafts(view == UnifiedView::Kind(FolderKind::Drafts)));
+        self.message_list.emit(MessageListInput::SetInTemplates(false));
         self.message_view
             .emit(MessageViewInput::SetDraftsView(view == UnifiedView::Kind(FolderKind::Drafts)));
         let reqs = self.unified_targets();
@@ -13999,12 +14088,20 @@ impl AppModel {
             sections.push(here);
         }
         sections.extend([
-            vec![
-                item(RowAction::Reply, i18n("Reply"), "mail-reply-sender"),
-                item(RowAction::ReplyAll, i18n("Reply All"), "mail-reply-all"),
-                item(RowAction::Forward, i18n("Forward"), "mail-forward"),
-                item(RowAction::EditAsNew, i18n("Edit as New Message"), "document-edit"),
-            ],
+            // A template (#360) is used or edited, never answered.
+            if kind == Some(FolderKind::Templates) {
+                vec![
+                    item(RowAction::EditAsNew, i18n("Use Template"), "mail-message-new"),
+                    item(RowAction::EditTemplate, i18n("Edit Template"), "document-edit"),
+                ]
+            } else {
+                vec![
+                    item(RowAction::Reply, i18n("Reply"), "mail-reply-sender"),
+                    item(RowAction::ReplyAll, i18n("Reply All"), "mail-reply-all"),
+                    item(RowAction::Forward, i18n("Forward"), "mail-forward"),
+                    item(RowAction::EditAsNew, i18n("Edit as New Message"), "document-edit"),
+                ]
+            },
             vec![
                 if m.starred {
                     item(RowAction::ToggleStar, i18n("Remove Star"), "hylki-non-starred")
@@ -14218,7 +14315,12 @@ impl AppModel {
         let restorable = kind.is_some_and(|k| matches!(k, FolderKind::Trash | FolderKind::Junk));
         self.message_list.emit(MessageListInput::SetRestorable(restorable));
         self.message_list.emit(MessageListInput::SetInJunk(kind == Some(FolderKind::Junk)));
-        self.message_list.emit(MessageListInput::SetInDrafts(kind == Some(FolderKind::Drafts)));
+        // A template is neither read nor unread either.
+        self.message_list.emit(MessageListInput::SetInDrafts(matches!(
+            kind,
+            Some(FolderKind::Drafts | FolderKind::Templates)
+        )));
+        self.message_list.emit(MessageListInput::SetInTemplates(kind == Some(FolderKind::Templates)));
         self.message_view.emit(MessageViewInput::SetDraftsView(kind == Some(FolderKind::Drafts)));
         self.selected = Some(SelectedFolder {
             account_id,
@@ -14706,6 +14808,14 @@ impl AppModel {
             .or_else(|| self.default_folder_path(account_id, FolderKind::Drafts).map(|p| (0, p)))
     }
 
+    /// The Templates folder a template of `account_id` is saved to (#360):
+    /// the existing one, else a default path the worker creates.
+    fn templates_target(&self, account_id: u32) -> Option<(u32, String)> {
+        self.folder_of_kind(account_id, FolderKind::Templates)
+            .map(|f| (f.id, f.path.clone()))
+            .or_else(|| self.default_folder_path(account_id, FolderKind::Templates).map(|p| (0, p)))
+    }
+
     /// Where a just-saved draft is, by its Message-ID, among the Drafts
     /// folder's messages the save has reloaded.
     fn find_draft(&self, account_id: u32, message_id: &str) -> Option<crate::models::DraftOrigin> {
@@ -14846,6 +14956,7 @@ impl AppModel {
             inline_files: Vec::new(),
             block_remote_images: false,
             resumed: false,
+            template: false,
         };
         // The Outbox stays the folder on screen: its list is still what's listed,
         // so its toolbar has to stay too. Leaving it would strand the user in a
@@ -14901,6 +15012,8 @@ impl AppModel {
             inline_files: Vec::new(),
             block_remote_images: false,
             resumed: true,
+            // A template that failed to save comes back cut loose from it.
+            template: false,
         };
         self.open_compose(account_id, prefill, sender);
     }
@@ -14982,6 +15095,9 @@ impl AppModel {
             path: self.resolve_folder_path(&m).unwrap_or_default(),
             uid: m.uid,
         });
+        // A template opened this way is being edited (#360): saving puts it
+        // back in Templates, and sending leaves it there.
+        prefill.template = self.folder_kind(m.account_id, m.folder_id) == Some(FolderKind::Templates);
         if inline {
             self.attachments.clear();
             self.attachments_loading = false;
@@ -15096,6 +15212,10 @@ impl AppModel {
             m.id,
             attachments.len()
         );
+        // A template (#360) is used as it was written: from the address it
+        // was saved with, and with the signature it already carries, none
+        // put above it again.
+        let template = self.folder_kind(m.account_id, m.folder_id) == Some(FolderKind::Templates);
         let prefill = self.quoting(
             &m,
             ComposePrefill {
@@ -15104,6 +15224,8 @@ impl AppModel {
                 subject: m.subject.clone(),
                 body_html: editable_copy_html(&m.body),
                 attachments,
+                from_address: if template { m.from_addr.clone() } else { String::new() },
+                resumed: template,
                 ..Default::default()
             },
         );
@@ -15306,6 +15428,7 @@ impl AppModel {
             .forward(sender.input_sender(), |out| match out {
                 ComposeOutput::Send(msg) => AppMsg::SendMessage(msg),
                 ComposeOutput::SaveDraft(msg) => AppMsg::SaveDraftMessage(msg),
+                ComposeOutput::SaveTemplate(msg) => AppMsg::SaveTemplateMessage(msg),
                 ComposeOutput::AutoSave { id, message } => AppMsg::AutoSaveDraft { id, message },
                 ComposeOutput::DiscardAutosave { id, origin } => AppMsg::DiscardAutosave { id, origin },
                 ComposeOutput::DeleteDraft { id, origin } => AppMsg::DeleteDraft { id, origin },
@@ -15634,6 +15757,45 @@ impl AppModel {
         }
     }
 
+    /// New Message from Template (#360): every template the app knows, to
+    /// start a message from.
+    fn show_template_picker(&self, sender: &ComponentSender<Self>) {
+        let mut templates = Vec::new();
+        for (account_id, folder) in self.templates_folders() {
+            let list = match self.message_cache.get(&(account_id, folder.id)) {
+                Some(l) => l.clone(),
+                None => self
+                    .cache
+                    .as_ref()
+                    .map(|c| c.load_messages(account_id, &folder.path, folder.id))
+                    .unwrap_or_default(),
+            };
+            let name = self.account_name(account_id);
+            templates.extend(list.into_iter().map(|m| (m, name.clone())));
+        }
+        templates.sort_by_key(|(m, _)| m.subject.to_lowercase());
+        let s = sender.clone();
+        show_message_picker(
+            self.window.upcast_ref(),
+            &i18n("New Message from Template"),
+            &i18n("The new message starts as a copy of the template you pick."),
+            &i18n("No templates yet. Save one from the composer's ⋯ menu with Save as Template."),
+            &i18n("Use Template"),
+            templates,
+            (),
+            move |(), template| s.input(AppMsg::TemplatePicked(template)),
+        );
+    }
+
+    /// Each account's Templates folder (#360), in account order.
+    fn templates_folders(&self) -> Vec<(u32, Folder)> {
+        let mut ids: Vec<u32> = self.folders.keys().copied().collect();
+        ids.sort_unstable();
+        ids.into_iter()
+            .filter_map(|id| Some((id, self.folder_of_kind(id, FolderKind::Templates)?.clone())))
+            .collect()
+    }
+
     /// The "Continue a Draft" picker over every draft the app knows.
     fn show_draft_picker(&self, hand_off: FileHandOff, sender: &ComponentSender<Self>) {
         let drafts = self.drafts_for_pick();
@@ -15648,6 +15810,19 @@ impl AppModel {
             hand_off,
             move |hand_off, draft| s.input(AppMsg::HandOffDraft { hand_off, draft }),
         );
+    }
+
+    /// Tell the reader which folders hold templates (#360), so a template's
+    /// card wears its banner.
+    fn push_template_folders(&self) {
+        let folders = self
+            .folders
+            .iter()
+            .flat_map(|(account_id, fs)| {
+                fs.iter().filter(|f| f.kind == FolderKind::Templates).map(move |f| (*account_id, f.id))
+            })
+            .collect();
+        self.message_view.emit(MessageViewInput::SetTemplateFolders(folders));
     }
 
     /// Each account's Drafts folder, in account order.
@@ -15684,7 +15859,8 @@ impl AppModel {
 
     /// Messages a reply could answer: what the reading pane shows first,
     /// then every account's Inbox (and the other folders listed this
-    /// session, Drafts, Sent, Junk and Trash left out), newest first.
+    /// session, Drafts, Templates, Sent, Junk and Trash left out), newest
+    /// first.
     fn messages_for_pick(&self) -> Vec<(Message, String)> {
         let mut seen: HashSet<(u32, u32)> = HashSet::new();
         let mut out = Vec::new();
@@ -15700,7 +15876,10 @@ impl AppModel {
             let Some(folders) = self.folders.get(&account_id) else { continue };
             let name = self.account_name(account_id);
             for f in folders {
-                if matches!(f.kind, FolderKind::Drafts | FolderKind::Sent | FolderKind::Junk | FolderKind::Trash) {
+                if matches!(
+                    f.kind,
+                    FolderKind::Drafts | FolderKind::Templates | FolderKind::Sent | FolderKind::Junk | FolderKind::Trash
+                ) {
                     continue;
                 }
                 let list = match self.message_cache.get(&(account_id, f.id)) {
@@ -17158,6 +17337,7 @@ impl AppModel {
             FolderKind::Trash => "Trash",
             FolderKind::Junk => "Junk",
             FolderKind::Drafts => "Drafts",
+            FolderKind::Templates => "Templates",
             _ => return None,
         };
         self.folders.get(&account_id)?; // require folders to be loaded
@@ -20656,6 +20836,7 @@ fn ctrl_shortcut_for(key: gtk::gdk::Key, shift: bool) -> Option<AppMsg> {
     use gtk::gdk::Key;
     match key {
         Key::n | Key::N if !shift => Some(AppMsg::Shortcut(Shortcut::Compose)),
+        Key::n | Key::N => Some(AppMsg::NewFromTemplate),
         Key::r | Key::R if !shift => Some(AppMsg::Shortcut(Shortcut::Reply)),
         Key::r | Key::R => Some(AppMsg::Shortcut(Shortcut::ReplyAll)),
         Key::u | Key::U if !shift => Some(AppMsg::ViewSource),
@@ -20700,6 +20881,7 @@ const SHORTCUT_HELP: &[(&str, &[(&str, &str)])] = &[
         i18n_noop("Writing"),
         &[
             ("c  or  Ctrl+N", i18n_noop("Compose")),
+            ("Ctrl+Shift+N", i18n_noop("New message from a template")),
             ("Ctrl+Enter", i18n_noop("Send the message you are writing")),
             ("Esc", i18n_noop("Back out of a reply and return to the list")),
             ("Ctrl+.  or  Ctrl+;", i18n_noop("Emoji chooser, at the cursor")),
@@ -21393,6 +21575,7 @@ fn sidebar_output_msg(out: SidebarOutput) -> AppMsg {
         }
         SidebarOutput::AddAccount => AppMsg::AddFirstAccount,
         SidebarOutput::ComposeRequested => AppMsg::Compose,
+        SidebarOutput::ComposeFromTemplateRequested => AppMsg::NewFromTemplate,
         SidebarOutput::Context(action) => AppMsg::SidebarContext(action),
         SidebarOutput::MoveMessages { dest_account, dest, items } => {
             AppMsg::DropMoveMessages { dest_account, dest, items }
@@ -21837,21 +22020,22 @@ fn remember_check() -> gtk::CheckButton {
     check
 }
 
-/// A dialog listing messages to pick one from (a draft to continue, a
-/// message to reply to) for handed-in files. `items` pairs each message
-/// with its account's name; a search box narrows them by sender, subject
-/// or account. `on_pick` gets the hand-off back with the choice, or
-/// `None` for "a new message instead"; Cancel drops the hand-off.
+/// A dialog listing messages to pick one from: a draft to continue or a
+/// message to reply to for handed-in files, or a template to start from
+/// (#360). `items` pairs each message with its account's name; a search box
+/// narrows them by sender, subject or account. `on_pick` gets `hand_off`
+/// back with the choice, or `None` for "a new message instead"; Cancel
+/// drops it.
 #[allow(clippy::too_many_arguments)]
-fn show_message_picker(
+fn show_message_picker<T: 'static>(
     parent: &gtk::Window,
     heading: &str,
     body: &str,
     empty_text: &str,
     pick_label: &str,
     items: Vec<(Message, String)>,
-    hand_off: FileHandOff,
-    on_pick: impl Fn(FileHandOff, Option<Message>) + 'static,
+    hand_off: T,
+    on_pick: impl Fn(T, Option<Message>) + 'static,
 ) {
     let dialog = adw::MessageDialog::new(Some(parent), Some(heading), Some(body));
     dialog.add_response("cancel", &i18n("Cancel"));
@@ -21951,7 +22135,7 @@ fn show_message_picker(
                     None => on_pick(hand_off, None),
                 }
             }
-            _ => tracing::info!("file hand-off: cancelled at the picker"),
+            _ => tracing::info!("message picker: cancelled"),
         }
     });
     dialog.present();
@@ -23040,8 +23224,8 @@ mod tests {
         assert!(matches!(ctrl_shortcut_for(Key::R, false), Some(AppMsg::Shortcut(Shortcut::Reply))));
         assert!(matches!(ctrl_shortcut_for(Key::R, true), Some(AppMsg::Shortcut(Shortcut::ReplyAll))));
         assert!(matches!(ctrl_shortcut_for(Key::u, false), Some(AppMsg::ViewSource)));
+        assert!(matches!(ctrl_shortcut_for(Key::N, true), Some(AppMsg::NewFromTemplate)));
         // Taken elsewhere, or not ours.
-        assert!(ctrl_shortcut_for(Key::N, true).is_none());
         assert!(ctrl_shortcut_for(Key::U, true).is_none());
         assert!(ctrl_shortcut_for(Key::f, false).is_none());
     }

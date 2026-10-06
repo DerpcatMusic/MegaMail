@@ -462,6 +462,9 @@ pub enum MailRequest {
         /// id comes back in [`WorkerEvent::DraftSaved`], and a failure is
         /// quiet, with the composer still open to try again.
         autosave: Option<u32>,
+        /// Saved as a template (#360): `path` is the Templates folder, and
+        /// the copy is filed as read mail rather than as a draft.
+        template: bool,
     },
     /// Re-ask the server for every folder's unread count and answer with one
     /// [`WorkerEvent::FolderUnread`] per folder. Cheap (STATUS only — no message
@@ -913,9 +916,10 @@ fn serve_cached_body(
 /// which is what lets the reader fetch a related message's body and say which
 /// folder it came from. Deleting or binning a message is a decision about it,
 /// so Trash and Junk copies are left out: a conversation shouldn't quietly put
-/// them back on screen.
+/// them back on screen. A template is no part of any conversation (#360).
 fn related_from_cache(cache: &Cache, account_id: u32, ids: &[String]) -> Vec<Message> {
-    related_in(cache, account_id, &cache.load_folders(account_id), ids, &[FolderKind::Trash, FolderKind::Junk])
+    let skipped = [FolderKind::Trash, FolderKind::Junk, FolderKind::Templates];
+    related_in(cache, account_id, &cache.load_folders(account_id), ids, &skipped)
 }
 
 /// [`related_from_cache`] over an already loaded folder list, leaving out the
@@ -956,7 +960,7 @@ fn thread_summaries_with_members(
         return summaries;
     }
     let folders = cache.load_folders(account_id);
-    let skipped = [FolderKind::Trash, FolderKind::Junk, FolderKind::Drafts];
+    let skipped = [FolderKind::Trash, FolderKind::Junk, FolderKind::Drafts, FolderKind::Templates];
     for (tag, summary) in &mut summaries {
         if summary.count < 2 {
             continue;
@@ -2621,9 +2625,9 @@ async fn run_imap(
                 .await;
             }
 
-            MailRequest::SaveDraft { message, folder_id, path, autosave } => {
+            MailRequest::SaveDraft { message, folder_id, path, autosave, template } => {
                 if autosave.is_none() {
-                    emit(WorkerEvent::Status(i18n("Saving draft…")));
+                    emit(WorkerEvent::Status(saving_text(template)));
                 }
                 // A draft is kept as written: signing and encrypting happen
                 // at send time (#133).
@@ -2635,7 +2639,7 @@ async fn run_imap(
                         let raw = email.formatted();
                         let append_res = {
                             let sess = session.as_mut().unwrap();
-                            let r = append_draft(sess, &path, &raw).await;
+                            let r = append_draft(sess, &path, &raw, template).await;
                             // Replace the previous version of this draft (same account).
                             if r.is_ok() {
                                 if let Some(o) = &message.draft_origin {
@@ -2673,20 +2677,23 @@ async fn run_imap(
                                 }
                                 // Saved as a draft instead of sent: the queued
                                 // copy it was edited from is now superseded.
-                                drop_superseded_outbox(cache.as_ref(), account_id, &message, &emit);
+                                // A template is a copy, and supersedes nothing.
+                                if !template {
+                                    drop_superseded_outbox(cache.as_ref(), account_id, &message, &emit);
+                                }
                                 emit(WorkerEvent::Status(String::new()));
                                 emit(WorkerEvent::DraftSaved { autosave, message_id: Some(message_id) });
                             }
                             Err(e) => {
                                 emit(WorkerEvent::Status(String::new()));
-                                draft_not_saved(autosave, e.to_string(), message.clone(), &emit);
+                                draft_not_saved(autosave, template, e.to_string(), message.clone(), &emit);
                                 lost = true;
                             }
                         }
                     }
                     Err(e) => {
                         emit(WorkerEvent::Status(String::new()));
-                        draft_not_saved(autosave, e.to_string(), message, &emit);
+                        draft_not_saved(autosave, template, e.to_string(), message, &emit);
                     }
                 }
             }
@@ -3333,15 +3340,17 @@ struct FolderWatch {
 }
 
 /// Whether a folder may hold a dynamic watcher slot. The Inbox is out because
-/// it has a permanent watcher; Sent and Drafts because changes there are the
-/// user's own doing; Trash and Junk because nobody needs to-the-second unread
-/// counts on either — the periodic sweep keeps them honest.
+/// it has a permanent watcher; Sent, Drafts and Templates because changes
+/// there are the user's own doing; Trash and Junk because nobody needs
+/// to-the-second unread counts on either — the periodic sweep keeps them
+/// honest.
 fn watchable(kind: FolderKind) -> bool {
     !matches!(
         kind,
         FolderKind::Inbox
             | FolderKind::Sent
             | FolderKind::Drafts
+            | FolderKind::Templates
             | FolderKind::Trash
             | FolderKind::Junk
     )
@@ -4332,14 +4341,36 @@ fn draft_message_id(email: &LettreMessage) -> String {
 /// A draft that could not be saved: said, and handed back to be opened
 /// again (#340), unless the composer was saving it on its own and is
 /// still open, in which case it just tries again later.
-fn draft_not_saved(autosave: Option<u32>, why: String, message: OutgoingMessage, emit: &impl Fn(WorkerEvent)) {
+fn draft_not_saved(
+    autosave: Option<u32>,
+    template: bool,
+    why: String,
+    message: OutgoingMessage,
+    emit: &impl Fn(WorkerEvent),
+) {
     if autosave.is_some() {
         tracing::info!("automatic draft save failed: {why}");
         emit(WorkerEvent::DraftSaved { autosave, message_id: None });
         return;
     }
+    if template {
+        emit(WorkerEvent::error(i18n_f("Could not save template: {e}", &[("e", &why)])));
+        // Save as Template leaves its composer open, with nothing to give
+        // back. An edited template's composer has closed: the text returns
+        // as a new message, cut loose from the template, so that saving it
+        // cannot put a draft in the template's place.
+        if message.draft_origin.is_some() {
+            emit(WorkerEvent::Unsent(Box::new(OutgoingMessage { draft_origin: None, ..message })));
+        }
+        return;
+    }
     emit(WorkerEvent::error(i18n_f("Could not save draft: {e}", &[("e", &why)])));
     emit(WorkerEvent::Unsent(Box::new(message)));
+}
+
+/// What the status line says while a draft, or a template, is saved.
+fn saving_text(template: bool) -> String {
+    if template { i18n("Saving template…") } else { i18n("Saving draft…") }
 }
 
 /// Rebuild the SMTP envelope stored alongside a queued message.
@@ -5240,17 +5271,18 @@ async fn append_draft(
     session: &mut ImapSession,
     path: &str,
     raw: &[u8],
+    template: bool,
 ) -> Result<(), async_imap::error::Error> {
-    if append_msg(session, path, Some("(\\Draft \\Seen)"), raw)
-        .await
-        .is_ok()
-    {
+    // A template (#360) is no draft: another client would offer to finish
+    // and send it rather than start a message from it.
+    let flags = if template { "(\\Seen)" } else { "(\\Draft \\Seen)" };
+    if append_msg(session, path, Some(flags), raw).await.is_ok() {
         return Ok(());
     }
     // Folder likely doesn't exist — create it and retry.
     let _ = create_box(session, path).await;
     let _ = subscribe_box(session, path).await;
-    append_msg(session, path, Some("(\\Draft \\Seen)"), raw).await
+    append_msg(session, path, Some(flags), raw).await
 }
 
 /// Delete a superseded draft (the previous version being replaced or sent):
@@ -9439,6 +9471,7 @@ fn classify_with_source(path: &str, delimiter: Option<&str>, attrs: &[NameAttrib
     let kind = match leaf.as_str() {
         "sent" | "sent items" | "sent mail" => FolderKind::Sent,
         "drafts" => FolderKind::Drafts,
+        name if crate::models::is_templates_name(name) => FolderKind::Templates,
         "trash" | "deleted" | "deleted items" | "bin" => FolderKind::Trash,
         "junk" | "spam" => FolderKind::Junk,
         "archive" | "all mail" => FolderKind::Archive,
@@ -9453,11 +9486,12 @@ pub(crate) fn folder_order(kind: FolderKind) -> u8 {
         FolderKind::Inbox => 0,
         FolderKind::Starred => 1,
         FolderKind::Drafts => 2,
-        FolderKind::Sent => 3,
-        FolderKind::Archive => 4,
-        FolderKind::Junk => 5,
-        FolderKind::Trash => 6,
-        FolderKind::Custom => 7,
+        FolderKind::Templates => 3,
+        FolderKind::Sent => 4,
+        FolderKind::Archive => 5,
+        FolderKind::Junk => 6,
+        FolderKind::Trash => 7,
+        FolderKind::Custom => 8,
     }
 }
 
@@ -10198,6 +10232,23 @@ mod tests {
     }
 
     #[test]
+    fn a_templates_folder_is_found_by_name() {
+        // #360: no SPECIAL-USE attribute marks one.
+        let kind = |p: &str, d: &str| classify_with_source(p, Some(d), &[]).0;
+        assert_eq!(kind("Templates", "/"), FolderKind::Templates);
+        assert_eq!(kind("INBOX.Templates", "."), FolderKind::Templates);
+        assert_eq!(kind("template", "/"), FolderKind::Templates);
+        assert_eq!(kind("Projects/Templates", "/"), FolderKind::Custom);
+        // Listed right after Drafts, ahead of Sent.
+        assert!(folder_order(FolderKind::Drafts) < folder_order(FolderKind::Templates));
+        assert!(folder_order(FolderKind::Templates) < folder_order(FolderKind::Sent));
+        assert!(folder_order(FolderKind::Templates) < folder_order(FolderKind::Custom));
+        // Nothing waits on it, and no conversation reaches into it.
+        assert!(!watchable(FolderKind::Templates));
+        assert!(!chip_counts_all(FolderKind::Templates));
+    }
+
+    #[test]
     fn envelope_names_lose_the_quotes_a_server_kept() {
         // #312: the name as imap-proto hands it back, escapes and all.
         let name = clean_display_name(&decode_header(&unescape_quoted(br#"\"Sender Name\""#)));
@@ -10352,7 +10403,7 @@ NIL NIL NIL NIL NIL NIL NIL))\r\n";
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
             let mut sess = connect(&account).await.expect("connect");
-            append_draft(&mut sess, "Drafts", &raw).await.expect("append");
+            append_draft(&mut sess, "Drafts", &raw, false).await.expect("append");
             let listed = load_messages(7, &mut sess, 1, "Drafts", true, None).await.expect("load");
             let uid = listed.iter().find(|m| m.subject == subject).expect("listed").uid;
             let back = load_raw(&mut sess, "Drafts", uid).await.expect("raw");
@@ -10365,6 +10416,48 @@ NIL NIL NIL NIL NIL NIL NIL))\r\n";
             assert_eq!(e.attachments.len(), 1);
         });
         std::fs::remove_file(&file).ok();
+    }
+
+    /// #360 against a real server: a template goes into a Templates folder
+    /// the save makes, as read mail and no draft.
+    /// `IMAP_LIVE=host,port,user,password cargo test live_template -- --ignored`
+    #[test]
+    #[ignore]
+    fn live_template_is_saved_as_read_mail() {
+        let Ok(spec) = std::env::var("IMAP_LIVE") else { return };
+        let p: Vec<&str> = spec.splitn(4, ',').collect();
+        let account = AccountConfig {
+            imap_host: p[0].into(),
+            imap_port: p[1].parse().expect("port"),
+            username: p[2].into(),
+            password: p[3].into(),
+            security: Some(crate::config::ServerSecurity {
+                imap_starttls: false,
+                imap_accept_invalid_certs: true,
+                ..Default::default()
+            }),
+            ..sample_account()
+        };
+        let folder = format!("Templates-{}", std::process::id());
+        let subject = format!("hylki-360-{}", std::process::id());
+        let msg = OutgoingMessage { subject: subject.clone(), html: "<p>template text</p>".into(), ..sample_outgoing() };
+        let raw = build_draft(&account, &msg).expect("builds").formatted();
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let mut sess = connect(&account).await.expect("connect");
+            append_draft(&mut sess, &folder, &raw, true).await.expect("append makes the folder");
+            let listed = load_messages(7, &mut sess, 1, &folder, true, None).await.expect("load");
+            let uid = listed.iter().find(|m| m.subject == subject).expect("listed").uid;
+            sel(&mut sess, &folder).await.expect("select");
+            let fetches: Vec<Fetch> =
+                fetch_uids(&mut sess, uid.to_string(), "(UID FLAGS)").await.expect("fetch").try_collect().await.expect("fetch");
+            let flags: Vec<String> = fetches.iter().flat_map(|f| f.flags()).map(|f| format!("{f:?}")).collect();
+            println!("template {uid}: flags {flags:?}");
+            assert!(flags.iter().any(|f| f == "Seen"), "{flags:?}");
+            assert!(!flags.iter().any(|f| f == "Draft"), "{flags:?}");
+            let _ = sess.close().await;
+            delete_box(&mut sess, &folder).await.expect("clean up");
+        });
     }
 
     #[test]

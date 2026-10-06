@@ -202,7 +202,13 @@ fn graph_list_folders(
         let Some(gid) = v["id"].as_str() else { continue };
         let name = v["displayName"].as_str().unwrap_or("?").to_string();
         let path = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
-        let kind = roles.get(gid).copied().unwrap_or(FolderKind::Custom);
+        let kind = match roles.get(gid) {
+            Some(kind) => *kind,
+            // No well-known folder is for templates (#360): a top-level
+            // one goes by name.
+            None if prefix.is_empty() && crate::models::is_templates_name(&name) => FolderKind::Templates,
+            None => FolderKind::Custom,
+        };
         if v["childFolderCount"].as_i64().unwrap_or(0) > 0 && depth < 4 && out.len() < 400 {
             if let Ok(children) = graph_paged(
                 token,
@@ -941,9 +947,30 @@ pub(super) async fn run_graph(
                 }
             }
 
-            MailRequest::SaveDraft { message, folder_id, path, autosave } => {
+            MailRequest::SaveDraft { message, folder_id, path, autosave, template } => {
                 if autosave.is_none() {
-                    emit(WorkerEvent::Status(i18n("Saving draft…")));
+                    emit(WorkerEvent::Status(saving_text(template)));
+                }
+                // A template (#360) is made where every new message is, in
+                // Drafts, and moved on: so its folder is first made if the
+                // account has none, and found by its Graph id.
+                let mut folder_id = folder_id;
+                let mut template_gid = None;
+                if template {
+                    if !state.folders.contains_key(&path) {
+                        if let Some(token) = graph_token(&account, &emit).await {
+                            let (t, url) = (token.clone(), format!("{GRAPH_BASE}/me/mailFolders"));
+                            let body = serde_json::json!({ "displayName": path });
+                            match blocking(move || graph_send_json(&t, "POST", &url, &body)).await {
+                                Ok(_) => refresh_graph_folders(&token, account_id, cache.as_ref(), &mut state, &emit).await,
+                                Err(e) => tracing::warn!("graph: could not create {path}: {e}"),
+                            }
+                        }
+                    }
+                    if let Some((id, gid)) = state.folders.get(&path) {
+                        folder_id = *id;
+                        template_gid = Some(gid.clone());
+                    }
                 }
                 let mut message = OutgoingMessage { sign: false, encrypt: false, ..*message };
                 restore_msgid_case(cache.as_ref(), &mut message);
@@ -959,6 +986,18 @@ pub(super) async fn run_graph(
                                 let r = blocking(move || {
                                     graph_post_mime(&t, &url, &raw)
                                 }).await;
+                                let r = match (r, &template_gid) {
+                                    (Ok(created), Some(dest)) => match created["id"].as_str() {
+                                        Some(gid) => {
+                                            let (t, url) = (token.clone(), format!("{GRAPH_BASE}/me/messages/{gid}/move"));
+                                            let body = serde_json::json!({ "destinationId": dest });
+                                            blocking(move || graph_send_json(&t, "POST", &url, &body)).await
+                                        }
+                                        None => Err("the new message has no id".to_string()),
+                                    },
+                                    (Ok(_), None) if template => Err(i18n("unknown folder")),
+                                    (r, _) => r,
+                                };
                                 match r {
                                     Ok(_) => {
                                         // Replace the previous version of this draft.
@@ -999,7 +1038,7 @@ pub(super) async fn run_graph(
                 emit(WorkerEvent::Status(String::new()));
                 match saved {
                     Some(id) => emit(WorkerEvent::DraftSaved { autosave, message_id: Some(id) }),
-                    None => draft_not_saved(autosave, why, message, &emit),
+                    None => draft_not_saved(autosave, template, why, message, &emit),
                 }
             }
 
