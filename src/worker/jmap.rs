@@ -484,7 +484,12 @@ fn jmap_list_folders(
         names.reverse();
         let path = names.join("/");
         let name = names.last().cloned().unwrap_or_default();
-        let kind = m["role"].as_str().map(role_kind).unwrap_or(FolderKind::Custom);
+        let kind = match m["role"].as_str().map(role_kind) {
+            Some(kind) => kind,
+            // No role names templates (#360): a top-level one goes by name.
+            None if names.len() == 1 && crate::models::is_templates_name(&name) => FolderKind::Templates,
+            None => FolderKind::Custom,
+        };
         let count = |field: &str| m[field].as_i64().unwrap_or(0).max(0) as u32;
         counts.insert(id.to_string(), (count("totalEmails"), count("unreadEmails")));
         out.push(JmapFolder {
@@ -1392,6 +1397,31 @@ fn jmap_import_draft(s: &JmapSession, raw: &[u8], drafts_mailbox: &str) -> Resul
     jmap_import(s, raw, drafts_mailbox, serde_json::json!({ "$draft": true, "$seen": true }))
 }
 
+/// Import a template (#360): read mail, not a draft, which another client
+/// would offer to finish and send.
+fn jmap_import_template(s: &JmapSession, raw: &[u8], mailbox: &str) -> Result<String, String> {
+    jmap_import(s, raw, mailbox, serde_json::json!({ "$seen": true }))
+}
+
+/// Create a mailbox called `name` under `parent` (the top when `None`).
+/// Returns its id.
+fn jmap_create_mailbox(s: &JmapSession, name: &str, parent: Option<&str>) -> Result<String, String> {
+    let r = jmap_call(
+        s,
+        &[CAP_CORE, CAP_MAIL],
+        vec![call(0, "Mailbox/set", serde_json::json!({
+            "accountId": s.account,
+            "create": { "c": { "name": name, "parentId": parent } },
+        }))],
+    )?;
+    let r = args(&r, 0);
+    match r["created"]["c"]["id"].as_str() {
+        Some(id) => Ok(id.to_string()),
+        None if r["created"]["c"].is_object() => Ok(String::new()),
+        None => Err(r["notCreated"]["c"]["description"].as_str().unwrap_or("the server refused").to_string()),
+    }
+}
+
 /// Upload a message's bytes and import them into `mailbox` with
 /// `keywords`: a draft being saved, or mail moved in from another account
 /// (#265).
@@ -2083,25 +2113,9 @@ pub(super) async fn run_jmap(
                     None => (None, path.clone()),
                 };
                 let sess = s.clone();
-                let r = blocking(move || {
-                    let r = jmap_call(
-                        &sess,
-                        &[CAP_CORE, CAP_MAIL],
-                        vec![call(0, "Mailbox/set", serde_json::json!({
-                            "accountId": sess.account,
-                            "create": { "c": { "name": name, "parentId": parent } },
-                        }))],
-                    )?;
-                    let r = args(&r, 0);
-                    if r["created"]["c"].is_object() {
-                        Ok(())
-                    } else {
-                        Err(r["notCreated"]["c"]["description"].as_str().unwrap_or("the server refused").to_string())
-                    }
-                })
-                .await;
+                let r = blocking(move || jmap_create_mailbox(&sess, &name, parent.as_deref())).await;
                 match r {
-                    Ok(()) => refresh_jmap_folders(&s, account_id, cache.as_ref(), &mut state, &emit).await,
+                    Ok(_) => refresh_jmap_folders(&s, account_id, cache.as_ref(), &mut state, &emit).await,
                     Err(e) => emit(WorkerEvent::error(i18n_f("Could not create folder: {e}", &[("e", &e)]))),
                 }
             }
@@ -2181,9 +2195,9 @@ pub(super) async fn run_jmap(
                 }
             }
 
-            MailRequest::SaveDraft { message, folder_id, path, autosave } => {
+            MailRequest::SaveDraft { message, folder_id, path, autosave, template } => {
                 if autosave.is_none() {
-                    emit(WorkerEvent::Status(i18n("Saving draft…")));
+                    emit(WorkerEvent::Status(saving_text(template)));
                 }
                 let mut message = OutgoingMessage { sign: false, encrypt: false, ..*message };
                 restore_msgid_case(cache.as_ref(), &mut message);
@@ -2194,11 +2208,32 @@ pub(super) async fn run_jmap(
                         let message_id = draft_message_id(&email);
                         let raw = email.formatted();
                         if let Some(s) = jmap_session(&account, &mut state, &emit).await {
-                            let mailbox_id = state.folders.get(&path).map(|(_, id)| id.clone());
+                            let mut mailbox_id = state.folders.get(&path).map(|(_, id)| id.clone());
+                            // The first template of an account with no
+                            // Templates folder makes one, as IMAP's APPEND does.
+                            if mailbox_id.is_none() && template {
+                                let (sess, name) = (s.clone(), path.clone());
+                                match blocking(move || jmap_create_mailbox(&sess, &name, None)).await {
+                                    Ok(_) => {
+                                        refresh_jmap_folders(&s, account_id, cache.as_ref(), &mut state, &emit).await;
+                                        mailbox_id = state.folders.get(&path).map(|(_, id)| id.clone());
+                                    }
+                                    Err(e) => tracing::warn!("jmap: could not create {path}: {e}"),
+                                }
+                            }
+                            // The listing just made numbers the new folder.
+                            let folder_id = state.folders.get(&path).map(|(id, _)| *id).unwrap_or(folder_id);
                             match mailbox_id {
                                 Some(mailbox_id) => {
                                     let sess = s.clone();
-                                    match blocking(move || jmap_import_draft(&sess, &raw, &mailbox_id)).await {
+                                    let import = move || {
+                                        if template {
+                                            jmap_import_template(&sess, &raw, &mailbox_id)
+                                        } else {
+                                            jmap_import_draft(&sess, &raw, &mailbox_id)
+                                        }
+                                    };
+                                    match blocking(import).await {
                                         Ok(_) => {
                                             if let Some(o) = message.draft_origin.clone() {
                                                 jmap_drop_draft_origin(&s, account_id, &o, cache.as_ref(), &mut state).await;
@@ -2222,7 +2257,7 @@ pub(super) async fn run_jmap(
                 emit(WorkerEvent::Status(String::new()));
                 match saved {
                     Some(id) => emit(WorkerEvent::DraftSaved { autosave, message_id: Some(id) }),
-                    None => draft_not_saved(autosave, why, message, &emit),
+                    None => draft_not_saved(autosave, template, why, message, &emit),
                 }
             }
 
@@ -2619,6 +2654,52 @@ mod tests {
         let sid = jmap_submit(&s, msg.as_bytes(), &me, &[me.clone()], &sent.mailbox_id).expect("submit");
         assert!(jmap_list_messages(&s, &sent.mailbox_id, 1, 0).expect("sent").iter().any(|(_, i, _)| i == &sid));
         println!("submitted {sid}");
+    }
+
+    /// A template (#360), with `JMAP_LIVE` as for [`live`]: a top-level
+    /// Templates mailbox the save makes is taken for the role by its name,
+    /// and the template in it is read mail, not a draft. Leaves the account
+    /// as it was.
+    #[test]
+    #[ignore]
+    fn live_template() {
+        let Ok(spec) = std::env::var("JMAP_LIVE") else { return };
+        let mut parts = spec.splitn(3, ',');
+        let acc = AccountConfig {
+            imap_host: parts.next().unwrap_or_default().into(),
+            imap_port: 443,
+            username: parts.next().unwrap_or_default().into(),
+            password: parts.next().unwrap_or_default().into(),
+            jmap_token: std::env::var_os("JMAP_LIVE_TOKEN").is_some(),
+            ..sample_account()
+        };
+        let s = jmap_connect(&acc).expect("session");
+        let before = jmap_list_folders(&s, 1, &BTreeMap::new()).expect("folders");
+        assert!(!before.iter().any(|f| f.folder.path == "Templates"), "start without one");
+        let made = jmap_create_mailbox(&s, "Templates", None).expect("create");
+        let folders = jmap_list_folders(&s, 1, &BTreeMap::new()).expect("folders");
+        let templates = folders.iter().find(|f| f.folder.path == "Templates").expect("listed");
+        assert_eq!(templates.folder.kind, FolderKind::Templates);
+        assert_eq!(templates.mailbox_id, made);
+        let raw = b"From: me <me@example.test>\r\nSubject: template\r\n\r\nbody\r\n";
+        let id = jmap_import_template(&s, raw, &templates.mailbox_id).expect("import");
+        let responses = jmap_call(
+            &s,
+            &[CAP_CORE, CAP_MAIL],
+            vec![call(0, "Email/get", serde_json::json!({ "accountId": s.account, "ids": [id], "properties": ["keywords"] }))],
+        )
+        .expect("get");
+        let keywords = args(&responses, 0)["list"][0]["keywords"].clone();
+        println!("template keywords {keywords}");
+        assert_eq!(keywords["$seen"], serde_json::json!(true));
+        assert!(keywords.get("$draft").is_none());
+        jmap_destroy_all(&s, &[id]).expect("drop template");
+        jmap_call(
+            &s,
+            &[CAP_CORE, CAP_MAIL],
+            vec![call(0, "Mailbox/set", serde_json::json!({ "accountId": s.account, "destroy": [made] }))],
+        )
+        .expect("drop mailbox");
     }
 
     /// The server's identities (#346), with `JMAP_LIVE` as for [`live`]:

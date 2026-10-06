@@ -236,6 +236,9 @@ pub struct ComposePrefill {
     /// worker handed back unsent): it already has its blank line and its
     /// signature. Drafts and queued messages count as this without it.
     pub resumed: bool,
+    /// Editing a template (#360): `draft_origin` is where it is kept, and
+    /// saving puts it back there rather than in Drafts.
+    pub template: bool,
 }
 
 /// Everything the compose pane needs to open.
@@ -314,6 +317,9 @@ pub struct Compose {
     references: String,
     /// When editing an existing draft, its origin (replaced on save/send).
     draft_origin: Option<DraftOrigin>,
+    /// Editing a template (#360), kept at `draft_origin`: Save puts it back,
+    /// and Send leaves it where it is.
+    template: bool,
     /// Stable id the app uses to track this composer across host moves.
     compose_id: u32,
     /// Currently shown as a standalone window (drives the toggle-button icon).
@@ -506,8 +512,11 @@ pub enum ComposeInput {
     SendBody { html: String, text: String, to: String, cc: String, bcc: String, reply_to: String, subject: String, from_account_id: u32, from_alias: Option<String> },
     /// Save the current message to Drafts.
     SaveDraft,
-    /// The editor content came back — finish saving the draft.
-    SaveDraftBody { html: String, text: String, to: String, cc: String, bcc: String, reply_to: String, subject: String, from_account_id: u32, from_alias: Option<String> },
+    /// Save a copy of the message as a template (#360), and go on writing.
+    SaveAsTemplate,
+    /// The editor content came back — finish saving the draft, or the copy
+    /// kept as a template.
+    SaveDraftBody { html: String, text: String, to: String, cc: String, bcc: String, reply_to: String, subject: String, from_account_id: u32, from_alias: Option<String>, as_template: bool },
     /// The automatic save's tick (#340), then, once anything was edited,
     /// the fields and body read for it.
     AutoSave,
@@ -580,6 +589,9 @@ pub enum ComposeOutput {
     Send(Box<OutgoingMessage>),
     /// Save the message to the Drafts folder (no send).
     SaveDraft(Box<OutgoingMessage>),
+    /// Save the message to the Templates folder (#360), replacing the
+    /// template at its `draft_origin` if it has one.
+    SaveTemplate(Box<OutgoingMessage>),
     /// Delete the draft this composer was opened from, and close it. The app
     /// moves the draft to Trash (undoable, like deleting it from the list).
     DeleteDraft { id: u32, origin: DraftOrigin },
@@ -643,10 +655,43 @@ impl Component for Compose {
                         },
                         // Save Draft stays, label and all, however narrow the
                         // pane: it is the one action worth a click in a hurry.
-                        pack_start = &gtk::Button {
-                            set_label: &i18n("Save Draft"),
-                            set_tooltip_text: Some(i18n("Save to Drafts").as_str()),
-                            connect_clicked => ComposeInput::SaveDraft,
+                        // Save as Template (#360) beside it, as Send Later
+                        // is beside Send; a template being edited has the
+                        // one way to be saved.
+                        pack_start = &gtk::Box {
+                            add_css_class: "linked",
+                            gtk::Button {
+                                set_label: &if model.template { i18n("Save Template") } else { i18n("Save Draft") },
+                                set_tooltip_text: Some(
+                                    if model.template { i18n("Save to Templates") } else { i18n("Save to Drafts") }.as_str()
+                                ),
+                                connect_clicked => ComposeInput::SaveDraft,
+                            },
+                            gtk::MenuButton {
+                                set_icon_name: "pan-down-symbolic",
+                                set_tooltip_text: Some(i18n("More ways to save").as_str()),
+                                set_can_focus: false,
+                                set_visible: !model.template,
+                                #[wrap(Some)]
+                                set_popover = &gtk::Popover {
+                                    gtk::Box {
+                                        set_orientation: gtk::Orientation::Vertical,
+                                        add_css_class: "context-menu-list",
+                                        gtk::Button {
+                                            add_css_class: "flat",
+                                            add_css_class: "context-menu-item",
+                                            set_halign: gtk::Align::Fill,
+                                            set_tooltip_text: Some(i18n("Keep a copy in Templates to start new messages from").as_str()),
+                                            #[wrap(Some)]
+                                            set_child = &gtk::Label { set_label: &i18n("Save as Template"), set_halign: gtk::Align::Start },
+                                            connect_clicked[sender] => move |b| {
+                                                b.ancestor(gtk::Popover::static_type()).and_downcast::<gtk::Popover>().map(|p| p.popdown());
+                                                sender.input(ComposeInput::SaveAsTemplate);
+                                            },
+                                        },
+                                    },
+                                },
+                            },
                         },
                         // Only while editing an existing draft: the message is
                         // moved to Trash, not saved, and the editor closes.
@@ -654,7 +699,7 @@ impl Component for Compose {
                             set_label: &i18n("Delete Draft"),
                             set_tooltip_text: Some(i18n("Move this draft to Trash").as_str()),
                             #[watch]
-                            set_visible: model.draft_origin.is_some() && !model.narrow,
+                            set_visible: model.draft_origin.is_some() && !model.template && !model.narrow,
                             connect_clicked => ComposeInput::DeleteDraft,
                         },
                         // Send, with Send Later beside it (#145): presets, or a
@@ -977,6 +1022,7 @@ impl Component for Compose {
         let in_reply_to = prefill.in_reply_to.clone();
         let references = prefill.references.clone();
         let draft_origin = prefill.draft_origin.clone();
+        let template = prefill.template && draft_origin.is_some();
         let outbox_origin = prefill.outbox_origin;
         let prefill_attachments = prefill.attachments.clone();
         let handed_files = !prefill_attachments.is_empty() && draft_origin.is_none() && outbox_origin.is_none();
@@ -1134,6 +1180,7 @@ impl Component for Compose {
             in_reply_to,
             references,
             draft_origin,
+            template,
             outbox_origin,
             compose_id,
             windowed,
@@ -1160,7 +1207,9 @@ impl Component for Compose {
             autosaved: None,
             autosave_pending: None,
             autosave_made: false,
-            autosave_off: false,
+            // A template is saved when its editor says so: an automatic save
+            // would put the half-edited one in its place.
+            autosave_off: template,
             tr_subject: None,
             preview_btn,
             preview_content,
@@ -1652,7 +1701,7 @@ impl Component for Compose {
                 }
                 self.asking_discard = true;
                 let parent = root.root().and_downcast::<gtk::Window>();
-                confirm_discard_dialog(parent.as_ref(), sender.input_sender().clone());
+                confirm_discard_dialog(parent.as_ref(), self.template, sender.input_sender().clone());
             }
 
             ComposeInput::KeepEditing => self.asking_discard = false,
@@ -1695,8 +1744,15 @@ impl Component for Compose {
                     MenuEntry::new(&label, move || s.input(msg()))
                         .icon(&format!("{icon}-symbolic"))
                 };
-                let mut drafts = vec![entry(i18n("Save Draft"), "document-save", || ComposeInput::SaveDraft)];
-                if self.draft_origin.is_some() {
+                let mut drafts = if self.template {
+                    vec![entry(i18n("Save Template"), "document-save", || ComposeInput::SaveDraft)]
+                } else {
+                    vec![
+                        entry(i18n("Save Draft"), "document-save", || ComposeInput::SaveDraft),
+                        entry(i18n("Save as Template"), "folder-templates", || ComposeInput::SaveAsTemplate),
+                    ]
+                };
+                if self.draft_origin.is_some() && !self.template {
                     drafts.push(entry(i18n("Delete Draft"), "user-trash", || ComposeInput::DeleteDraft));
                 }
                 let mut attach = vec![entry(i18n("Attach files"), "mail-attachment", || ComposeInput::AttachFiles)];
@@ -2688,13 +2744,19 @@ impl Component for Compose {
 
             ComposeInput::SendBody { html, text, to, cc, bcc, reply_to, subject, from_account_id, from_alias } => {
                 let (html, text) = self.outgoing_body(html, text);
-                let out = self
+                let mut out = self
                     .build_outgoing(from_account_id, from_alias, to, cc, bcc, reply_to, subject, text, html);
+                // A draft goes once it is sent; a template stays to be used
+                // again.
+                if self.template {
+                    out.draft_origin = None;
+                }
                 let _ = sender.output(ComposeOutput::Send(Box::new(out)));
                 let _ = sender.output(ComposeOutput::Close(self.compose_id));
             }
 
-            ComposeInput::SaveDraft => {
+            msg @ (ComposeInput::SaveDraft | ComposeInput::SaveAsTemplate) => {
+                let as_template = matches!(msg, ComposeInput::SaveAsTemplate);
                 // A draft can be saved without recipients; just capture the fields.
                 let to = widgets.to_row.text().trim().to_string();
                 let cc = widgets.cc_row.text().trim().to_string();
@@ -2720,15 +2782,33 @@ impl Component for Compose {
                         subject: subject.clone(),
                         from_account_id,
                         from_alias: from_alias.clone(),
+                        as_template,
                     });
                 });
             }
 
-            ComposeInput::SaveDraftBody { html, text, to, cc, bcc, reply_to, subject, from_account_id, from_alias } => {
+            ComposeInput::SaveDraftBody { html, text, to, cc, bcc, reply_to, subject, from_account_id, from_alias, as_template } => {
                 let (html, text) = self.outgoing_body(html, text);
-                let out = self
+                let mut out = self
                     .build_outgoing(from_account_id, from_alias, to, cc, bcc, reply_to, subject, text, html);
-                let _ = sender.output(ComposeOutput::SaveDraft(Box::new(out)));
+                if as_template {
+                    // A copy, cut loose from wherever this message came
+                    // from: saving it replaces no draft and no queued
+                    // message, and a message started from it answers
+                    // nothing and waits for no time.
+                    out.draft_origin = None;
+                    out.outbox_origin = None;
+                    out.in_reply_to.clear();
+                    out.references.clear();
+                    out.send_at = None;
+                    let _ = sender.output(ComposeOutput::SaveTemplate(Box::new(out)));
+                    break 'handle;
+                }
+                if self.template {
+                    let _ = sender.output(ComposeOutput::SaveTemplate(Box::new(out)));
+                } else {
+                    let _ = sender.output(ComposeOutput::SaveDraft(Box::new(out)));
+                }
                 let _ = sender.output(ComposeOutput::Close(self.compose_id));
             }
 
@@ -3448,15 +3528,24 @@ impl Compose {
 /// Save the edited message, discard it, or go back to it. Escape answers
 /// Keep Editing, so a second press never discards what the first one asked
 /// about (#290).
-fn confirm_discard_dialog(parent: Option<&gtk::Window>, sender: relm4::Sender<ComposeInput>) {
-    let dialog = adw::MessageDialog::new(
-        parent,
-        Some(i18n("Save the message?").as_str()),
-        Some(i18n("It has not been sent. Save it to Drafts to finish later, or discard it.").as_str()),
-    );
+fn confirm_discard_dialog(parent: Option<&gtk::Window>, template: bool, sender: relm4::Sender<ComposeInput>) {
+    let (heading, body, save) = if template {
+        (
+            i18n("Save the template?"),
+            i18n("Its changes have not been saved. Save them to the template, or discard them."),
+            i18n("Save Template"),
+        )
+    } else {
+        (
+            i18n("Save the message?"),
+            i18n("It has not been sent. Save it to Drafts to finish later, or discard it."),
+            i18n("Save Draft"),
+        )
+    };
+    let dialog = adw::MessageDialog::new(parent, Some(heading.as_str()), Some(body.as_str()));
     dialog.add_response("keep", &i18n("Keep Editing"));
     dialog.add_response("discard", &i18n("Discard"));
-    dialog.add_response("save", &i18n("Save Draft"));
+    dialog.add_response("save", &save);
     dialog.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
     dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
     dialog.set_default_response(Some("save"));

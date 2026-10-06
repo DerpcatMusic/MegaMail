@@ -65,6 +65,8 @@ msgstr "Reencaminhar"
 msgid "Remove Star"
 msgstr "Remover estrela"
 
+#. One glyph in both states, as in the main window; the
+#. starred state carries color only.
 msgid "Star"
 msgstr "Adicionar estrela"
 
@@ -92,21 +94,6 @@ msgstr "Marcar como não lida"
 msgid "Downloading attachments…"
 msgstr "A transferir anexos…"
 
-msgid "Close"
-msgstr "Fechar"
-
-msgid "Previous"
-msgstr "Anterior"
-
-msgid "Next"
-msgstr "Seguinte"
-
-msgid "Open"
-msgstr "Abrir"
-
-msgid "Download…"
-msgstr "Transferir…"
-
 msgid "Settings"
 msgstr "Definições"
 
@@ -125,6 +112,7 @@ msgstr "Imprimir mensagem…"
 msgid "Quit"
 msgstr "Sair"
 
+#. Rightmost, beside the window controls, as in the main window.
 msgid "Actions"
 msgstr "Ações"
 
@@ -185,9 +173,6 @@ msgstr "A página para cancelar a subscrição da lista está aberta no navegado
 msgid "The language applies the next time Hylki starts."
 msgstr "O idioma será aplicado da próxima vez que o Hylki for iniciado."
 
-msgid "Save Attachment"
-msgstr "Guardar anexo"
-
 msgid ""
 "Couldn't restart automatically — quit and reopen Hylki to finish switching "
 "the icon."
@@ -205,6 +190,10 @@ msgid "No message with the ID {id} was found"
 msgstr "Não foi encontrada nenhuma mensagem com o ID {id}"
 
 msgid "No Drafts folder available for this account"
+msgstr "Não existe uma pasta Rascunhos disponível para esta conta"
+
+#, fuzzy
+msgid "No Templates folder available for this account"
 msgstr "Não existe uma pasta Rascunhos disponível para esta conta"
 
 msgid "Could not save account: {e}"
@@ -323,9 +312,6 @@ msgstr ""
 msgid "Restart Now"
 msgstr "Reiniciar agora"
 
-msgid "{name} · {current} of {total}"
-msgstr "{name} · {current} de {total}"
-
 msgid "View Source"
 msgstr "Ver fonte"
 
@@ -347,6 +333,13 @@ msgstr "Ordenar"
 msgid "Message Source"
 msgstr "Código fonte da mensagem"
 
+msgid "Use Template"
+msgstr ""
+
+#, fuzzy
+msgid "Edit Template"
+msgstr "Editar etiqueta"
+
 msgid "Edit as New Message"
 msgstr "Editar como nova mensagem"
 
@@ -364,6 +357,9 @@ msgstr "Expandir todas as mensagens"
 
 msgid "Collapse All Messages"
 msgstr "Recolher todas as mensagens"
+
+msgid "Print…"
+msgstr "Imprimir…"
 
 msgid "Delete {n} messages"
 msgstr "Eliminar {n} mensagens"
@@ -429,6 +425,18 @@ msgstr "Anexar mesmo assim"
 
 msgid "Upload to Cloud Storage"
 msgstr "Carregar para o armazenamento na nuvem"
+
+#, fuzzy
+msgid "New Message from Template"
+msgstr "Criar uma nova mensagem"
+
+#, fuzzy
+msgid "The new message starts as a copy of the template you pick."
+msgstr "Os ficheiros serão adicionados a uma resposta à mensagem escolhida."
+
+msgid ""
+"No templates yet. Save one from the composer's ⋯ menu with Save as Template."
+msgstr ""
 
 msgid "Continue a Draft"
 msgstr "Continuar um rascunho"
@@ -719,6 +727,9 @@ msgstr[1] ""
 msgid "Filters Applied"
 msgstr "Filtros aplicados"
 
+msgid "Close"
+msgstr "Fechar"
+
 msgid "This message carries no calendar file to open."
 msgstr "Esta mensagem não contém nenhum ficheiro de calendário para abrir."
 
@@ -857,6 +868,10 @@ msgstr ""
 msgid "Compose"
 msgstr "Compor"
 
+#, fuzzy
+msgid "New message from a template"
+msgstr "Mensagem mais recente primeiro"
+
 msgid "Send the message you are writing"
 msgstr "Enviar a mensagem que está a escrever"
 
@@ -922,6 +937,9 @@ msgstr "Esta lista"
 
 msgid "Unstar"
 msgstr "Remover estrela"
+
+msgid "Save Attachment"
+msgstr "Guardar anexo"
 
 msgid "Save All Attachments"
 msgstr "Guardar todos os anexos"
@@ -1772,6 +1790,9 @@ msgstr ""
 msgid "Drafts"
 msgstr "Rascunhos"
 
+msgid "Templates"
+msgstr ""
+
 msgid "Trash"
 msgstr "Lixo"
 
@@ -2235,6 +2256,12 @@ msgstr "Essa chave já tinha sido importada."
 msgid "Could not import the key"
 msgstr "Não foi possível importar a chave"
 
+msgid "Open"
+msgstr "Abrir"
+
+msgid "Download…"
+msgstr "Transferir…"
+
 msgid "Show in Message"
 msgstr "Mostrar na mensagem"
 
@@ -2336,6 +2363,12 @@ msgstr "Tipo (A–Z)"
 
 msgid "Type (Z–A)"
 msgstr "Tipo (Z–A)"
+
+msgid "Previous"
+msgstr "Anterior"
+
+msgid "Next"
+msgstr "Seguinte"
 
 msgid "Open in the default app"
 msgstr "Abrir na aplicação predefinida"
@@ -2787,11 +2820,29 @@ msgstr "Recolher no leitor"
 msgid "Open in window"
 msgstr "Abrir numa janela"
 
+#, fuzzy
+msgid "Save Template"
+msgstr "Guardar imagem"
+
 msgid "Save Draft"
 msgstr "Guardar rascunho"
 
+#, fuzzy
+msgid "Save to Templates"
+msgstr "Guardar em Rascunhos"
+
 msgid "Save to Drafts"
 msgstr "Guardar em Rascunhos"
+
+msgid "More ways to save"
+msgstr ""
+
+msgid "Keep a copy in Templates to start new messages from"
+msgstr ""
+
+#, fuzzy
+msgid "Save as Template"
+msgstr "Colar como texto simples"
 
 msgid "Delete Draft"
 msgstr "Eliminar rascunho"
@@ -2975,6 +3026,17 @@ msgstr "{name} (ligação)"
 
 msgid "Uploading…"
 msgstr "A carregar…"
+
+#, fuzzy
+msgid "Save the template?"
+msgstr "Guardar a etiqueta?"
+
+#, fuzzy
+msgid ""
+"Its changes have not been saved. Save them to the template, or discard them."
+msgstr ""
+"A mensagem não foi enviada. Guarde-a em Rascunhos para a terminar mais tarde "
+"ou descarte-a."
 
 msgid "Save the message?"
 msgstr "Guardar a mensagem?"
@@ -3299,6 +3361,9 @@ msgstr ""
 "• Atualizar o “xdg-desktop-portal” e terminar e voltar a iniciar a sessão "
 "poderá corrigir a abertura direta das ligações"
 
+msgid "{name} · {current} of {total}"
+msgstr "{name} · {current} de {total}"
+
 msgid "me"
 msgstr "eu"
 
@@ -3516,6 +3581,17 @@ msgid "A pass proves the address wasn't forged — not that the message is safe.
 msgstr ""
 "Um resultado positivo prova que o endereço não foi falsificado — não que a "
 "mensagem seja segura."
+
+#, fuzzy
+msgid "This message is a template."
+msgstr "Esta mensagem está em {language}."
+
+msgid "Change the template itself"
+msgstr ""
+
+#, fuzzy
+msgid "Start a new message from a copy of the template"
+msgstr "Iniciar uma mensagem com a imagem no texto"
 
 msgid "Repeats daily"
 msgstr "Repete-se diariamente"
@@ -3755,9 +3831,6 @@ msgstr "Copiar imagem"
 
 msgid "Copy Image Address"
 msgstr "Copiar endereço da imagem"
-
-msgid "Load attachments from server"
-msgstr "Carregar anexos do servidor"
 
 msgid "Clear all"
 msgstr "Limpar tudo"
@@ -5011,6 +5084,30 @@ msgstr ""
 "de leitura ou tal como foram enviadas. O interruptor continua a alterar a "
 "mensagem apresentada."
 
+#, fuzzy
+msgid "Printing"
+msgstr "Imprimir"
+
+msgid "Page numbers"
+msgstr ""
+
+msgid ""
+"Print the page number and the number of pages at the foot of every page."
+msgstr ""
+
+#, fuzzy
+msgid "Date printed"
+msgstr "Formato da data"
+
+msgid "Print the date and time of printing at the foot of every page."
+msgstr ""
+
+msgid "Wider left margin"
+msgstr ""
+
+msgid "Leave 25 mm at the left of every page, so punched holes miss the text."
+msgstr ""
+
 msgid "Compose in the main window"
 msgstr "Compor na janela principal"
 
@@ -5604,17 +5701,29 @@ msgstr "Ficheiro personalizado"
 msgid "Print Message"
 msgstr "Imprimir mensagem"
 
-msgid "Save as PDF"
-msgstr "Guardar como PDF"
+#, fuzzy
+msgid "No PDF writer is available on this system"
+msgstr "Não existe uma pasta Rascunhos disponível para esta conta"
 
-msgid "Could not save the PDF: {error}"
-msgstr "Não foi possível guardar o PDF: {error}"
-
-msgid "Print…"
-msgstr "Imprimir…"
+msgid "Page {page} of {pages}"
+msgstr ""
 
 msgid "Save as PDF…"
 msgstr "Guardar como PDF…"
+
+#, fuzzy
+msgid "No Preview"
+msgstr "Pré-visualizar"
+
+msgid "Save as PDF"
+msgstr "Guardar como PDF"
+
+#, fuzzy
+msgid "Saved {name}"
+msgstr "Conta {name} removida"
+
+msgid "Could not save the PDF: {error}"
+msgstr "Não foi possível guardar o PDF: {error}"
 
 msgid "Send as Attachment Instead"
 msgstr "Enviar como anexo em alternativa"
@@ -5764,6 +5873,9 @@ msgstr "Adicionar a primeira conta"
 
 msgid "No accounts yet"
 msgstr "Ainda não existem contas"
+
+msgid "New Message from Template…"
+msgstr ""
 
 msgid "Outbox"
 msgstr "Caixa de saída"
@@ -6152,8 +6264,8 @@ msgstr "Não foi possível eliminar a pasta: pasta desconhecida"
 msgid "Could not delete folder: {e}"
 msgstr "Não foi possível eliminar a pasta: {e}"
 
-msgid "Saving draft…"
-msgstr "A guardar o rascunho…"
+msgid "unknown folder"
+msgstr "pasta desconhecida"
 
 msgid "Could not reach the server"
 msgstr "Não foi possível aceder ao servidor"
@@ -6184,9 +6296,6 @@ msgstr "A ligação IMAP deixou de progredir"
 
 msgid "Could not reach the JMAP server: {e}"
 msgstr "Não foi possível aceder ao servidor JMAP: {e}"
-
-msgid "unknown folder"
-msgstr "pasta desconhecida"
 
 msgid "That folder is not on the server"
 msgstr "Essa pasta não existe no servidor"
@@ -6282,8 +6391,19 @@ msgstr "«{subject}» será enviada {when}"
 msgid "Could not schedule the message."
 msgstr "Não foi possível agendar a mensagem."
 
+#, fuzzy
+msgid "Could not save template: {e}"
+msgstr "Não foi possível guardar o rascunho: {e}"
+
 msgid "Could not save draft: {e}"
 msgstr "Não foi possível guardar o rascunho: {e}"
+
+#, fuzzy
+msgid "Saving template…"
+msgstr "A guardar o rascunho…"
+
+msgid "Saving draft…"
+msgstr "A guardar o rascunho…"
 
 msgid ""
 "no OpenPGP key of your own for {addr}; generate one under Settings, OpenPGP"
@@ -6444,6 +6564,9 @@ msgstr "A caixa de entrada unificada no modo claro"
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid "Load attachments from server"
+#~ msgstr "Carregar anexos do servidor"
 
 #~ msgid ""
 #~ "Single-key shortcuts are switched off. Turn them on in Settings → System "

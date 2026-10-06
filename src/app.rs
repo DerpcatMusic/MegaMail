@@ -541,21 +541,9 @@ pub struct AppModel {
     /// attachment bytes for every message ever opened added up to hundreds of
     /// megabytes over a long session (issue #106).
     attachment_cache: crate::ram_cache::RamCache<BodyKey, Vec<Attachment>>,
-    /// The app-wide attachment lightbox (drawer previews): the
-    /// previewable items on show, the current index, and its texture. The
-    /// overlay fills the whole window — a separate window meant double chrome.
-    lightbox_items: Vec<Attachment>,
-    lightbox_pos: usize,
-    lightbox_texture: Option<gtk::gdk::Texture>,
-    /// Mirror of "the lightbox is open", readable synchronously by the
-    /// window's key controller (closures only get a sender, not the model).
-    lightbox_open: std::rc::Rc<std::cell::Cell<bool>>,
-    /// Current lightbox zoom (1 or 3) — a click on the document toggles it,
-    /// Escape unwinds it before closing.
-    lightbox_zoom: i32,
-    /// The lightbox picture + its scroller, for applying zoom sizes.
-    lightbox_picture: Option<gtk::Picture>,
-    lightbox_scroller: Option<gtk::ScrolledWindow>,
+    /// The attachment lightbox over the whole window (drawer previews and
+    /// card attachment rows).
+    lightbox: Controller<crate::ui::lightbox::Lightbox>,
     /// True when a unified view is active (no single folder): the folders
     /// `unified_view` names, merged into one list.
     unified: bool,
@@ -982,6 +970,8 @@ pub struct AppModel {
     /// Return starts a new paragraph in the composer; off, a new line.
     return_paragraph: bool,
     toolbar_expanded: bool,
+    /// What a printed page carries besides the message (#359).
+    print_options: config::PrintOptions,
     /// New messages start as plain text (#180).
     compose_format: crate::config::ComposeFormat,
     /// Where the split reply opens in the reading pane (#212).
@@ -1110,6 +1100,8 @@ pub struct AppModel {
     /// A draft picker waiting for Drafts folders never listed this run
     /// (the hand-off, and the folders still to answer).
     pending_draft_pick: Option<(FileHandOff, HashSet<(u32, u32)>)>,
+    /// The template picker, waiting on these Templates folders' lists.
+    pending_template_pick: Option<HashSet<(u32, u32)>>,
     /// Settings → System → GNOME Files: what handed-in files open into and
     /// what happens over the size limit.
     files_prefs: config::FilesPrefs,
@@ -1148,6 +1140,9 @@ struct PopOut {
     /// The popped-out message, where it lives (see [`body_key`]), for the
     /// events that arrive about it by folder and UID.
     message: BodyKey,
+    /// Every message the window shows, the same way, with its (account,
+    /// id): the files of each are the window's to show.
+    members: Vec<(BodyKey, (u32, u32))>,
 }
 
 /// Which folders a unified view merges (see `AppModel::unified_view`).
@@ -1295,10 +1290,14 @@ pub enum AppMsg {
         message_id: u32,
         check: Box<crate::models::SenderCheck>,
     },
-    /// Open a single attachment delivered from a popout window.
-    OpenAttachmentItem(Box<Attachment>),
-    /// Save attachments delivered from a popout window.
-    SaveAttachmentItems(Vec<Attachment>),
+    /// HYLKI_SHOWCASE_POPOUT: open the open message in a window of its own.
+    ShowcasePopout,
+    /// A message window's Move To: the folder picker over that window, at
+    /// its point (x, y). The window closes once a folder is picked.
+    PopoutMoveTo { key: (u32, u32), message: Box<Message>, x: f64, y: f64 },
+    /// A message window's drawer: delete this file from the server (#289),
+    /// asking over that window first.
+    DeletePopoutAttachment { key: (u32, u32), message: Box<Message>, attachment: Box<Attachment> },
     ToggleStar,
     Archive,
     Delete,
@@ -1387,21 +1386,6 @@ pub enum AppMsg {
     /// Show the full-window attachment lightbox (from the drawer or the
     /// toolbar popover's Preview) over these previewable items.
     ShowLightbox { items: Vec<Attachment>, start: usize },
-    LightboxPrev,
-    LightboxNext,
-    LightboxClose,
-    /// Click on the document: toggle zoom 1x ↔ 3x, anchored at the clicked
-    /// point (picture coordinates at the fitted size).
-    LightboxZoomCycle { x: f64, y: f64 },
-    /// Escape: unwind zoom first; close only from normal view.
-    LightboxEscape,
-    /// Open the shown lightbox item in its default application.
-    LightboxOpenCurrent,
-    /// Save the shown lightbox item via a file chooser.
-    LightboxDownloadCurrent,
-    /// A full-size PDF render finished (content hash) — show it if that item
-    /// is still on screen.
-    LightboxRendered(u64),
     /// The GNOME Contacts photo index changed (EDS sync, or the first load
     /// finished) — refresh the avatars that are on screen.
     ContactPhotosChanged,
@@ -1436,6 +1420,13 @@ pub enum AppMsg {
     HandOffDraft { hand_off: FileHandOff, draft: Option<Message> },
     /// Show the draft picker with whatever Drafts lists have arrived.
     HandOffDraftPickNow,
+    /// New Message from Template (#360): pick a template to start from,
+    /// once every Templates folder has been listed.
+    NewFromTemplate,
+    /// Show the template picker with whatever Templates lists have arrived.
+    TemplatePickNow,
+    /// The template picker answered (None: a blank message instead).
+    TemplatePicked(Option<Message>),
     /// The reply picker answered (None: a new message instead).
     HandOffReply { hand_off: FileHandOff, message: Option<Message> },
     /// The size check answered: open the composer, attaching or uploading.
@@ -1616,6 +1607,9 @@ pub enum AppMsg {
     /// pre-downloaded — fetch them from the server now.
     SendMessage(Box<OutgoingMessage>),
     SaveDraftMessage(Box<OutgoingMessage>),
+    /// Save a message to the Templates folder (#360): a composer's Save as
+    /// Template, or an edited template saved back.
+    SaveTemplateMessage(Box<OutgoingMessage>),
     /// The composer's Delete Draft: trash the draft it was opened from and
     /// close that composer without saving.
     DeleteDraft { id: u32, origin: crate::models::DraftOrigin },
@@ -1848,24 +1842,6 @@ impl SimpleComponent for AppModel {
                 // notification. Nothing else needs persisting on quit: accounts
                 // and settings are written as they change.
                 std::process::exit(0)
-            },
-
-            // Escape/arrows drive the lightbox from anywhere (capture phase,
-            // gated on the open flag so normal typing is untouched).
-            add_controller = gtk::EventControllerKey {
-                set_propagation_phase: gtk::PropagationPhase::Capture,
-                connect_key_pressed[sender, open = model.lightbox_open.clone()] => move |_, key, _, _| {
-                    if !open.get() {
-                        return gtk::glib::Propagation::Proceed;
-                    }
-                    match key {
-                        gtk::gdk::Key::Escape => sender.input(AppMsg::LightboxEscape),
-                        gtk::gdk::Key::Left => sender.input(AppMsg::LightboxPrev),
-                        gtk::gdk::Key::Right => sender.input(AppMsg::LightboxNext),
-                        _ => return gtk::glib::Propagation::Proceed,
-                    }
-                    gtk::glib::Propagation::Stop
-                },
             },
 
             #[wrap(Some)]
@@ -2522,132 +2498,7 @@ impl SimpleComponent for AppModel {
                 // Covers all three panes; shown for images and PDFs coming
                 // from the drawer. Same look as the gallery's own lightbox
                 // (same CSS), no extra window.
-                add_overlay = &gtk::Box {
-                    add_css_class: "gallery-lightbox",
-                    set_orientation: gtk::Orientation::Vertical,
-                    #[watch]
-                    set_visible: !model.lightbox_items.is_empty(),
-
-                    gtk::CenterBox {
-                        add_css_class: "gallery-lightbox-bar",
-                        #[wrap(Some)]
-                        set_start_widget = &gtk::Label {
-                            #[watch]
-                            set_label: model
-                                .lightbox_items
-                                .get(model.lightbox_pos)
-                                .map(|a| a.name.as_str())
-                                .unwrap_or(""),
-                            set_ellipsize: gtk::pango::EllipsizeMode::Middle,
-                            set_halign: gtk::Align::Start,
-                            add_css_class: "gallery-lightbox-title",
-                        },
-                        #[wrap(Some)]
-                        set_end_widget = &gtk::Button {
-                            set_icon_name: "window-close-symbolic",
-                            set_tooltip_text: Some(i18n("Close").as_str()),
-                            add_css_class: "circular",
-                            add_css_class: "flat",
-                            connect_clicked => AppMsg::LightboxClose,
-                        },
-                    },
-
-                    gtk::Box {
-                        set_orientation: gtk::Orientation::Horizontal,
-                        set_vexpand: true,
-                        set_spacing: 8,
-
-                        gtk::Button {
-                            set_icon_name: "go-previous-symbolic",
-                            set_tooltip_text: Some(i18n("Previous").as_str()),
-                            set_valign: gtk::Align::Center,
-                            add_css_class: "circular",
-                            add_css_class: "osd",
-                            #[watch]
-                            set_visible: model.lightbox_items.len() > 1,
-                            connect_clicked => AppMsg::LightboxPrev,
-                        },
-
-                        gtk::Stack {
-                            set_hexpand: true,
-                            set_vexpand: true,
-                            #[watch]
-                            set_visible_child_name: if model.lightbox_texture.is_some() {
-                                "image"
-                            } else {
-                                "rendering"
-                            },
-
-                            #[name = "lightbox_scroller"]
-                            add_named[Some("image")] = &gtk::ScrolledWindow {
-                                set_hscrollbar_policy: gtk::PolicyType::Automatic,
-                                set_vscrollbar_policy: gtk::PolicyType::Automatic,
-                                set_hexpand: true,
-                                set_vexpand: true,
-
-                                #[name = "lightbox_picture"]
-                                gtk::Picture {
-                                    set_can_shrink: true,
-                                    set_content_fit: gtk::ContentFit::Contain,
-                                    #[watch]
-                                    set_paintable: model.lightbox_texture.as_ref(),
-                                    // Click-to-zoom and drag-to-pan are wired
-                                    // in `init` (they share a movement
-                                    // threshold, which view! closures can't).
-                                },
-                            },
-
-                            add_named[Some("rendering")] = &gtk::Box {
-                                set_halign: gtk::Align::Center,
-                                set_valign: gtk::Align::Center,
-                                gtk::Spinner {
-                                    set_spinning: true,
-                                    set_width_request: 36,
-                                    set_height_request: 36,
-                                },
-                            },
-                        },
-
-                        gtk::Button {
-                            set_icon_name: "go-next-symbolic",
-                            set_tooltip_text: Some(i18n("Next").as_str()),
-                            set_valign: gtk::Align::Center,
-                            add_css_class: "circular",
-                            add_css_class: "osd",
-                            #[watch]
-                            set_visible: model.lightbox_items.len() > 1,
-                            connect_clicked => AppMsg::LightboxNext,
-                        },
-                    },
-
-                    gtk::CenterBox {
-                        add_css_class: "gallery-lightbox-bar",
-                        #[wrap(Some)]
-                        set_start_widget = &gtk::Label {
-                            #[watch]
-                            set_label: &model.lightbox_caption(),
-                            set_halign: gtk::Align::Start,
-                            set_ellipsize: gtk::pango::EllipsizeMode::End,
-                            add_css_class: "dim-label",
-                        },
-                        #[wrap(Some)]
-                        set_end_widget = &gtk::Box {
-                            set_spacing: 6,
-                            gtk::Button {
-                                set_icon_name: "document-open-symbolic",
-                                set_tooltip_text: Some(i18n("Open").as_str()),
-                                add_css_class: "flat",
-                                connect_clicked => AppMsg::LightboxOpenCurrent,
-                            },
-                            gtk::Button {
-                                set_icon_name: "folder-download-symbolic",
-                                set_tooltip_text: Some(i18n("Download…").as_str()),
-                                add_css_class: "flat",
-                                connect_clicked => AppMsg::LightboxDownloadCurrent,
-                            },
-                        },
-                    },
-                },
+                add_overlay: model.lightbox.widget(),
             },
         }
     }
@@ -2916,6 +2767,8 @@ impl SimpleComponent for AppModel {
                 }
             });
 
+        let lightbox = crate::ui::lightbox::Lightbox::builder().launch(()).detach();
+
         let gallery =
             AttachmentsGallery::builder()
                 .launch(())
@@ -3125,13 +2978,7 @@ impl SimpleComponent for AppModel {
             folder_order,
             selected: None,
             attachments: Vec::new(),
-            lightbox_items: Vec::new(),
-            lightbox_pos: 0,
-            lightbox_texture: None,
-            lightbox_open: std::rc::Rc::new(std::cell::Cell::new(false)),
-            lightbox_zoom: 1,
-            lightbox_picture: None,
-            lightbox_scroller: None,
+            lightbox,
             attachments_loading: false,
             reader_actions_collapsed: false,
             reader_toolbar: config::load_reader_toolbar(),
@@ -3171,6 +3018,7 @@ impl SimpleComponent for AppModel {
             pending_draft_token: None,
             pending_reply: None,
             pending_draft_pick: None,
+            pending_template_pick: None,
             pending_edit_as_new: None,
             pending_forward: None,
             pending_notified_reply: None,
@@ -3392,6 +3240,7 @@ impl SimpleComponent for AppModel {
             paste_plain: prefs.paste_plain,
             return_paragraph: prefs.return_paragraph,
             toolbar_expanded: prefs.toolbar_expanded,
+            print_options: prefs.print,
             compose_format: config::load_compose_format(),
             reply_position: prefs.reply_position,
             signature_position: prefs.signature_position,
@@ -3533,6 +3382,7 @@ impl SimpleComponent for AppModel {
             .message_list
             .emit(MessageListInput::SetSenderLogos(model.sender_logos));
         crate::datefmt::set_style(model.date_style, model.clock_style);
+        crate::ui::print_preview::set_options(model.print_options);
         model.message_list.emit(MessageListInput::SetLook {
             avatars: model.list_avatars(),
             preview_lines: model.list_preview_lines(),
@@ -4342,57 +4192,6 @@ impl SimpleComponent for AppModel {
             sender.input(AppMsg::ShowCarryOverNotice(&crate::legacy::PREDECESSORS[0]));
         }
 
-        model.lightbox_picture = Some(widgets.lightbox_picture.clone());
-        model.lightbox_scroller = Some(widgets.lightbox_scroller.clone());
-
-        // Lightbox pointer behaviour: dragging pans the zoomed document (the
-        // scroller's adjustments move opposite the pointer); a clean click —
-        // release with no meaningful movement — cycles the zoom. The shared
-        // `moved` cell is what keeps a pan from also zooming.
-        {
-            let hadj = widgets.lightbox_scroller.hadjustment();
-            let vadj = widgets.lightbox_scroller.vadjustment();
-            let start = std::rc::Rc::new(std::cell::Cell::new((0.0_f64, 0.0_f64)));
-            let moved = std::rc::Rc::new(std::cell::Cell::new(0.0_f64));
-
-            let drag = gtk::GestureDrag::new();
-            drag.set_button(gtk::gdk::BUTTON_PRIMARY);
-            {
-                let start = start.clone();
-                let moved = moved.clone();
-                let (h, v) = (hadj.clone(), vadj.clone());
-                drag.connect_drag_begin(move |_, _, _| {
-                    start.set((h.value(), v.value()));
-                    moved.set(0.0);
-                });
-            }
-            {
-                let start = start.clone();
-                let moved = moved.clone();
-                drag.connect_drag_update(move |_, dx, dy| {
-                    moved.set(moved.get().max(dx.abs().max(dy.abs())));
-                    let (h0, v0) = start.get();
-                    hadj.set_value(h0 - dx);
-                    vadj.set_value(v0 - dy);
-                });
-            }
-            // On the SCROLLER, not the picture: the picture's own coordinate
-            // space moves with every pan, so offsets measured in it oscillate
-            // — scroll, shift, un-scroll — and the drag jitters. The scroller
-            // stays put, so its offsets are stable.
-            widgets.lightbox_scroller.add_controller(drag);
-
-            let click = gtk::GestureClick::new();
-            click.set_button(gtk::gdk::BUTTON_PRIMARY);
-            let s = sender.clone();
-            click.connect_released(move |_, n, x, y| {
-                if n == 1 && moved.get() < 8.0 {
-                    s.input(AppMsg::LightboxZoomCycle { x, y });
-                }
-            });
-            widgets.lightbox_picture.add_controller(click);
-        }
-
         // Screenshot showcase (HYLKI_DEMO + HYLKI_SHOWCASE=/path.png): stage
         // the demo the way the marketing shots want it — first row (the demo
         // conversation, expanded via the threads_expanded preference) selected,
@@ -4766,6 +4565,22 @@ impl SimpleComponent for AppModel {
                         let _ = s.send(AppMsg::ReaderOverflowMenu);
                     });
                 }
+                // HYLKI_SHOWCASE_PRINT=1 opens the print preview of the open
+                // message at 6s (#359); HYLKI_SHOWCASE_TOP captures it.
+                if std::env::var("HYLKI_SHOWCASE_PRINT").is_ok() {
+                    let s = sender.input_sender().clone();
+                    gtk::glib::timeout_add_seconds_local_once(6, move || {
+                        let _ = s.send(AppMsg::PrintPreview);
+                    });
+                }
+                // HYLKI_SHOWCASE_POPOUT=1 opens the open message in a window
+                // of its own at 6s; HYLKI_SHOWCASE_TOP captures it.
+                if std::env::var("HYLKI_SHOWCASE_POPOUT").is_ok() {
+                    let s = sender.input_sender().clone();
+                    gtk::glib::timeout_add_seconds_local_once(6, move || {
+                        let _ = s.send(AppMsg::ShowcasePopout);
+                    });
+                }
                 // HYLKI_SHOWCASE_EDIT_AS_NEW=1 copies the open message into
                 // the composer at 6s (#232), as its menu entry does.
                 if std::env::var("HYLKI_SHOWCASE_EDIT_AS_NEW").is_ok() {
@@ -4905,7 +4720,7 @@ impl SimpleComponent for AppModel {
                 // selected message, to check the composer's grounds (#148).
                 // HYLKI_SHOWCASE_FLIP=dark|light then switches the app theme
                 // at 6 s, to check a live flip re-resolves those grounds.
-                // HYLKI_SHOWCASE_FOLDER=drafts|sent|archive|junk|trash[@<s>]
+                // HYLKI_SHOWCASE_FOLDER=drafts|templates|sent|archive|junk|trash[@<s>]
                 // switches to that folder at 2 s, before the staging's 3 s
                 // selection moves onto its first row, or at the time given.
                 // HYLKI_SHOWCASE_FOCUS=<seconds> switches Focus Mode on at
@@ -4927,6 +4742,7 @@ impl SimpleComponent for AppModel {
                     let (kind, at) = showcase_at(&v, 2);
                     let kind = match kind {
                         "drafts" => Some(FolderKind::Drafts),
+                        "templates" => Some(FolderKind::Templates),
                         "sent" => Some(FolderKind::Sent),
                         "archive" => Some(FolderKind::Archive),
                         "junk" => Some(FolderKind::Junk),
@@ -6590,9 +6406,12 @@ impl SimpleComponent for AppModel {
             }
 
             AppMsg::OpenMessageWindow { message: m, thread } => {
-                // Drafts open in the editor rather than a read-only window.
+                // Drafts open in the editor rather than a read-only window,
+                // and a template opens a new message made from it (#360).
                 if self.is_drafts_folder(m.account_id, m.folder_id) {
                     self.open_draft(m, false, HandOffFiles::default(), &sender);
+                } else if self.folder_kind(m.account_id, m.folder_id) == Some(FolderKind::Templates) {
+                    self.edit_as_new(m, &sender);
                 } else {
                     // Popouts follow the reading pane's display order (#70).
                     let mut thread = thread;
@@ -6623,16 +6442,41 @@ impl SimpleComponent for AppModel {
                 }
             }
 
-            AppMsg::OpenAttachmentItem(att) => {
-                crate::ui::attachments_gallery::open_bytes(
-                    &att.name,
-                    &att.data,
-                    Some(self.window.upcast_ref()),
-                );
+            AppMsg::ShowcasePopout => {
+                if let Some(m) = self.current.clone() {
+                    let thread = self.current_thread.clone();
+                    sender.input(AppMsg::OpenMessageWindow { message: m, thread });
+                }
             }
 
-            AppMsg::SaveAttachmentItems(items) => {
-                save_all_attachments(items, Some(self.window.clone()));
+            AppMsg::PopoutMoveTo { key, message, x, y } => {
+                let Some(window) = self.popouts.get(&key).map(|p| p.window.clone()) else { return };
+                let accounts = self.picker_accounts(message.account_id, self.resolve_folder_path(&message));
+                if accounts.is_empty() {
+                    return;
+                }
+                let s = sender.input_sender().clone();
+                let picked = (*message).clone();
+                let closing = window.clone();
+                crate::ui::folder_picker::show_folder_picker(&window, x, y, accounts, None, move |account_id, dest, _| {
+                    let _ = s.send(AppMsg::MoveMessagesTo { account_id, dest, messages: vec![picked.clone()] });
+                    // As Archive and Delete do: the message has left.
+                    closing.close();
+                });
+            }
+
+            AppMsg::DeletePopoutAttachment { key, message, attachment } => {
+                let Some(window) = self.popouts.get(&key).map(|p| p.window.clone()) else { return };
+                let Some(path) = self.resolve_folder_path(&message) else { return };
+                let target = AttachmentTarget {
+                    account_id: message.account_id,
+                    message_id: message.id,
+                    path,
+                    uid: message.uid,
+                    name: attachment.name.clone(),
+                    size: attachment.data.len() as u64,
+                };
+                self.confirm_delete_attachment(target, window.upcast_ref(), &sender);
             }
 
             AppMsg::ToggleStar => {
@@ -6785,6 +6629,12 @@ impl SimpleComponent for AppModel {
                     RowAction::Forward => {
                         self.forward(m, true, &sender);
                     }
+                    // A template's banner (#360): edited where a new message
+                    // is written.
+                    RowAction::EditTemplate => {
+                        let inline = self.compose_inline;
+                        self.open_draft(m, inline, HandOffFiles::default(), &sender);
+                    }
                     // Cards only carry the three above; anything else falls
                     // through to the ordinary row behaviour.
                     other => sender.input(AppMsg::RowAction {
@@ -6861,6 +6711,12 @@ impl SimpleComponent for AppModel {
                     RowAction::EditAsNew => {
                         let m = self.newest_to_answer(&conversation, m);
                         self.edit_as_new(m, &sender);
+                    }
+                    // Edited where a new message is written (#360), from a
+                    // row's menu as from the banner.
+                    RowAction::EditTemplate => {
+                        let inline = self.compose_inline;
+                        self.open_draft(m, inline, HandOffFiles::default(), &sender);
                     }
                     RowAction::ToggleStar => {
                         let starred = !m.starred;
@@ -7207,6 +7063,9 @@ impl SimpleComponent for AppModel {
                     self.reader_toolbar = layout;
                     config::save_reader_toolbar(&self.reader_toolbar);
                     self.relayout_reader_toolbar();
+                    for p in self.popouts.values() {
+                        p.controller.emit(MessageWindowInput::SetToolbar(self.reader_toolbar.clone()));
+                    }
                     // Not while the inline composer covers the header: that
                     // path hides the ⋯ by hand and restores it on close.
                     if !self.reader_compose.as_ref().is_some_and(|r| r.window.is_none()) {
@@ -7325,70 +7184,7 @@ impl SimpleComponent for AppModel {
             }
 
             AppMsg::ShowLightbox { items, start } => {
-                if !items.is_empty() {
-                    self.lightbox_pos = start.min(items.len() - 1);
-                    self.lightbox_items = items;
-                    self.lightbox_open.set(true);
-                    self.lightbox_set_zoom(1);
-                    self.lightbox_refresh(&sender);
-                }
-            }
-            AppMsg::LightboxPrev => self.lightbox_step(-1, &sender),
-            AppMsg::LightboxNext => self.lightbox_step(1, &sender),
-            AppMsg::LightboxClose => {
-                self.lightbox_items.clear();
-                self.lightbox_texture = None;
-                self.lightbox_open.set(false);
-                self.lightbox_set_zoom(1);
-            }
-            AppMsg::LightboxZoomCycle { x, y } => {
-                if self.lightbox_zoom == 1 {
-                    self.lightbox_zoom_to_point(x, y);
-                } else {
-                    self.lightbox_set_zoom(1);
-                }
-            }
-            AppMsg::LightboxEscape => {
-                // Zoomed in, Escape returns to the fitted view; from there it
-                // closes the lightbox.
-                if self.lightbox_zoom != 1 {
-                    self.lightbox_set_zoom(1);
-                } else {
-                    sender.input(AppMsg::LightboxClose);
-                }
-            }
-            AppMsg::LightboxOpenCurrent => {
-                if let Some(att) = self.lightbox_items.get(self.lightbox_pos) {
-                    crate::ui::attachments_gallery::open_bytes(
-                        &att.name,
-                        &att.data,
-                        Some(self.window.upcast_ref()),
-                    );
-                }
-            }
-            AppMsg::LightboxDownloadCurrent => {
-                if let Some(att) = self.lightbox_items.get(self.lightbox_pos).cloned() {
-                    let dialog = gtk::FileDialog::builder()
-                        .initial_name(&att.name)
-                        .title(&i18n("Save Attachment"))
-                        .build();
-                    dialog.save(Some(&self.window), gtk::gio::Cancellable::NONE, move |res| {
-                        if let Ok(file) = res {
-                            if let Some(path) = file.path() {
-                                let _ = std::fs::write(path, &att.data);
-                            }
-                        }
-                    });
-                }
-            }
-            AppMsg::LightboxRendered(key) => {
-                let still_current = self
-                    .lightbox_items
-                    .get(self.lightbox_pos)
-                    .is_some_and(|a| crate::ui::attachments_gallery::content_key(&a.data) == key);
-                if still_current {
-                    self.lightbox_refresh(&sender);
-                }
+                self.lightbox.emit(crate::ui::lightbox::LightboxInput::Show { items, start });
             }
             AppMsg::ContactPhotosChanged => {
                 // The list skips the work when avatars are off; the
@@ -7833,12 +7629,18 @@ impl SimpleComponent for AppModel {
             AppMsg::Pref(PrefOutput::SetCardAttachments(on)) => {
                 if pref!(self.card_attachments = on) {
                     self.message_view.emit(MessageViewInput::SetCardAttachmentsShown(on));
+                    for p in self.popouts.values() {
+                        p.controller.emit(MessageWindowInput::SetCardAttachmentsShown(on));
+                    }
                 }
             }
             AppMsg::Pref(PrefOutput::SetAttachmentDrawer(on)) => {
                 if pref!(self.drawer_enabled = on) {
                     self.sync_attachment_drawer();
                     self.message_view.emit(MessageViewInput::SetAttachmentDrawer(on));
+                    for p in self.popouts.values() {
+                        p.controller.emit(MessageWindowInput::SetAttachmentDrawer(on));
+                    }
                 }
             }
             AppMsg::CardAttachment { account_id, id, index, save } => {
@@ -7911,10 +7713,18 @@ impl SimpleComponent for AppModel {
             AppMsg::AskDeleteAttachment(target) if std::mem::take(&mut self.showcase_confirm_delete) => {
                 sender.input(AppMsg::DeleteAttachment(target));
             }
-            AppMsg::AskDeleteAttachment(target) => self.confirm_delete_attachment(target, &sender),
+            AppMsg::AskDeleteAttachment(target) => {
+                self.confirm_delete_attachment(target, self.window.upcast_ref(), &sender)
+            }
             AppMsg::DeleteAttachment(t) => {
                 self.attachment_drawer
                     .emit(AttachmentDrawerInput::MarkDeleting(t.name.clone(), t.size as usize));
+                if let Some(p) = self.popouts.get(&(t.account_id, t.message_id)) {
+                    p.controller.emit(MessageWindowInput::Drawer(AttachmentDrawerInput::MarkDeleting(
+                        t.name.clone(),
+                        t.size as usize,
+                    )));
+                }
                 self.gallery.emit(GalleryInput::SetDeleting(t.gallery_key(), true));
                 self.deleting_attachments.push(t.clone());
                 // HYLKI_SHOWCASE_DELETE_HOLD=<seconds> holds the request back,
@@ -7941,6 +7751,12 @@ impl SimpleComponent for AppModel {
                 if let Some(t) = self.take_deleting(account_id, message_id, &name) {
                     self.gallery.emit(GalleryInput::SetDeleting(t.gallery_key(), false));
                 }
+                if let Some(p) = self.popouts.get(&(account_id, message_id)) {
+                    p.controller.emit(MessageWindowInput::Drawer(AttachmentDrawerInput::NotDeleted(
+                        name.clone(),
+                        size as usize,
+                    )));
+                }
                 self.attachment_drawer.emit(AttachmentDrawerInput::NotDeleted(name, size as usize));
             }
             AppMsg::AttachmentDeleted { account_id, message_id, path, uid, new_uid, name, size } => {
@@ -7948,10 +7764,11 @@ impl SimpleComponent for AppModel {
                 // follow wait for it.
                 let t = self.take_deleting(account_id, message_id, &name);
                 self.gallery.emit(GalleryInput::Removed((account_id, path.clone(), uid, name.clone())));
-                self.attachment_drawer.emit(AttachmentDrawerInput::Deleted(
-                    name.clone(),
-                    t.map_or(size, |t| t.size) as usize,
-                ));
+                let shown = t.map_or(size, |t| t.size) as usize;
+                self.attachment_drawer.emit(AttachmentDrawerInput::Deleted(name.clone(), shown));
+                if let Some(p) = self.popouts.get(&(account_id, message_id)) {
+                    p.controller.emit(MessageWindowInput::Drawer(AttachmentDrawerInput::Deleted(name.clone(), shown)));
+                }
                 let key = (account_id, message_id);
                 let members = self.conversation_members();
                 self.thread_cache.retain(|_, members| {
@@ -8208,6 +8025,37 @@ impl SimpleComponent for AppModel {
                 }
             }
 
+            AppMsg::NewFromTemplate => {
+                // As the draft picker does: Templates folders not listed this
+                // run are fetched first, and a silent worker gets three
+                // seconds.
+                let mut waiting = HashSet::new();
+                for (account_id, folder) in self.templates_folders() {
+                    if !self.message_cache.contains_key(&(account_id, folder.id)) {
+                        waiting.insert((account_id, folder.id));
+                        self.send_to(account_id, MailRequest::SyncFolder { folder_id: folder.id, path: folder.path.clone() });
+                    }
+                }
+                if waiting.is_empty() {
+                    self.show_template_picker(&sender);
+                } else {
+                    self.pending_template_pick = Some(waiting);
+                    let s = sender.clone();
+                    gtk::glib::timeout_add_seconds_local_once(3, move || s.input(AppMsg::TemplatePickNow));
+                }
+            }
+
+            AppMsg::TemplatePickNow => {
+                if self.pending_template_pick.take().is_some() {
+                    self.show_template_picker(&sender);
+                }
+            }
+
+            AppMsg::TemplatePicked(picked) => match picked {
+                Some(m) => self.edit_as_new(m, &sender),
+                None => sender.input(AppMsg::Compose),
+            },
+
             AppMsg::HandOffDraft { hand_off, draft } => {
                 let target = match draft {
                     Some(m) => HandOffTarget::Draft(m),
@@ -8248,6 +8096,12 @@ impl SimpleComponent for AppModel {
 
             AppMsg::Pref(PrefOutput::SetToolbarExpanded(on)) => {
                 pref!(self.toolbar_expanded = on);
+            }
+
+            AppMsg::Pref(PrefOutput::SetPrintOptions(options)) => {
+                if pref!(self.print_options = options) {
+                    crate::ui::print_preview::set_options(options);
+                }
             }
 
             AppMsg::Pref(PrefOutput::SetSpellcheck(on)) => {
@@ -8731,7 +8585,29 @@ impl SimpleComponent for AppModel {
                     });
                     return;
                 };
-                self.send_to(account_id, MailRequest::SaveDraft { message: out, folder_id, path, autosave: None });
+                self.send_to(account_id, MailRequest::SaveDraft { message: out, folder_id, path, autosave: None, template: false });
+            }
+
+            AppMsg::SaveTemplateMessage(out) => {
+                let account_id = out.from_account_id;
+                // An edited template goes back to the folder it was kept in;
+                // a new one, or one now sent from another account, to the
+                // account's Templates folder, which saving makes if need be.
+                let target = out
+                    .draft_origin
+                    .as_ref()
+                    .filter(|o| o.account_id == account_id)
+                    .map(|o| (o.folder_id, o.path.clone()))
+                    .or_else(|| self.templates_target(account_id));
+                let Some((folder_id, path)) = target else {
+                    self.notifications.emit(NotifyInput::Push {
+                        text: i18n("No Templates folder available for this account"),
+                        error: true,
+                        connectivity: false,
+                    });
+                    return;
+                };
+                self.send_to(account_id, MailRequest::SaveDraft { message: out, folder_id, path, autosave: None, template: true });
             }
 
             AppMsg::EmitUnified => {
@@ -8749,7 +8625,7 @@ impl SimpleComponent for AppModel {
                 match self.drafts_target(account_id) {
                     Some((folder_id, path)) => self.send_to(
                         account_id,
-                        MailRequest::SaveDraft { message, folder_id, path, autosave: Some(id) },
+                        MailRequest::SaveDraft { message, folder_id, path, autosave: Some(id), template: false },
                     ),
                     None => self.emit_to_composer(id, ComposeInput::Autosaved { saved: false, origin: None }),
                 }
@@ -9874,6 +9750,7 @@ impl SimpleComponent for AppModel {
                     }
                 }
                 self.folders.insert(account_id, folders);
+                self.push_template_folders();
                 if unchanged {
                     self.push_unread_counts();
                 } else {
@@ -10196,6 +10073,12 @@ impl SimpleComponent for AppModel {
                     waiting.remove(&(account_id, folder_id));
                     if waiting.is_empty() {
                         sender.input(AppMsg::HandOffDraftPickNow);
+                    }
+                }
+                if let Some(waiting) = self.pending_template_pick.as_mut() {
+                    waiting.remove(&(account_id, folder_id));
+                    if waiting.is_empty() {
+                        sender.input(AppMsg::TemplatePickNow);
                     }
                 }
                 if !unchanged {
@@ -10683,8 +10566,17 @@ impl SimpleComponent for AppModel {
                     self.attachments_loading = false;
                     self.refresh_thread_attachments();
                 }
-                for p in self.popouts.values().filter(|p| key == Some(p.message)) {
-                    p.controller.emit(MessageWindowInput::SetAttachments(items.clone()));
+                for p in self.popouts.values() {
+                    let member = p.members.iter().find(|(k, (a, id))| {
+                        key.map_or(*a == account_id && *id == message_id, |key| *k == key)
+                    });
+                    if let Some((_, (a, id))) = member {
+                        p.controller.emit(MessageWindowInput::SetAttachments {
+                            account_id: *a,
+                            id: *id,
+                            items: items.clone(),
+                        });
+                    }
                 }
                 // These files were fetched to be carried into a copy of the
                 // message; they are cached now, so the second pass stages them.
@@ -10730,8 +10622,13 @@ impl SimpleComponent for AppModel {
                         });
                     }
                 }
-                for p in self.popouts.values().filter(|p| key == Some(p.message)) {
-                    p.controller.emit(MessageWindowInput::AttachmentsPending);
+                for p in self.popouts.values() {
+                    let member = p.members.iter().find(|(k, (a, id))| {
+                        key.map_or(*a == account_id && *id == message_id, |key| *k == key)
+                    });
+                    if let Some((_, (a, id))) = member {
+                        p.controller.emit(MessageWindowInput::AttachmentsPending { account_id: *a, id: *id });
+                    }
                 }
             }
 
@@ -11228,6 +11125,7 @@ impl AppModel {
             paste_plain: self.paste_plain,
             return_paragraph: self.return_paragraph,
             toolbar_expanded: self.toolbar_expanded,
+            print: self.print_options,
             // Both are written: the boolean is what an older version reads.
             compose_plain: self.compose_format == config::ComposeFormat::Plain,
             compose_format: Some(self.compose_format),
@@ -13359,110 +13257,6 @@ impl AppModel {
         self.allowed_senders.iter().any(|s| *s == addr)
     }
 
-    /// Push the current attachments into the in-message thumbnail drawer (which
-    /// hides itself when the list is empty). Called wherever `self.attachments`
-    /// changes so the drawer always mirrors the open message.
-    /// "name · n of m" for the lightbox's bottom bar.
-    fn lightbox_caption(&self) -> String {
-        match self.lightbox_items.get(self.lightbox_pos) {
-            Some(att) => i18n_f(
-                "{name} · {current} of {total}",
-                &[
-                    ("name", &att.name),
-                    ("current", &(self.lightbox_pos + 1).to_string()),
-                    ("total", &self.lightbox_items.len().to_string()),
-                ],
-            ),
-            None => String::new(),
-        }
-    }
-
-    fn lightbox_step(&mut self, delta: i32, sender: &ComponentSender<Self>) {
-        let n = self.lightbox_items.len() as i32;
-        if n == 0 {
-            return;
-        }
-        self.lightbox_pos = (((self.lightbox_pos as i32 + delta) % n + n) % n) as usize;
-        self.lightbox_set_zoom(1);
-        self.lightbox_refresh(sender);
-    }
-
-    /// Zoom to 3x anchored at `(x, y)` — the clicked point in the fitted
-    /// picture's coordinates. The whole box scales uniformly by 3, so the
-    /// clicked content sits at exactly (3x, 3y) afterwards; once the resize
-    /// has been laid out (the scroller's range exists), the adjustments put
-    /// that point at the viewport's centre. Without this the view stayed at
-    /// the top-left of the grown, mostly-letterboxed box — content apparently
-    /// shoved off-screen.
-    fn lightbox_zoom_to_point(&mut self, x: f64, y: f64) {
-        self.lightbox_set_zoom(3);
-        let (Some(picture), Some(scroller)) =
-            (&self.lightbox_picture, &self.lightbox_scroller)
-        else {
-            return;
-        };
-        let hadj = scroller.hadjustment();
-        let vadj = scroller.vadjustment();
-        let target_x = x * 3.0 - f64::from(scroller.width()) / 2.0;
-        let target_y = y * 3.0 - f64::from(scroller.height()) / 2.0;
-        let tries = std::cell::Cell::new(0u8);
-        picture.add_tick_callback(move |_, _| {
-            let laid_out = hadj.upper() > hadj.page_size() + 1.0
-                || vadj.upper() > vadj.page_size() + 1.0;
-            if laid_out {
-                hadj.set_value(target_x);
-                vadj.set_value(target_y);
-                return gtk::glib::ControlFlow::Break;
-            }
-            tries.set(tries.get() + 1);
-            if tries.get() > 30 {
-                return gtk::glib::ControlFlow::Break;
-            }
-            gtk::glib::ControlFlow::Continue
-        });
-    }
-
-    /// Apply a lightbox zoom level. At 1x the picture fits its scroller; at
-    /// 3x its box grows to that multiple of the viewport (Contain keeps the
-    /// aspect) and the scroller pans the overflow.
-    fn lightbox_set_zoom(&mut self, zoom: i32) {
-        self.lightbox_zoom = zoom;
-        let (Some(picture), Some(scroller)) =
-            (&self.lightbox_picture, &self.lightbox_scroller)
-        else {
-            return;
-        };
-        if zoom <= 1 {
-            picture.set_size_request(-1, -1);
-        } else {
-            picture.set_size_request(scroller.width() * zoom, scroller.height() * zoom);
-        }
-    }
-
-    /// Work out the lightbox texture for the current item: images decode on
-    /// the spot; a PDF's page comes from the shared full-size cache or a
-    /// worker render that circles back via [`AppMsg::LightboxRendered`].
-    fn lightbox_refresh(&mut self, sender: &ComponentSender<Self>) {
-        use crate::ui::attachments_gallery as gallery;
-        self.lightbox_texture = None;
-        let Some(att) = self.lightbox_items.get(self.lightbox_pos) else { return };
-        if crate::models::is_image_name(&att.name) {
-            self.lightbox_texture = gallery::texture_from(&att.data);
-            return;
-        }
-        // Cache hit paints immediately (and, crucially, spawns nothing — a
-        // hit that re-entered via LightboxRendered would loop forever).
-        if let Some(tex) = gallery::cached_pdf_preview(&att.data) {
-            self.lightbox_texture = Some(tex);
-            return;
-        }
-        let key = gallery::content_key(&att.data);
-        let s = sender.clone();
-        gallery::lightbox_pdf_texture(&att.data, move |_| {
-            s.input(AppMsg::LightboxRendered(key));
-        });
-    }
-
     /// The tag entries of the reader's menus (#71): one per tag, its swatch
     /// filled where the reader's target message carries it. None without a
     /// target or a tag.
@@ -14062,7 +13856,10 @@ impl AppModel {
                             .filter(|f| {
                                 !matches!(
                                     f.kind,
-                                    FolderKind::Drafts | FolderKind::Junk | FolderKind::Trash
+                                    FolderKind::Drafts
+                                        | FolderKind::Templates
+                                        | FolderKind::Junk
+                                        | FolderKind::Trash
                                 )
                             })
                             .map(|f| GalleryFolder {
@@ -14185,6 +13982,7 @@ impl AppModel {
         self.message_list.emit(MessageListInput::SetInJunk(false));
         self.message_list
             .emit(MessageListInput::SetInDrafts(view == UnifiedView::Kind(FolderKind::Drafts)));
+        self.message_list.emit(MessageListInput::SetInTemplates(false));
         self.message_view
             .emit(MessageViewInput::SetDraftsView(view == UnifiedView::Kind(FolderKind::Drafts)));
         let reqs = self.unified_targets();
@@ -14294,12 +14092,20 @@ impl AppModel {
             sections.push(here);
         }
         sections.extend([
-            vec![
-                item(RowAction::Reply, i18n("Reply"), "mail-reply-sender"),
-                item(RowAction::ReplyAll, i18n("Reply All"), "mail-reply-all"),
-                item(RowAction::Forward, i18n("Forward"), "mail-forward"),
-                item(RowAction::EditAsNew, i18n("Edit as New Message"), "document-edit"),
-            ],
+            // A template (#360) is used or edited, never answered.
+            if kind == Some(FolderKind::Templates) {
+                vec![
+                    item(RowAction::EditAsNew, i18n("Use Template"), "mail-message-new"),
+                    item(RowAction::EditTemplate, i18n("Edit Template"), "document-edit"),
+                ]
+            } else {
+                vec![
+                    item(RowAction::Reply, i18n("Reply"), "mail-reply-sender"),
+                    item(RowAction::ReplyAll, i18n("Reply All"), "mail-reply-all"),
+                    item(RowAction::Forward, i18n("Forward"), "mail-forward"),
+                    item(RowAction::EditAsNew, i18n("Edit as New Message"), "document-edit"),
+                ]
+            },
             vec![
                 if m.starred {
                     item(RowAction::ToggleStar, i18n("Remove Star"), "hylki-non-starred")
@@ -14404,6 +14210,28 @@ impl AppModel {
         }
         last.push(item(RowAction::ViewSource, i18n("View Source"), "code"));
         sections.push(last);
+        // Printing prints what the reader shows, the whole conversation in
+        // it, so the reader that was right-clicked is the one asked (#359).
+        {
+            let print = |label: String, preview: bool| -> MenuEntry {
+                let s = sender.input_sender().clone();
+                let window = popout.and_then(|key| self.popouts.get(&key)).map(|p| p.controller.sender().clone());
+                MenuEntry::new(label, move || match &window {
+                    Some(w) => w.emit(if preview {
+                        MessageWindowInput::PrintPreview
+                    } else {
+                        MessageWindowInput::Print
+                    }),
+                    None => {
+                        let _ = s.send(if preview { AppMsg::PrintPreview } else { AppMsg::PrintMessage });
+                    }
+                })
+            };
+            sections.push(vec![
+                print(i18n("Print Preview"), true).icon("printer-symbolic"),
+                print(i18n("Print…"), false),
+            ]);
+        }
         show_context_menu(&parent, x, y, sections);
     }
 
@@ -14491,7 +14319,12 @@ impl AppModel {
         let restorable = kind.is_some_and(|k| matches!(k, FolderKind::Trash | FolderKind::Junk));
         self.message_list.emit(MessageListInput::SetRestorable(restorable));
         self.message_list.emit(MessageListInput::SetInJunk(kind == Some(FolderKind::Junk)));
-        self.message_list.emit(MessageListInput::SetInDrafts(kind == Some(FolderKind::Drafts)));
+        // A template is neither read nor unread either.
+        self.message_list.emit(MessageListInput::SetInDrafts(matches!(
+            kind,
+            Some(FolderKind::Drafts | FolderKind::Templates)
+        )));
+        self.message_list.emit(MessageListInput::SetInTemplates(kind == Some(FolderKind::Templates)));
         self.message_view.emit(MessageViewInput::SetDraftsView(kind == Some(FolderKind::Drafts)));
         self.selected = Some(SelectedFolder {
             account_id,
@@ -14698,25 +14531,6 @@ impl AppModel {
             }
         }
 
-        // Attachments: use the in-memory cache if present; otherwise fetch
-        // them (disk cache first, then the server) and route the reply to
-        // this window, just like the main reader does.
-        let mut atts: Vec<Attachment> = Vec::new();
-        let mut atts_loading = false;
-        if display.has_attachment {
-            if let Some(cached) = self.attachment_cache.get(&body_key(&m)).cloned() {
-                atts = cached;
-            } else if let Some(path) = self.resolve_folder_path(&m) {
-                atts_loading = true;
-                self.send_to(account_id, MailRequest::LoadAttachments {
-                    message_id: m.id,
-                    path,
-                    uid: m.uid,
-                    download: true,
-                });
-            }
-        }
-
         // The conversation for the window: the assembled cache when this
         // thread has been opened before (cross-folder members and bodies
         // included), else what the list handed over. Members still missing
@@ -14746,7 +14560,31 @@ impl AppModel {
             }
         }
 
+        // Attachments, for every message the window shows: the in-memory
+        // cache where present; otherwise fetched (disk cache first, then the
+        // server) with the reply routed to this window, as the main reader
+        // does for a conversation.
+        let shown: Vec<Message> = if thread.is_empty() { vec![display.clone()] } else { thread.clone() };
+        let mut atts: Vec<((u32, u32), Vec<Attachment>)> = Vec::new();
+        let mut atts_loading: Vec<(u32, u32)> = Vec::new();
+        for member in shown.iter().filter(|m| m.has_attachment) {
+            let mkey = (member.account_id, member.id);
+            if let Some(cached) = self.attachment_cache.get(&body_key(member)).cloned() {
+                atts.push((mkey, cached));
+            } else if let Some(path) = self.resolve_folder_path(member) {
+                atts_loading.push(mkey);
+                self.send_to(member.account_id, MailRequest::LoadAttachments {
+                    message_id: member.id,
+                    path,
+                    uid: member.uid,
+                    download: true,
+                });
+            }
+        }
+        let members = shown.iter().map(|m| (body_key(m), (m.account_id, m.id))).collect();
+
         let allow_remote = self.remote_allowed(&display);
+        let folder_kind = self.folder_kind(display.account_id, display.folder_id);
         let init = MessageWindowInit {
             message: display,
             thread,
@@ -14755,8 +14593,12 @@ impl AppModel {
             allow_remote,
             loading: needs_body,
             attachments: atts,
-            attachments_available: false,
             attachments_loading: atts_loading,
+            drawer_enabled: self.drawer_enabled,
+            card_attachments: self.card_attachments,
+            toolbar: self.reader_toolbar.clone(),
+            in_junk: folder_kind == Some(FolderKind::Junk),
+            restorable: matches!(folder_kind, Some(FolderKind::Trash | FolderKind::Junk)),
             content_dark: self.message_theme.dark_override(),
             reader_style: self.reader_style(),
             reader_mode: self.effective_reader_mode(),
@@ -14779,12 +14621,14 @@ impl AppModel {
                     AppMsg::AddContactFrom { name, email }
                 }
                 MessageWindowOutput::LoadAttachments(message) => AppMsg::LoadAttachmentsFor(message),
-                MessageWindowOutput::OpenAttachment(att) => AppMsg::OpenAttachmentItem(att),
-                MessageWindowOutput::SaveAllAttachments(items) => AppMsg::SaveAttachmentItems(items),
+                MessageWindowOutput::MoveTo { message, x, y } => AppMsg::PopoutMoveTo { key, message, x, y },
+                MessageWindowOutput::SetTag { message, keyword, add } => AppMsg::SetTag { message, keyword, add },
+                MessageWindowOutput::DeleteAttachment { message, attachment } => {
+                    AppMsg::DeletePopoutAttachment { key, message, attachment }
+                }
                 MessageWindowOutput::AllowSender(addr) => AppMsg::AllowSender(addr),
                 MessageWindowOutput::ReloadBody(m) => AppMsg::ReloadBody(m),
                 MessageWindowOutput::Notice(text) => AppMsg::Notice(text),
-                MessageWindowOutput::ReaderMode(on) => AppMsg::SetReaderMode(on),
                 MessageWindowOutput::ZoomReset => AppMsg::ZoomMessage(0),
                 MessageWindowOutput::Unsubscribe { message, info } => {
                     AppMsg::Unsubscribe { message, info }
@@ -14806,7 +14650,7 @@ impl AppModel {
         controller.emit(MessageWindowInput::SetIdentities(self.identities_map()));
         controller.emit(MessageWindowInput::SetInviteAnswers(self.invite_answers_map()));
 
-        self.popouts.insert(key, PopOut { window, controller, message: body_key(&m) });
+        self.popouts.insert(key, PopOut { window, controller, message: body_key(&m), members });
     }
 
     /// Push every cached sender verdict for the on-screen conversation into
@@ -14968,6 +14812,14 @@ impl AppModel {
             .or_else(|| self.default_folder_path(account_id, FolderKind::Drafts).map(|p| (0, p)))
     }
 
+    /// The Templates folder a template of `account_id` is saved to (#360):
+    /// the existing one, else a default path the worker creates.
+    fn templates_target(&self, account_id: u32) -> Option<(u32, String)> {
+        self.folder_of_kind(account_id, FolderKind::Templates)
+            .map(|f| (f.id, f.path.clone()))
+            .or_else(|| self.default_folder_path(account_id, FolderKind::Templates).map(|p| (0, p)))
+    }
+
     /// Where a just-saved draft is, by its Message-ID, among the Drafts
     /// folder's messages the save has reloaded.
     fn find_draft(&self, account_id: u32, message_id: &str) -> Option<crate::models::DraftOrigin> {
@@ -15108,6 +14960,7 @@ impl AppModel {
             inline_files: Vec::new(),
             block_remote_images: false,
             resumed: false,
+            template: false,
         };
         // The Outbox stays the folder on screen: its list is still what's listed,
         // so its toolbar has to stay too. Leaving it would strand the user in a
@@ -15163,6 +15016,8 @@ impl AppModel {
             inline_files: Vec::new(),
             block_remote_images: false,
             resumed: true,
+            // A template that failed to save comes back cut loose from it.
+            template: false,
         };
         self.open_compose(account_id, prefill, sender);
     }
@@ -15244,6 +15099,9 @@ impl AppModel {
             path: self.resolve_folder_path(&m).unwrap_or_default(),
             uid: m.uid,
         });
+        // A template opened this way is being edited (#360): saving puts it
+        // back in Templates, and sending leaves it there.
+        prefill.template = self.folder_kind(m.account_id, m.folder_id) == Some(FolderKind::Templates);
         if inline {
             self.attachments.clear();
             self.attachments_loading = false;
@@ -15358,6 +15216,10 @@ impl AppModel {
             m.id,
             attachments.len()
         );
+        // A template (#360) is used as it was written: from the address it
+        // was saved with, and with the signature it already carries, none
+        // put above it again.
+        let template = self.folder_kind(m.account_id, m.folder_id) == Some(FolderKind::Templates);
         let prefill = self.quoting(
             &m,
             ComposePrefill {
@@ -15366,6 +15228,8 @@ impl AppModel {
                 subject: m.subject.clone(),
                 body_html: editable_copy_html(&m.body),
                 attachments,
+                from_address: if template { m.from_addr.clone() } else { String::new() },
+                resumed: template,
                 ..Default::default()
             },
         );
@@ -15568,6 +15432,7 @@ impl AppModel {
             .forward(sender.input_sender(), |out| match out {
                 ComposeOutput::Send(msg) => AppMsg::SendMessage(msg),
                 ComposeOutput::SaveDraft(msg) => AppMsg::SaveDraftMessage(msg),
+                ComposeOutput::SaveTemplate(msg) => AppMsg::SaveTemplateMessage(msg),
                 ComposeOutput::AutoSave { id, message } => AppMsg::AutoSaveDraft { id, message },
                 ComposeOutput::DiscardAutosave { id, origin } => AppMsg::DiscardAutosave { id, origin },
                 ComposeOutput::DeleteDraft { id, origin } => AppMsg::DeleteDraft { id, origin },
@@ -15896,6 +15761,45 @@ impl AppModel {
         }
     }
 
+    /// New Message from Template (#360): every template the app knows, to
+    /// start a message from.
+    fn show_template_picker(&self, sender: &ComponentSender<Self>) {
+        let mut templates = Vec::new();
+        for (account_id, folder) in self.templates_folders() {
+            let list = match self.message_cache.get(&(account_id, folder.id)) {
+                Some(l) => l.clone(),
+                None => self
+                    .cache
+                    .as_ref()
+                    .map(|c| c.load_messages(account_id, &folder.path, folder.id))
+                    .unwrap_or_default(),
+            };
+            let name = self.account_name(account_id);
+            templates.extend(list.into_iter().map(|m| (m, name.clone())));
+        }
+        templates.sort_by_key(|(m, _)| m.subject.to_lowercase());
+        let s = sender.clone();
+        show_message_picker(
+            self.window.upcast_ref(),
+            &i18n("New Message from Template"),
+            &i18n("The new message starts as a copy of the template you pick."),
+            &i18n("No templates yet. Save one from the composer's ⋯ menu with Save as Template."),
+            &i18n("Use Template"),
+            templates,
+            (),
+            move |(), template| s.input(AppMsg::TemplatePicked(template)),
+        );
+    }
+
+    /// Each account's Templates folder (#360), in account order.
+    fn templates_folders(&self) -> Vec<(u32, Folder)> {
+        let mut ids: Vec<u32> = self.folders.keys().copied().collect();
+        ids.sort_unstable();
+        ids.into_iter()
+            .filter_map(|id| Some((id, self.folder_of_kind(id, FolderKind::Templates)?.clone())))
+            .collect()
+    }
+
     /// The "Continue a Draft" picker over every draft the app knows.
     fn show_draft_picker(&self, hand_off: FileHandOff, sender: &ComponentSender<Self>) {
         let drafts = self.drafts_for_pick();
@@ -15910,6 +15814,19 @@ impl AppModel {
             hand_off,
             move |hand_off, draft| s.input(AppMsg::HandOffDraft { hand_off, draft }),
         );
+    }
+
+    /// Tell the reader which folders hold templates (#360), so a template's
+    /// card wears its banner.
+    fn push_template_folders(&self) {
+        let folders = self
+            .folders
+            .iter()
+            .flat_map(|(account_id, fs)| {
+                fs.iter().filter(|f| f.kind == FolderKind::Templates).map(move |f| (*account_id, f.id))
+            })
+            .collect();
+        self.message_view.emit(MessageViewInput::SetTemplateFolders(folders));
     }
 
     /// Each account's Drafts folder, in account order.
@@ -15946,7 +15863,8 @@ impl AppModel {
 
     /// Messages a reply could answer: what the reading pane shows first,
     /// then every account's Inbox (and the other folders listed this
-    /// session, Drafts, Sent, Junk and Trash left out), newest first.
+    /// session, Drafts, Templates, Sent, Junk and Trash left out), newest
+    /// first.
     fn messages_for_pick(&self) -> Vec<(Message, String)> {
         let mut seen: HashSet<(u32, u32)> = HashSet::new();
         let mut out = Vec::new();
@@ -15962,7 +15880,10 @@ impl AppModel {
             let Some(folders) = self.folders.get(&account_id) else { continue };
             let name = self.account_name(account_id);
             for f in folders {
-                if matches!(f.kind, FolderKind::Drafts | FolderKind::Sent | FolderKind::Junk | FolderKind::Trash) {
+                if matches!(
+                    f.kind,
+                    FolderKind::Drafts | FolderKind::Templates | FolderKind::Sent | FolderKind::Junk | FolderKind::Trash
+                ) {
                     continue;
                 }
                 let list = match self.message_cache.get(&(account_id, f.id)) {
@@ -16670,13 +16591,13 @@ impl AppModel {
 
     /// Removing an attachment cannot be undone, and reaches every device
     /// that reads the account: ask (#289).
-    fn confirm_delete_attachment(&self, target: AttachmentTarget, sender: &ComponentSender<Self>) {
+    fn confirm_delete_attachment(&self, target: AttachmentTarget, parent: &gtk::Window, sender: &ComponentSender<Self>) {
         let heading = i18n("Delete the attachment from the server?");
         let body = i18n_f(
             "“{name}” will be removed from the message on the server. The rest of the message stays. This can’t be undone.",
             &[("name", &target.name)],
         );
-        let dialog = adw::MessageDialog::new(Some(&self.window), Some(&heading), Some(&body));
+        let dialog = adw::MessageDialog::new(Some(parent), Some(&heading), Some(&body));
         dialog.add_response("cancel", &i18n("Cancel"));
         dialog.add_response("delete", &i18n("Delete"));
         dialog.set_default_response(Some("cancel"));
@@ -17420,6 +17341,7 @@ impl AppModel {
             FolderKind::Trash => "Trash",
             FolderKind::Junk => "Junk",
             FolderKind::Drafts => "Drafts",
+            FolderKind::Templates => "Templates",
             _ => return None,
         };
         self.folders.get(&account_id)?; // require folders to be loaded
@@ -18299,6 +18221,7 @@ impl AppModel {
             paste_plain: self.paste_plain,
             return_paragraph: self.return_paragraph,
             toolbar_expanded: self.toolbar_expanded,
+            print_options: self.print_options,
             spellcheck: self.spellcheck,
             spellcheck_langs: self.spellcheck_langs.clone(),
             app_theme: self.app_theme,
@@ -18957,6 +18880,9 @@ impl AppModel {
         self.message_list
             .emit(MessageListInput::SetRead { slot: (m.account_id, m.folder_id, m.id), read });
         self.set_cached_unread(m.account_id, m.folder_id, m.id, !read);
+        if let Some(p) = self.popouts.get(&(m.account_id, m.id)) {
+            p.controller.emit(MessageWindowInput::SetUnread(!read));
+        }
         if let Some(n) = self.folder_unread.get_mut(&(m.account_id, m.folder_id)) {
             if read {
                 *n = n.saturating_sub(1);
@@ -20914,6 +20840,7 @@ fn ctrl_shortcut_for(key: gtk::gdk::Key, shift: bool) -> Option<AppMsg> {
     use gtk::gdk::Key;
     match key {
         Key::n | Key::N if !shift => Some(AppMsg::Shortcut(Shortcut::Compose)),
+        Key::n | Key::N => Some(AppMsg::NewFromTemplate),
         Key::r | Key::R if !shift => Some(AppMsg::Shortcut(Shortcut::Reply)),
         Key::r | Key::R => Some(AppMsg::Shortcut(Shortcut::ReplyAll)),
         Key::u | Key::U if !shift => Some(AppMsg::ViewSource),
@@ -20958,6 +20885,7 @@ const SHORTCUT_HELP: &[(&str, &[(&str, &str)])] = &[
         i18n_noop("Writing"),
         &[
             ("c  or  Ctrl+N", i18n_noop("Compose")),
+            ("Ctrl+Shift+N", i18n_noop("New message from a template")),
             ("Ctrl+Enter", i18n_noop("Send the message you are writing")),
             ("Esc", i18n_noop("Back out of a reply and return to the list")),
             ("Ctrl+.  or  Ctrl+;", i18n_noop("Emoji chooser, at the cursor")),
@@ -21651,6 +21579,7 @@ fn sidebar_output_msg(out: SidebarOutput) -> AppMsg {
         }
         SidebarOutput::AddAccount => AppMsg::AddFirstAccount,
         SidebarOutput::ComposeRequested => AppMsg::Compose,
+        SidebarOutput::ComposeFromTemplateRequested => AppMsg::NewFromTemplate,
         SidebarOutput::Context(action) => AppMsg::SidebarContext(action),
         SidebarOutput::MoveMessages { dest_account, dest, items } => {
             AppMsg::DropMoveMessages { dest_account, dest, items }
@@ -22095,21 +22024,22 @@ fn remember_check() -> gtk::CheckButton {
     check
 }
 
-/// A dialog listing messages to pick one from (a draft to continue, a
-/// message to reply to) for handed-in files. `items` pairs each message
-/// with its account's name; a search box narrows them by sender, subject
-/// or account. `on_pick` gets the hand-off back with the choice, or
-/// `None` for "a new message instead"; Cancel drops the hand-off.
+/// A dialog listing messages to pick one from: a draft to continue or a
+/// message to reply to for handed-in files, or a template to start from
+/// (#360). `items` pairs each message with its account's name; a search box
+/// narrows them by sender, subject or account. `on_pick` gets `hand_off`
+/// back with the choice, or `None` for "a new message instead"; Cancel
+/// drops it.
 #[allow(clippy::too_many_arguments)]
-fn show_message_picker(
+fn show_message_picker<T: 'static>(
     parent: &gtk::Window,
     heading: &str,
     body: &str,
     empty_text: &str,
     pick_label: &str,
     items: Vec<(Message, String)>,
-    hand_off: FileHandOff,
-    on_pick: impl Fn(FileHandOff, Option<Message>) + 'static,
+    hand_off: T,
+    on_pick: impl Fn(T, Option<Message>) + 'static,
 ) {
     let dialog = adw::MessageDialog::new(Some(parent), Some(heading), Some(body));
     dialog.add_response("cancel", &i18n("Cancel"));
@@ -22209,7 +22139,7 @@ fn show_message_picker(
                     None => on_pick(hand_off, None),
                 }
             }
-            _ => tracing::info!("file hand-off: cancelled at the picker"),
+            _ => tracing::info!("message picker: cancelled"),
         }
     });
     dialog.present();
@@ -23298,8 +23228,8 @@ mod tests {
         assert!(matches!(ctrl_shortcut_for(Key::R, false), Some(AppMsg::Shortcut(Shortcut::Reply))));
         assert!(matches!(ctrl_shortcut_for(Key::R, true), Some(AppMsg::Shortcut(Shortcut::ReplyAll))));
         assert!(matches!(ctrl_shortcut_for(Key::u, false), Some(AppMsg::ViewSource)));
+        assert!(matches!(ctrl_shortcut_for(Key::N, true), Some(AppMsg::NewFromTemplate)));
         // Taken elsewhere, or not ours.
-        assert!(ctrl_shortcut_for(Key::N, true).is_none());
         assert!(ctrl_shortcut_for(Key::U, true).is_none());
         assert!(ctrl_shortcut_for(Key::f, false).is_none());
     }

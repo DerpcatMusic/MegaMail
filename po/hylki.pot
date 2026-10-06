@@ -58,6 +58,8 @@ msgstr ""
 msgid "Remove Star"
 msgstr ""
 
+#. One glyph in both states, as in the main window; the
+#. starred state carries color only.
 msgid "Star"
 msgstr ""
 
@@ -85,21 +87,6 @@ msgstr ""
 msgid "Downloading attachments…"
 msgstr ""
 
-msgid "Close"
-msgstr ""
-
-msgid "Previous"
-msgstr ""
-
-msgid "Next"
-msgstr ""
-
-msgid "Open"
-msgstr ""
-
-msgid "Download…"
-msgstr ""
-
 msgid "Settings"
 msgstr ""
 
@@ -118,6 +105,7 @@ msgstr ""
 msgid "Quit"
 msgstr ""
 
+#. Rightmost, beside the window controls, as in the main window.
 msgid "Actions"
 msgstr ""
 
@@ -178,9 +166,6 @@ msgstr ""
 msgid "The language applies the next time Hylki starts."
 msgstr ""
 
-msgid "Save Attachment"
-msgstr ""
-
 msgid ""
 "Couldn't restart automatically — quit and reopen Hylki to finish switching "
 "the icon."
@@ -196,6 +181,9 @@ msgid "No message with the ID {id} was found"
 msgstr ""
 
 msgid "No Drafts folder available for this account"
+msgstr ""
+
+msgid "No Templates folder available for this account"
 msgstr ""
 
 msgid "Could not save account: {e}"
@@ -305,9 +293,6 @@ msgstr ""
 msgid "Restart Now"
 msgstr ""
 
-msgid "{name} · {current} of {total}"
-msgstr ""
-
 msgid "View Source"
 msgstr ""
 
@@ -329,6 +314,12 @@ msgstr ""
 msgid "Message Source"
 msgstr ""
 
+msgid "Use Template"
+msgstr ""
+
+msgid "Edit Template"
+msgstr ""
+
 msgid "Edit as New Message"
 msgstr ""
 
@@ -345,6 +336,9 @@ msgid "Expand All Messages"
 msgstr ""
 
 msgid "Collapse All Messages"
+msgstr ""
+
+msgid "Print…"
 msgstr ""
 
 msgid "Delete {n} messages"
@@ -403,6 +397,16 @@ msgid "Attach Anyway"
 msgstr ""
 
 msgid "Upload to Cloud Storage"
+msgstr ""
+
+msgid "New Message from Template"
+msgstr ""
+
+msgid "The new message starts as a copy of the template you pick."
+msgstr ""
+
+msgid ""
+"No templates yet. Save one from the composer's ⋯ menu with Save as Template."
 msgstr ""
 
 msgid "Continue a Draft"
@@ -666,6 +670,9 @@ msgstr[1] ""
 msgid "Filters Applied"
 msgstr ""
 
+msgid "Close"
+msgstr ""
+
 msgid "This message carries no calendar file to open."
 msgstr ""
 
@@ -794,6 +801,9 @@ msgstr ""
 msgid "Compose"
 msgstr ""
 
+msgid "New message from a template"
+msgstr ""
+
 msgid "Send the message you are writing"
 msgstr ""
 
@@ -858,6 +868,9 @@ msgid "This list"
 msgstr ""
 
 msgid "Unstar"
+msgstr ""
+
+msgid "Save Attachment"
 msgstr ""
 
 msgid "Save All Attachments"
@@ -1613,6 +1626,9 @@ msgstr ""
 msgid "Drafts"
 msgstr ""
 
+msgid "Templates"
+msgstr ""
+
 msgid "Trash"
 msgstr ""
 
@@ -2039,6 +2055,12 @@ msgstr ""
 msgid "Could not import the key"
 msgstr ""
 
+msgid "Open"
+msgstr ""
+
+msgid "Download…"
+msgstr ""
+
 msgid "Show in Message"
 msgstr ""
 
@@ -2138,6 +2160,12 @@ msgid "Type (A–Z)"
 msgstr ""
 
 msgid "Type (Z–A)"
+msgstr ""
+
+msgid "Previous"
+msgstr ""
+
+msgid "Next"
 msgstr ""
 
 msgid "Open in the default app"
@@ -2502,10 +2530,25 @@ msgstr ""
 msgid "Open in window"
 msgstr ""
 
+msgid "Save Template"
+msgstr ""
+
 msgid "Save Draft"
 msgstr ""
 
+msgid "Save to Templates"
+msgstr ""
+
 msgid "Save to Drafts"
+msgstr ""
+
+msgid "More ways to save"
+msgstr ""
+
+msgid "Keep a copy in Templates to start new messages from"
+msgstr ""
+
+msgid "Save as Template"
 msgstr ""
 
 msgid "Delete Draft"
@@ -2681,6 +2724,13 @@ msgid "{name} (link)"
 msgstr ""
 
 msgid "Uploading…"
+msgstr ""
+
+msgid "Save the template?"
+msgstr ""
+
+msgid ""
+"Its changes have not been saved. Save them to the template, or discard them."
 msgstr ""
 
 msgid "Save the message?"
@@ -2978,6 +3028,9 @@ msgid ""
 "directly"
 msgstr ""
 
+msgid "{name} · {current} of {total}"
+msgstr ""
+
 msgid "me"
 msgstr ""
 
@@ -3190,6 +3243,15 @@ msgid "Trust this key…"
 msgstr ""
 
 msgid "A pass proves the address wasn't forged — not that the message is safe."
+msgstr ""
+
+msgid "This message is a template."
+msgstr ""
+
+msgid "Change the template itself"
+msgstr ""
+
+msgid "Start a new message from a copy of the template"
 msgstr ""
 
 msgid "Repeats daily"
@@ -3418,9 +3480,6 @@ msgid "Copy Image"
 msgstr ""
 
 msgid "Copy Image Address"
-msgstr ""
-
-msgid "Load attachments from server"
 msgstr ""
 
 msgid "Clear all"
@@ -4457,6 +4516,28 @@ msgid ""
 "or as sent. The switch still changes the message on screen."
 msgstr ""
 
+msgid "Printing"
+msgstr ""
+
+msgid "Page numbers"
+msgstr ""
+
+msgid ""
+"Print the page number and the number of pages at the foot of every page."
+msgstr ""
+
+msgid "Date printed"
+msgstr ""
+
+msgid "Print the date and time of printing at the foot of every page."
+msgstr ""
+
+msgid "Wider left margin"
+msgstr ""
+
+msgid "Leave 25 mm at the left of every page, so punched holes miss the text."
+msgstr ""
+
 msgid "Compose in the main window"
 msgstr ""
 
@@ -4947,16 +5028,25 @@ msgstr ""
 msgid "Print Message"
 msgstr ""
 
-msgid "Save as PDF"
+msgid "No PDF writer is available on this system"
 msgstr ""
 
-msgid "Could not save the PDF: {error}"
-msgstr ""
-
-msgid "Print…"
+msgid "Page {page} of {pages}"
 msgstr ""
 
 msgid "Save as PDF…"
+msgstr ""
+
+msgid "No Preview"
+msgstr ""
+
+msgid "Save as PDF"
+msgstr ""
+
+msgid "Saved {name}"
+msgstr ""
+
+msgid "Could not save the PDF: {error}"
 msgstr ""
 
 msgid "Send as Attachment Instead"
@@ -5094,6 +5184,9 @@ msgid "Add first account"
 msgstr ""
 
 msgid "No accounts yet"
+msgstr ""
+
+msgid "New Message from Template…"
 msgstr ""
 
 msgid "Outbox"
@@ -5457,7 +5550,7 @@ msgstr ""
 msgid "Could not delete folder: {e}"
 msgstr ""
 
-msgid "Saving draft…"
+msgid "unknown folder"
 msgstr ""
 
 msgid "Could not reach the server"
@@ -5488,9 +5581,6 @@ msgid "IMAP connection stopped making progress"
 msgstr ""
 
 msgid "Could not reach the JMAP server: {e}"
-msgstr ""
-
-msgid "unknown folder"
 msgstr ""
 
 msgid "That folder is not on the server"
@@ -5577,7 +5667,16 @@ msgstr ""
 msgid "Could not schedule the message."
 msgstr ""
 
+msgid "Could not save template: {e}"
+msgstr ""
+
 msgid "Could not save draft: {e}"
+msgstr ""
+
+msgid "Saving template…"
+msgstr ""
+
+msgid "Saving draft…"
 msgstr ""
 
 msgid ""

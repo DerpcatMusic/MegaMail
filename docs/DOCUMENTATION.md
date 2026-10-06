@@ -507,6 +507,36 @@ saved. **Discard** on a new message removes the copy it left; on a draft you
 had saved before, the last automatic save stays. A save that fails, offline
 say, is tried again at the next one, without a message about it.
 
+### Templates
+
+A template is a message kept to start new ones from. It lives in the
+account's Templates folder, on the server, so another client that keeps
+templates there, Thunderbird among them, sees the same ones.
+
+- **Save as Template**, in the arrow beside **Save Draft**, keeps a copy of
+  the message being written in Templates and leaves the composer open. The
+  copy answers nothing: it carries no reply headers, and a message started
+  from it begins a conversation of its own. An account with no Templates
+  folder gets one the first time.
+- A template opened in the Templates folder has a banner. **Use Template**,
+  or a double-click on it in the list, opens a new message with its
+  recipients, subject, text and files, sent from the address it was saved
+  with. The template stays as it is.
+- **Edit Template** opens the template itself, where a new message opens:
+  in the reading pane, or in a window of its own with **Settings →
+  Composing → Compose in the main window** switched off. **Save Template**
+  puts the changed one back in its place, and nothing is saved on its own
+  while it is open. Sending from it leaves the template in Templates.
+- **New Message from Template…**, in the arrow at the end of **New
+  Message** (on its right-click menu when the sidebar is folded to icons),
+  or <kbd>Ctrl+Shift+N</kbd>, lists every account's templates to start
+  from.
+
+A folder called Templates is taken for the role, at the top of the account
+or directly under the Inbox. Nothing on a server marks one otherwise, so a
+folder by another name, "Vorlagen" say, is chosen in the account's
+**Special Folders**, under **Templates**.
+
 ### The From address
 
 The From row lists each account's address and the aliases set up for it.
@@ -834,6 +864,40 @@ message you move to with `w` or `b`. Right-clicking anywhere in a
 conversation offers **Expand All Messages** and **Collapse All Messages**.
 What you fold or open stays that way while the conversation is on screen.
 Printing shows every message in full.
+
+### A message in its own window
+
+Double-clicking a message in the list, or a message's header in a
+conversation, opens it in a window of its own. Its toolbar is the reader's:
+the same buttons in the order **Settings → Appearance → Toolbar** gives
+them, and in a narrow window the right-hand group folds into a ⋯ menu as it
+does in the main window. Its files are in the attachment drawer under the
+message, and on each message's card when those are switched on, and images
+and PDFs open in the same full-window preview. A conversation's window
+gathers the files of every message in it. Its Reader View switch changes
+that window alone; the main window and the choice Hylki remembers stay as
+they were. **Ctrl+F** finds in the message and **Ctrl+P** prints it.
+
+### Printing
+
+**Ctrl+P** prints the message or conversation in the reader, and
+**Ctrl+Shift+P**, the printer button in the reader's toolbar or **Print
+Preview** in the message's right-click menu shows it first, page by page,
+as it will come out. The preview prints from its **Print…** button and
+saves a PDF from **Save as PDF…**. A message opened in a window of its own
+has the same printer button, menu entries and keys.
+
+The printed page starts with the subject, sender, recipients and date, and
+has a 15 mm margin on every side. **Settings → Reading → Printing** adds to
+it:
+
+- **Page numbers**, on by default: "Page 2 of 5" at the foot of every page.
+- **Date printed**: the date and time of printing at the foot of every
+  page, at the left.
+- **Wider left margin**: 25 mm at the left, so punched holes miss the text.
+
+The preview is laid out on the paper chosen the last time you printed, or
+your language's default paper size before that.
 
 ### Message list layout
 

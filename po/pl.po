@@ -63,6 +63,8 @@ msgstr "Przekaż dalej"
 msgid "Remove Star"
 msgstr "Usuń gwiazdkę"
 
+#. One glyph in both states, as in the main window; the
+#. starred state carries color only.
 msgid "Star"
 msgstr "Oznacz gwiazdką"
 
@@ -90,21 +92,6 @@ msgstr "Oznacz jako nieprzeczytane"
 msgid "Downloading attachments…"
 msgstr "Pobieranie załączników…"
 
-msgid "Close"
-msgstr "Zamknij"
-
-msgid "Previous"
-msgstr "Poprzedni"
-
-msgid "Next"
-msgstr "Następny"
-
-msgid "Open"
-msgstr "Otwórz"
-
-msgid "Download…"
-msgstr "Pobierz…"
-
 msgid "Settings"
 msgstr "Ustawienia"
 
@@ -123,6 +110,7 @@ msgstr "Drukuj wiadomość…"
 msgid "Quit"
 msgstr "Zakończ"
 
+#. Rightmost, beside the window controls, as in the main window.
 msgid "Actions"
 msgstr "Działania"
 
@@ -184,9 +172,6 @@ msgstr "Otwarto w przeglądarce stronę wypisania z listy."
 msgid "The language applies the next time Hylki starts."
 msgstr "Język zostanie zmieniony przy następnym uruchomieniu aplikacji Hylki."
 
-msgid "Save Attachment"
-msgstr "Zapisz załącznik"
-
 msgid ""
 "Couldn't restart automatically — quit and reopen Hylki to finish switching "
 "the icon."
@@ -204,6 +189,10 @@ msgid "No message with the ID {id} was found"
 msgstr "Nie odnaleziono wiadomości o identyfikatorze {id}"
 
 msgid "No Drafts folder available for this account"
+msgstr "To konto nie ma katalogu szkiców"
+
+#, fuzzy
+msgid "No Templates folder available for this account"
 msgstr "To konto nie ma katalogu szkiców"
 
 msgid "Could not save account: {e}"
@@ -323,9 +312,6 @@ msgstr ""
 msgid "Restart Now"
 msgstr "Uruchom ponownie teraz"
 
-msgid "{name} · {current} of {total}"
-msgstr "{name} · {current} z {total}"
-
 msgid "View Source"
 msgstr "Wyświetl źródło"
 
@@ -347,6 +333,13 @@ msgstr "Sortuj"
 msgid "Message Source"
 msgstr "Źródło wiadomości"
 
+msgid "Use Template"
+msgstr ""
+
+#, fuzzy
+msgid "Edit Template"
+msgstr "Modyfikuj etykietę"
+
 msgid "Edit as New Message"
 msgstr "Modyfikuj jako nową wiadomość"
 
@@ -366,6 +359,9 @@ msgstr "Znajdź w wiadomości"
 #, fuzzy
 msgid "Collapse All Messages"
 msgstr "Zwiń do panelu czytania"
+
+msgid "Print…"
+msgstr "Drukuj…"
 
 msgid "Delete {n} messages"
 msgstr "Usuń wiadomości ({n})"
@@ -438,6 +434,18 @@ msgstr "Załącz mimo to"
 
 msgid "Upload to Cloud Storage"
 msgstr "Prześlij do chmury"
+
+#, fuzzy
+msgid "New Message from Template"
+msgstr "Nowa wiadomość"
+
+#, fuzzy
+msgid "The new message starts as a copy of the template you pick."
+msgstr "Pliki zostaną dołączone do odpowiedzi na wybraną wiadomość."
+
+msgid ""
+"No templates yet. Save one from the composer's ⋯ menu with Save as Template."
+msgstr ""
 
 msgid "Continue a Draft"
 msgstr "Kontynuuj szkic"
@@ -740,6 +748,9 @@ msgstr[2] ""
 msgid "Filters Applied"
 msgstr "Zastosowano filtry"
 
+msgid "Close"
+msgstr "Zamknij"
+
 msgid "This message carries no calendar file to open."
 msgstr "Ta wiadomość nie zawiera pliku kalendarza do otwarcia."
 
@@ -877,6 +888,10 @@ msgstr "Pisanie:"
 msgid "Compose"
 msgstr "Napisz nową wiadomość"
 
+#, fuzzy
+msgid "New message from a template"
+msgstr "Najnowsza wiadomość na początku"
+
 msgid "Send the message you are writing"
 msgstr "Wyślij pisaną wiadomość"
 
@@ -943,6 +958,9 @@ msgstr "Ta lista"
 
 msgid "Unstar"
 msgstr "Usuń gwiazdkę"
+
+msgid "Save Attachment"
+msgstr "Zapisz załącznik"
 
 msgid "Save All Attachments"
 msgstr "Zapisz wszystkie załączniki"
@@ -1798,6 +1816,9 @@ msgstr ""
 msgid "Drafts"
 msgstr "Szkice"
 
+msgid "Templates"
+msgstr ""
+
 msgid "Trash"
 msgstr "Kosz"
 
@@ -2263,6 +2284,12 @@ msgstr "Ten klucz został już wcześniej zaimportowany."
 msgid "Could not import the key"
 msgstr "Nie udało się zaimportować klucza"
 
+msgid "Open"
+msgstr "Otwórz"
+
+msgid "Download…"
+msgstr "Pobierz…"
+
 msgid "Show in Message"
 msgstr "Wyświetl w wiadomości"
 
@@ -2365,6 +2392,12 @@ msgstr "Typ (A–Z)"
 
 msgid "Type (Z–A)"
 msgstr "Typ (Z–A)"
+
+msgid "Previous"
+msgstr "Poprzedni"
+
+msgid "Next"
+msgstr "Następny"
 
 msgid "Open in the default app"
 msgstr "Otwórz w domyślnej aplikacji"
@@ -2813,11 +2846,29 @@ msgstr "Zwiń do panelu czytania"
 msgid "Open in window"
 msgstr "Otwórz w osobnym oknie"
 
+#, fuzzy
+msgid "Save Template"
+msgstr "Zapisz obraz"
+
 msgid "Save Draft"
 msgstr "Zapisz szkic"
 
+#, fuzzy
+msgid "Save to Templates"
+msgstr "Zapisz w katalogu „Szkice”"
+
 msgid "Save to Drafts"
 msgstr "Zapisz w katalogu „Szkice”"
+
+msgid "More ways to save"
+msgstr ""
+
+msgid "Keep a copy in Templates to start new messages from"
+msgstr ""
+
+#, fuzzy
+msgid "Save as Template"
+msgstr "Wklejanie jako zwykły tekst"
 
 msgid "Delete Draft"
 msgstr "Usuń szkic"
@@ -3006,6 +3057,17 @@ msgstr "{name} (odnośnik)"
 
 msgid "Uploading…"
 msgstr "Przesyłanie…"
+
+#, fuzzy
+msgid "Save the template?"
+msgstr "Czy zapisać etykietę?"
+
+#, fuzzy
+msgid ""
+"Its changes have not been saved. Save them to the template, or discard them."
+msgstr ""
+"Wiadomość nie została wysłana. Zapisz ją w katalogu „Szkice”, aby dokończyć "
+"później, lub ją odrzuć."
 
 msgid "Save the message?"
 msgstr "Czy zapisać wiadomość?"
@@ -3339,6 +3401,9 @@ msgstr ""
 "• Zaktualizowanie pakietu „xdg-desktop-portal” i ponowne zalogowanie się "
 "może rozwiązać problem z bezpośrednim otwieraniem odnośników"
 
+msgid "{name} · {current} of {total}"
+msgstr "{name} · {current} z {total}"
+
 #, fuzzy
 msgid "me"
 msgstr "Nazwa"
@@ -3565,6 +3630,17 @@ msgid "A pass proves the address wasn't forged — not that the message is safe.
 msgstr ""
 "Pozytywny wynik potwierdza, że adres nie został sfałszowany – nie oznacza, "
 "że wiadomość jest bezpieczna."
+
+#, fuzzy
+msgid "This message is a template."
+msgstr "Ta wiadomość pochodzi z listy dyskusyjnej."
+
+msgid "Change the template itself"
+msgstr ""
+
+#, fuzzy
+msgid "Start a new message from a copy of the template"
+msgstr "Utwórz wiadomość z obrazem w treści"
 
 msgid "Repeats daily"
 msgstr "Powtarza się codziennie"
@@ -3816,9 +3892,6 @@ msgstr "Obrazy"
 #, fuzzy
 msgid "Copy Image Address"
 msgstr "Adres e-mail"
-
-msgid "Load attachments from server"
-msgstr "Pobierz załączniki z serwera"
 
 msgid "Clear all"
 msgstr "Wyczyść wszystko"
@@ -5050,6 +5123,30 @@ msgstr ""
 "jest otwierana w widoku czytania lub w oryginalnej postaci. Przełącznik "
 "nadal zmienia widok bieżącej wiadomości."
 
+#, fuzzy
+msgid "Printing"
+msgstr "Pisanie:"
+
+msgid "Page numbers"
+msgstr ""
+
+msgid ""
+"Print the page number and the number of pages at the foot of every page."
+msgstr ""
+
+#, fuzzy
+msgid "Date printed"
+msgstr "Format daty"
+
+msgid "Print the date and time of printing at the foot of every page."
+msgstr ""
+
+msgid "Wider left margin"
+msgstr ""
+
+msgid "Leave 25 mm at the left of every page, so punched holes miss the text."
+msgstr ""
+
 msgid "Compose in the main window"
 msgstr "Pisanie w oknie głównym"
 
@@ -5643,17 +5740,29 @@ msgstr "Własny plik"
 msgid "Print Message"
 msgstr "Drukuj wiadomość"
 
-msgid "Save as PDF"
-msgstr "Zapisz jako PDF"
+#, fuzzy
+msgid "No PDF writer is available on this system"
+msgstr "To konto nie ma katalogu szkiców"
 
-msgid "Could not save the PDF: {error}"
-msgstr "Nie udało się zapisać pliku PDF: {error}"
-
-msgid "Print…"
-msgstr "Drukuj…"
+msgid "Page {page} of {pages}"
+msgstr ""
 
 msgid "Save as PDF…"
 msgstr "Zapisz jako PDF…"
+
+#, fuzzy
+msgid "No Preview"
+msgstr "Podgląd"
+
+msgid "Save as PDF"
+msgstr "Zapisz jako PDF"
+
+#, fuzzy
+msgid "Saved {name}"
+msgstr "Usunięto konto {name}"
+
+msgid "Could not save the PDF: {error}"
+msgstr "Nie udało się zapisać pliku PDF: {error}"
 
 msgid "Send as Attachment Instead"
 msgstr "Wyślij jako załącznik"
@@ -5805,6 +5914,9 @@ msgstr "Dodaj pierwsze konto"
 
 msgid "No accounts yet"
 msgstr "Brak kont"
+
+msgid "New Message from Template…"
+msgstr ""
 
 msgid "Outbox"
 msgstr "Skrzynka nadawcza"
@@ -6191,8 +6303,9 @@ msgstr "Nie udało się usunąć katalogu: nieznany katalog"
 msgid "Could not delete folder: {e}"
 msgstr "Nie udało się usunąć katalogu: {e}"
 
-msgid "Saving draft…"
-msgstr "Zapisywanie szkicu…"
+#, fuzzy
+msgid "unknown folder"
+msgstr "Wyświetl poszczególne katalogi"
 
 msgid "Could not reach the server"
 msgstr "Nie udało się połączyć z serwerem"
@@ -6223,10 +6336,6 @@ msgstr ""
 
 msgid "Could not reach the JMAP server: {e}"
 msgstr "Nie udało się połączyć z serwerem JMAP: {e}"
-
-#, fuzzy
-msgid "unknown folder"
-msgstr "Wyświetl poszczególne katalogi"
 
 msgid "That folder is not on the server"
 msgstr "Tego katalogu nie ma na serwerze"
@@ -6324,8 +6433,19 @@ msgstr "Wiadomość „{subject}” zostanie wysłana {when}"
 msgid "Could not schedule the message."
 msgstr "Nie udało się usunąć wiadomości: {e}"
 
+#, fuzzy
+msgid "Could not save template: {e}"
+msgstr "Nie udało się zapisać szkicu: {e}"
+
 msgid "Could not save draft: {e}"
 msgstr "Nie udało się zapisać szkicu: {e}"
+
+#, fuzzy
+msgid "Saving template…"
+msgstr "Zapisywanie szkicu…"
+
+msgid "Saving draft…"
+msgstr "Zapisywanie szkicu…"
 
 msgid ""
 "no OpenPGP key of your own for {addr}; generate one under Settings, OpenPGP"
@@ -6489,6 +6609,9 @@ msgstr "Zbiorcza skrzynka odbiorcza w jasnym motywie"
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid "Load attachments from server"
+#~ msgstr "Pobierz załączniki z serwera"
 
 #~ msgid "Could not save draft: unknown folder"
 #~ msgstr "Nie udało się zapisać szkicu: nieznany katalog"

@@ -21,6 +21,9 @@ pub enum FolderKind {
     Starred,
     Sent,
     Drafts,
+    /// Messages kept to start new ones from (#360): no server marks this
+    /// role, so it is found by name or assigned under Special Folders.
+    Templates,
     Archive,
     Junk,
     Trash,
@@ -34,6 +37,7 @@ impl FolderKind {
             FolderKind::Starred => "starred-symbolic",
             FolderKind::Sent => "mail-send-symbolic",
             FolderKind::Drafts => "document-edit-symbolic",
+            FolderKind::Templates => "folder-templates-symbolic",
             FolderKind::Archive => "mail-archive-symbolic",
             FolderKind::Junk => "mail-mark-junk-symbolic",
             FolderKind::Trash => "user-trash-symbolic",
@@ -120,6 +124,7 @@ pub fn localize_special_folder_names(folders: &mut [Folder]) {
             FolderKind::Inbox => ("Inbox", &["inbox"]),
             FolderKind::Sent => ("Sent", &["sent", "sent items", "sent mail", "sent messages"]),
             FolderKind::Drafts => ("Drafts", &["drafts", "draft"]),
+            FolderKind::Templates => ("Templates", &["templates", "template"]),
             FolderKind::Trash => ("Trash", &["trash", "deleted items", "deleted messages", "bin"]),
             FolderKind::Junk => (
                 "Junk",
@@ -191,11 +196,19 @@ pub fn exchange_non_mail_folders(folders: &[Folder]) -> Vec<String> {
         .collect()
 }
 
+/// Whether a folder's own name makes it the Templates folder (#360). No
+/// server marks one, so the name is all there is to go by; any other is
+/// assigned under Special Folders.
+pub fn is_templates_name(name: &str) -> bool {
+    matches!(name.trim().to_lowercase().as_str(), "templates" | "template")
+}
+
 /// The [`FolderKind`] behind a Special Folders role key (#82).
 pub fn role_kind(role: &str) -> Option<FolderKind> {
     match role {
         "sent" => Some(FolderKind::Sent),
         "drafts" => Some(FolderKind::Drafts),
+        "templates" => Some(FolderKind::Templates),
         "trash" => Some(FolderKind::Trash),
         "junk" => Some(FolderKind::Junk),
         "archive" => Some(FolderKind::Archive),
@@ -1480,6 +1493,32 @@ mod tests {
         // Positions and ids are untouched: the worker's cache keys ids by order.
         assert_eq!(folders.iter().map(|f| f.id).collect::<Vec<_>>(), vec![1, 2, 3]);
         assert_eq!(folders[1].path, "Brouillons");
+    }
+
+    #[test]
+    fn templates_can_be_assigned_and_are_named_in_the_language() {
+        // #360: "Vorlagen" is pointed at under Special Folders, and a
+        // detected "Templates" gives way to it.
+        let f = |id: u32, path: &str, kind: FolderKind| Folder {
+            id,
+            account_id: 1,
+            name: path.to_string(),
+            path: path.to_string(),
+            kind,
+            unread: 0,
+        };
+        let mut folders = vec![
+            f(1, "INBOX", FolderKind::Inbox),
+            f(2, "Templates", FolderKind::Templates),
+            f(3, "Vorlagen", FolderKind::Custom),
+        ];
+        let roles: std::collections::BTreeMap<String, String> =
+            [("templates".to_string(), "Vorlagen".to_string())].into();
+        assign_folder_roles(&roles, &mut folders);
+        assert_eq!(folders[1].kind, FolderKind::Custom);
+        assert_eq!(folders[2].kind, FolderKind::Templates);
+        assert!(is_templates_name(" Templates "));
+        assert!(!is_templates_name("My Templates"));
     }
 
     fn plain_folder(path: &str, kind: FolderKind) -> Folder {

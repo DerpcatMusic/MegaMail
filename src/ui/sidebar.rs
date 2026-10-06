@@ -552,6 +552,8 @@ pub enum SidebarOutput {
     ToggleAccountTags(u32),
     /// The "New message" row at the top of the sidebar.
     ComposeRequested,
+    /// Its right-click menu's New Message from Template (#360).
+    ComposeFromTemplateRequested,
     /// The refresh button beside it.
     RefreshRequested,
     /// Long-press on the rail's refresh button: reveal the status bar.
@@ -1935,7 +1937,10 @@ impl Sidebar {
 
             // The compose button, drawn like a row so it matches the
             // sidebar's look. Expanded: full width like the rows below, icon
-            // and label centred. The collapsed rail shows the icon alone.
+            // and label centred, and a caret at the end, as the composer's
+            // Send has for Send Later, opening the menu a right-click opens
+            // (#360). The collapsed rail shows the icon alone, its menu on a
+            // right-click only.
             let list = gtk::ListBox::new();
             list.set_selection_mode(gtk::SelectionMode::None);
             list.add_css_class("navigation-sidebar");
@@ -1943,6 +1948,25 @@ impl Sidebar {
             row.add_css_class("compose-row");
             let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 12);
             hbox.add_css_class("folder-row");
+            let menu_sender = sender.clone();
+            let compose_menu = move |widget: &gtk::Widget, x: f64, y: f64| {
+                let (blank, from_template) = (menu_sender.clone(), menu_sender.clone());
+                show_context_menu(
+                    widget,
+                    x,
+                    y,
+                    vec![vec![
+                        MenuEntry::new(i18n("New Message"), move || {
+                            let _ = blank.output(SidebarOutput::ComposeRequested);
+                        })
+                        .icon("mail-message-new-symbolic"),
+                        MenuEntry::new(i18n("New Message from Template…"), move || {
+                            let _ = from_template.output(SidebarOutput::ComposeFromTemplateRequested);
+                        })
+                        .icon("folder-templates-symbolic"),
+                    ]],
+                );
+            };
             if self.collapsed {
                 // The rail has no room for a label; the icon carries it there.
                 let img = gtk::Image::from_icon_name("mail-message-new-symbolic");
@@ -1952,21 +1976,50 @@ impl Sidebar {
                 row.set_tooltip_text(Some(i18n("New Message").as_str()));
                 hbox.append(&img);
             } else {
-                hbox.set_halign(gtk::Align::Center);
-                hbox.set_spacing(6);
+                hbox.set_spacing(0);
+                hbox.add_css_class("compose-split");
+                let main = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+                main.set_hexpand(true);
+                main.set_halign(gtk::Align::Center);
                 let icon =
                     gtk::Image::from_icon_name("mail-message-new-symbolic");
                 icon.add_css_class("folder-icon");
-                hbox.append(&icon);
+                main.append(&icon);
                 let label = gtk::Label::new(Some(i18n("New Message").as_str()));
                 label.add_css_class("account-name");
                 // The pill must be able to shrink with the sidebar (down to its
                 // 180px minimum) — otherwise the whole column's minimum width
                 // exceeds the pane and every row highlight overflows the edge.
                 label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-                hbox.append(&label);
+                main.append(&label);
+                hbox.append(&main);
+                hbox.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+                // Its own click: the row's activation, which composes, never
+                // sees it.
+                let caret = gtk::Button::from_icon_name("pan-down-symbolic");
+                caret.add_css_class("flat");
+                caret.add_css_class("compose-caret");
+                caret.set_focus_on_click(false);
+                caret.set_valign(gtk::Align::Center);
+                caret.set_tooltip_text(Some(i18n("New Message from Template…").as_str()));
+                let menu = compose_menu.clone();
+                let quiet = self.quiet.clone();
+                caret.connect_clicked(move |b| {
+                    if !quiet.get() {
+                        menu(b.upcast_ref(), f64::from(b.width()) / 2.0, f64::from(b.height()));
+                    }
+                });
+                hbox.append(&caret);
             }
             row.set_child(Some(&hbox));
+            // A right-click offers a template to start from (#360).
+            let right_click = gtk::GestureClick::new();
+            right_click.set_button(gtk::gdk::BUTTON_SECONDARY);
+            right_click.connect_pressed(move |gesture, _, x, y| {
+                let Some(widget) = gesture.widget() else { return };
+                compose_menu(&widget, x, y);
+            });
+            row.add_controller(right_click);
             list.append(&row);
             let s = sender.clone();
             let quiet = self.quiet.clone();
@@ -4628,11 +4681,15 @@ fn folder_menu_items(
     ];
     // Rules normally only meet mail arriving in the Inbox; from here they
     // can be held up against whatever is already in this folder (#198).
-    // Not on Drafts, Junk or Trash: filing mail *out* of those is never what
-    // a rule about incoming mail meant.
+    // Not on Drafts, Templates, Junk or Trash: filing mail *out* of those is
+    // never what a rule about incoming mail meant.
     let filterable = !matches!(
         f.kind,
-        FolderKind::Drafts | FolderKind::Junk | FolderKind::Trash | FolderKind::Starred
+        FolderKind::Drafts
+            | FolderKind::Templates
+            | FolderKind::Junk
+            | FolderKind::Trash
+            | FolderKind::Starred
     );
     if has_filters && filterable {
         items.push((i18n_noop("Apply Filters"), CtxAction::ApplyFilters {

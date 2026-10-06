@@ -64,6 +64,8 @@ msgstr "Továbbítás"
 msgid "Remove Star"
 msgstr "Csillag eltávolítása"
 
+#. One glyph in both states, as in the main window; the
+#. starred state carries color only.
 msgid "Star"
 msgstr "Csillagozás"
 
@@ -91,21 +93,6 @@ msgstr "Megjelölés olvasatlanként"
 msgid "Downloading attachments…"
 msgstr "Mellékletek letöltése…"
 
-msgid "Close"
-msgstr "Bezárás"
-
-msgid "Previous"
-msgstr "Előző"
-
-msgid "Next"
-msgstr "Következő"
-
-msgid "Open"
-msgstr "Megnyitás"
-
-msgid "Download…"
-msgstr "Letöltés…"
-
 msgid "Settings"
 msgstr "Beállítások"
 
@@ -124,6 +111,7 @@ msgstr "Nyomtatás…"
 msgid "Quit"
 msgstr "Kilépés"
 
+#. Rightmost, beside the window controls, as in the main window.
 msgid "Actions"
 msgstr "Műveletek"
 
@@ -185,9 +173,6 @@ msgstr "A lista leiratkozási oldala megnyílik a böngészőben."
 msgid "The language applies the next time Hylki starts."
 msgstr "A nyelvi módosítások a Hylki következő indításakor lépnek életbe."
 
-msgid "Save Attachment"
-msgstr "Melléklet mentése"
-
 msgid ""
 "Couldn't restart automatically — quit and reopen Hylki to finish switching "
 "the icon."
@@ -205,6 +190,10 @@ msgid "No message with the ID {id} was found"
 msgstr "Nem található üzenet ezzel az azonosítóval: {id}"
 
 msgid "No Drafts folder available for this account"
+msgstr "Ehhez a fiókhoz nem érhető el Piszkozatok mappa"
+
+#, fuzzy
+msgid "No Templates folder available for this account"
 msgstr "Ehhez a fiókhoz nem érhető el Piszkozatok mappa"
 
 msgid "Could not save account: {e}"
@@ -323,9 +312,6 @@ msgstr ""
 msgid "Restart Now"
 msgstr "Újraindítás most"
 
-msgid "{name} · {current} of {total}"
-msgstr "{name} · {current} / {total}"
-
 msgid "View Source"
 msgstr "Forrás megtekintése"
 
@@ -347,6 +333,13 @@ msgstr "Rendezés"
 msgid "Message Source"
 msgstr "Üzenetforrás"
 
+msgid "Use Template"
+msgstr ""
+
+#, fuzzy
+msgid "Edit Template"
+msgstr "Címke szerkesztése"
+
 msgid "Edit as New Message"
 msgstr "Szerkesztés új üzenetként"
 
@@ -366,6 +359,9 @@ msgstr "Keresés az üzenetben"
 #, fuzzy
 msgid "Collapse All Messages"
 msgstr "Olvasói nézetre váltás"
+
+msgid "Print…"
+msgstr "Nyomtatás…"
 
 msgid "Delete {n} messages"
 msgstr "{n} üzenet törlése"
@@ -429,6 +425,18 @@ msgstr "Csatolás mindenképpen"
 
 msgid "Upload to Cloud Storage"
 msgstr "Feltöltés a felhőbe"
+
+#, fuzzy
+msgid "New Message from Template"
+msgstr "Inkább új üzenet"
+
+#, fuzzy
+msgid "The new message starts as a copy of the template you pick."
+msgstr "A fájlok az Ön által kiválasztott üzenetre adott válaszba kerülnek."
+
+msgid ""
+"No templates yet. Save one from the composer's ⋯ menu with Save as Template."
+msgstr ""
 
 msgid "Continue a Draft"
 msgstr "Folytatás piszkozatként"
@@ -710,6 +718,9 @@ msgstr[1] "Az {tagged} címkével ellátott szűrők, {n} üzenetből {filed}. �
 msgid "Filters Applied"
 msgstr "Alkalmazott szűrők"
 
+msgid "Close"
+msgstr "Bezárás"
+
 msgid "This message carries no calendar file to open."
 msgstr "Ez az üzenet nem tartalmaz megnyitható naptárfájlt."
 
@@ -849,6 +860,10 @@ msgstr "Írás:"
 msgid "Compose"
 msgstr "Levélírás"
 
+#, fuzzy
+msgid "New message from a template"
+msgstr "Legújabb üzenet elöl"
+
 msgid "Send the message you are writing"
 msgstr "Küldd el az éppen írt üzenetet"
 
@@ -917,6 +932,9 @@ msgstr "Ez a lista"
 
 msgid "Unstar"
 msgstr "Csillagozás törlése"
+
+msgid "Save Attachment"
+msgstr "Melléklet mentése"
 
 msgid "Save All Attachments"
 msgstr "Összes melléklet mentése"
@@ -1762,6 +1780,9 @@ msgstr ""
 msgid "Drafts"
 msgstr "Piszkozatok"
 
+msgid "Templates"
+msgstr ""
+
 msgid "Trash"
 msgstr "Kuka"
 
@@ -2227,6 +2248,12 @@ msgstr "Ezt a kulcsot korábban már importálták."
 msgid "Could not import the key"
 msgstr "A kulcs nem importálható"
 
+msgid "Open"
+msgstr "Megnyitás"
+
+msgid "Download…"
+msgstr "Letöltés…"
+
 msgid "Show in Message"
 msgstr "Megjelenítés az üzenetben"
 
@@ -2329,6 +2356,12 @@ msgstr "Típus (A–Z)"
 
 msgid "Type (Z–A)"
 msgstr "Típus (Z–A)"
+
+msgid "Previous"
+msgstr "Előző"
+
+msgid "Next"
+msgstr "Következő"
 
 msgid "Open in the default app"
 msgstr "Megnyitás az alapértelmezett alkalmazásban"
@@ -2780,11 +2813,29 @@ msgstr "Olvasói nézetre váltás"
 msgid "Open in window"
 msgstr "Megnyitás ablakban"
 
+#, fuzzy
+msgid "Save Template"
+msgstr "Kép mentése"
+
 msgid "Save Draft"
 msgstr "Piszkozat mentése"
 
+#, fuzzy
+msgid "Save to Templates"
+msgstr "Mentés a Piszkozatok közé"
+
 msgid "Save to Drafts"
 msgstr "Mentés a Piszkozatok közé"
+
+msgid "More ways to save"
+msgstr ""
+
+msgid "Keep a copy in Templates to start new messages from"
+msgstr ""
+
+#, fuzzy
+msgid "Save as Template"
+msgstr "Beillesztés egyszerű szövegként"
 
 msgid "Delete Draft"
 msgstr "Piszkozat törlése"
@@ -2974,6 +3025,17 @@ msgstr "{name} (hivatkozás)"
 
 msgid "Uploading…"
 msgstr "Feltöltés…"
+
+#, fuzzy
+msgid "Save the template?"
+msgstr "Elmented a címkét?"
+
+#, fuzzy
+msgid ""
+"Its changes have not been saved. Save them to the template, or discard them."
+msgstr ""
+"Még nem küldted el. Mentsd el a „Piszkozatok” mappába, hogy később befejezd, "
+"vagy töröld."
 
 msgid "Save the message?"
 msgstr "Elmenti az üzenetet?"
@@ -3301,6 +3363,9 @@ msgstr ""
 "• Az „xdg-desktop-portal” frissítése és az újbóli bejelentkezés megoldhatja "
 "a hivatkozások közvetlen megnyitásának problémáját"
 
+msgid "{name} · {current} of {total}"
+msgstr "{name} · {current} / {total}"
+
 #, fuzzy
 msgid "me"
 msgstr "Név"
@@ -3527,6 +3592,17 @@ msgid "A pass proves the address wasn't forged — not that the message is safe.
 msgstr ""
 "A sikeres ellenőrzés bizonyítja, hogy a címet nem hamisították meg — azt "
 "nem, hogy az üzenet biztonságos."
+
+#, fuzzy
+msgid "This message is a template."
+msgstr "Ez az üzenet egy levelezőlistáról származik."
+
+msgid "Change the template itself"
+msgstr ""
+
+#, fuzzy
+msgid "Start a new message from a copy of the template"
+msgstr "Kezdd az üzenetet úgy, hogy a képet beilleszted a szövegbe"
 
 msgid "Repeats daily"
 msgstr "Naponta ismétlődik"
@@ -3771,9 +3847,6 @@ msgstr "Kép másolása"
 
 msgid "Copy Image Address"
 msgstr "Kép címének másolása"
-
-msgid "Load attachments from server"
-msgstr "Mellékletek betöltése a kiszolgálóról"
 
 msgid "Clear all"
 msgstr "Összes törlése"
@@ -5017,6 +5090,30 @@ msgstr ""
 "nézetben vagy elküldött formában indítson el. A kapcsoló továbbra is "
 "megváltoztatja a képernyőn megjelenő üzenetet."
 
+#, fuzzy
+msgid "Printing"
+msgstr "Írás:"
+
+msgid "Page numbers"
+msgstr ""
+
+msgid ""
+"Print the page number and the number of pages at the foot of every page."
+msgstr ""
+
+#, fuzzy
+msgid "Date printed"
+msgstr "Dátumformátum"
+
+msgid "Print the date and time of printing at the foot of every page."
+msgstr ""
+
+msgid "Wider left margin"
+msgstr ""
+
+msgid "Leave 25 mm at the left of every page, so punched holes miss the text."
+msgstr ""
+
 msgid "Compose in the main window"
 msgstr "Levélírás a főablakban"
 
@@ -5617,17 +5714,29 @@ msgstr "Egyéni fájl"
 msgid "Print Message"
 msgstr "Üzenet nyomtatása"
 
-msgid "Save as PDF"
-msgstr "Mentés PDF-ként"
+#, fuzzy
+msgid "No PDF writer is available on this system"
+msgstr "Ehhez a fiókhoz nem érhető el Piszkozatok mappa"
 
-msgid "Could not save the PDF: {error}"
-msgstr "A PDF nem menthető: {error}"
-
-msgid "Print…"
-msgstr "Nyomtatás…"
+msgid "Page {page} of {pages}"
+msgstr ""
 
 msgid "Save as PDF…"
 msgstr "Mentés PDF-ként…"
+
+#, fuzzy
+msgid "No Preview"
+msgstr "Előnézet"
+
+msgid "Save as PDF"
+msgstr "Mentés PDF-ként"
+
+#, fuzzy
+msgid "Saved {name}"
+msgstr "Eltávolítva: {name}"
+
+msgid "Could not save the PDF: {error}"
+msgstr "A PDF nem menthető: {error}"
 
 msgid "Send as Attachment Instead"
 msgstr "Küldés inkább mellékletként"
@@ -5777,6 +5886,9 @@ msgstr "Első fiók hozzáadása"
 
 msgid "No accounts yet"
 msgstr "Még nincsenek fiókok"
+
+msgid "New Message from Template…"
+msgstr ""
 
 msgid "Outbox"
 msgstr "Kimenő"
@@ -6168,8 +6280,9 @@ msgstr "A mappa nem törölhető: ismeretlen mappa"
 msgid "Could not delete folder: {e}"
 msgstr "A mappa nem törölhető: {e}"
 
-msgid "Saving draft…"
-msgstr "Piszkozat mentése…"
+#, fuzzy
+msgid "unknown folder"
+msgstr "Minden mappa megjelenítése"
 
 msgid "Could not reach the server"
 msgstr "Nem sikerült elérni a kiszolgálót"
@@ -6200,10 +6313,6 @@ msgstr ""
 
 msgid "Could not reach the JMAP server: {e}"
 msgstr "Nem sikerült elérni a JMAP kiszolgálót: {e}"
-
-#, fuzzy
-msgid "unknown folder"
-msgstr "Minden mappa megjelenítése"
 
 msgid "That folder is not on the server"
 msgstr "A mappa nincs a kiszolgálón"
@@ -6300,8 +6409,19 @@ msgstr "A(z) „{subject}” küldése ekkor történik: {when}"
 msgid "Could not schedule the message."
 msgstr "Az üzenet nem törölhető: {e}"
 
+#, fuzzy
+msgid "Could not save template: {e}"
+msgstr "A piszkozat nem menthető: {e}"
+
 msgid "Could not save draft: {e}"
 msgstr "A piszkozat nem menthető: {e}"
+
+#, fuzzy
+msgid "Saving template…"
+msgstr "Piszkozat mentése…"
+
+msgid "Saving draft…"
+msgstr "Piszkozat mentése…"
 
 msgid ""
 "no OpenPGP key of your own for {addr}; generate one under Settings, OpenPGP"
@@ -6469,6 +6589,9 @@ msgstr "Az egységes beérkező levelek mappa világos üzemmódban"
 msgid "Hyprlab"
 msgstr "Hyprlab"
 
+#~ msgid "Load attachments from server"
+#~ msgstr "Mellékletek betöltése a kiszolgálóról"
+
 #~ msgid "Could not save draft: unknown folder"
 #~ msgstr "A piszkozat mentése nem sikerült: ismeretlen mappa"
 
@@ -6627,10 +6750,6 @@ msgstr "Hyprlab"
 #, fuzzy
 #~ msgid "Send with formatting"
 #~ msgstr "Beillesztés formázással"
-
-#, fuzzy
-#~ msgid "Send as plain text"
-#~ msgstr "Beillesztés egyszerű szövegként"
 
 #, fuzzy
 #~ msgid "Compose in plain text"

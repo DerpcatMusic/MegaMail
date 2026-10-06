@@ -54,8 +54,9 @@ The full list. The [README](../README.md) carries a shorter one.
   deep archive scan that finds old attachments without downloading them.
 - **Delete an attachment from the server:** take a large file out of a
   message and keep the rest of it, on IMAP, JMAP and Microsoft 365.
-- **Printing:** a message with its sender, recipients and date, with an
-  in-app preview that also saves straight to PDF.
+- **Printing:** a message with its sender, recipients and date, page
+  numbers and an optional wider margin for hole punching, with an in-app
+  preview that also saves straight to PDF.
 - **Outbox:** a send that fails is kept and retried when the connection
   returns, not lost. Queued messages can be edited, sent by hand or discarded.
 - **Send later:** schedule a message for tomorrow morning, Monday, or any
@@ -71,6 +72,9 @@ The full list. The [README](../README.md) carries a shorter one.
   if you prefer.
 - **Drafts** that can be saved without a recipient, reopened inline, and
   deleted from the composer.
+- **Templates:** save a message as a template and start new ones from it,
+  from the Templates folder or with Ctrl+Shift+N. Thunderbird's Templates
+  folder is picked up as it is.
 - **Forwarding keeps the attachments:** the original's files are attached to
   the forward, ready to send on. A reply does not repeat them.
 - **Inline images:** dropped, pasted or picked from a file manager, resized

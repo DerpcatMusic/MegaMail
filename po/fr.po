@@ -64,6 +64,8 @@ msgstr "Transférer"
 msgid "Remove Star"
 msgstr "Retirer l'étoile"
 
+#. One glyph in both states, as in the main window; the
+#. starred state carries color only.
 msgid "Star"
 msgstr "Ajouter une étoile"
 
@@ -91,21 +93,6 @@ msgstr "Marquer comme non lu"
 msgid "Downloading attachments…"
 msgstr "Téléchargement des pièces jointes…"
 
-msgid "Close"
-msgstr "Fermer"
-
-msgid "Previous"
-msgstr "Précédent"
-
-msgid "Next"
-msgstr "Suivant"
-
-msgid "Open"
-msgstr "Ouvrir"
-
-msgid "Download…"
-msgstr "Télécharger…"
-
 msgid "Settings"
 msgstr "Paramètres"
 
@@ -124,6 +111,7 @@ msgstr "Imprimer le message…"
 msgid "Quit"
 msgstr "Quitter"
 
+#. Rightmost, beside the window controls, as in the main window.
 msgid "Actions"
 msgstr "Actions"
 
@@ -185,9 +173,6 @@ msgstr ""
 msgid "The language applies the next time Hylki starts."
 msgstr "La langue s'appliquera au prochain démarrage de Hylki."
 
-msgid "Save Attachment"
-msgstr "Enregistrer la pièce jointe"
-
 msgid ""
 "Couldn't restart automatically — quit and reopen Hylki to finish switching "
 "the icon."
@@ -205,6 +190,10 @@ msgid "No message with the ID {id} was found"
 msgstr "Aucun message portant l'identifiant {id} n'a été trouvé"
 
 msgid "No Drafts folder available for this account"
+msgstr "Aucun dossier Brouillons disponible pour ce compte"
+
+#, fuzzy
+msgid "No Templates folder available for this account"
 msgstr "Aucun dossier Brouillons disponible pour ce compte"
 
 msgid "Could not save account: {e}"
@@ -326,9 +315,6 @@ msgstr ""
 msgid "Restart Now"
 msgstr "Redémarrer maintenant"
 
-msgid "{name} · {current} of {total}"
-msgstr "{name} · {current} sur {total}"
-
 msgid "View Source"
 msgstr "Afficher le code source"
 
@@ -350,6 +336,13 @@ msgstr "Trier"
 msgid "Message Source"
 msgstr "Code source du message"
 
+msgid "Use Template"
+msgstr ""
+
+#, fuzzy
+msgid "Edit Template"
+msgstr "Modifier la balise"
+
 msgid "Edit as New Message"
 msgstr "Modifier en tant que nouveau message"
 
@@ -367,6 +360,9 @@ msgstr "Déployer tous les messages"
 
 msgid "Collapse All Messages"
 msgstr "Réduire tous les messages"
+
+msgid "Print…"
+msgstr "Imprimer…"
 
 msgid "Delete {n} messages"
 msgstr "Supprimer {n} messages"
@@ -435,6 +431,19 @@ msgstr "Joindre quand même"
 
 msgid "Upload to Cloud Storage"
 msgstr "Téléverser vers un stockage en ligne"
+
+#, fuzzy
+msgid "New Message from Template"
+msgstr "Nouveau message à la place"
+
+#, fuzzy
+msgid "The new message starts as a copy of the template you pick."
+msgstr ""
+"Les fichiers seront joints à une réponse au message que vous choisissez."
+
+msgid ""
+"No templates yet. Save one from the composer's ⋯ menu with Save as Template."
+msgstr ""
 
 msgid "Continue a Draft"
 msgstr "Continuer un brouillon"
@@ -720,6 +729,9 @@ msgstr[1] "Filtres marqués {tagged} et classés {filed} de {n} messages"
 msgid "Filters Applied"
 msgstr "Filtres appliqués"
 
+msgid "Close"
+msgstr "Fermer"
+
 msgid "This message carries no calendar file to open."
 msgstr "Ce message ne contient aucun fichier de calendrier à ouvrir."
 
@@ -859,6 +871,10 @@ msgstr "Écriture :"
 msgid "Compose"
 msgstr "Rédiger"
 
+#, fuzzy
+msgid "New message from a template"
+msgstr "Message le plus récent en premier"
+
 msgid "Send the message you are writing"
 msgstr "Envoyer le message en cours de rédaction"
 
@@ -927,6 +943,9 @@ msgstr "Cette liste"
 
 msgid "Unstar"
 msgstr "Retirer l'étoile"
+
+msgid "Save Attachment"
+msgstr "Enregistrer la pièce jointe"
 
 msgid "Save All Attachments"
 msgstr "Enregistrer toutes les pièces jointes"
@@ -1778,6 +1797,9 @@ msgstr ""
 msgid "Drafts"
 msgstr "Brouillons"
 
+msgid "Templates"
+msgstr ""
+
 msgid "Trash"
 msgstr "Corbeille"
 
@@ -2242,6 +2264,12 @@ msgstr "Cette clé avait déjà été importée."
 msgid "Could not import the key"
 msgstr "Impossible d'importer la clé"
 
+msgid "Open"
+msgstr "Ouvrir"
+
+msgid "Download…"
+msgstr "Télécharger…"
+
 msgid "Show in Message"
 msgstr "Afficher dans le message"
 
@@ -2344,6 +2372,12 @@ msgstr "Type (A–Z)"
 
 msgid "Type (Z–A)"
 msgstr "Type (Z–A)"
+
+msgid "Previous"
+msgstr "Précédent"
+
+msgid "Next"
+msgstr "Suivant"
 
 msgid "Open in the default app"
 msgstr "Ouvrir dans l'application par défaut"
@@ -2797,11 +2831,29 @@ msgstr "Réduire dans le lecteur"
 msgid "Open in window"
 msgstr "Ouvrir dans une fenêtre"
 
+#, fuzzy
+msgid "Save Template"
+msgstr "Enregistrer l'image"
+
 msgid "Save Draft"
 msgstr "Enregistrer le brouillon"
 
+#, fuzzy
+msgid "Save to Templates"
+msgstr "Enregistrer dans les brouillons"
+
 msgid "Save to Drafts"
 msgstr "Enregistrer dans les brouillons"
+
+msgid "More ways to save"
+msgstr ""
+
+msgid "Keep a copy in Templates to start new messages from"
+msgstr ""
+
+#, fuzzy
+msgid "Save as Template"
+msgstr "Envoyer en texte brut"
 
 msgid "Delete Draft"
 msgstr "Supprimer le brouillon"
@@ -2984,6 +3036,17 @@ msgstr "{name} (lien)"
 
 msgid "Uploading…"
 msgstr "Téléversement…"
+
+#, fuzzy
+msgid "Save the template?"
+msgstr "Enregistrer le tag ?"
+
+#, fuzzy
+msgid ""
+"Its changes have not been saved. Save them to the template, or discard them."
+msgstr ""
+"Il n'a pas été envoyé. Enregistrez-le dans Brouillons pour le terminer plus "
+"tard, ou abandonnez-le."
 
 msgid "Save the message?"
 msgstr "Enregistrer le message ?"
@@ -3310,6 +3373,9 @@ msgstr ""
 "• Mettre à jour « xdg-desktop-portal » et vous reconnecter peut résoudre "
 "l'ouverture directe des liens"
 
+msgid "{name} · {current} of {total}"
+msgstr "{name} · {current} sur {total}"
+
 msgid "me"
 msgstr "moi"
 
@@ -3528,6 +3594,17 @@ msgid "A pass proves the address wasn't forged — not that the message is safe.
 msgstr ""
 "Une validation prouve que l'adresse n'a pas été falsifiée, mais ne garantit "
 "pas que le message soit sans danger."
+
+#, fuzzy
+msgid "This message is a template."
+msgstr "Ce message est rédigé en {language}."
+
+msgid "Change the template itself"
+msgstr ""
+
+#, fuzzy
+msgid "Start a new message from a copy of the template"
+msgstr "Rédiger un message avec l'image dans le texte"
 
 msgid "Repeats daily"
 msgstr "Se répète chaque jour"
@@ -3769,9 +3846,6 @@ msgstr "Copier l'image"
 
 msgid "Copy Image Address"
 msgstr "Copier l'adresse de l'image"
-
-msgid "Load attachments from server"
-msgstr "Charger les pièces jointes depuis le serveur"
 
 msgid "Clear all"
 msgstr "Tout effacer"
@@ -5015,6 +5089,30 @@ msgstr ""
 "messages en mode Lecture ou tel qu'envoyé. Le commutateur permet toujours de "
 "changer le message affiché à l'écran."
 
+#, fuzzy
+msgid "Printing"
+msgstr "Écriture :"
+
+msgid "Page numbers"
+msgstr ""
+
+msgid ""
+"Print the page number and the number of pages at the foot of every page."
+msgstr ""
+
+#, fuzzy
+msgid "Date printed"
+msgstr "Format de date"
+
+msgid "Print the date and time of printing at the foot of every page."
+msgstr ""
+
+msgid "Wider left margin"
+msgstr ""
+
+msgid "Leave 25 mm at the left of every page, so punched holes miss the text."
+msgstr ""
+
 msgid "Compose in the main window"
 msgstr "Rédiger dans la fenêtre principale"
 
@@ -5610,17 +5708,29 @@ msgstr "Fichier personnalisé"
 msgid "Print Message"
 msgstr "Imprimer le message"
 
-msgid "Save as PDF"
-msgstr "Enregistrer au format PDF"
+#, fuzzy
+msgid "No PDF writer is available on this system"
+msgstr "Aucun dossier Brouillons disponible pour ce compte"
 
-msgid "Could not save the PDF: {error}"
-msgstr "Impossible d'enregistrer le PDF : {error}"
-
-msgid "Print…"
-msgstr "Imprimer…"
+msgid "Page {page} of {pages}"
+msgstr ""
 
 msgid "Save as PDF…"
 msgstr "Enregistrer au format PDF…"
+
+#, fuzzy
+msgid "No Preview"
+msgstr "Aperçu"
+
+msgid "Save as PDF"
+msgstr "Enregistrer au format PDF"
+
+#, fuzzy
+msgid "Saved {name}"
+msgstr "{name} supprimé"
+
+msgid "Could not save the PDF: {error}"
+msgstr "Impossible d'enregistrer le PDF : {error}"
 
 msgid "Send as Attachment Instead"
 msgstr "Envoyer plutôt en pièce jointe"
@@ -5770,6 +5880,9 @@ msgstr "Ajouter un premier compte"
 
 msgid "No accounts yet"
 msgstr "Aucun compte pour le moment"
+
+msgid "New Message from Template…"
+msgstr ""
 
 msgid "Outbox"
 msgstr "Boîte d'envoi"
@@ -6160,8 +6273,8 @@ msgstr "Impossible de supprimer le dossier : dossier inconnu"
 msgid "Could not delete folder: {e}"
 msgstr "Impossible de supprimer le dossier : {e}"
 
-msgid "Saving draft…"
-msgstr "Enregistrement du brouillon…"
+msgid "unknown folder"
+msgstr ""
 
 msgid "Could not reach the server"
 msgstr "Impossible de joindre le serveur"
@@ -6192,9 +6305,6 @@ msgstr "La connexion IMAP ne progresse plus"
 
 msgid "Could not reach the JMAP server: {e}"
 msgstr "Impossible de contacter le serveur JMAP : {e}"
-
-msgid "unknown folder"
-msgstr ""
 
 msgid "That folder is not on the server"
 msgstr "Ce dossier n'existe pas sur le serveur"
@@ -6290,8 +6400,19 @@ msgstr "« {subject} » sera envoyé {when}"
 msgid "Could not schedule the message."
 msgstr "Impossible de programmer le message."
 
+#, fuzzy
+msgid "Could not save template: {e}"
+msgstr "Impossible d'enregistrer le brouillon : {e}"
+
 msgid "Could not save draft: {e}"
 msgstr "Impossible d'enregistrer le brouillon : {e}"
+
+#, fuzzy
+msgid "Saving template…"
+msgstr "Enregistrement du brouillon…"
+
+msgid "Saving draft…"
+msgstr "Enregistrement du brouillon…"
 
 msgid ""
 "no OpenPGP key of your own for {addr}; generate one under Settings, OpenPGP"
@@ -6456,6 +6577,9 @@ msgstr "La boîte de réception unifiée en mode clair"
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid "Load attachments from server"
+#~ msgstr "Charger les pièces jointes depuis le serveur"
 
 #~ msgid ""
 #~ "Each message on lines of its own, or on one line in columns. Automatic "
@@ -6662,9 +6786,6 @@ msgstr "Hyprlab"
 
 #~ msgid "Send with formatting"
 #~ msgstr "Envoyer avec formatage"
-
-#~ msgid "Send as plain text"
-#~ msgstr "Envoyer en texte brut"
 
 #~ msgid "Compose in plain text"
 #~ msgstr "Rédiger en texte brut"

@@ -39,6 +39,34 @@ row.compose-row .account-name {
   opacity: 1;
 }
 
+/* Expanded, it is split like the composer's Send (#360): the caret at the
+   end opens the template menu, past a short inset divider. The caret keeps
+   to the row's height and reaches into its end padding, far enough to sit
+   in line with the chevrons of the unified rows beneath. */
+row.compose-row .compose-split {
+  padding-right: 0;
+}
+row.compose-row .compose-split > separator {
+  background-color: alpha(white, 0.55);
+  min-width: 1px;
+  margin: 3px 4px 3px 8px;
+}
+row.compose-row .compose-caret {
+  color: white;
+  min-height: 0;
+  min-width: 0;
+  padding: 2px 6px;
+  margin-top: -4px;
+  margin-right: -3px;
+  margin-bottom: -4px;
+}
+row.compose-row .compose-caret:hover {
+  background-color: alpha(white, 0.15);
+}
+row.compose-row .compose-caret:active {
+  background-color: alpha(white, 0.28);
+}
+
 .account-header {
   padding: 10px 12px 14px 12px;
   /* Match the side margin + rounded highlight of the navigation-sidebar rows
@@ -2112,4 +2140,14 @@ textview.console-view text selection {
    whatever the theme, since the highlight colors are all light. */
 .format-bar .on-highlight {
   color: rgba(0, 0, 0, 0.85);
+}
+
+/* The print preview (#359): each page as paper on a desk a shade darker
+   than the window, in either theme. */
+.print-desk {
+  background-color: shade(@window_bg_color, 0.85);
+}
+.print-page {
+  background-color: white;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
 }

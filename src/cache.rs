@@ -1189,7 +1189,7 @@ impl Cache {
         let folders = self.load_folders(account_id);
         let hidden: HashSet<String> = folders
             .iter()
-            .filter(|f| matches!(f.kind, FolderKind::Trash | FolderKind::Junk))
+            .filter(|f| matches!(f.kind, FolderKind::Trash | FolderKind::Junk | FolderKind::Templates))
             .map(|f| f.path.clone())
             .collect();
         // Counted, but never the message a row is shown as: a draft is a
@@ -2256,6 +2256,9 @@ fn kind_to_i64(kind: FolderKind) -> i64 {
         FolderKind::Junk => 5,
         FolderKind::Trash => 6,
         FolderKind::Custom => 7,
+        // After Custom: the numbers are stored, and the older ones keep
+        // their meaning.
+        FolderKind::Templates => 8,
     }
 }
 
@@ -2268,6 +2271,7 @@ fn kind_from_i64(v: i64) -> FolderKind {
         4 => FolderKind::Archive,
         5 => FolderKind::Junk,
         6 => FolderKind::Trash,
+        8 => FolderKind::Templates,
         _ => FolderKind::Custom,
     }
 }
@@ -2365,6 +2369,27 @@ mod tests {
 
         std::env::remove_var("XDG_DATA_HOME");
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn folder_kinds_keep_their_stored_numbers() {
+        // #360: Templates came after Custom; a cache written before it
+        // still reads every folder as it was.
+        for kind in [
+            FolderKind::Inbox,
+            FolderKind::Starred,
+            FolderKind::Sent,
+            FolderKind::Drafts,
+            FolderKind::Templates,
+            FolderKind::Archive,
+            FolderKind::Junk,
+            FolderKind::Trash,
+            FolderKind::Custom,
+        ] {
+            assert_eq!(kind_from_i64(kind_to_i64(kind)), kind);
+        }
+        assert_eq!(kind_to_i64(FolderKind::Custom), 7);
+        assert_eq!(kind_to_i64(FolderKind::Templates), 8);
     }
 
     #[test]

@@ -136,6 +136,9 @@ pub struct MessageView {
     /// The list beside the pane shows Drafts: the empty state invites
     /// editing a draft rather than reading a message.
     drafts_view: bool,
+    /// Every account's Templates folder, as (account, folder) (#360): a
+    /// message from one wears a banner offering to use it or edit it.
+    template_folders: std::collections::HashSet<(u32, u32)>,
     /// The saved anchor was set by the app, not by a scroll: the render
     /// lands it below the page's top gutter (where an unscrolled pane has
     /// its first card), not flush at the top the way a place the user
@@ -1146,6 +1149,11 @@ pub enum MessageViewInput {
     ScrollAnchor { account_id: u32, id: u32, offset: u32 },
     /// The list shows Drafts (or not): the empty pane's wording follows.
     SetDraftsView(bool),
+    /// Which folders are Templates folders, as (account, folder) (#360).
+    SetTemplateFolders(std::collections::HashSet<(u32, u32)>),
+    /// A template banner's button: start a new message from the template,
+    /// or edit it.
+    TemplateAction { account_id: u32, id: u32, edit: bool },
     /// Keep the pane where it is through the next render (a reply just
     /// arrived for the conversation on screen): when no scrolled-to place
     /// is recorded yet, the card at the top of the pane is pinned there,
@@ -1308,6 +1316,26 @@ const FOLD_BAR_FACE: &str = "\u{1}face\u{1}";
 /// today, the day and month this year, the year too before that.
 fn fold_bar_date(m: &Message) -> String {
     crate::models::date_short(m.timestamp, &m.date)
+}
+
+/// A template card's banner (#360): what the message is, and its two uses.
+fn template_row_html(key: (u32, u32)) -> String {
+    let button = |verb: &str, label: &str, title: &str| {
+        format!(
+            "<button type=\"button\" class=\"vireo-unsub-btn vireo-tpl-btn\" data-key=\"{}:{}\" \
+             data-tpl=\"{verb}\" title=\"{}\">{}</button>",
+            key.0,
+            key.1,
+            attr_escape(title),
+            escape_text(label),
+        )
+    };
+    format!(
+        "<div class=\"vireo-unsub vireo-tpl\"><span class=\"vireo-unsub-text\">{}</span>{}{}</div>",
+        escape_text(&i18n("This message is a template.")),
+        button("edit", &i18n("Edit Template"), &i18n("Change the template itself")),
+        button("use", &i18n("Use Template"), &i18n("Start a new message from a copy of the template")),
+    )
 }
 
 fn unsub_row_html(key: (u32, u32), inner: &str) -> String {
@@ -1860,10 +1888,11 @@ impl Component for MessageView {
                                 set_valign: gtk::Align::Center,
                                 #[watch]
                                 set_active: model.reader_mode,
-                                // The app owns the preference: it saves the
-                                // choice and hands it back to every reader
-                                // (this one included), so a flip here never
-                                // renders on its own.
+                                // The owner decides what a flip does, so it
+                                // never renders on its own: the main window
+                                // saves the choice and hands it back to every
+                                // reader, a message's own window applies it
+                                // to itself alone.
                                 connect_active_notify[sender] => move |sw| {
                                     let _ = sender.output(MessageViewOutput::ReaderMode(sw.is_active()));
                                 },
@@ -2013,6 +2042,7 @@ impl Component for MessageView {
             saved_anchor: None,
             anchor_gutter: false,
             drafts_view: false,
+            template_folders: std::collections::HashSet::new(),
             frame_heights: std::collections::HashMap::new(),
             instant: false,
             selected_cards: Vec::new(),
@@ -2249,6 +2279,12 @@ impl Component for MessageView {
                     "open" => open_sender.input(MessageViewInput::OpenHeader { account_id, id }),
                     "seen" => open_sender.input(MessageViewInput::MarkSeen { account_id, id }),
                     "unsub" => open_sender.input(MessageViewInput::Unsubscribe { account_id, id }),
+                    // A card's template banner (#360); `extra` is the button.
+                    "tpl" => open_sender.input(MessageViewInput::TemplateAction {
+                        account_id,
+                        id,
+                        edit: extra.map(str::trim) == Some("edit"),
+                    }),
                     // A card's invitation banner (#223); `extra` is which
                     // button was pressed.
                     "invite" => {
@@ -2577,18 +2613,15 @@ impl Component for MessageView {
                 // whatever the desktop opens PDFs with: that route is a temporary
                 // file, a URI, the document portal and an external viewer, each
                 // able to fail without saying anything — and it did.
-                let Some(parent) = self
-                    .webview
-                    .root()
-                    .and_downcast::<adw::ApplicationWindow>()
-                else {
+                // A pop-out reader's window is not an application window,
+                // and asking for one there showed nothing (#359).
+                let Some(parent) = self.webview.root().and_downcast::<gtk::Window>() else {
                     tracing::warn!("no window to attach the preview to");
                     return;
                 };
-                let html = self.preview_html();
                 crate::ui::print_preview::open(
                     &parent,
-                    &html,
+                    &self.print_document_html(),
                     &sanitize_filename(&self.job_name()),
                 );
             }
@@ -3452,6 +3485,26 @@ impl Component for MessageView {
             MessageViewInput::SetDraftsView(on) => {
                 self.drafts_view = on;
             }
+            MessageViewInput::SetTemplateFolders(folders) => {
+                if self.template_folders != folders {
+                    let shown = |set: &std::collections::HashSet<(u32, u32)>| {
+                        self.thread.iter().any(|m| set.contains(&(m.account_id, m.folder_id)))
+                    };
+                    let redraw = shown(&self.template_folders) || shown(&folders);
+                    self.template_folders = folders;
+                    if redraw {
+                        self.render();
+                    }
+                }
+            }
+            MessageViewInput::TemplateAction { account_id, id, edit } => {
+                let message = self.thread.iter().find(|m| m.account_id == account_id && m.id == id).cloned();
+                if let Some(message) = message {
+                    use crate::ui::message_list::RowAction;
+                    let action = if edit { RowAction::EditTemplate } else { RowAction::EditAsNew };
+                    let _ = sender.output(MessageViewOutput::CardAction { action, message: Box::new(message) });
+                }
+            }
             MessageViewInput::HoldPlace { account_id, id } => {
                 if self.saved_anchor.is_none() {
                     self.saved_anchor = Some((account_id, id, 0));
@@ -3824,6 +3877,7 @@ impl MessageView {
             self.no_autoread.contains(&key).hash(&mut h);
             self.sender_style.contains(&key).hash(&mut h);
             self.folder_labels.get(&key).hash(&mut h);
+            self.template_folders.contains(&(m.account_id, m.folder_id)).hash(&mut h);
         }
         h.finish()
     }
@@ -3852,6 +3906,14 @@ impl MessageView {
                 .collect()
         });
         LIVE_FOLDED.with(|f| *f.borrow_mut() = self.folded_cards());
+        LIVE_TEMPLATES.with(|t| {
+            *t.borrow_mut() = self
+                .thread
+                .iter()
+                .filter(|m| self.template_folders.contains(&(m.account_id, m.folder_id)))
+                .map(|m| (m.account_id, m.id))
+                .collect()
+        });
         LIVE_FOLDBAR.with(|b| {
             *b.borrow_mut() = if self.thread.len() > 1 {
                 self.thread.iter().map(|m| ((m.account_id, m.id), self.fold_bar_html(m))).collect()
@@ -4035,7 +4097,7 @@ impl MessageView {
                              <span class=\"vireo-date\">{date}</span></span>\
                            {acts_toggle}{acts}\
                          </div>{rcpt}\
-                       </header>{invite}{unsub}{tr}{body}{atts}</section>",
+                       </header>{tpl}{invite}{unsub}{tr}{body}{atts}</section>",
                     aid = m.account_id,
                     id = m.id,
                     // The message's own attachments beneath its body (#213).
@@ -4045,6 +4107,13 @@ impl MessageView {
                         let key = (m.account_id, m.id);
                         att_row_html(key, a.borrow().get(&key).map(|v| v.as_slice()))
                     }),
+                    // A template's banner (#360), first: what the message
+                    // is for matters more than anything it says.
+                    tpl = if LIVE_TEMPLATES.with(|t| t.borrow().contains(&(m.account_id, m.id))) {
+                        template_row_html((m.account_id, m.id))
+                    } else {
+                        String::new()
+                    },
                     // The invitation banner (#223) at the top of the card,
                     // above the Unsubscribe one and on the same terms: the
                     // container is always there, empty (hidden) for a
@@ -4783,19 +4852,6 @@ impl MessageView {
             })
             .collect();
         print_document(&self.print_header_html(), &messages, self.remote_allowed)
-    }
-
-    /// That same document, dressed as a page for the preview window.
-    fn preview_html(&self) -> String {
-        let doc = self.print_document_html();
-        let extra = format!(
-            "<style>{}</style></head>",
-            crate::ui::print_preview::PREVIEW_STYLES
-        );
-        let doc = doc.replacen("</head>", &extra, 1);
-        // Wrap the content in the sheet the styles above draw.
-        doc.replacen("<body>", "<body><div class=\"vireo-print-sheet\">", 1)
-            .replacen("</body>", "</div></body>", 1)
     }
 
     /// The header block that only appears on paper (see [`print_header_html`]).
@@ -6664,6 +6720,10 @@ thread_local! {
     /// The cards that open folded (#326). Empty in tests.
     static LIVE_FOLDED: std::cell::RefCell<std::collections::HashSet<(u32, u32)>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
+    /// The cards showing a template (#360), which wear its banner. Empty in
+    /// tests.
+    static LIVE_TEMPLATES: std::cell::RefCell<std::collections::HashSet<(u32, u32)>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
     /// Whether a translation service is set up, so cards offer Translate.
     static LIVE_TRANSLATE_ON: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -6968,7 +7028,8 @@ try{window.webkit.messageHandlers.hylki.postMessage(this.dataset.act+':'+this.da
 as[k].addEventListener('dblclick',function(e){e.stopPropagation();});}\
 document.addEventListener('click',function(e){var b=e.target&&e.target.closest?e.target.closest('.vireo-unsub-btn'):null;\
 if(!b)return;e.stopPropagation();e.preventDefault();\
-try{window.webkit.messageHandlers.hylki.postMessage('unsub:'+b.dataset.key);}catch(_){}});\
+var v=b.dataset.tpl?'tpl:'+b.dataset.key+':'+b.dataset.tpl:'unsub:'+b.dataset.key;\
+try{window.webkit.messageHandlers.hylki.postMessage(v);}catch(_){}});\
 document.addEventListener('click',function(e){var b=e.target&&e.target.closest?e.target.closest('.vireo-tr-btn'):null;\
 if(!b)return;e.stopPropagation();e.preventDefault();\
 try{window.webkit.messageHandlers.hylki.postMessage('tr:'+b.dataset.key);}catch(_){}});\

@@ -31,6 +31,9 @@ pub enum RowAction {
     /// (#232) — same recipients, subject, body and files, nothing tying it
     /// to the original.
     EditAsNew,
+    /// Open a template (#360) in the composer to change it: saving puts it
+    /// back in the Templates folder.
+    EditTemplate,
     ToggleStar,
     ToggleRead,
     Spam,

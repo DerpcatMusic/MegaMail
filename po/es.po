@@ -62,6 +62,8 @@ msgstr "Reenviar"
 msgid "Remove Star"
 msgstr "Quitar destacado"
 
+#. One glyph in both states, as in the main window; the
+#. starred state carries color only.
 msgid "Star"
 msgstr "Destacar"
 
@@ -89,21 +91,6 @@ msgstr "Marcar como no leído"
 msgid "Downloading attachments…"
 msgstr "Descargando archivos adjuntos…"
 
-msgid "Close"
-msgstr "Cerrar"
-
-msgid "Previous"
-msgstr "Anterior"
-
-msgid "Next"
-msgstr "Siguiente"
-
-msgid "Open"
-msgstr "Abrir"
-
-msgid "Download…"
-msgstr "Descargar…"
-
 msgid "Settings"
 msgstr "Ajustes"
 
@@ -122,6 +109,7 @@ msgstr "Imprimir mensaje…"
 msgid "Quit"
 msgstr "Salir"
 
+#. Rightmost, beside the window controls, as in the main window.
 msgid "Actions"
 msgstr "Acciones"
 
@@ -185,9 +173,6 @@ msgstr ""
 msgid "The language applies the next time Hylki starts."
 msgstr "El idioma se aplicará la próxima vez que se inicie Hylki."
 
-msgid "Save Attachment"
-msgstr "Guardar archivo adjunto"
-
 msgid ""
 "Couldn't restart automatically — quit and reopen Hylki to finish switching "
 "the icon."
@@ -205,6 +190,10 @@ msgid "No message with the ID {id} was found"
 msgstr "No se encontró ningún mensaje con el ID {id}"
 
 msgid "No Drafts folder available for this account"
+msgstr "No hay ninguna carpeta de borradores disponible para esta cuenta"
+
+#, fuzzy
+msgid "No Templates folder available for this account"
 msgstr "No hay ninguna carpeta de borradores disponible para esta cuenta"
 
 msgid "Could not save account: {e}"
@@ -326,9 +315,6 @@ msgstr ""
 msgid "Restart Now"
 msgstr "Reiniciar ahora"
 
-msgid "{name} · {current} of {total}"
-msgstr "{name} · {current} de {total}"
-
 msgid "View Source"
 msgstr "Ver código fuente"
 
@@ -350,6 +336,13 @@ msgstr "Ordenar"
 msgid "Message Source"
 msgstr "Código fuente del mensaje"
 
+msgid "Use Template"
+msgstr ""
+
+#, fuzzy
+msgid "Edit Template"
+msgstr "Editar etiqueta"
+
 msgid "Edit as New Message"
 msgstr "Editar como mensaje nuevo"
 
@@ -369,6 +362,9 @@ msgstr "Buscar en el mensaje"
 #, fuzzy
 msgid "Collapse All Messages"
 msgstr "Contraer en el lector"
+
+msgid "Print…"
+msgstr "Imprimir…"
 
 msgid "Delete {n} messages"
 msgstr "Eliminar {n} mensajes"
@@ -434,6 +430,18 @@ msgstr "Adjuntar de todos modos"
 
 msgid "Upload to Cloud Storage"
 msgstr "Subir al almacenamiento en la nube"
+
+#, fuzzy
+msgid "New Message from Template"
+msgstr "Crear un mensaje nuevo"
+
+#, fuzzy
+msgid "The new message starts as a copy of the template you pick."
+msgstr "Los archivos se añadirán a una respuesta al mensaje que elijas."
+
+msgid ""
+"No templates yet. Save one from the composer's ⋯ menu with Save as Template."
+msgstr ""
 
 msgid "Continue a Draft"
 msgstr "Continuar un borrador"
@@ -721,6 +729,9 @@ msgstr[1] ""
 msgid "Filters Applied"
 msgstr "Filtros aplicados"
 
+msgid "Close"
+msgstr "Cerrar"
+
 msgid "This message carries no calendar file to open."
 msgstr "Este mensaje no contiene ningún archivo de calendario que abrir."
 
@@ -860,6 +871,10 @@ msgstr "Redacción:"
 msgid "Compose"
 msgstr "Redactar"
 
+#, fuzzy
+msgid "New message from a template"
+msgstr "Mensaje más reciente primero"
+
 msgid "Send the message you are writing"
 msgstr "Enviar el mensaje que estás escribiendo"
 
@@ -927,6 +942,9 @@ msgstr "Esta lista"
 
 msgid "Unstar"
 msgstr "Quitar destacado"
+
+msgid "Save Attachment"
+msgstr "Guardar archivo adjunto"
 
 msgid "Save All Attachments"
 msgstr "Guardar todos los archivos adjuntos"
@@ -1771,6 +1789,9 @@ msgstr ""
 msgid "Drafts"
 msgstr "Borradores"
 
+msgid "Templates"
+msgstr ""
+
 msgid "Trash"
 msgstr "Papelera"
 
@@ -2232,6 +2253,12 @@ msgstr "Esa clave ya se había importado."
 msgid "Could not import the key"
 msgstr "No se pudo importar la clave"
 
+msgid "Open"
+msgstr "Abrir"
+
+msgid "Download…"
+msgstr "Descargar…"
+
 msgid "Show in Message"
 msgstr "Mostrar en el mensaje"
 
@@ -2334,6 +2361,12 @@ msgstr "Tipo (A–Z)"
 
 msgid "Type (Z–A)"
 msgstr "Tipo (Z–A)"
+
+msgid "Previous"
+msgstr "Anterior"
+
+msgid "Next"
+msgstr "Siguiente"
 
 msgid "Open in the default app"
 msgstr "Abrir en la aplicación predeterminada"
@@ -2776,11 +2809,29 @@ msgstr "Contraer en el lector"
 msgid "Open in window"
 msgstr "Abrir en una ventana"
 
+#, fuzzy
+msgid "Save Template"
+msgstr "Guardar imagen"
+
 msgid "Save Draft"
 msgstr "Guardar borrador"
 
+#, fuzzy
+msgid "Save to Templates"
+msgstr "Guardar en Borradores"
+
 msgid "Save to Drafts"
 msgstr "Guardar en Borradores"
+
+msgid "More ways to save"
+msgstr ""
+
+msgid "Keep a copy in Templates to start new messages from"
+msgstr ""
+
+#, fuzzy
+msgid "Save as Template"
+msgstr "Pegar como texto sin formato"
 
 msgid "Delete Draft"
 msgstr "Eliminar borrador"
@@ -2969,6 +3020,17 @@ msgstr "{name} (enlace)"
 
 msgid "Uploading…"
 msgstr "Subiendo…"
+
+#, fuzzy
+msgid "Save the template?"
+msgstr "¿Guardar la etiqueta?"
+
+#, fuzzy
+msgid ""
+"Its changes have not been saved. Save them to the template, or discard them."
+msgstr ""
+"No se ha enviado. Guárdalo en Borradores para terminarlo más tarde o "
+"descártalo."
 
 msgid "Save the message?"
 msgstr "¿Guardar el mensaje?"
@@ -3288,6 +3350,9 @@ msgstr ""
 "enlace, cópialo y ábrelo en el navegador • Actualizar «xdg-desktop-portal» y "
 "volver a iniciar sesión puede solucionar la apertura directa de enlaces"
 
+msgid "{name} · {current} of {total}"
+msgstr "{name} · {current} de {total}"
+
 #, fuzzy
 msgid "me"
 msgstr "Nombre"
@@ -3515,6 +3580,17 @@ msgid "A pass proves the address wasn't forged — not that the message is safe.
 msgstr ""
 "Una verificación demuestra que la dirección no fue falsificada, no que el "
 "mensaje sea seguro."
+
+#, fuzzy
+msgid "This message is a template."
+msgstr "Este mensaje procede de una lista de correo."
+
+msgid "Change the template itself"
+msgstr ""
+
+#, fuzzy
+msgid "Start a new message from a copy of the template"
+msgstr "Iniciar un mensaje con la imagen en el texto"
 
 msgid "Repeats daily"
 msgstr "Se repite diariamente"
@@ -3758,9 +3834,6 @@ msgstr "Copiar imagen"
 
 msgid "Copy Image Address"
 msgstr "Copiar dirección de la imagen"
-
-msgid "Load attachments from server"
-msgstr "Cargar archivos adjuntos desde el servidor"
 
 msgid "Clear all"
 msgstr "Borrar todo"
@@ -4999,6 +5072,30 @@ msgstr ""
 "de lectura o tal como fue enviado. El interruptor sigue permitiendo cambiar "
 "el mensaje mostrado."
 
+#, fuzzy
+msgid "Printing"
+msgstr "Redacción:"
+
+msgid "Page numbers"
+msgstr ""
+
+msgid ""
+"Print the page number and the number of pages at the foot of every page."
+msgstr ""
+
+#, fuzzy
+msgid "Date printed"
+msgstr "Formato de fecha"
+
+msgid "Print the date and time of printing at the foot of every page."
+msgstr ""
+
+msgid "Wider left margin"
+msgstr ""
+
+msgid "Leave 25 mm at the left of every page, so punched holes miss the text."
+msgstr ""
+
 msgid "Compose in the main window"
 msgstr "Redactar en la ventana principal"
 
@@ -5593,17 +5690,29 @@ msgstr "Archivo personalizado"
 msgid "Print Message"
 msgstr "Imprimir mensaje"
 
-msgid "Save as PDF"
-msgstr "Guardar como PDF"
+#, fuzzy
+msgid "No PDF writer is available on this system"
+msgstr "No hay ninguna carpeta de borradores disponible para esta cuenta"
 
-msgid "Could not save the PDF: {error}"
-msgstr "No se pudo guardar el PDF: {error}"
-
-msgid "Print…"
-msgstr "Imprimir…"
+msgid "Page {page} of {pages}"
+msgstr ""
 
 msgid "Save as PDF…"
 msgstr "Guardar como PDF…"
+
+#, fuzzy
+msgid "No Preview"
+msgstr "Vista previa"
+
+msgid "Save as PDF"
+msgstr "Guardar como PDF"
+
+#, fuzzy
+msgid "Saved {name}"
+msgstr "{name} eliminada"
+
+msgid "Could not save the PDF: {error}"
+msgstr "No se pudo guardar el PDF: {error}"
 
 msgid "Send as Attachment Instead"
 msgstr "Enviar como archivo adjunto en su lugar"
@@ -5753,6 +5862,9 @@ msgstr "Añadir primera cuenta"
 
 msgid "No accounts yet"
 msgstr "Todavía no hay cuentas"
+
+msgid "New Message from Template…"
+msgstr ""
 
 msgid "Outbox"
 msgstr "Bandeja de salida"
@@ -6143,8 +6255,9 @@ msgstr "No se pudo eliminar la carpeta: carpeta desconocida"
 msgid "Could not delete folder: {e}"
 msgstr "No se pudo eliminar la carpeta: {e}"
 
-msgid "Saving draft…"
-msgstr "Guardando borrador…"
+#, fuzzy
+msgid "unknown folder"
+msgstr "Mostrar cada carpeta"
 
 msgid "Could not reach the server"
 msgstr "No se pudo contactar con el servidor"
@@ -6175,10 +6288,6 @@ msgstr ""
 
 msgid "Could not reach the JMAP server: {e}"
 msgstr "No se pudo contactar con el servidor JMAP: {e}"
-
-#, fuzzy
-msgid "unknown folder"
-msgstr "Mostrar cada carpeta"
 
 msgid "That folder is not on the server"
 msgstr "Esa carpeta no está en el servidor"
@@ -6275,8 +6384,19 @@ msgstr "«{subject}» se enviará {when}"
 msgid "Could not schedule the message."
 msgstr "No se pudo eliminar el mensaje: {e}"
 
+#, fuzzy
+msgid "Could not save template: {e}"
+msgstr "No se pudo guardar el borrador: {e}"
+
 msgid "Could not save draft: {e}"
 msgstr "No se pudo guardar el borrador: {e}"
+
+#, fuzzy
+msgid "Saving template…"
+msgstr "Guardando borrador…"
+
+msgid "Saving draft…"
+msgstr "Guardando borrador…"
 
 msgid ""
 "no OpenPGP key of your own for {addr}; generate one under Settings, OpenPGP"
@@ -6438,6 +6558,9 @@ msgstr "La bandeja de entrada unificada en modo claro"
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid "Load attachments from server"
+#~ msgstr "Cargar archivos adjuntos desde el servidor"
 
 #~ msgid "Could not save draft: unknown folder"
 #~ msgstr "No se pudo guardar el borrador: carpeta desconocida"
