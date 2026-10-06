@@ -525,9 +525,10 @@ templates there, Thunderbird among them, sees the same ones.
 - **Edit Template** opens the template itself. **Save Template** puts the
   changed one back in its place, and nothing is saved on its own while it
   is open. Sending from it leaves the template in Templates.
-- **New Message from Template…**, on the right-click menu of **New
-  Message**, or <kbd>Ctrl+Shift+N</kbd>, lists every account's templates to
-  start from.
+- **New Message from Template…**, in the arrow at the end of **New
+  Message** (on its right-click menu when the sidebar is folded to icons),
+  or <kbd>Ctrl+Shift+N</kbd>, lists every account's templates to start
+  from.
 
 A folder called Templates is taken for the role, at the top of the account
 or directly under the Inbox. Nothing on a server marks one otherwise, so a

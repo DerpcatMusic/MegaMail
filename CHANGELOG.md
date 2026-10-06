@@ -11,8 +11,9 @@
   reader has a banner with **Use Template**, which starts a new message from
   a copy of it (as a double-click on it in the list does), and **Edit
   Template**, which opens the template itself to change and save back.
-  **New Message from Template…**, on the right-click menu of **New Message**
-  or Ctrl+Shift+N, picks one from every account. Templates are left out of
+  **New Message from Template…**, in an arrow at the end of **New Message**
+  like the one beside **Send**, on its right-click menu, or Ctrl+Shift+N,
+  picks one from every account. Templates are left out of
   conversations, filters and the attachment gallery. Microsoft 365 has no
   Templates folder of its own: one is made, and a template saved there is
   moved in from Drafts.
