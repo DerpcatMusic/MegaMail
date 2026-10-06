@@ -982,6 +982,8 @@ pub struct AppModel {
     /// Return starts a new paragraph in the composer; off, a new line.
     return_paragraph: bool,
     toolbar_expanded: bool,
+    /// What a printed page carries besides the message (#359).
+    print_options: config::PrintOptions,
     /// New messages start as plain text (#180).
     compose_format: crate::config::ComposeFormat,
     /// Where the split reply opens in the reading pane (#212).
@@ -3392,6 +3394,7 @@ impl SimpleComponent for AppModel {
             paste_plain: prefs.paste_plain,
             return_paragraph: prefs.return_paragraph,
             toolbar_expanded: prefs.toolbar_expanded,
+            print_options: prefs.print,
             compose_format: config::load_compose_format(),
             reply_position: prefs.reply_position,
             signature_position: prefs.signature_position,
@@ -3533,6 +3536,7 @@ impl SimpleComponent for AppModel {
             .message_list
             .emit(MessageListInput::SetSenderLogos(model.sender_logos));
         crate::datefmt::set_style(model.date_style, model.clock_style);
+        crate::ui::print_preview::set_options(model.print_options);
         model.message_list.emit(MessageListInput::SetLook {
             avatars: model.list_avatars(),
             preview_lines: model.list_preview_lines(),
@@ -4764,6 +4768,14 @@ impl SimpleComponent for AppModel {
                     let s = sender.input_sender().clone();
                     gtk::glib::timeout_add_seconds_local_once(5, move || {
                         let _ = s.send(AppMsg::ReaderOverflowMenu);
+                    });
+                }
+                // HYLKI_SHOWCASE_PRINT=1 opens the print preview of the open
+                // message at 6s (#359); HYLKI_SHOWCASE_TOP captures it.
+                if std::env::var("HYLKI_SHOWCASE_PRINT").is_ok() {
+                    let s = sender.input_sender().clone();
+                    gtk::glib::timeout_add_seconds_local_once(6, move || {
+                        let _ = s.send(AppMsg::PrintPreview);
                     });
                 }
                 // HYLKI_SHOWCASE_EDIT_AS_NEW=1 copies the open message into
@@ -8250,6 +8262,12 @@ impl SimpleComponent for AppModel {
                 pref!(self.toolbar_expanded = on);
             }
 
+            AppMsg::Pref(PrefOutput::SetPrintOptions(options)) => {
+                if pref!(self.print_options = options) {
+                    crate::ui::print_preview::set_options(options);
+                }
+            }
+
             AppMsg::Pref(PrefOutput::SetSpellcheck(on)) => {
                 if pref!(self.spellcheck = on) {
                     // Takes effect in already-open composers too: the shared
@@ -11228,6 +11246,7 @@ impl AppModel {
             paste_plain: self.paste_plain,
             return_paragraph: self.return_paragraph,
             toolbar_expanded: self.toolbar_expanded,
+            print: self.print_options,
             // Both are written: the boolean is what an older version reads.
             compose_plain: self.compose_format == config::ComposeFormat::Plain,
             compose_format: Some(self.compose_format),
@@ -14404,6 +14423,28 @@ impl AppModel {
         }
         last.push(item(RowAction::ViewSource, i18n("View Source"), "code"));
         sections.push(last);
+        // Printing prints what the reader shows, the whole conversation in
+        // it, so the reader that was right-clicked is the one asked (#359).
+        {
+            let print = |label: String, preview: bool| -> MenuEntry {
+                let s = sender.input_sender().clone();
+                let window = popout.and_then(|key| self.popouts.get(&key)).map(|p| p.controller.sender().clone());
+                MenuEntry::new(label, move || match &window {
+                    Some(w) => w.emit(if preview {
+                        MessageWindowInput::PrintPreview
+                    } else {
+                        MessageWindowInput::Print
+                    }),
+                    None => {
+                        let _ = s.send(if preview { AppMsg::PrintPreview } else { AppMsg::PrintMessage });
+                    }
+                })
+            };
+            sections.push(vec![
+                print(i18n("Print Preview"), true).icon("printer-symbolic"),
+                print(i18n("Print…"), false),
+            ]);
+        }
         show_context_menu(&parent, x, y, sections);
     }
 
@@ -18299,6 +18340,7 @@ impl AppModel {
             paste_plain: self.paste_plain,
             return_paragraph: self.return_paragraph,
             toolbar_expanded: self.toolbar_expanded,
+            print_options: self.print_options,
             spellcheck: self.spellcheck,
             spellcheck_langs: self.spellcheck_langs.clone(),
             app_theme: self.app_theme,

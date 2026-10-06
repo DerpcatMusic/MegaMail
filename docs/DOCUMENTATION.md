@@ -835,6 +835,27 @@ conversation offers **Expand All Messages** and **Collapse All Messages**.
 What you fold or open stays that way while the conversation is on screen.
 Printing shows every message in full.
 
+### Printing
+
+**Ctrl+P** prints the message or conversation in the reader, and
+**Ctrl+Shift+P**, the printer button in the reader's toolbar or **Print
+Preview** in the message's right-click menu shows it first, page by page,
+as it will come out. The preview prints from its **Print…** button and
+saves a PDF from **Save as PDF…**. A message opened in a window of its own
+has the same printer button, menu entries and keys.
+
+The printed page starts with the subject, sender, recipients and date, and
+has a 15 mm margin on every side. **Settings → Reading → Printing** adds to
+it:
+
+- **Page numbers**, on by default: "Page 2 of 5" at the foot of every page.
+- **Date printed**: the date and time of printing at the foot of every
+  page, at the left.
+- **Wider left margin**: 25 mm at the left, so punched holes miss the text.
+
+The preview is laid out on the paper chosen the last time you printed, or
+your language's default paper size before that.
+
 ### Message list layout
 
 **Settings → Message List → Layout** sets how the list shows a message.

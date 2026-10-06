@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **Added: page numbers, the date printed and a wider left margin on
+  printed mail** (#359, requested by rsx-xp). **Settings → Reading →
+  Printing** puts "Page 2 of 5" (on by default) and the date and time of
+  printing at the foot of every page, and can widen the left margin to
+  25 mm for hole punching. Pages now have a 15 mm margin all round, where
+  they had the paper's quarter inch. Hylki makes the PDF itself and adds
+  the footer to it, so the preview shows each page exactly as it will
+  print, footer and margins included, and Save as PDF saves that file.
+- **Added: printing from a message's own window** (#359). The window has
+  the printer button for the preview, and the right-click menu in any
+  message, in the main window or its own, offers **Print Preview** and
+  **Print…**. Ctrl+Shift+P in a message's own window opened no preview;
+  it now does.
+- **Fixed: a message could print as thousands of blank pages** where the
+  desktop sets no font resolution (no settings portal or XSettings).
+
 - **Added: more formatting tools in the composer** (#358, requested by
   urkos101). A chevron at the end of the formatting toolbar shows paragraph
   styles (headings and preformatted text), fonts, text and highlight colors,

@@ -68,7 +68,7 @@ pub struct MessageWindow {
 pub enum MessageWindowInput {
     /// Print this message (Ctrl+P), the same as in the main window.
     Print,
-    /// Preview it as a PDF (Ctrl+Shift+P).
+    /// Preview it as it will print (Ctrl+Shift+P).
     PrintPreview,
     /// No-op (unreachable output mapping).
     Ignore,
@@ -277,6 +277,14 @@ impl Component for MessageWindow {
                         set_tooltip_text: Some(i18n("View Source").as_str()),
                         add_css_class: "flat",
                         connect_clicked => MessageWindowInput::ViewSource,
+                    },
+                    // The preview, as in the main window's toolbar: it shows
+                    // what will come out and prints from there (#359).
+                    pack_end = &gtk::Button {
+                        set_icon_name: "printer-symbolic",
+                        set_tooltip_text: Some(i18n("Print Preview (Ctrl+Shift+P)").as_str()),
+                        add_css_class: "flat",
+                        connect_clicked => MessageWindowInput::PrintPreview,
                     },
                     pack_end = &gtk::Button {
                         set_icon_name: "mail-mark-junk-symbolic",
