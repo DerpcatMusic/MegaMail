@@ -41,9 +41,10 @@ row.compose-row .account-name {
 
 /* Expanded, it is split like the composer's Send (#360): the caret at the
    end opens the template menu, past a short inset divider. The caret keeps
-   to the row's height and reaches into its end padding. */
+   to the row's height and reaches into its end padding, far enough to sit
+   in line with the chevrons of the unified rows beneath. */
 row.compose-row .compose-split {
-  padding-right: 2px;
+  padding-right: 0;
 }
 row.compose-row .compose-split > separator {
   background-color: alpha(white, 0.55);
@@ -56,6 +57,7 @@ row.compose-row .compose-caret {
   min-width: 0;
   padding: 2px 6px;
   margin-top: -4px;
+  margin-right: -3px;
   margin-bottom: -4px;
 }
 row.compose-row .compose-caret:hover {
