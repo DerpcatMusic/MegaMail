@@ -15,6 +15,17 @@
   message, in the main window or its own, offers **Print Preview** and
   **Print…**. Ctrl+Shift+P in a message's own window opened no preview;
   it now does.
+- **Changed: a message's own window has the reader's toolbar and
+  attachment drawer.** The toolbar shows the same buttons in the order
+  **Settings → Appearance → Toolbar** gives them, Tags, Read/Unread, Move
+  To and Find among them, and folds its right-hand group into a ⋯ menu when
+  the window is narrow. Add sender to Contacts and View Source left the
+  toolbar for the right-click menu, which already had them, and the subject
+  is no longer repeated in the window's header. The attachments button and
+  its list are gone: the files are in the drawer under the message, and on
+  the cards when those are on, for every message of a conversation, with
+  the same full-window preview for images and PDFs. Changes to the toolbar
+  and to the attachment settings reach open windows at once.
 - **Fixed: a message could print as thousands of blank pages** where the
   desktop sets no font resolution (no settings portal or XSettings).
 

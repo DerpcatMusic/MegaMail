@@ -835,6 +835,18 @@ conversation offers **Expand All Messages** and **Collapse All Messages**.
 What you fold or open stays that way while the conversation is on screen.
 Printing shows every message in full.
 
+### A message in its own window
+
+Double-clicking a message in the list, or a message's header in a
+conversation, opens it in a window of its own. Its toolbar is the reader's:
+the same buttons in the order **Settings → Appearance → Toolbar** gives
+them, and in a narrow window the right-hand group folds into a ⋯ menu as it
+does in the main window. Its files are in the attachment drawer under the
+message, and on each message's card when those are switched on, and images
+and PDFs open in the same full-window preview. A conversation's window
+gathers the files of every message in it. **Ctrl+F** finds in the message
+and **Ctrl+P** prints it.
+
 ### Printing
 
 **Ctrl+P** prints the message or conversation in the reader, and
