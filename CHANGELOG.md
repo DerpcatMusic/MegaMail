@@ -26,6 +26,9 @@
   the cards when those are on, for every message of a conversation, with
   the same full-window preview for images and PDFs. Changes to the toolbar
   and to the attachment settings reach open windows at once.
+- **Changed: a message card's ⋯ opens the message's menu by default.**
+  **Settings → Reading → Message card actions palette as a menu** is on
+  for new installs; an existing install keeps its setting.
 - **Fixed: a message could print as thousands of blank pages** where the
   desktop sets no font resolution (no settings portal or XSettings).
 

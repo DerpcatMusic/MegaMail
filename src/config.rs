@@ -1197,8 +1197,10 @@ pub(crate) struct PrivacyFile {
     #[serde(default)]
     pub(crate) list_palette_hover: bool,
     /// Whether the ⋯ on a message card opens the card's menu in place of
-    /// sliding its actions palette out.
-    #[serde(default)]
+    /// sliding its actions palette out. On for new installs (2026-10-06);
+    /// an install that saved its settings before then keeps its own value,
+    /// since every save writes every key.
+    #[serde(default = "default_on")]
     pub(crate) card_palette_menu: bool,
     /// Whether message rows take a sideways swipe at all (#92, PR #135).
     #[serde(default = "default_on")]
@@ -1577,7 +1579,7 @@ impl Default for PrivacyFile {
             card_actions_auto: default_card_actions_auto(),
             list_palette: true,
             list_palette_hover: false,
-            card_palette_menu: false,
+            card_palette_menu: true,
             swipe_enabled: true,
             swipe_reversed: false,
             swipe_sensitivity: default_swipe_sensitivity(),
