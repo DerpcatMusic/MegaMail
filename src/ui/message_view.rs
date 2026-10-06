@@ -1860,10 +1860,11 @@ impl Component for MessageView {
                                 set_valign: gtk::Align::Center,
                                 #[watch]
                                 set_active: model.reader_mode,
-                                // The app owns the preference: it saves the
-                                // choice and hands it back to every reader
-                                // (this one included), so a flip here never
-                                // renders on its own.
+                                // The owner decides what a flip does, so it
+                                // never renders on its own: the main window
+                                // saves the choice and hands it back to every
+                                // reader, a message's own window applies it
+                                // to itself alone.
                                 connect_active_notify[sender] => move |sw| {
                                     let _ = sender.output(MessageViewOutput::ReaderMode(sw.is_active()));
                                 },

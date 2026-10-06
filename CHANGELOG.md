@@ -26,6 +26,9 @@
   the cards when those are on, for every message of a conversation, with
   the same full-window preview for images and PDFs. Changes to the toolbar
   and to the attachment settings reach open windows at once.
+- **Fixed: Reader View switched on in a message's own window switched it
+  on in the main window too.** The window's switch now changes that window
+  alone, and the remembered choice is left as it was.
 - **Changed: a message card's ⋯ opens the message's menu by default.**
   **Settings → Reading → Message card actions palette as a menu** is on
   for new installs; an existing install keeps its setting.

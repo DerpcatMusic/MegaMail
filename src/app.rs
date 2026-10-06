@@ -14523,7 +14523,6 @@ impl AppModel {
                 MessageWindowOutput::AllowSender(addr) => AppMsg::AllowSender(addr),
                 MessageWindowOutput::ReloadBody(m) => AppMsg::ReloadBody(m),
                 MessageWindowOutput::Notice(text) => AppMsg::Notice(text),
-                MessageWindowOutput::ReaderMode(on) => AppMsg::SetReaderMode(on),
                 MessageWindowOutput::ZoomReset => AppMsg::ZoomMessage(0),
                 MessageWindowOutput::Unsubscribe { message, info } => {
                     AppMsg::Unsubscribe { message, info }

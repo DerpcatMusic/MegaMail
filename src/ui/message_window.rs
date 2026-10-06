@@ -159,8 +159,9 @@ pub enum MessageWindowInput {
     ZoomReset,
     SetReaderSwitchShown(bool),
     SetReaderDefault(crate::config::ReaderDefault),
-    /// This window's own Reader View toggle was flipped: handed up to the
-    /// app, which owns the preference and pushes it back to every reader.
+    /// This window's own Reader View switch was flipped. It changes this
+    /// window alone: the main window and the saved choice are left as they
+    /// were.
     ReaderMode(bool),
     /// What one of the user's own mailboxes shows changed (#189).
     FacesChanged,
@@ -235,8 +236,6 @@ pub enum MessageWindowOutput {
         invite: Box<crate::models::Invite>,
         action: crate::ui::message_view::InviteAction,
     },
-    /// Reader View flipped from this window's subject block.
-    ReaderMode(bool),
     /// The zoom chip was clicked in this window: back to the default.
     ZoomReset,
     /// A per-message action handled exactly like a list/context-menu action.
@@ -498,7 +497,7 @@ impl Component for MessageWindow {
                 self.view.emit(MessageViewInput::SetReaderDefault(policy));
             }
             MessageWindowInput::ReaderMode(on) => {
-                let _ = sender.output(MessageWindowOutput::ReaderMode(on));
+                self.view.emit(MessageViewInput::SetReaderMode(on));
             }
             MessageWindowInput::Unsubscribe { message, info } => {
                 let _ = sender.output(MessageWindowOutput::Unsubscribe { message, info });

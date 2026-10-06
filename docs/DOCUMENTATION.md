@@ -844,8 +844,9 @@ them, and in a narrow window the right-hand group folds into a ⋯ menu as it
 does in the main window. Its files are in the attachment drawer under the
 message, and on each message's card when those are switched on, and images
 and PDFs open in the same full-window preview. A conversation's window
-gathers the files of every message in it. **Ctrl+F** finds in the message
-and **Ctrl+P** prints it.
+gathers the files of every message in it. Its Reader View switch changes
+that window alone; the main window and the choice Hylki remembers stay as
+they were. **Ctrl+F** finds in the message and **Ctrl+P** prints it.
 
 ### Printing
 
