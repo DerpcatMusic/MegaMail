@@ -365,6 +365,9 @@ msgstr "Expandir todas as mensagens"
 msgid "Collapse All Messages"
 msgstr "Recolher todas as mensagens"
 
+msgid "Print…"
+msgstr "Imprimir…"
+
 msgid "Delete {n} messages"
 msgstr "Excluir {n} mensagens"
 
@@ -4984,6 +4987,30 @@ msgstr ""
 "de leitura ou como foram enviadas. O interruptor ainda altera a mensagem "
 "exibida."
 
+#, fuzzy
+msgid "Printing"
+msgstr "Imprimir"
+
+msgid "Page numbers"
+msgstr ""
+
+msgid ""
+"Print the page number and the number of pages at the foot of every page."
+msgstr ""
+
+#, fuzzy
+msgid "Date printed"
+msgstr "Formato da data"
+
+msgid "Print the date and time of printing at the foot of every page."
+msgstr ""
+
+msgid "Wider left margin"
+msgstr ""
+
+msgid "Leave 25 mm at the left of every page, so punched holes miss the text."
+msgstr ""
+
 msgid "Compose in the main window"
 msgstr "Compor na janela principal"
 
@@ -5577,17 +5604,29 @@ msgstr "Arquivo personalizado"
 msgid "Print Message"
 msgstr "Imprimir mensagem"
 
-msgid "Save as PDF"
-msgstr "Salvar como PDF"
+#, fuzzy
+msgid "No PDF writer is available on this system"
+msgstr "Não existe uma pasta Rascunhos disponível para esta conta"
 
-msgid "Could not save the PDF: {error}"
-msgstr "Não foi possível salvar o PDF: {error}"
-
-msgid "Print…"
-msgstr "Imprimir…"
+msgid "Page {page} of {pages}"
+msgstr ""
 
 msgid "Save as PDF…"
 msgstr "Salvar como PDF…"
+
+#, fuzzy
+msgid "No Preview"
+msgstr "Visualizar"
+
+msgid "Save as PDF"
+msgstr "Salvar como PDF"
+
+#, fuzzy
+msgid "Saved {name}"
+msgstr "Conta {name} removida"
+
+msgid "Could not save the PDF: {error}"
+msgstr "Não foi possível salvar o PDF: {error}"
 
 msgid "Send as Attachment Instead"
 msgstr "Enviar como anexo em alternativa"

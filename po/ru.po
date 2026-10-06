@@ -365,6 +365,9 @@ msgstr "Развернуть все сообщения"
 msgid "Collapse All Messages"
 msgstr "Свернуть все сообщения"
 
+msgid "Print…"
+msgstr "Печать…"
+
 msgid "Delete {n} messages"
 msgstr "Удалить {n} сообщений"
 
@@ -4994,6 +4997,30 @@ msgstr ""
 "в режиме чтения или в исходном виде. Переключатель по-прежнему позволяет "
 "изменить режим отображения на экране."
 
+#, fuzzy
+msgid "Printing"
+msgstr "Составление писем:"
+
+msgid "Page numbers"
+msgstr ""
+
+msgid ""
+"Print the page number and the number of pages at the foot of every page."
+msgstr ""
+
+#, fuzzy
+msgid "Date printed"
+msgstr "Формат даты"
+
+msgid "Print the date and time of printing at the foot of every page."
+msgstr ""
+
+msgid "Wider left margin"
+msgstr ""
+
+msgid "Leave 25 mm at the left of every page, so punched holes miss the text."
+msgstr ""
+
 msgid "Compose in the main window"
 msgstr "Создание писем в основном окне"
 
@@ -5586,17 +5613,29 @@ msgstr "Другой файл"
 msgid "Print Message"
 msgstr "Печать сообщения"
 
-msgid "Save as PDF"
-msgstr "Сохранить как PDF"
+#, fuzzy
+msgid "No PDF writer is available on this system"
+msgstr "Для этой учётной записи недоступна папка «Черновики»"
 
-msgid "Could not save the PDF: {error}"
-msgstr "Не удалось сохранить PDF: {error}"
-
-msgid "Print…"
-msgstr "Печать…"
+msgid "Page {page} of {pages}"
+msgstr ""
 
 msgid "Save as PDF…"
 msgstr "Сохранить как PDF…"
+
+#, fuzzy
+msgid "No Preview"
+msgstr "Предпросмотр печати"
+
+msgid "Save as PDF"
+msgstr "Сохранить как PDF"
+
+#, fuzzy
+msgid "Saved {name}"
+msgstr "Удалено: {name}"
+
+msgid "Could not save the PDF: {error}"
+msgstr "Не удалось сохранить PDF: {error}"
 
 msgid "Send as Attachment Instead"
 msgstr "Отправить вложением"

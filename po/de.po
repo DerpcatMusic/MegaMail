@@ -370,6 +370,9 @@ msgstr "In Nachricht suchen"
 msgid "Collapse All Messages"
 msgstr "Im Lesebereich einklappen"
 
+msgid "Print…"
+msgstr "Drucken…"
+
 msgid "Delete {n} messages"
 msgstr "{n} Nachrichten löschen"
 
@@ -5031,6 +5034,30 @@ msgstr ""
 "Sie jede Nachricht in der Reader-Ansicht oder wie gesendet. Der Schalter "
 "ändert die Nachricht weiterhin auf dem Bildschirm."
 
+#, fuzzy
+msgid "Printing"
+msgstr "Schreiben:"
+
+msgid "Page numbers"
+msgstr ""
+
+msgid ""
+"Print the page number and the number of pages at the foot of every page."
+msgstr ""
+
+#, fuzzy
+msgid "Date printed"
+msgstr "Datumsformat"
+
+msgid "Print the date and time of printing at the foot of every page."
+msgstr ""
+
+msgid "Wider left margin"
+msgstr ""
+
+msgid "Leave 25 mm at the left of every page, so punched holes miss the text."
+msgstr ""
+
 msgid "Compose in the main window"
 msgstr "Im Hauptfenster verfassen"
 
@@ -5628,17 +5655,29 @@ msgstr "Eigene Datei"
 msgid "Print Message"
 msgstr "Nachricht drucken"
 
-msgid "Save as PDF"
-msgstr "Als PDF speichern"
+#, fuzzy
+msgid "No PDF writer is available on this system"
+msgstr "Für dieses Konto ist kein Entwurfsordner verfügbar"
 
-msgid "Could not save the PDF: {error}"
-msgstr "PDF konnte nicht gespeichert werden: {error}"
-
-msgid "Print…"
-msgstr "Drucken…"
+msgid "Page {page} of {pages}"
+msgstr ""
 
 msgid "Save as PDF…"
 msgstr "Als PDF speichern…"
+
+#, fuzzy
+msgid "No Preview"
+msgstr "Vorschau"
+
+msgid "Save as PDF"
+msgstr "Als PDF speichern"
+
+#, fuzzy
+msgid "Saved {name}"
+msgstr "{name} entfernt"
+
+msgid "Could not save the PDF: {error}"
+msgstr "PDF konnte nicht gespeichert werden: {error}"
 
 msgid "Send as Attachment Instead"
 msgstr "Stattdessen als Anhang senden"

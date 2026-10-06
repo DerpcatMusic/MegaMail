@@ -367,6 +367,9 @@ msgstr "Znajdź w wiadomości"
 msgid "Collapse All Messages"
 msgstr "Zwiń do panelu czytania"
 
+msgid "Print…"
+msgstr "Drukuj…"
+
 msgid "Delete {n} messages"
 msgstr "Usuń wiadomości ({n})"
 
@@ -5050,6 +5053,30 @@ msgstr ""
 "jest otwierana w widoku czytania lub w oryginalnej postaci. Przełącznik "
 "nadal zmienia widok bieżącej wiadomości."
 
+#, fuzzy
+msgid "Printing"
+msgstr "Pisanie:"
+
+msgid "Page numbers"
+msgstr ""
+
+msgid ""
+"Print the page number and the number of pages at the foot of every page."
+msgstr ""
+
+#, fuzzy
+msgid "Date printed"
+msgstr "Format daty"
+
+msgid "Print the date and time of printing at the foot of every page."
+msgstr ""
+
+msgid "Wider left margin"
+msgstr ""
+
+msgid "Leave 25 mm at the left of every page, so punched holes miss the text."
+msgstr ""
+
 msgid "Compose in the main window"
 msgstr "Pisanie w oknie głównym"
 
@@ -5643,17 +5670,29 @@ msgstr "Własny plik"
 msgid "Print Message"
 msgstr "Drukuj wiadomość"
 
-msgid "Save as PDF"
-msgstr "Zapisz jako PDF"
+#, fuzzy
+msgid "No PDF writer is available on this system"
+msgstr "To konto nie ma katalogu szkiców"
 
-msgid "Could not save the PDF: {error}"
-msgstr "Nie udało się zapisać pliku PDF: {error}"
-
-msgid "Print…"
-msgstr "Drukuj…"
+msgid "Page {page} of {pages}"
+msgstr ""
 
 msgid "Save as PDF…"
 msgstr "Zapisz jako PDF…"
+
+#, fuzzy
+msgid "No Preview"
+msgstr "Podgląd"
+
+msgid "Save as PDF"
+msgstr "Zapisz jako PDF"
+
+#, fuzzy
+msgid "Saved {name}"
+msgstr "Usunięto konto {name}"
+
+msgid "Could not save the PDF: {error}"
+msgstr "Nie udało się zapisać pliku PDF: {error}"
 
 msgid "Send as Attachment Instead"
 msgstr "Wyślij jako załącznik"

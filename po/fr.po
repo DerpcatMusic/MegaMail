@@ -368,6 +368,9 @@ msgstr "Déployer tous les messages"
 msgid "Collapse All Messages"
 msgstr "Réduire tous les messages"
 
+msgid "Print…"
+msgstr "Imprimer…"
+
 msgid "Delete {n} messages"
 msgstr "Supprimer {n} messages"
 
@@ -5015,6 +5018,30 @@ msgstr ""
 "messages en mode Lecture ou tel qu'envoyé. Le commutateur permet toujours de "
 "changer le message affiché à l'écran."
 
+#, fuzzy
+msgid "Printing"
+msgstr "Écriture :"
+
+msgid "Page numbers"
+msgstr ""
+
+msgid ""
+"Print the page number and the number of pages at the foot of every page."
+msgstr ""
+
+#, fuzzy
+msgid "Date printed"
+msgstr "Format de date"
+
+msgid "Print the date and time of printing at the foot of every page."
+msgstr ""
+
+msgid "Wider left margin"
+msgstr ""
+
+msgid "Leave 25 mm at the left of every page, so punched holes miss the text."
+msgstr ""
+
 msgid "Compose in the main window"
 msgstr "Rédiger dans la fenêtre principale"
 
@@ -5610,17 +5637,29 @@ msgstr "Fichier personnalisé"
 msgid "Print Message"
 msgstr "Imprimer le message"
 
-msgid "Save as PDF"
-msgstr "Enregistrer au format PDF"
+#, fuzzy
+msgid "No PDF writer is available on this system"
+msgstr "Aucun dossier Brouillons disponible pour ce compte"
 
-msgid "Could not save the PDF: {error}"
-msgstr "Impossible d'enregistrer le PDF : {error}"
-
-msgid "Print…"
-msgstr "Imprimer…"
+msgid "Page {page} of {pages}"
+msgstr ""
 
 msgid "Save as PDF…"
 msgstr "Enregistrer au format PDF…"
+
+#, fuzzy
+msgid "No Preview"
+msgstr "Aperçu"
+
+msgid "Save as PDF"
+msgstr "Enregistrer au format PDF"
+
+#, fuzzy
+msgid "Saved {name}"
+msgstr "{name} supprimé"
+
+msgid "Could not save the PDF: {error}"
+msgstr "Impossible d'enregistrer le PDF : {error}"
 
 msgid "Send as Attachment Instead"
 msgstr "Envoyer plutôt en pièce jointe"

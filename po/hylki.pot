@@ -347,6 +347,9 @@ msgstr ""
 msgid "Collapse All Messages"
 msgstr ""
 
+msgid "Print…"
+msgstr ""
+
 msgid "Delete {n} messages"
 msgstr ""
 
@@ -4457,6 +4460,28 @@ msgid ""
 "or as sent. The switch still changes the message on screen."
 msgstr ""
 
+msgid "Printing"
+msgstr ""
+
+msgid "Page numbers"
+msgstr ""
+
+msgid ""
+"Print the page number and the number of pages at the foot of every page."
+msgstr ""
+
+msgid "Date printed"
+msgstr ""
+
+msgid "Print the date and time of printing at the foot of every page."
+msgstr ""
+
+msgid "Wider left margin"
+msgstr ""
+
+msgid "Leave 25 mm at the left of every page, so punched holes miss the text."
+msgstr ""
+
 msgid "Compose in the main window"
 msgstr ""
 
@@ -4947,16 +4972,25 @@ msgstr ""
 msgid "Print Message"
 msgstr ""
 
-msgid "Save as PDF"
+msgid "No PDF writer is available on this system"
 msgstr ""
 
-msgid "Could not save the PDF: {error}"
-msgstr ""
-
-msgid "Print…"
+msgid "Page {page} of {pages}"
 msgstr ""
 
 msgid "Save as PDF…"
+msgstr ""
+
+msgid "No Preview"
+msgstr ""
+
+msgid "Save as PDF"
+msgstr ""
+
+msgid "Saved {name}"
+msgstr ""
+
+msgid "Could not save the PDF: {error}"
 msgstr ""
 
 msgid "Send as Attachment Instead"

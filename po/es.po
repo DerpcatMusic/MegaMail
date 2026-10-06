@@ -370,6 +370,9 @@ msgstr "Buscar en el mensaje"
 msgid "Collapse All Messages"
 msgstr "Contraer en el lector"
 
+msgid "Print…"
+msgstr "Imprimir…"
+
 msgid "Delete {n} messages"
 msgstr "Eliminar {n} mensajes"
 
@@ -4999,6 +5002,30 @@ msgstr ""
 "de lectura o tal como fue enviado. El interruptor sigue permitiendo cambiar "
 "el mensaje mostrado."
 
+#, fuzzy
+msgid "Printing"
+msgstr "Redacción:"
+
+msgid "Page numbers"
+msgstr ""
+
+msgid ""
+"Print the page number and the number of pages at the foot of every page."
+msgstr ""
+
+#, fuzzy
+msgid "Date printed"
+msgstr "Formato de fecha"
+
+msgid "Print the date and time of printing at the foot of every page."
+msgstr ""
+
+msgid "Wider left margin"
+msgstr ""
+
+msgid "Leave 25 mm at the left of every page, so punched holes miss the text."
+msgstr ""
+
 msgid "Compose in the main window"
 msgstr "Redactar en la ventana principal"
 
@@ -5593,17 +5620,29 @@ msgstr "Archivo personalizado"
 msgid "Print Message"
 msgstr "Imprimir mensaje"
 
-msgid "Save as PDF"
-msgstr "Guardar como PDF"
+#, fuzzy
+msgid "No PDF writer is available on this system"
+msgstr "No hay ninguna carpeta de borradores disponible para esta cuenta"
 
-msgid "Could not save the PDF: {error}"
-msgstr "No se pudo guardar el PDF: {error}"
-
-msgid "Print…"
-msgstr "Imprimir…"
+msgid "Page {page} of {pages}"
+msgstr ""
 
 msgid "Save as PDF…"
 msgstr "Guardar como PDF…"
+
+#, fuzzy
+msgid "No Preview"
+msgstr "Vista previa"
+
+msgid "Save as PDF"
+msgstr "Guardar como PDF"
+
+#, fuzzy
+msgid "Saved {name}"
+msgstr "{name} eliminada"
+
+msgid "Could not save the PDF: {error}"
+msgstr "No se pudo guardar el PDF: {error}"
 
 msgid "Send as Attachment Instead"
 msgstr "Enviar como archivo adjunto en su lugar"

@@ -372,6 +372,9 @@ msgstr "Εύρεση στο μήνυμα"
 msgid "Collapse All Messages"
 msgstr "Σύμπτυξη στην προβολή ανάγνωσης"
 
+msgid "Print…"
+msgstr "Εκτύπωση…"
+
 msgid "Delete {n} messages"
 msgstr "Διαγραφή {n} μηνυμάτων"
 
@@ -5034,6 +5037,30 @@ msgstr ""
 "Προβολή ανάγνωσης ή όπως απεστάλη. Ο διακόπτης εξακολουθεί να αλλάζει το "
 "μήνυμα στην οθόνη."
 
+#, fuzzy
+msgid "Printing"
+msgstr "Σύνταξη:"
+
+msgid "Page numbers"
+msgstr ""
+
+msgid ""
+"Print the page number and the number of pages at the foot of every page."
+msgstr ""
+
+#, fuzzy
+msgid "Date printed"
+msgstr "Μορφή ημερομηνίας"
+
+msgid "Print the date and time of printing at the foot of every page."
+msgstr ""
+
+msgid "Wider left margin"
+msgstr ""
+
+msgid "Leave 25 mm at the left of every page, so punched holes miss the text."
+msgstr ""
+
 msgid "Compose in the main window"
 msgstr "Σύνταξη στο κύριο παράθυρο"
 
@@ -5632,17 +5659,29 @@ msgstr "Προσαρμοσμένο αρχείο"
 msgid "Print Message"
 msgstr "Εκτύπωση μηνύματος"
 
-msgid "Save as PDF"
-msgstr "Αποθήκευση ως PDF"
+#, fuzzy
+msgid "No PDF writer is available on this system"
+msgstr "Δεν υπάρχει φάκελος Προχείρων για αυτόν τον λογαριασμό"
 
-msgid "Could not save the PDF: {error}"
-msgstr "Δεν ήταν δυνατή η αποθήκευση του PDF: {error}"
-
-msgid "Print…"
-msgstr "Εκτύπωση…"
+msgid "Page {page} of {pages}"
+msgstr ""
 
 msgid "Save as PDF…"
 msgstr "Αποθήκευση ως PDF…"
+
+#, fuzzy
+msgid "No Preview"
+msgstr "Προεπισκόπηση"
+
+msgid "Save as PDF"
+msgstr "Αποθήκευση ως PDF"
+
+#, fuzzy
+msgid "Saved {name}"
+msgstr "Αφαιρέθηκε το {name}"
+
+msgid "Could not save the PDF: {error}"
+msgstr "Δεν ήταν δυνατή η αποθήκευση του PDF: {error}"
 
 msgid "Send as Attachment Instead"
 msgstr "Αποστολή ως συνημμένο αντί για σύνδεσμο"

@@ -367,6 +367,9 @@ msgstr "Keresés az üzenetben"
 msgid "Collapse All Messages"
 msgstr "Olvasói nézetre váltás"
 
+msgid "Print…"
+msgstr "Nyomtatás…"
+
 msgid "Delete {n} messages"
 msgstr "{n} üzenet törlése"
 
@@ -5017,6 +5020,30 @@ msgstr ""
 "nézetben vagy elküldött formában indítson el. A kapcsoló továbbra is "
 "megváltoztatja a képernyőn megjelenő üzenetet."
 
+#, fuzzy
+msgid "Printing"
+msgstr "Írás:"
+
+msgid "Page numbers"
+msgstr ""
+
+msgid ""
+"Print the page number and the number of pages at the foot of every page."
+msgstr ""
+
+#, fuzzy
+msgid "Date printed"
+msgstr "Dátumformátum"
+
+msgid "Print the date and time of printing at the foot of every page."
+msgstr ""
+
+msgid "Wider left margin"
+msgstr ""
+
+msgid "Leave 25 mm at the left of every page, so punched holes miss the text."
+msgstr ""
+
 msgid "Compose in the main window"
 msgstr "Levélírás a főablakban"
 
@@ -5617,17 +5644,29 @@ msgstr "Egyéni fájl"
 msgid "Print Message"
 msgstr "Üzenet nyomtatása"
 
-msgid "Save as PDF"
-msgstr "Mentés PDF-ként"
+#, fuzzy
+msgid "No PDF writer is available on this system"
+msgstr "Ehhez a fiókhoz nem érhető el Piszkozatok mappa"
 
-msgid "Could not save the PDF: {error}"
-msgstr "A PDF nem menthető: {error}"
-
-msgid "Print…"
-msgstr "Nyomtatás…"
+msgid "Page {page} of {pages}"
+msgstr ""
 
 msgid "Save as PDF…"
 msgstr "Mentés PDF-ként…"
+
+#, fuzzy
+msgid "No Preview"
+msgstr "Előnézet"
+
+msgid "Save as PDF"
+msgstr "Mentés PDF-ként"
+
+#, fuzzy
+msgid "Saved {name}"
+msgstr "Eltávolítva: {name}"
+
+msgid "Could not save the PDF: {error}"
+msgstr "A PDF nem menthető: {error}"
 
 msgid "Send as Attachment Instead"
 msgstr "Küldés inkább mellékletként"
