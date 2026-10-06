@@ -192,6 +192,10 @@ msgstr "Aucun message portant l'identifiant {id} n'a été trouvé"
 msgid "No Drafts folder available for this account"
 msgstr "Aucun dossier Brouillons disponible pour ce compte"
 
+#, fuzzy
+msgid "No Templates folder available for this account"
+msgstr "Aucun dossier Brouillons disponible pour ce compte"
+
 msgid "Could not save account: {e}"
 msgstr "Impossible d'enregistrer le compte : {e}"
 
@@ -332,6 +336,13 @@ msgstr "Trier"
 msgid "Message Source"
 msgstr "Code source du message"
 
+msgid "Use Template"
+msgstr ""
+
+#, fuzzy
+msgid "Edit Template"
+msgstr "Modifier la balise"
+
 msgid "Edit as New Message"
 msgstr "Modifier en tant que nouveau message"
 
@@ -420,6 +431,19 @@ msgstr "Joindre quand même"
 
 msgid "Upload to Cloud Storage"
 msgstr "Téléverser vers un stockage en ligne"
+
+#, fuzzy
+msgid "New Message from Template"
+msgstr "Nouveau message à la place"
+
+#, fuzzy
+msgid "The new message starts as a copy of the template you pick."
+msgstr ""
+"Les fichiers seront joints à une réponse au message que vous choisissez."
+
+msgid ""
+"No templates yet. Save one from the composer's ⋯ menu with Save as Template."
+msgstr ""
 
 msgid "Continue a Draft"
 msgstr "Continuer un brouillon"
@@ -846,6 +870,10 @@ msgstr "Écriture :"
 
 msgid "Compose"
 msgstr "Rédiger"
+
+#, fuzzy
+msgid "New message from a template"
+msgstr "Message le plus récent en premier"
 
 msgid "Send the message you are writing"
 msgstr "Envoyer le message en cours de rédaction"
@@ -1768,6 +1796,9 @@ msgstr ""
 
 msgid "Drafts"
 msgstr "Brouillons"
+
+msgid "Templates"
+msgstr ""
 
 msgid "Trash"
 msgstr "Corbeille"
@@ -2800,11 +2831,32 @@ msgstr "Réduire dans le lecteur"
 msgid "Open in window"
 msgstr "Ouvrir dans une fenêtre"
 
+msgid "Template"
+msgstr ""
+
+#, fuzzy
+msgid "Save Template"
+msgstr "Enregistrer l'image"
+
 msgid "Save Draft"
 msgstr "Enregistrer le brouillon"
 
+#, fuzzy
+msgid "Save to Templates"
+msgstr "Enregistrer dans les brouillons"
+
 msgid "Save to Drafts"
 msgstr "Enregistrer dans les brouillons"
+
+msgid "More ways to save"
+msgstr ""
+
+msgid "Keep a copy in Templates to start new messages from"
+msgstr ""
+
+#, fuzzy
+msgid "Save as Template"
+msgstr "Envoyer en texte brut"
 
 msgid "Delete Draft"
 msgstr "Supprimer le brouillon"
@@ -2987,6 +3039,17 @@ msgstr "{name} (lien)"
 
 msgid "Uploading…"
 msgstr "Téléversement…"
+
+#, fuzzy
+msgid "Save the template?"
+msgstr "Enregistrer le tag ?"
+
+#, fuzzy
+msgid ""
+"Its changes have not been saved. Save them to the template, or discard them."
+msgstr ""
+"Il n'a pas été envoyé. Enregistrez-le dans Brouillons pour le terminer plus "
+"tard, ou abandonnez-le."
 
 msgid "Save the message?"
 msgstr "Enregistrer le message ?"
@@ -3534,6 +3597,17 @@ msgid "A pass proves the address wasn't forged — not that the message is safe.
 msgstr ""
 "Une validation prouve que l'adresse n'a pas été falsifiée, mais ne garantit "
 "pas que le message soit sans danger."
+
+#, fuzzy
+msgid "This message is a template."
+msgstr "Ce message est rédigé en {language}."
+
+msgid "Change the template itself"
+msgstr ""
+
+#, fuzzy
+msgid "Start a new message from a copy of the template"
+msgstr "Rédiger un message avec l'image dans le texte"
 
 msgid "Repeats daily"
 msgstr "Se répète chaque jour"
@@ -5810,6 +5884,9 @@ msgstr "Ajouter un premier compte"
 msgid "No accounts yet"
 msgstr "Aucun compte pour le moment"
 
+msgid "New Message from Template…"
+msgstr ""
+
 msgid "Outbox"
 msgstr "Boîte d'envoi"
 
@@ -6199,8 +6276,8 @@ msgstr "Impossible de supprimer le dossier : dossier inconnu"
 msgid "Could not delete folder: {e}"
 msgstr "Impossible de supprimer le dossier : {e}"
 
-msgid "Saving draft…"
-msgstr "Enregistrement du brouillon…"
+msgid "unknown folder"
+msgstr ""
 
 msgid "Could not reach the server"
 msgstr "Impossible de joindre le serveur"
@@ -6231,9 +6308,6 @@ msgstr "La connexion IMAP ne progresse plus"
 
 msgid "Could not reach the JMAP server: {e}"
 msgstr "Impossible de contacter le serveur JMAP : {e}"
-
-msgid "unknown folder"
-msgstr ""
 
 msgid "That folder is not on the server"
 msgstr "Ce dossier n'existe pas sur le serveur"
@@ -6329,8 +6403,19 @@ msgstr "« {subject} » sera envoyé {when}"
 msgid "Could not schedule the message."
 msgstr "Impossible de programmer le message."
 
+#, fuzzy
+msgid "Could not save template: {e}"
+msgstr "Impossible d'enregistrer le brouillon : {e}"
+
 msgid "Could not save draft: {e}"
 msgstr "Impossible d'enregistrer le brouillon : {e}"
+
+#, fuzzy
+msgid "Saving template…"
+msgstr "Enregistrement du brouillon…"
+
+msgid "Saving draft…"
+msgstr "Enregistrement du brouillon…"
 
 msgid ""
 "no OpenPGP key of your own for {addr}; generate one under Settings, OpenPGP"
@@ -6704,9 +6789,6 @@ msgstr "Hyprlab"
 
 #~ msgid "Send with formatting"
 #~ msgstr "Envoyer avec formatage"
-
-#~ msgid "Send as plain text"
-#~ msgstr "Envoyer en texte brut"
 
 #~ msgid "Compose in plain text"
 #~ msgstr "Rédiger en texte brut"

@@ -192,6 +192,10 @@ msgstr "Keine Nachricht mit der ID {id} wurde gefunden"
 msgid "No Drafts folder available for this account"
 msgstr "Für dieses Konto ist kein Entwurfsordner verfügbar"
 
+#, fuzzy
+msgid "No Templates folder available for this account"
+msgstr "Für dieses Konto ist kein Entwurfsordner verfügbar"
+
 msgid "Could not save account: {e}"
 msgstr "Konnte kein Konto speichern: {e}"
 
@@ -332,6 +336,13 @@ msgstr "Sortieren"
 msgid "Message Source"
 msgstr "Nachrichtenquelle"
 
+msgid "Use Template"
+msgstr ""
+
+#, fuzzy
+msgid "Edit Template"
+msgstr "Tag bearbeiten"
+
 msgid "Edit as New Message"
 msgstr "Als neue Nachricht bearbeiten"
 
@@ -422,6 +433,19 @@ msgstr "Trotzdem anhängen"
 
 msgid "Upload to Cloud Storage"
 msgstr "In Cloud-Speicher hochladen"
+
+#, fuzzy
+msgid "New Message from Template"
+msgstr "Stattdessen neue Nachricht verfassen"
+
+#, fuzzy
+msgid "The new message starts as a copy of the template you pick."
+msgstr ""
+"Die Dateien gehen in eine Antwort auf die Nachricht, die Sie auswählen."
+
+msgid ""
+"No templates yet. Save one from the composer's ⋯ menu with Save as Template."
+msgstr ""
 
 msgid "Continue a Draft"
 msgstr "Entwurf fortsetzen"
@@ -851,6 +875,10 @@ msgstr "Schreiben:"
 
 msgid "Compose"
 msgstr "Verfassen"
+
+#, fuzzy
+msgid "New message from a template"
+msgstr "Neueste Nachricht zuerst"
 
 msgid "Send the message you are writing"
 msgstr "Senden Sie die Nachricht, die Sie schreiben"
@@ -1781,6 +1809,9 @@ msgstr ""
 
 msgid "Drafts"
 msgstr "Entwürfe"
+
+msgid "Templates"
+msgstr ""
 
 msgid "Trash"
 msgstr "Papierkorb"
@@ -2804,11 +2835,32 @@ msgstr "Im Lesebereich einklappen"
 msgid "Open in window"
 msgstr "In Fenster öffnen"
 
+msgid "Template"
+msgstr ""
+
+#, fuzzy
+msgid "Save Template"
+msgstr "Bild speichern"
+
 msgid "Save Draft"
 msgstr "Entwurf speichern"
 
+#, fuzzy
+msgid "Save to Templates"
+msgstr "Unter Entwürfe speichern"
+
 msgid "Save to Drafts"
 msgstr "Unter Entwürfe speichern"
+
+msgid "More ways to save"
+msgstr ""
+
+msgid "Keep a copy in Templates to start new messages from"
+msgstr ""
+
+#, fuzzy
+msgid "Save as Template"
+msgstr "Als reinen Text einfügen"
 
 msgid "Delete Draft"
 msgstr "Entwurf löschen"
@@ -2997,6 +3049,17 @@ msgstr "{name} (Link)"
 
 msgid "Uploading…"
 msgstr "Wird hochgeladen…"
+
+#, fuzzy
+msgid "Save the template?"
+msgstr "Tag speichern?"
+
+#, fuzzy
+msgid ""
+"Its changes have not been saved. Save them to the template, or discard them."
+msgstr ""
+"Die Nachricht wurde noch nicht gesendet. Speichere sie unter „Entwürfe“, um "
+"sie später fertigzustellen, oder lösche sie."
 
 msgid "Save the message?"
 msgstr "Die Nachricht speichern?"
@@ -3554,6 +3617,17 @@ msgid "A pass proves the address wasn't forged — not that the message is safe.
 msgstr ""
 "Ein Pass beweist, dass die Adresse nicht gefälscht wurde - nicht, dass die "
 "Nachricht sicher ist."
+
+#, fuzzy
+msgid "This message is a template."
+msgstr "Diese Nachricht stammt aus einer Mailingliste."
+
+msgid "Change the template itself"
+msgstr ""
+
+#, fuzzy
+msgid "Start a new message from a copy of the template"
+msgstr "Neue Nachricht mit dem Bild im Text beginnen"
 
 msgid "Repeats daily"
 msgstr "Wiederholt sich täglich"
@@ -5828,6 +5902,9 @@ msgstr "Erstes Konto hinzufügen"
 msgid "No accounts yet"
 msgstr "Noch keine Konten"
 
+msgid "New Message from Template…"
+msgstr ""
+
 msgid "Outbox"
 msgstr "Postausgang"
 
@@ -6214,8 +6291,9 @@ msgstr "Ordner konnte nicht gelöscht werden: unbekannter Ordner"
 msgid "Could not delete folder: {e}"
 msgstr "Ordner konnte nicht gelöscht werden: {e}"
 
-msgid "Saving draft…"
-msgstr "Entwurf wird gespeichert…"
+#, fuzzy
+msgid "unknown folder"
+msgstr "Jeden Ordner anzeigen"
 
 msgid "Could not reach the server"
 msgstr "Server konnte nicht erreicht werden"
@@ -6247,10 +6325,6 @@ msgstr ""
 
 msgid "Could not reach the JMAP server: {e}"
 msgstr "Konnte den JMAP-Server nicht erreichen: {e}"
-
-#, fuzzy
-msgid "unknown folder"
-msgstr "Jeden Ordner anzeigen"
 
 msgid "That folder is not on the server"
 msgstr "Dieser Ordner ist nicht auf dem Server vorhanden"
@@ -6352,8 +6426,19 @@ msgstr "„{subject}“ wird {when} gesendet"
 msgid "Could not schedule the message."
 msgstr "Nachricht konnte nicht gelöscht werden: {e}"
 
+#, fuzzy
+msgid "Could not save template: {e}"
+msgstr "Konnte den Entwurf nicht speichern: {e}"
+
 msgid "Could not save draft: {e}"
 msgstr "Konnte den Entwurf nicht speichern: {e}"
+
+#, fuzzy
+msgid "Saving template…"
+msgstr "Entwurf wird gespeichert…"
+
+msgid "Saving draft…"
+msgstr "Entwurf wird gespeichert…"
 
 msgid ""
 "no OpenPGP key of your own for {addr}; generate one under Settings, OpenPGP"

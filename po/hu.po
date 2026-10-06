@@ -192,6 +192,10 @@ msgstr "Nem található üzenet ezzel az azonosítóval: {id}"
 msgid "No Drafts folder available for this account"
 msgstr "Ehhez a fiókhoz nem érhető el Piszkozatok mappa"
 
+#, fuzzy
+msgid "No Templates folder available for this account"
+msgstr "Ehhez a fiókhoz nem érhető el Piszkozatok mappa"
+
 msgid "Could not save account: {e}"
 msgstr "A fiók nem menthető: {e}"
 
@@ -329,6 +333,13 @@ msgstr "Rendezés"
 msgid "Message Source"
 msgstr "Üzenetforrás"
 
+msgid "Use Template"
+msgstr ""
+
+#, fuzzy
+msgid "Edit Template"
+msgstr "Címke szerkesztése"
+
 msgid "Edit as New Message"
 msgstr "Szerkesztés új üzenetként"
 
@@ -414,6 +425,18 @@ msgstr "Csatolás mindenképpen"
 
 msgid "Upload to Cloud Storage"
 msgstr "Feltöltés a felhőbe"
+
+#, fuzzy
+msgid "New Message from Template"
+msgstr "Inkább új üzenet"
+
+#, fuzzy
+msgid "The new message starts as a copy of the template you pick."
+msgstr "A fájlok az Ön által kiválasztott üzenetre adott válaszba kerülnek."
+
+msgid ""
+"No templates yet. Save one from the composer's ⋯ menu with Save as Template."
+msgstr ""
 
 msgid "Continue a Draft"
 msgstr "Folytatás piszkozatként"
@@ -836,6 +859,10 @@ msgstr "Írás:"
 
 msgid "Compose"
 msgstr "Levélírás"
+
+#, fuzzy
+msgid "New message from a template"
+msgstr "Legújabb üzenet elöl"
 
 msgid "Send the message you are writing"
 msgstr "Küldd el az éppen írt üzenetet"
@@ -1752,6 +1779,9 @@ msgstr ""
 
 msgid "Drafts"
 msgstr "Piszkozatok"
+
+msgid "Templates"
+msgstr ""
 
 msgid "Trash"
 msgstr "Kuka"
@@ -2783,11 +2813,32 @@ msgstr "Olvasói nézetre váltás"
 msgid "Open in window"
 msgstr "Megnyitás ablakban"
 
+msgid "Template"
+msgstr ""
+
+#, fuzzy
+msgid "Save Template"
+msgstr "Kép mentése"
+
 msgid "Save Draft"
 msgstr "Piszkozat mentése"
 
+#, fuzzy
+msgid "Save to Templates"
+msgstr "Mentés a Piszkozatok közé"
+
 msgid "Save to Drafts"
 msgstr "Mentés a Piszkozatok közé"
+
+msgid "More ways to save"
+msgstr ""
+
+msgid "Keep a copy in Templates to start new messages from"
+msgstr ""
+
+#, fuzzy
+msgid "Save as Template"
+msgstr "Beillesztés egyszerű szövegként"
 
 msgid "Delete Draft"
 msgstr "Piszkozat törlése"
@@ -2977,6 +3028,17 @@ msgstr "{name} (hivatkozás)"
 
 msgid "Uploading…"
 msgstr "Feltöltés…"
+
+#, fuzzy
+msgid "Save the template?"
+msgstr "Elmented a címkét?"
+
+#, fuzzy
+msgid ""
+"Its changes have not been saved. Save them to the template, or discard them."
+msgstr ""
+"Még nem küldted el. Mentsd el a „Piszkozatok” mappába, hogy később befejezd, "
+"vagy töröld."
 
 msgid "Save the message?"
 msgstr "Elmenti az üzenetet?"
@@ -3533,6 +3595,17 @@ msgid "A pass proves the address wasn't forged — not that the message is safe.
 msgstr ""
 "A sikeres ellenőrzés bizonyítja, hogy a címet nem hamisították meg — azt "
 "nem, hogy az üzenet biztonságos."
+
+#, fuzzy
+msgid "This message is a template."
+msgstr "Ez az üzenet egy levelezőlistáról származik."
+
+msgid "Change the template itself"
+msgstr ""
+
+#, fuzzy
+msgid "Start a new message from a copy of the template"
+msgstr "Kezdd az üzenetet úgy, hogy a képet beilleszted a szövegbe"
 
 msgid "Repeats daily"
 msgstr "Naponta ismétlődik"
@@ -5817,6 +5890,9 @@ msgstr "Első fiók hozzáadása"
 msgid "No accounts yet"
 msgstr "Még nincsenek fiókok"
 
+msgid "New Message from Template…"
+msgstr ""
+
 msgid "Outbox"
 msgstr "Kimenő"
 
@@ -6207,8 +6283,9 @@ msgstr "A mappa nem törölhető: ismeretlen mappa"
 msgid "Could not delete folder: {e}"
 msgstr "A mappa nem törölhető: {e}"
 
-msgid "Saving draft…"
-msgstr "Piszkozat mentése…"
+#, fuzzy
+msgid "unknown folder"
+msgstr "Minden mappa megjelenítése"
 
 msgid "Could not reach the server"
 msgstr "Nem sikerült elérni a kiszolgálót"
@@ -6239,10 +6316,6 @@ msgstr ""
 
 msgid "Could not reach the JMAP server: {e}"
 msgstr "Nem sikerült elérni a JMAP kiszolgálót: {e}"
-
-#, fuzzy
-msgid "unknown folder"
-msgstr "Minden mappa megjelenítése"
 
 msgid "That folder is not on the server"
 msgstr "A mappa nincs a kiszolgálón"
@@ -6339,8 +6412,19 @@ msgstr "A(z) „{subject}” küldése ekkor történik: {when}"
 msgid "Could not schedule the message."
 msgstr "Az üzenet nem törölhető: {e}"
 
+#, fuzzy
+msgid "Could not save template: {e}"
+msgstr "A piszkozat nem menthető: {e}"
+
 msgid "Could not save draft: {e}"
 msgstr "A piszkozat nem menthető: {e}"
+
+#, fuzzy
+msgid "Saving template…"
+msgstr "Piszkozat mentése…"
+
+msgid "Saving draft…"
+msgstr "Piszkozat mentése…"
 
 msgid ""
 "no OpenPGP key of your own for {addr}; generate one under Settings, OpenPGP"
@@ -6669,10 +6753,6 @@ msgstr "Hyprlab"
 #, fuzzy
 #~ msgid "Send with formatting"
 #~ msgstr "Beillesztés formázással"
-
-#, fuzzy
-#~ msgid "Send as plain text"
-#~ msgstr "Beillesztés egyszerű szövegként"
 
 #, fuzzy
 #~ msgid "Compose in plain text"

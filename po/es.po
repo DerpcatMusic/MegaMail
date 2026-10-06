@@ -192,6 +192,10 @@ msgstr "No se encontró ningún mensaje con el ID {id}"
 msgid "No Drafts folder available for this account"
 msgstr "No hay ninguna carpeta de borradores disponible para esta cuenta"
 
+#, fuzzy
+msgid "No Templates folder available for this account"
+msgstr "No hay ninguna carpeta de borradores disponible para esta cuenta"
+
 msgid "Could not save account: {e}"
 msgstr "No se pudo guardar la cuenta: {e}"
 
@@ -332,6 +336,13 @@ msgstr "Ordenar"
 msgid "Message Source"
 msgstr "Código fuente del mensaje"
 
+msgid "Use Template"
+msgstr ""
+
+#, fuzzy
+msgid "Edit Template"
+msgstr "Editar etiqueta"
+
 msgid "Edit as New Message"
 msgstr "Editar como mensaje nuevo"
 
@@ -419,6 +430,18 @@ msgstr "Adjuntar de todos modos"
 
 msgid "Upload to Cloud Storage"
 msgstr "Subir al almacenamiento en la nube"
+
+#, fuzzy
+msgid "New Message from Template"
+msgstr "Crear un mensaje nuevo"
+
+#, fuzzy
+msgid "The new message starts as a copy of the template you pick."
+msgstr "Los archivos se añadirán a una respuesta al mensaje que elijas."
+
+msgid ""
+"No templates yet. Save one from the composer's ⋯ menu with Save as Template."
+msgstr ""
 
 msgid "Continue a Draft"
 msgstr "Continuar un borrador"
@@ -847,6 +870,10 @@ msgstr "Redacción:"
 
 msgid "Compose"
 msgstr "Redactar"
+
+#, fuzzy
+msgid "New message from a template"
+msgstr "Mensaje más reciente primero"
 
 msgid "Send the message you are writing"
 msgstr "Enviar el mensaje que estás escribiendo"
@@ -1761,6 +1788,9 @@ msgstr ""
 
 msgid "Drafts"
 msgstr "Borradores"
+
+msgid "Templates"
+msgstr ""
 
 msgid "Trash"
 msgstr "Papelera"
@@ -2779,11 +2809,32 @@ msgstr "Contraer en el lector"
 msgid "Open in window"
 msgstr "Abrir en una ventana"
 
+msgid "Template"
+msgstr ""
+
+#, fuzzy
+msgid "Save Template"
+msgstr "Guardar imagen"
+
 msgid "Save Draft"
 msgstr "Guardar borrador"
 
+#, fuzzy
+msgid "Save to Templates"
+msgstr "Guardar en Borradores"
+
 msgid "Save to Drafts"
 msgstr "Guardar en Borradores"
+
+msgid "More ways to save"
+msgstr ""
+
+msgid "Keep a copy in Templates to start new messages from"
+msgstr ""
+
+#, fuzzy
+msgid "Save as Template"
+msgstr "Pegar como texto sin formato"
 
 msgid "Delete Draft"
 msgstr "Eliminar borrador"
@@ -2972,6 +3023,17 @@ msgstr "{name} (enlace)"
 
 msgid "Uploading…"
 msgstr "Subiendo…"
+
+#, fuzzy
+msgid "Save the template?"
+msgstr "¿Guardar la etiqueta?"
+
+#, fuzzy
+msgid ""
+"Its changes have not been saved. Save them to the template, or discard them."
+msgstr ""
+"No se ha enviado. Guárdalo en Borradores para terminarlo más tarde o "
+"descártalo."
 
 msgid "Save the message?"
 msgstr "¿Guardar el mensaje?"
@@ -3521,6 +3583,17 @@ msgid "A pass proves the address wasn't forged — not that the message is safe.
 msgstr ""
 "Una verificación demuestra que la dirección no fue falsificada, no que el "
 "mensaje sea seguro."
+
+#, fuzzy
+msgid "This message is a template."
+msgstr "Este mensaje procede de una lista de correo."
+
+msgid "Change the template itself"
+msgstr ""
+
+#, fuzzy
+msgid "Start a new message from a copy of the template"
+msgstr "Iniciar un mensaje con la imagen en el texto"
 
 msgid "Repeats daily"
 msgstr "Se repite diariamente"
@@ -5793,6 +5866,9 @@ msgstr "Añadir primera cuenta"
 msgid "No accounts yet"
 msgstr "Todavía no hay cuentas"
 
+msgid "New Message from Template…"
+msgstr ""
+
 msgid "Outbox"
 msgstr "Bandeja de salida"
 
@@ -6182,8 +6258,9 @@ msgstr "No se pudo eliminar la carpeta: carpeta desconocida"
 msgid "Could not delete folder: {e}"
 msgstr "No se pudo eliminar la carpeta: {e}"
 
-msgid "Saving draft…"
-msgstr "Guardando borrador…"
+#, fuzzy
+msgid "unknown folder"
+msgstr "Mostrar cada carpeta"
 
 msgid "Could not reach the server"
 msgstr "No se pudo contactar con el servidor"
@@ -6214,10 +6291,6 @@ msgstr ""
 
 msgid "Could not reach the JMAP server: {e}"
 msgstr "No se pudo contactar con el servidor JMAP: {e}"
-
-#, fuzzy
-msgid "unknown folder"
-msgstr "Mostrar cada carpeta"
 
 msgid "That folder is not on the server"
 msgstr "Esa carpeta no está en el servidor"
@@ -6314,8 +6387,19 @@ msgstr "«{subject}» se enviará {when}"
 msgid "Could not schedule the message."
 msgstr "No se pudo eliminar el mensaje: {e}"
 
+#, fuzzy
+msgid "Could not save template: {e}"
+msgstr "No se pudo guardar el borrador: {e}"
+
 msgid "Could not save draft: {e}"
 msgstr "No se pudo guardar el borrador: {e}"
+
+#, fuzzy
+msgid "Saving template…"
+msgstr "Guardando borrador…"
+
+msgid "Saving draft…"
+msgstr "Guardando borrador…"
 
 msgid ""
 "no OpenPGP key of your own for {addr}; generate one under Settings, OpenPGP"

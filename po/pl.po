@@ -191,6 +191,10 @@ msgstr "Nie odnaleziono wiadomości o identyfikatorze {id}"
 msgid "No Drafts folder available for this account"
 msgstr "To konto nie ma katalogu szkiców"
 
+#, fuzzy
+msgid "No Templates folder available for this account"
+msgstr "To konto nie ma katalogu szkiców"
+
 msgid "Could not save account: {e}"
 msgstr "Nie udało się zapisać konta: {e}"
 
@@ -329,6 +333,13 @@ msgstr "Sortuj"
 msgid "Message Source"
 msgstr "Źródło wiadomości"
 
+msgid "Use Template"
+msgstr ""
+
+#, fuzzy
+msgid "Edit Template"
+msgstr "Modyfikuj etykietę"
+
 msgid "Edit as New Message"
 msgstr "Modyfikuj jako nową wiadomość"
 
@@ -423,6 +434,18 @@ msgstr "Załącz mimo to"
 
 msgid "Upload to Cloud Storage"
 msgstr "Prześlij do chmury"
+
+#, fuzzy
+msgid "New Message from Template"
+msgstr "Nowa wiadomość"
+
+#, fuzzy
+msgid "The new message starts as a copy of the template you pick."
+msgstr "Pliki zostaną dołączone do odpowiedzi na wybraną wiadomość."
+
+msgid ""
+"No templates yet. Save one from the composer's ⋯ menu with Save as Template."
+msgstr ""
 
 msgid "Continue a Draft"
 msgstr "Kontynuuj szkic"
@@ -864,6 +887,10 @@ msgstr "Pisanie:"
 
 msgid "Compose"
 msgstr "Napisz nową wiadomość"
+
+#, fuzzy
+msgid "New message from a template"
+msgstr "Najnowsza wiadomość na początku"
 
 msgid "Send the message you are writing"
 msgstr "Wyślij pisaną wiadomość"
@@ -1788,6 +1815,9 @@ msgstr ""
 
 msgid "Drafts"
 msgstr "Szkice"
+
+msgid "Templates"
+msgstr ""
 
 msgid "Trash"
 msgstr "Kosz"
@@ -2816,11 +2846,32 @@ msgstr "Zwiń do panelu czytania"
 msgid "Open in window"
 msgstr "Otwórz w osobnym oknie"
 
+msgid "Template"
+msgstr ""
+
+#, fuzzy
+msgid "Save Template"
+msgstr "Zapisz obraz"
+
 msgid "Save Draft"
 msgstr "Zapisz szkic"
 
+#, fuzzy
+msgid "Save to Templates"
+msgstr "Zapisz w katalogu „Szkice”"
+
 msgid "Save to Drafts"
 msgstr "Zapisz w katalogu „Szkice”"
+
+msgid "More ways to save"
+msgstr ""
+
+msgid "Keep a copy in Templates to start new messages from"
+msgstr ""
+
+#, fuzzy
+msgid "Save as Template"
+msgstr "Wklejanie jako zwykły tekst"
 
 msgid "Delete Draft"
 msgstr "Usuń szkic"
@@ -3009,6 +3060,17 @@ msgstr "{name} (odnośnik)"
 
 msgid "Uploading…"
 msgstr "Przesyłanie…"
+
+#, fuzzy
+msgid "Save the template?"
+msgstr "Czy zapisać etykietę?"
+
+#, fuzzy
+msgid ""
+"Its changes have not been saved. Save them to the template, or discard them."
+msgstr ""
+"Wiadomość nie została wysłana. Zapisz ją w katalogu „Szkice”, aby dokończyć "
+"później, lub ją odrzuć."
 
 msgid "Save the message?"
 msgstr "Czy zapisać wiadomość?"
@@ -3571,6 +3633,17 @@ msgid "A pass proves the address wasn't forged — not that the message is safe.
 msgstr ""
 "Pozytywny wynik potwierdza, że adres nie został sfałszowany – nie oznacza, "
 "że wiadomość jest bezpieczna."
+
+#, fuzzy
+msgid "This message is a template."
+msgstr "Ta wiadomość pochodzi z listy dyskusyjnej."
+
+msgid "Change the template itself"
+msgstr ""
+
+#, fuzzy
+msgid "Start a new message from a copy of the template"
+msgstr "Utwórz wiadomość z obrazem w treści"
 
 msgid "Repeats daily"
 msgstr "Powtarza się codziennie"
@@ -5845,6 +5918,9 @@ msgstr "Dodaj pierwsze konto"
 msgid "No accounts yet"
 msgstr "Brak kont"
 
+msgid "New Message from Template…"
+msgstr ""
+
 msgid "Outbox"
 msgstr "Skrzynka nadawcza"
 
@@ -6230,8 +6306,9 @@ msgstr "Nie udało się usunąć katalogu: nieznany katalog"
 msgid "Could not delete folder: {e}"
 msgstr "Nie udało się usunąć katalogu: {e}"
 
-msgid "Saving draft…"
-msgstr "Zapisywanie szkicu…"
+#, fuzzy
+msgid "unknown folder"
+msgstr "Wyświetl poszczególne katalogi"
 
 msgid "Could not reach the server"
 msgstr "Nie udało się połączyć z serwerem"
@@ -6262,10 +6339,6 @@ msgstr ""
 
 msgid "Could not reach the JMAP server: {e}"
 msgstr "Nie udało się połączyć z serwerem JMAP: {e}"
-
-#, fuzzy
-msgid "unknown folder"
-msgstr "Wyświetl poszczególne katalogi"
 
 msgid "That folder is not on the server"
 msgstr "Tego katalogu nie ma na serwerze"
@@ -6363,8 +6436,19 @@ msgstr "Wiadomość „{subject}” zostanie wysłana {when}"
 msgid "Could not schedule the message."
 msgstr "Nie udało się usunąć wiadomości: {e}"
 
+#, fuzzy
+msgid "Could not save template: {e}"
+msgstr "Nie udało się zapisać szkicu: {e}"
+
 msgid "Could not save draft: {e}"
 msgstr "Nie udało się zapisać szkicu: {e}"
+
+#, fuzzy
+msgid "Saving template…"
+msgstr "Zapisywanie szkicu…"
+
+msgid "Saving draft…"
+msgstr "Zapisywanie szkicu…"
 
 msgid ""
 "no OpenPGP key of your own for {addr}; generate one under Settings, OpenPGP"

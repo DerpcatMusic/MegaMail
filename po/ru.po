@@ -190,6 +190,10 @@ msgstr "Ни одного сообщения с ID {id} не найдено"
 msgid "No Drafts folder available for this account"
 msgstr "Для этой учётной записи недоступна папка «Черновики»"
 
+#, fuzzy
+msgid "No Templates folder available for this account"
+msgstr "Для этой учётной записи недоступна папка «Черновики»"
+
 msgid "Could not save account: {e}"
 msgstr "Не удалось сохранить учетную запись: {e}"
 
@@ -329,6 +333,13 @@ msgstr "Сортировать"
 msgid "Message Source"
 msgstr "Исходный текст сообщения"
 
+msgid "Use Template"
+msgstr ""
+
+#, fuzzy
+msgid "Edit Template"
+msgstr "Редактировать тег"
+
 msgid "Edit as New Message"
 msgstr "Изменить как новое сообщение"
 
@@ -418,6 +429,18 @@ msgstr "Всё равно прикрепить"
 
 msgid "Upload to Cloud Storage"
 msgstr "Загрузить в облачное хранилище"
+
+#, fuzzy
+msgid "New Message from Template"
+msgstr "Написать новое письмо"
+
+#, fuzzy
+msgid "The new message starts as a copy of the template you pick."
+msgstr "Файлы будут добавлены в ответ на выбранное письмо."
+
+msgid ""
+"No templates yet. Save one from the composer's ⋯ menu with Save as Template."
+msgstr ""
 
 msgid "Continue a Draft"
 msgstr "Продолжить черновик"
@@ -856,6 +879,10 @@ msgstr "Составление писем:"
 
 msgid "Compose"
 msgstr "Написать"
+
+#, fuzzy
+msgid "New message from a template"
+msgstr "Сначала новые сообщения"
 
 msgid "Send the message you are writing"
 msgstr "Отправить создаваемое сообщение"
@@ -1765,6 +1792,9 @@ msgstr ""
 
 msgid "Drafts"
 msgstr "Черновики"
+
+msgid "Templates"
+msgstr ""
 
 msgid "Trash"
 msgstr "Корзина"
@@ -2786,11 +2816,32 @@ msgstr "Свернуть в область чтения"
 msgid "Open in window"
 msgstr "Открыть в отдельном окне"
 
+msgid "Template"
+msgstr ""
+
+#, fuzzy
+msgid "Save Template"
+msgstr "Сохранить изображение"
+
 msgid "Save Draft"
 msgstr "Сохранить черновик"
 
+#, fuzzy
+msgid "Save to Templates"
+msgstr "Сохранить в «Черновики»"
+
 msgid "Save to Drafts"
 msgstr "Сохранить в «Черновики»"
+
+msgid "More ways to save"
+msgstr ""
+
+msgid "Keep a copy in Templates to start new messages from"
+msgstr ""
+
+#, fuzzy
+msgid "Save as Template"
+msgstr "Отправлять как обычный текст"
 
 msgid "Delete Draft"
 msgstr "Удалить черновик"
@@ -2973,6 +3024,17 @@ msgstr "{name} (ссылка)"
 
 msgid "Uploading…"
 msgstr "Загрузка…"
+
+#, fuzzy
+msgid "Save the template?"
+msgstr "Сохранить метку?"
+
+#, fuzzy
+msgid ""
+"Its changes have not been saved. Save them to the template, or discard them."
+msgstr ""
+"Сообщение не было отправлено. Сохраните его в «Черновики», чтобы завершить "
+"позже, или удалите его."
 
 msgid "Save the message?"
 msgstr "Сохранить сообщение?"
@@ -3525,6 +3587,17 @@ msgid "A pass proves the address wasn't forged — not that the message is safe.
 msgstr ""
 "Пройденная проверка доказывает лишь, что адрес не подделан, — но не "
 "безопасность письма."
+
+#, fuzzy
+msgid "This message is a template."
+msgstr "Это сообщение написано на языке «{language}»."
+
+msgid "Change the template itself"
+msgstr ""
+
+#, fuzzy
+msgid "Start a new message from a copy of the template"
+msgstr "Написать письмо с изображением в тексте"
 
 msgid "Repeats daily"
 msgstr "Повторяется ежедневно"
@@ -5786,6 +5859,9 @@ msgstr "Добавить первую учётную запись"
 msgid "No accounts yet"
 msgstr "Учётные записи пока не добавлены"
 
+msgid "New Message from Template…"
+msgstr ""
+
 msgid "Outbox"
 msgstr "Исходящие"
 
@@ -6169,8 +6245,9 @@ msgstr "Не удалось удалить папку: неизвестная п
 msgid "Could not delete folder: {e}"
 msgstr "Не удалось удалить папку: {e}"
 
-msgid "Saving draft…"
-msgstr "Сохранение черновика…"
+#, fuzzy
+msgid "unknown folder"
+msgstr "Показывать каждую папку"
 
 msgid "Could not reach the server"
 msgstr "Не удалось связаться с сервером"
@@ -6202,10 +6279,6 @@ msgstr "Соединение IMAP перестало отвечать"
 
 msgid "Could not reach the JMAP server: {e}"
 msgstr "Не удалось связаться с сервером JMAP: {e}"
-
-#, fuzzy
-msgid "unknown folder"
-msgstr "Показывать каждую папку"
 
 msgid "That folder is not on the server"
 msgstr "Эта папка отсутствует на сервере"
@@ -6303,8 +6376,19 @@ msgstr "Письмо «{subject}» будет отправлено {when}"
 msgid "Could not schedule the message."
 msgstr "Не удалось удалить сообщение: {e}"
 
+#, fuzzy
+msgid "Could not save template: {e}"
+msgstr "Не удалось сохранить черновик: {e}"
+
 msgid "Could not save draft: {e}"
 msgstr "Не удалось сохранить черновик: {e}"
+
+#, fuzzy
+msgid "Saving template…"
+msgstr "Сохранение черновика…"
+
+msgid "Saving draft…"
+msgstr "Сохранение черновика…"
 
 msgid ""
 "no OpenPGP key of your own for {addr}; generate one under Settings, OpenPGP"
@@ -6629,9 +6713,6 @@ msgstr "Hyprlab"
 
 #~ msgid "Send with formatting"
 #~ msgstr "Отправлять с форматированием"
-
-#~ msgid "Send as plain text"
-#~ msgstr "Отправлять как обычный текст"
 
 #~ msgid "Compose in plain text"
 #~ msgstr "Создавать в формате обычного текста"

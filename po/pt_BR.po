@@ -193,6 +193,10 @@ msgstr "Não foi encontrada nenhuma mensagem com o ID {id}"
 msgid "No Drafts folder available for this account"
 msgstr "Não existe uma pasta Rascunhos disponível para esta conta"
 
+#, fuzzy
+msgid "No Templates folder available for this account"
+msgstr "Não existe uma pasta Rascunhos disponível para esta conta"
+
 msgid "Could not save account: {e}"
 msgstr "Não foi possível salvar a conta: {e}"
 
@@ -329,6 +333,13 @@ msgstr "Ordenar"
 msgid "Message Source"
 msgstr "Código fonte da mensagem"
 
+msgid "Use Template"
+msgstr ""
+
+#, fuzzy
+msgid "Edit Template"
+msgstr "Editar etiqueta"
+
 msgid "Edit as New Message"
 msgstr "Editar como nova mensagem"
 
@@ -413,6 +424,18 @@ msgstr "Anexar mesmo assim"
 
 msgid "Upload to Cloud Storage"
 msgstr "Enviar para o armazenamento na nuvem"
+
+#, fuzzy
+msgid "New Message from Template"
+msgstr "Criar uma nova mensagem"
+
+#, fuzzy
+msgid "The new message starts as a copy of the template you pick."
+msgstr "Os arquivos serão adicionados a uma resposta à mensagem escolhida."
+
+msgid ""
+"No templates yet. Save one from the composer's ⋯ menu with Save as Template."
+msgstr ""
 
 msgid "Continue a Draft"
 msgstr "Continuar um rascunho"
@@ -842,6 +865,10 @@ msgstr ""
 
 msgid "Compose"
 msgstr "Compor"
+
+#, fuzzy
+msgid "New message from a template"
+msgstr "Mensagem mais recente primeiro"
 
 msgid "Send the message you are writing"
 msgstr "Enviar a mensagem que você está escrevendo"
@@ -1752,6 +1779,9 @@ msgstr ""
 
 msgid "Drafts"
 msgstr "Rascunhos"
+
+msgid "Templates"
+msgstr ""
 
 msgid "Trash"
 msgstr "Lixeira"
@@ -2770,11 +2800,32 @@ msgstr "Recolher no leitor"
 msgid "Open in window"
 msgstr "Abrir em uma janela"
 
+msgid "Template"
+msgstr ""
+
+#, fuzzy
+msgid "Save Template"
+msgstr "Salvar imagem"
+
 msgid "Save Draft"
 msgstr "Salvar rascunho"
 
+#, fuzzy
+msgid "Save to Templates"
+msgstr "Salvar em Rascunhos"
+
 msgid "Save to Drafts"
 msgstr "Salvar em Rascunhos"
+
+msgid "More ways to save"
+msgstr ""
+
+msgid "Keep a copy in Templates to start new messages from"
+msgstr ""
+
+#, fuzzy
+msgid "Save as Template"
+msgstr "Colar como texto sem formatação"
 
 msgid "Delete Draft"
 msgstr "Excluir rascunho"
@@ -2956,6 +3007,17 @@ msgstr "{name} (link)"
 
 msgid "Uploading…"
 msgstr "Enviando…"
+
+#, fuzzy
+msgid "Save the template?"
+msgstr "Salvar a etiqueta?"
+
+#, fuzzy
+msgid ""
+"Its changes have not been saved. Save them to the template, or discard them."
+msgstr ""
+"A mensagem não foi enviada. Salve-a em Rascunhos para terminá-la mais tarde "
+"ou descarte-a."
 
 msgid "Save the message?"
 msgstr "Salvar a mensagem?"
@@ -3501,6 +3563,17 @@ msgid "A pass proves the address wasn't forged — not that the message is safe.
 msgstr ""
 "Um resultado positivo prova que o endereço não foi falsificado — não que a "
 "mensagem seja segura."
+
+#, fuzzy
+msgid "This message is a template."
+msgstr "Esta mensagem está em {language}."
+
+msgid "Change the template itself"
+msgstr ""
+
+#, fuzzy
+msgid "Start a new message from a copy of the template"
+msgstr "Iniciar uma mensagem com a imagem no texto"
 
 msgid "Repeats daily"
 msgstr "Repete diariamente"
@@ -5777,6 +5850,9 @@ msgstr "Adicionar a primeira conta"
 msgid "No accounts yet"
 msgstr "Ainda não existem contas"
 
+msgid "New Message from Template…"
+msgstr ""
+
 msgid "Outbox"
 msgstr "Caixa de saída"
 
@@ -6163,8 +6239,8 @@ msgstr "Não foi possível excluir a pasta: pasta desconhecida"
 msgid "Could not delete folder: {e}"
 msgstr "Não foi possível excluir a pasta: {e}"
 
-msgid "Saving draft…"
-msgstr "Salvando o rascunho…"
+msgid "unknown folder"
+msgstr "pasta desconhecida"
 
 msgid "Could not reach the server"
 msgstr "Não foi possível acessar o servidor"
@@ -6195,9 +6271,6 @@ msgstr "A conexão IMAP parou de progredir"
 
 msgid "Could not reach the JMAP server: {e}"
 msgstr "Não foi possível acessar o servidor JMAP: {e}"
-
-msgid "unknown folder"
-msgstr "pasta desconhecida"
 
 msgid "That folder is not on the server"
 msgstr "Essa pasta não está no servidor"
@@ -6294,8 +6367,19 @@ msgstr "«{subject}» será enviada {when}"
 msgid "Could not schedule the message."
 msgstr "Não foi possível agendar a mensagem."
 
+#, fuzzy
+msgid "Could not save template: {e}"
+msgstr "Não foi possível salvar o rascunho: {e}"
+
 msgid "Could not save draft: {e}"
 msgstr "Não foi possível salvar o rascunho: {e}"
+
+#, fuzzy
+msgid "Saving template…"
+msgstr "Salvando o rascunho…"
+
+msgid "Saving draft…"
+msgstr "Salvando o rascunho…"
 
 msgid ""
 "no OpenPGP key of your own for {addr}; generate one under Settings, OpenPGP"

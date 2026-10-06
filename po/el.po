@@ -193,6 +193,10 @@ msgstr "Δεν βρέθηκε μήνυμα με αναγνωριστικό {id}"
 msgid "No Drafts folder available for this account"
 msgstr "Δεν υπάρχει φάκελος Προχείρων για αυτόν τον λογαριασμό"
 
+#, fuzzy
+msgid "No Templates folder available for this account"
+msgstr "Δεν υπάρχει φάκελος Προχείρων για αυτόν τον λογαριασμό"
+
 msgid "Could not save account: {e}"
 msgstr "Αδυναμία αποθήκευσης λογαριασμού: {e}"
 
@@ -334,6 +338,13 @@ msgstr "Ταξινόμηση"
 msgid "Message Source"
 msgstr "Πηγαίος κώδικας μηνύματος"
 
+msgid "Use Template"
+msgstr ""
+
+#, fuzzy
+msgid "Edit Template"
+msgstr "Επεξεργασία ετικέτας"
+
 msgid "Edit as New Message"
 msgstr "Επεξεργασία ως νέο μήνυμα"
 
@@ -423,6 +434,18 @@ msgstr "Επισύναψη ούτως ή άλλως"
 
 msgid "Upload to Cloud Storage"
 msgstr "Μεταφόρτωση σε αποθήκευση cloud"
+
+#, fuzzy
+msgid "New Message from Template"
+msgstr "Νέο μήνυμα αντί αυτού"
+
+#, fuzzy
+msgid "The new message starts as a copy of the template you pick."
+msgstr "Τα αρχεία θα προστεθούν σε απάντηση προς το μήνυμα που θα επιλέξετε."
+
+msgid ""
+"No templates yet. Save one from the composer's ⋯ menu with Save as Template."
+msgstr ""
 
 msgid "Continue a Draft"
 msgstr "Συνέχιση προχείρου"
@@ -849,6 +872,10 @@ msgstr "Σύνταξη:"
 
 msgid "Compose"
 msgstr "Σύνταξη"
+
+#, fuzzy
+msgid "New message from a template"
+msgstr "Νεότερο μήνυμα πρώτο"
 
 msgid "Send the message you are writing"
 msgstr "Αποστολή του μηνύματος που συντάσσετε"
@@ -1776,6 +1803,9 @@ msgstr ""
 
 msgid "Drafts"
 msgstr "Πρόχειρα"
+
+msgid "Templates"
+msgstr ""
 
 msgid "Trash"
 msgstr "Κάδος"
@@ -2812,11 +2842,32 @@ msgstr "Σύμπτυξη στην προβολή ανάγνωσης"
 msgid "Open in window"
 msgstr "Άνοιγμα σε παράθυρο"
 
+msgid "Template"
+msgstr ""
+
+#, fuzzy
+msgid "Save Template"
+msgstr "Αποθήκευση εικόνας"
+
 msgid "Save Draft"
 msgstr "Αποθήκευση προχείρου"
 
+#, fuzzy
+msgid "Save to Templates"
+msgstr "Αποθήκευση στα Πρόχειρα"
+
 msgid "Save to Drafts"
 msgstr "Αποθήκευση στα Πρόχειρα"
+
+msgid "More ways to save"
+msgstr ""
+
+msgid "Keep a copy in Templates to start new messages from"
+msgstr ""
+
+#, fuzzy
+msgid "Save as Template"
+msgstr "Επικόλληση ως απλό κείμενο"
 
 msgid "Delete Draft"
 msgstr "Διαγραφή προχείρου"
@@ -3005,6 +3056,17 @@ msgstr "{name} (σύνδεσμος)"
 
 msgid "Uploading…"
 msgstr "Μεταφόρτωση…"
+
+#, fuzzy
+msgid "Save the template?"
+msgstr "Αποθήκευση της ετικέτας;"
+
+#, fuzzy
+msgid ""
+"Its changes have not been saved. Save them to the template, or discard them."
+msgstr ""
+"Δεν έχει σταλεί. Αποθηκεύστε το στα Πρόχειρα για να το ολοκληρώσετε αργότερα "
+"ή απορρίψτε το."
 
 msgid "Save the message?"
 msgstr "Να αποθηκευτεί το μήνυμα;"
@@ -3551,6 +3613,17 @@ msgid "A pass proves the address wasn't forged — not that the message is safe.
 msgstr ""
 "Μια επιτυχής επαλήθευση αποδεικνύει ότι η διεύθυνση δεν πλαστογραφήθηκε — "
 "όχι ότι το μήνυμα είναι ασφαλές."
+
+#, fuzzy
+msgid "This message is a template."
+msgstr "Αυτό το μήνυμα προέρχεται από λίστα αλληλογραφίας."
+
+msgid "Change the template itself"
+msgstr ""
+
+#, fuzzy
+msgid "Start a new message from a copy of the template"
+msgstr "Έναρξη μηνύματος με την εικόνα στο κείμενο"
 
 msgid "Repeats daily"
 msgstr "Επαναλαμβάνεται καθημερινά"
@@ -5832,6 +5905,9 @@ msgstr "Προσθήκη πρώτου λογαριασμού"
 msgid "No accounts yet"
 msgstr "Δεν υπάρχουν ακόμη λογαριασμοί"
 
+msgid "New Message from Template…"
+msgstr ""
+
 msgid "Outbox"
 msgstr "Εξερχόμενα"
 
@@ -6227,8 +6303,9 @@ msgstr "Δεν ήταν δυνατή η διαγραφή φακέλου: άγν�
 msgid "Could not delete folder: {e}"
 msgstr "Δεν ήταν δυνατή η διαγραφή φακέλου: {e}"
 
-msgid "Saving draft…"
-msgstr "Αποθήκευση προχείρου…"
+#, fuzzy
+msgid "unknown folder"
+msgstr "Εμφάνιση κάθε φακέλου"
 
 msgid "Could not reach the server"
 msgstr "Δεν ήταν δυνατή η επικοινωνία με τον διακομιστή"
@@ -6261,10 +6338,6 @@ msgstr ""
 
 msgid "Could not reach the JMAP server: {e}"
 msgstr "Δεν ήταν δυνατή η επικοινωνία με τον διακομιστή JMAP: {e}"
-
-#, fuzzy
-msgid "unknown folder"
-msgstr "Εμφάνιση κάθε φακέλου"
 
 msgid "That folder is not on the server"
 msgstr "Αυτός ο φάκελος δεν υπάρχει στον διακομιστή"
@@ -6365,8 +6438,19 @@ msgstr "Το «{subject}» θα σταλεί {when}"
 msgid "Could not schedule the message."
 msgstr "Δεν ήταν δυνατή η διαγραφή του μηνύματος: {e}"
 
+#, fuzzy
+msgid "Could not save template: {e}"
+msgstr "Δεν ήταν δυνατή η αποθήκευση του προχείρου: {e}"
+
 msgid "Could not save draft: {e}"
 msgstr "Δεν ήταν δυνατή η αποθήκευση του προχείρου: {e}"
+
+#, fuzzy
+msgid "Saving template…"
+msgstr "Αποθήκευση προχείρου…"
+
+msgid "Saving draft…"
+msgstr "Αποθήκευση προχείρου…"
 
 msgid ""
 "no OpenPGP key of your own for {addr}; generate one under Settings, OpenPGP"
