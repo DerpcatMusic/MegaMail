@@ -63,6 +63,11 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="1.43.0-beta.5" date="2026-10-06" type="development">
+      <description>
+        <p>Fifth preview of 1.43.0: templates with a Templates special folder, page numbers and the print date on printed mail, the reader's toolbar and attachment drawer in a message's own window, and fixes for blank printed pages and Reader View in a message window.</p>
+      </description>
+    </release>
     <release version="1.43.0-beta.4" date="2026-10-05" type="development">
       <description>
         <p>Fourth preview of 1.43.0: more formatting tools in the composer behind a chevron, Fastmail and any JMAP server, a JMAP account's server identities in its settings, a complete keyboard shortcuts list, and fixes for a freeze after start and replies opening on the sent original.</p>

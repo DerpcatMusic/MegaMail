@@ -2,6 +2,27 @@
 
 Hylki (formerly Vireo) is a clean, fast, GNOME-native email client built with Rust and libadwaita for Wayland desktops. Privacy-first: no telemetry, remote content blocked by default, and credentials kept in the system keyring.
 
+## What's new in 1.43.0-beta.5
+
+The fifth beta previewing 1.43.0.
+
+- **Templates** (#360, requested by amadeusp): Save as Template, in the
+  arrow beside Save Draft, keeps a message to start new ones from. A
+  template in the reader offers Use Template and Edit Template, and New
+  Message from Template… (the arrow beside New Message, or Ctrl+Shift+N)
+  picks one from every account. A Templates folder, Thunderbird's
+  included, is found by name or chosen under Special Folders.
+- **Page numbers and the print date on printed mail** (#359, requested by
+  rsx-xp), with an optional wider left margin for hole punching, set in
+  Settings > Reading > Printing. The preview shows each page exactly as it
+  prints.
+- **A message's own window has the reader's toolbar and attachment
+  drawer**, and can print and preview from its menu.
+- **A message card's ⋯ opens the message's menu** on new installs.
+- **Fixed:** a message could print as thousands of blank pages, and Reader
+  View switched on in a message's own window also switched it on in the
+  main window.
+
 ## What's new in 1.43.0-beta.4
 
 The fourth beta previewing 1.43.0.
