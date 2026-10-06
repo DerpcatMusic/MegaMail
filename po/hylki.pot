@@ -58,6 +58,8 @@ msgstr ""
 msgid "Remove Star"
 msgstr ""
 
+#. One glyph in both states, as in the main window; the
+#. starred state carries color only.
 msgid "Star"
 msgstr ""
 
@@ -85,21 +87,6 @@ msgstr ""
 msgid "Downloading attachments…"
 msgstr ""
 
-msgid "Close"
-msgstr ""
-
-msgid "Previous"
-msgstr ""
-
-msgid "Next"
-msgstr ""
-
-msgid "Open"
-msgstr ""
-
-msgid "Download…"
-msgstr ""
-
 msgid "Settings"
 msgstr ""
 
@@ -118,6 +105,7 @@ msgstr ""
 msgid "Quit"
 msgstr ""
 
+#. Rightmost, beside the window controls, as in the main window.
 msgid "Actions"
 msgstr ""
 
@@ -176,9 +164,6 @@ msgid "The list's unsubscribe page is open in your browser."
 msgstr ""
 
 msgid "The language applies the next time Hylki starts."
-msgstr ""
-
-msgid "Save Attachment"
 msgstr ""
 
 msgid ""
@@ -303,9 +288,6 @@ msgid ""
 msgstr ""
 
 msgid "Restart Now"
-msgstr ""
-
-msgid "{name} · {current} of {total}"
 msgstr ""
 
 msgid "View Source"
@@ -669,6 +651,9 @@ msgstr[1] ""
 msgid "Filters Applied"
 msgstr ""
 
+msgid "Close"
+msgstr ""
+
 msgid "This message carries no calendar file to open."
 msgstr ""
 
@@ -861,6 +846,9 @@ msgid "This list"
 msgstr ""
 
 msgid "Unstar"
+msgstr ""
+
+msgid "Save Attachment"
 msgstr ""
 
 msgid "Save All Attachments"
@@ -2042,6 +2030,12 @@ msgstr ""
 msgid "Could not import the key"
 msgstr ""
 
+msgid "Open"
+msgstr ""
+
+msgid "Download…"
+msgstr ""
+
 msgid "Show in Message"
 msgstr ""
 
@@ -2141,6 +2135,12 @@ msgid "Type (A–Z)"
 msgstr ""
 
 msgid "Type (Z–A)"
+msgstr ""
+
+msgid "Previous"
+msgstr ""
+
+msgid "Next"
 msgstr ""
 
 msgid "Open in the default app"
@@ -2981,6 +2981,9 @@ msgid ""
 "directly"
 msgstr ""
 
+msgid "{name} · {current} of {total}"
+msgstr ""
+
 msgid "me"
 msgstr ""
 
@@ -3421,9 +3424,6 @@ msgid "Copy Image"
 msgstr ""
 
 msgid "Copy Image Address"
-msgstr ""
-
-msgid "Load attachments from server"
 msgstr ""
 
 msgid "Clear all"

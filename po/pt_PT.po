@@ -65,6 +65,8 @@ msgstr "Reencaminhar"
 msgid "Remove Star"
 msgstr "Remover estrela"
 
+#. One glyph in both states, as in the main window; the
+#. starred state carries color only.
 msgid "Star"
 msgstr "Adicionar estrela"
 
@@ -92,21 +94,6 @@ msgstr "Marcar como não lida"
 msgid "Downloading attachments…"
 msgstr "A transferir anexos…"
 
-msgid "Close"
-msgstr "Fechar"
-
-msgid "Previous"
-msgstr "Anterior"
-
-msgid "Next"
-msgstr "Seguinte"
-
-msgid "Open"
-msgstr "Abrir"
-
-msgid "Download…"
-msgstr "Transferir…"
-
 msgid "Settings"
 msgstr "Definições"
 
@@ -125,6 +112,7 @@ msgstr "Imprimir mensagem…"
 msgid "Quit"
 msgstr "Sair"
 
+#. Rightmost, beside the window controls, as in the main window.
 msgid "Actions"
 msgstr "Ações"
 
@@ -184,9 +172,6 @@ msgstr "A página para cancelar a subscrição da lista está aberta no navegado
 
 msgid "The language applies the next time Hylki starts."
 msgstr "O idioma será aplicado da próxima vez que o Hylki for iniciado."
-
-msgid "Save Attachment"
-msgstr "Guardar anexo"
 
 msgid ""
 "Couldn't restart automatically — quit and reopen Hylki to finish switching "
@@ -322,9 +307,6 @@ msgstr ""
 
 msgid "Restart Now"
 msgstr "Reiniciar agora"
-
-msgid "{name} · {current} of {total}"
-msgstr "{name} · {current} de {total}"
 
 msgid "View Source"
 msgstr "Ver fonte"
@@ -722,6 +704,9 @@ msgstr[1] ""
 msgid "Filters Applied"
 msgstr "Filtros aplicados"
 
+msgid "Close"
+msgstr "Fechar"
+
 msgid "This message carries no calendar file to open."
 msgstr "Esta mensagem não contém nenhum ficheiro de calendário para abrir."
 
@@ -925,6 +910,9 @@ msgstr "Esta lista"
 
 msgid "Unstar"
 msgstr "Remover estrela"
+
+msgid "Save Attachment"
+msgstr "Guardar anexo"
 
 msgid "Save All Attachments"
 msgstr "Guardar todos os anexos"
@@ -2238,6 +2226,12 @@ msgstr "Essa chave já tinha sido importada."
 msgid "Could not import the key"
 msgstr "Não foi possível importar a chave"
 
+msgid "Open"
+msgstr "Abrir"
+
+msgid "Download…"
+msgstr "Transferir…"
+
 msgid "Show in Message"
 msgstr "Mostrar na mensagem"
 
@@ -2339,6 +2333,12 @@ msgstr "Tipo (A–Z)"
 
 msgid "Type (Z–A)"
 msgstr "Tipo (Z–A)"
+
+msgid "Previous"
+msgstr "Anterior"
+
+msgid "Next"
+msgstr "Seguinte"
 
 msgid "Open in the default app"
 msgstr "Abrir na aplicação predefinida"
@@ -3302,6 +3302,9 @@ msgstr ""
 "• Atualizar o “xdg-desktop-portal” e terminar e voltar a iniciar a sessão "
 "poderá corrigir a abertura direta das ligações"
 
+msgid "{name} · {current} of {total}"
+msgstr "{name} · {current} de {total}"
+
 msgid "me"
 msgstr "eu"
 
@@ -3758,9 +3761,6 @@ msgstr "Copiar imagem"
 
 msgid "Copy Image Address"
 msgstr "Copiar endereço da imagem"
-
-msgid "Load attachments from server"
-msgstr "Carregar anexos do servidor"
 
 msgid "Clear all"
 msgstr "Limpar tudo"
@@ -6483,6 +6483,9 @@ msgstr "A caixa de entrada unificada no modo claro"
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid "Load attachments from server"
+#~ msgstr "Carregar anexos do servidor"
 
 #~ msgid ""
 #~ "Single-key shortcuts are switched off. Turn them on in Settings → System "
