@@ -2813,9 +2813,6 @@ msgstr "Olvasói nézetre váltás"
 msgid "Open in window"
 msgstr "Megnyitás ablakban"
 
-msgid "Template"
-msgstr ""
-
 #, fuzzy
 msgid "Save Template"
 msgstr "Kép mentése"

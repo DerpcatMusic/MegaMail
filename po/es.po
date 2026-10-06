@@ -2809,9 +2809,6 @@ msgstr "Contraer en el lector"
 msgid "Open in window"
 msgstr "Abrir en una ventana"
 
-msgid "Template"
-msgstr ""
-
 #, fuzzy
 msgid "Save Template"
 msgstr "Guardar imagen"

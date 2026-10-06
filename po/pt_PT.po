@@ -2820,9 +2820,6 @@ msgstr "Recolher no leitor"
 msgid "Open in window"
 msgstr "Abrir numa janela"
 
-msgid "Template"
-msgstr ""
-
 #, fuzzy
 msgid "Save Template"
 msgstr "Guardar imagem"

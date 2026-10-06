@@ -2530,9 +2530,6 @@ msgstr ""
 msgid "Open in window"
 msgstr ""
 
-msgid "Template"
-msgstr ""
-
 msgid "Save Template"
 msgstr ""
 

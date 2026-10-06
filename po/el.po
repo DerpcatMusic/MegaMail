@@ -2842,9 +2842,6 @@ msgstr "Σύμπτυξη στην προβολή ανάγνωσης"
 msgid "Open in window"
 msgstr "Άνοιγμα σε παράθυρο"
 
-msgid "Template"
-msgstr ""
-
 #, fuzzy
 msgid "Save Template"
 msgstr "Αποθήκευση εικόνας"

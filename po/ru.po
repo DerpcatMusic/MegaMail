@@ -2816,9 +2816,6 @@ msgstr "Свернуть в область чтения"
 msgid "Open in window"
 msgstr "Открыть в отдельном окне"
 
-msgid "Template"
-msgstr ""
-
 #, fuzzy
 msgid "Save Template"
 msgstr "Сохранить изображение"

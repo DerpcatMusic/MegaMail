@@ -2835,9 +2835,6 @@ msgstr "Im Lesebereich einklappen"
 msgid "Open in window"
 msgstr "In Fenster öffnen"
 
-msgid "Template"
-msgstr ""
-
 #, fuzzy
 msgid "Save Template"
 msgstr "Bild speichern"

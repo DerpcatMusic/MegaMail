@@ -2831,9 +2831,6 @@ msgstr "Réduire dans le lecteur"
 msgid "Open in window"
 msgstr "Ouvrir dans une fenêtre"
 
-msgid "Template"
-msgstr ""
-
 #, fuzzy
 msgid "Save Template"
 msgstr "Enregistrer l'image"

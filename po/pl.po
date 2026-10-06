@@ -2846,9 +2846,6 @@ msgstr "Zwiń do panelu czytania"
 msgid "Open in window"
 msgstr "Otwórz w osobnym oknie"
 
-msgid "Template"
-msgstr ""
-
 #, fuzzy
 msgid "Save Template"
 msgstr "Zapisz obraz"
