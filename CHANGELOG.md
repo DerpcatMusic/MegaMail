@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Fixed: a message could be lost to an address that cannot be sent to**
+  (#368, reported by martin-ribot). **Send** now checks every address in
+  To, Cc, Bcc and Reply-To first, and an address that is not one keeps the
+  composer open with its field marked and the address named. Invisible
+  characters pasted along with an address (zero-width spaces, direction
+  marks, no-break spaces) are taken out of it, and the field shows the
+  result. A recipient the server refuses brings the message back in a
+  composer to be fixed, where before it went to the Outbox and failed again
+  on every retry.
 - **Fixed: opening a message could wait behind background syncing** (#370,
   by Salem Sayed Abdel Gawad). A body that is not cached yet no longer waits
   for folder syncs, body prefetch, search indexing or unread counts that

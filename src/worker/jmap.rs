@@ -29,6 +29,10 @@ const CAP_MAIL: &str = "urn:ietf:params:jmap:mail";
 const CAP_SUBMISSION: &str = "urn:ietf:params:jmap:submission";
 /// RFC 9425: how much room the account has (#298).
 const CAP_QUOTA: &str = "urn:ietf:params:jmap:quota";
+/// How a refused EmailSubmission starts its error. Every `notCreated` type
+/// there (invalidRecipients, forbiddenToSend and the rest) is final, so the
+/// message goes back to the composer rather than to the Outbox (#368).
+const SUBMISSION_REFUSED: &str = "the server refused to send it";
 
 /// The summary properties one listing asks `Email/get` for.
 const EMAIL_PROPS: &[&str] = &[
@@ -1254,7 +1258,7 @@ fn jmap_submit(
             } else {
                 let why = &r["notCreated"]["s"];
                 Err(format!(
-                    "the server refused to send it: {}",
+                    "{SUBMISSION_REFUSED}: {}",
                     why["description"].as_str().or(why["type"].as_str()).unwrap_or("unknown reason")
                 ))
             }
@@ -2306,7 +2310,7 @@ pub(super) async fn run_jmap(
                         emit(WorkerEvent::Sent);
                     }
                     Err(e) => {
-                        send_failed(cache.as_ref(), account_id, &account, &message, sent_path.as_deref(), &e, &emit);
+                        send_failed(cache.as_ref(), account_id, &account, &message, sent_path.as_deref(), &e, e.starts_with(SUBMISSION_REFUSED), &emit);
                     }
                 }
             }

@@ -2682,7 +2682,7 @@ async fn run_imap(
                     }
                     Err(e) => {
                         emit(WorkerEvent::Status(String::new()));
-                        send_failed(cache.as_ref(), account_id, &account, &message, sent_path.as_deref(), &e.to_string(), &emit);
+                        send_failed(cache.as_ref(), account_id, &account, &message, sent_path.as_deref(), &e.to_string(), smtp_refused(&e), &emit);
                     }
                 }
             }
@@ -4011,6 +4011,9 @@ fn drop_superseded_outbox(
 /// here is gone (issue #15). Being offline is the usual reason, which is
 /// exactly when saving to the server's Drafts folder would fail too. With no
 /// cache there is nowhere to keep it, and the error must not claim otherwise.
+/// `refused` is a server that read the message and said no, to a recipient
+/// most often (#368). Sending it again would only fail again, so the message
+/// goes back to the composer to be fixed, not to the Outbox to wait.
 fn send_failed(
     cache: Option<&Cache>,
     account_id: u32,
@@ -4018,9 +4021,10 @@ fn send_failed(
     msg: &OutgoingMessage,
     sent_path: Option<&str>,
     error: &str,
+    refused: bool,
     emit: &impl Fn(WorkerEvent),
 ) {
-    let queued = queue_outbox_message(cache, account_id, account, msg, sent_path, error, None);
+    let queued = !refused && queue_outbox_message(cache, account_id, account, msg, sent_path, error, None);
     // Queue first, drop the superseded row second: a crash in between leaves
     // the message queued twice, which is recoverable, rather than not at all.
     if let (true, Some(old), Some(c)) = (queued, msg.outbox_origin, cache) {
@@ -4521,13 +4525,65 @@ pub fn parse_recipients(s: &str) -> Vec<(String, String)> {
         }
         match (part.rfind('<'), part.rfind('>')) {
             (Some(lt), Some(gt)) if lt < gt => {
-                let email = part[lt + 1..gt].trim().to_string();
-                out.push((unquote_name(&part[..lt]), email));
+                out.push((unquote_name(&part[..lt]), clean_address(&part[lt + 1..gt])));
             }
-            _ => out.push((String::new(), part)),
+            _ => out.push((String::new(), clean_address(&part))),
         }
     }
     out
+}
+
+/// Characters that take no space on screen: zero-width spaces and joiners,
+/// direction marks and embeddings, the BOM and the soft hyphen.
+fn is_invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00ad}'
+            | '\u{061c}'
+            | '\u{180e}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{feff}'
+    )
+}
+
+/// An address as typed or pasted, without the invisible characters a copy
+/// from a web page or a chat brings along (#368). The server refuses an
+/// address with one inside, and nobody can see why. A display name keeps
+/// its characters: a zero-width non-joiner is part of how a Persian name is
+/// spelled.
+fn clean_address(raw: &str) -> String {
+    raw.chars()
+        .filter(|&c| !is_invisible(c))
+        .map(|c| if matches!(c, '\u{a0}' | '\u{2007}' | '\u{202f}') { ' ' } else { c })
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+/// The field with the invisible characters taken out of its addresses, when
+/// it had any: the composer shows the cleaned text before it sends.
+pub fn clean_recipient_field(field: &str) -> Option<String> {
+    if !field.chars().any(|c| is_invisible(c) || matches!(c, '\u{a0}' | '\u{2007}' | '\u{202f}')) {
+        return None;
+    }
+    let clean = parse_recipients(field)
+        .iter()
+        .map(|(name, addr)| format_recipient(name, addr))
+        .collect::<Vec<_>>()
+        .join(", ");
+    (clean != field.trim()).then_some(clean)
+}
+
+/// The first address in a recipient field that cannot be sent to, so the
+/// composer can say so while the message is still open.
+pub fn invalid_recipient(field: &str) -> Option<String> {
+    parse_recipients(field)
+        .into_iter()
+        .map(|(_, addr)| addr)
+        .find(|addr| addr.parse::<Address>().is_err())
 }
 
 /// A display name as written in a header, without its quotes and escapes.
@@ -4665,8 +4721,8 @@ fn build_message(
         ));
     }
     // Reply-To (#58): answers go where the sender asked, not to From.
-    for addr in msg.reply_to.split(',') {
-        if let Ok(mbox) = addr.trim().parse() {
+    for (name, addr) in parse_recipients(&msg.reply_to) {
+        if let Ok(mbox) = mailbox(&name, &addr) {
             builder = builder.reply_to(mbox);
         }
     }
@@ -5179,6 +5235,16 @@ async fn send_raw_smtp(
     }
     r?;
     Ok(())
+}
+
+/// A permanent (5xx) SMTP answer other than a failed sign-in. A wrong
+/// password is fixed in Settings and the queued message then goes; a refused
+/// recipient never will.
+fn smtp_refused(e: &SmtpError) -> bool {
+    e.downcast_ref::<lettre::transport::smtp::Error>()
+        .filter(|e| e.is_permanent())
+        .and_then(|e| e.status())
+        .is_some_and(|code| !(530..540).contains(&u16::from(code)))
 }
 
 async fn send_smtp(account: &AccountConfig, msg: &OutgoingMessage) -> Result<Vec<u8>, SmtpError> {
@@ -9187,7 +9253,7 @@ async fn run_pop3(
                     Err(e) => {
                         // POP3 has no Sent folder to copy to, but the message is held
                         // exactly as it is for IMAP accounts.
-                        send_failed(cache.as_ref(), account_id, &account, &message, None, &e.to_string(), &emit);
+                        send_failed(cache.as_ref(), account_id, &account, &message, None, &e.to_string(), smtp_refused(&e), &emit);
                     }
                 }
             }
@@ -10906,7 +10972,7 @@ NIL NIL NIL NIL NIL NIL NIL))\r\n";
         msg.to = "ann@example.com".into();
         msg.attachments = vec!["/nonexistent/hylki-test/moved.pdf".into()];
         let events = std::cell::RefCell::new(Vec::new());
-        send_failed(Some(&cache), 1, &account, &msg, None, "could not read the attachment", &|e| {
+        send_failed(Some(&cache), 1, &account, &msg, None, "could not read the attachment", false, &|e| {
             events.borrow_mut().push(e)
         });
         let events = events.into_inner();
@@ -10917,8 +10983,44 @@ NIL NIL NIL NIL NIL NIL NIL))\r\n";
         // A message that does build is queued and not handed back.
         msg.attachments.clear();
         let events = std::cell::RefCell::new(Vec::new());
-        send_failed(Some(&cache), 1, &account, &msg, None, "offline", &|e| events.borrow_mut().push(e));
+        send_failed(Some(&cache), 1, &account, &msg, None, "offline", false, &|e| events.borrow_mut().push(e));
         assert!(!events.into_inner().iter().any(|e| matches!(e, WorkerEvent::Unsent(_))));
+    }
+
+    /// #368: a recipient the server refuses comes back to the composer and
+    /// is not queued, where it would fail again on every retry.
+    #[test]
+    fn a_refused_send_comes_back_unqueued() {
+        let cache = Cache::in_memory().expect("cache");
+        let account = sample_account();
+        let mut msg = sample_outgoing();
+        msg.to = "ann@example.com".into();
+        let events = std::cell::RefCell::new(Vec::new());
+        send_failed(Some(&cache), 1, &account, &msg, None, "550 no such user", true, &|e| {
+            events.borrow_mut().push(e)
+        });
+        assert!(events.into_inner().iter().any(|e| matches!(e, WorkerEvent::Unsent(_))));
+        assert!(cache.outbox_items(1).is_empty());
+    }
+
+    /// #368: invisible characters pasted along with an address are dropped
+    /// from the address, and kept in a name.
+    #[test]
+    fn pasted_addresses_lose_invisible_characters() {
+        assert_eq!(
+            parse_recipients("\u{200b}ann\u{200b}@example.com\u{200e}, Bob <\u{feff}bob@example.com\u{a0}>"),
+            vec![(String::new(), "ann@example.com".to_string()), ("Bob".to_string(), "bob@example.com".to_string())],
+        );
+        let persian = "\u{0645}\u{06cc}\u{200c}\u{0631}\u{0648}\u{062f}";
+        assert_eq!(parse_recipients(&format!("{persian} <a@b.com>"))[0].0, persian);
+        assert_eq!(
+            clean_recipient_field("ann\u{200b}@example.com, Bob <bob@example.com>").as_deref(),
+            Some("ann@example.com, Bob <bob@example.com>")
+        );
+        assert_eq!(clean_recipient_field("ann@example.com"), None);
+        assert_eq!(invalid_recipient("ann@example.com, Bob <bob@example.com>"), None);
+        assert_eq!(invalid_recipient("ann@example.com, bob@"), Some("bob@".to_string()));
+        assert_eq!(invalid_recipient("ann example.com"), Some("ann example.com".to_string()));
     }
 
     /// A draft saved before any address is typed: the bytes build without a
