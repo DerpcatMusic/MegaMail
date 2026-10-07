@@ -1710,7 +1710,8 @@ msgstr "Fájl importálása…"
 msgid "Syncing"
 msgstr "Szinkronizálás"
 
-msgid "Instant new mail (IMAP push)"
+#, fuzzy
+msgid "Instant new mail (push)"
 msgstr "Az új levelek azonnali megjelenítése (IMAP push)"
 
 msgid "Turn off for servers that stall on push connections."
@@ -3002,6 +3003,13 @@ msgid "Cannot send with OpenPGP"
 msgstr "Nem lehet küldeni OpenPGP-vel"
 
 #, fuzzy
+msgid "Check the address"
+msgstr "Feladó címe"
+
+msgid "“{addr}” is not an email address."
+msgstr ""
+
+#, fuzzy
 msgid "An attachment is missing"
 msgstr "{n} melléklet"
 
@@ -4285,10 +4293,10 @@ msgstr ""
 msgid "Check for new mail"
 msgstr "Új levelek keresése"
 
-msgid "Uses IMAP IDLE to receive messages the moment they arrive."
+msgid ""
+"Receives messages the moment they arrive. Microsoft 365 accounts check at "
+"the interval above."
 msgstr ""
-"Az IMAP IDLE funkciót használja az üzenetek érkezésük pillanatában történő "
-"fogadására."
 
 msgid "Notifications"
 msgstr "Értesítések"
@@ -6432,6 +6440,11 @@ msgstr ""
 msgid "no OpenPGP key for {addr}"
 msgstr "nincs OpenPGP-kulcs ehhez: {addr}"
 
+msgid ""
+"This account has no IMAP server. Hylki can't use Exchange accounts from "
+"Online Accounts: remove it and add it as an IMAP or Microsoft 365 account."
+msgstr ""
+
 msgid "Could not delete message: {e}"
 msgstr "Az üzenet nem törölhető: {e}"
 
@@ -6588,6 +6601,11 @@ msgstr "Az egységes beérkező levelek mappa világos üzemmódban"
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid "Uses IMAP IDLE to receive messages the moment they arrive."
+#~ msgstr ""
+#~ "Az IMAP IDLE funkciót használja az üzenetek érkezésük pillanatában "
+#~ "történő fogadására."
 
 #~ msgid "Load attachments from server"
 #~ msgstr "Mellékletek betöltése a kiszolgálóról"

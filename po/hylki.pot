@@ -1569,7 +1569,7 @@ msgstr ""
 msgid "Syncing"
 msgstr ""
 
-msgid "Instant new mail (IMAP push)"
+msgid "Instant new mail (push)"
 msgstr ""
 
 msgid "Turn off for servers that stall on push connections."
@@ -2701,6 +2701,12 @@ msgid "Could not translate"
 msgstr ""
 
 msgid "Cannot send with OpenPGP"
+msgstr ""
+
+msgid "Check the address"
+msgstr ""
+
+msgid "“{addr}” is not an email address."
 msgstr ""
 
 msgid "An attachment is missing"
@@ -3872,7 +3878,9 @@ msgstr ""
 msgid "Check for new mail"
 msgstr ""
 
-msgid "Uses IMAP IDLE to receive messages the moment they arrive."
+msgid ""
+"Receives messages the moment they arrive. Microsoft 365 accounts check at "
+"the interval above."
 msgstr ""
 
 msgid "Notifications"
@@ -5684,6 +5692,11 @@ msgid ""
 msgstr ""
 
 msgid "no OpenPGP key for {addr}"
+msgstr ""
+
+msgid ""
+"This account has no IMAP server. Hylki can't use Exchange accounts from "
+"Online Accounts: remove it and add it as an IMAP or Microsoft 365 account."
 msgstr ""
 
 msgid "Could not delete message: {e}"

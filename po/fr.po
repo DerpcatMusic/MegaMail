@@ -1727,7 +1727,8 @@ msgstr "Importer le fichier…"
 msgid "Syncing"
 msgstr "Synchronisation"
 
-msgid "Instant new mail (IMAP push)"
+#, fuzzy
+msgid "Instant new mail (push)"
 msgstr "Nouveau courrier instantané (IMAP Push)"
 
 msgid "Turn off for servers that stall on push connections."
@@ -3011,6 +3012,13 @@ msgstr "Impossible de traduire"
 msgid "Cannot send with OpenPGP"
 msgstr "Impossible d'envoyer avec OpenPGP"
 
+#, fuzzy
+msgid "Check the address"
+msgstr "Vérifier les paramètres"
+
+msgid "“{addr}” is not an email address."
+msgstr ""
+
 msgid "An attachment is missing"
 msgstr "Une pièce jointe est manquante"
 
@@ -4284,8 +4292,10 @@ msgstr ""
 msgid "Check for new mail"
 msgstr "Vérifier s'il y a de nouveaux messages"
 
-msgid "Uses IMAP IDLE to receive messages the moment they arrive."
-msgstr "Utilise IMAP IDLE pour recevoir les messages dès qu'ils arrivent."
+msgid ""
+"Receives messages the moment they arrive. Microsoft 365 accounts check at "
+"the interval above."
+msgstr ""
 
 msgid "Notifications"
 msgstr "Notifications"
@@ -6423,6 +6433,11 @@ msgstr ""
 msgid "no OpenPGP key for {addr}"
 msgstr "aucune clé OpenPGP pour {addr}"
 
+msgid ""
+"This account has no IMAP server. Hylki can't use Exchange accounts from "
+"Online Accounts: remove it and add it as an IMAP or Microsoft 365 account."
+msgstr ""
+
 msgid "Could not delete message: {e}"
 msgstr "Impossible de supprimer le message : {e}"
 
@@ -6577,6 +6592,9 @@ msgstr "La boîte de réception unifiée en mode clair"
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid "Uses IMAP IDLE to receive messages the moment they arrive."
+#~ msgstr "Utilise IMAP IDLE pour recevoir les messages dès qu'ils arrivent."
 
 #~ msgid "Load attachments from server"
 #~ msgstr "Charger les pièces jointes depuis le serveur"

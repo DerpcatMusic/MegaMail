@@ -1737,7 +1737,8 @@ msgstr "Εισαγωγή αρχείου…"
 msgid "Syncing"
 msgstr "Συγχρονισμός"
 
-msgid "Instant new mail (IMAP push)"
+#, fuzzy
+msgid "Instant new mail (push)"
 msgstr "Άμεση λήψη νέων μηνυμάτων (ώθηση IMAP)"
 
 msgid "Turn off for servers that stall on push connections."
@@ -3030,6 +3031,13 @@ msgid "Cannot send with OpenPGP"
 msgstr "Δεν είναι δυνατή η αποστολή με OpenPGP"
 
 #, fuzzy
+msgid "Check the address"
+msgstr "DMARC (είναι γνήσια η διεύθυνση Από:)"
+
+msgid "“{addr}” is not an email address."
+msgstr ""
+
+#, fuzzy
 msgid "An attachment is missing"
 msgstr "{n} συνημμένο"
 
@@ -4305,8 +4313,10 @@ msgstr ""
 msgid "Check for new mail"
 msgstr "Έλεγχος για νέα μηνύματα"
 
-msgid "Uses IMAP IDLE to receive messages the moment they arrive."
-msgstr "Χρησιμοποιεί IMAP IDLE για τη λήψη μηνυμάτων τη στιγμή που φτάνουν."
+msgid ""
+"Receives messages the moment they arrive. Microsoft 365 accounts check at "
+"the interval above."
+msgstr ""
 
 msgid "Notifications"
 msgstr "Ειδοποιήσεις"
@@ -6458,6 +6468,11 @@ msgstr ""
 msgid "no OpenPGP key for {addr}"
 msgstr "δεν υπάρχει κλειδί OpenPGP για τη διεύθυνση {addr}"
 
+msgid ""
+"This account has no IMAP server. Hylki can't use Exchange accounts from "
+"Online Accounts: remove it and add it as an IMAP or Microsoft 365 account."
+msgstr ""
+
 msgid "Could not delete message: {e}"
 msgstr "Δεν ήταν δυνατή η διαγραφή του μηνύματος: {e}"
 
@@ -6614,6 +6629,9 @@ msgstr "Τα ενοποιημένα εισερχόμενα σε φωτεινή �
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid "Uses IMAP IDLE to receive messages the moment they arrive."
+#~ msgstr "Χρησιμοποιεί IMAP IDLE για τη λήψη μηνυμάτων τη στιγμή που φτάνουν."
 
 #~ msgid "Load attachments from server"
 #~ msgstr "Φόρτωση συνημμένων από τον διακομιστή"

@@ -1725,7 +1725,8 @@ msgstr "Импортировать файл…"
 msgid "Syncing"
 msgstr "Синхронизация"
 
-msgid "Instant new mail (IMAP push)"
+#, fuzzy
+msgid "Instant new mail (push)"
 msgstr "Мгновенное получение новых сообщений (IMAP Push)"
 
 msgid "Turn off for servers that stall on push connections."
@@ -2996,6 +2997,13 @@ msgstr "Не удалось перевести"
 
 msgid "Cannot send with OpenPGP"
 msgstr "Невозможно отправить с помощью OpenPGP"
+
+#, fuzzy
+msgid "Check the address"
+msgstr "Адрес отправителя"
+
+msgid "“{addr}” is not an email address."
+msgstr ""
 
 #, fuzzy
 msgid "An attachment is missing"
@@ -4273,8 +4281,10 @@ msgstr ""
 msgid "Check for new mail"
 msgstr "Проверка новой почты"
 
-msgid "Uses IMAP IDLE to receive messages the moment they arrive."
-msgstr "Использует IMAP IDLE для мгновенного получения входящих сообщений."
+msgid ""
+"Receives messages the moment they arrive. Microsoft 365 accounts check at "
+"the interval above."
+msgstr ""
 
 msgid "Notifications"
 msgstr "Уведомления"
@@ -6396,6 +6406,11 @@ msgstr ""
 msgid "no OpenPGP key for {addr}"
 msgstr "нет ключа OpenPGP для {addr}"
 
+msgid ""
+"This account has no IMAP server. Hylki can't use Exchange accounts from "
+"Online Accounts: remove it and add it as an IMAP or Microsoft 365 account."
+msgstr ""
+
 msgid "Could not delete message: {e}"
 msgstr "Не удалось удалить сообщение: {e}"
 
@@ -6548,6 +6563,9 @@ msgstr "Общие входящие в светлом режиме"
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid "Uses IMAP IDLE to receive messages the moment they arrive."
+#~ msgstr "Использует IMAP IDLE для мгновенного получения входящих сообщений."
 
 #~ msgid "Load attachments from server"
 #~ msgstr "Загрузить вложения с сервера"
