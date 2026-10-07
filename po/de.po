@@ -6495,6 +6495,11 @@ msgid "no OpenPGP key for {addr}"
 msgstr "Kein OpenPGP-Schlüssel für {addr}"
 
 msgid ""
+"Could not read the password for {email} from the keyring ({e}). Hylki tries "
+"again at the next connection."
+msgstr ""
+
+msgid ""
 "This account has no IMAP server. Hylki can't use Exchange accounts from "
 "Online Accounts: remove it and add it as an IMAP or Microsoft 365 account."
 msgstr ""
