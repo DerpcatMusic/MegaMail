@@ -47,7 +47,8 @@ The full list. The [README](../README.md) carries a shorter one.
   server has neither; custom colours, drag to reorder, and number-key
   shortcuts.
 - **Unified and filtered folders:** Inboxes, Starred, Sent, Drafts, Archive,
-  Junk and Trash across accounts, plus a folder per filter.
+  Junk and Trash across accounts, plus a folder per filter and any folders
+  you keep in Favorites.
 - **Empty Trash and Junk**, by hand or automatically after a number of days.
 - **Attachment gallery:** every attachment in an account or folder in one
   place, with PDF first-page thumbnails, scoped by account and folder, and a

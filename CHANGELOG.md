@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Added: Favorites** (#367, requested by eirinn1975). **Add to
+  Favorites** in a folder's right-click menu lists it in a Favorites row at
+  the top of the sidebar, under Inboxes, whichever account it belongs to.
+  Favorites keep the order they were added in, show unread counts and
+  open or close from their row; **Remove from Favorites** takes one out. The
+  row shows with a single account too. A folder renamed in Hylki stays a
+  favorite; one deleted leaves the list.
 - **Added: Junk and Trash in the unified section** (#369, requested by
   amadeusp). **Settings → Sidebar → Unified** has a switch for each, off
   until switched on, along with their unread counts and the icon rail's

@@ -84,6 +84,8 @@ struct KindWidgets {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum UnifiedRow {
     Kind(FolderKind),
+    /// The folders picked with Add to Favorites (#367), from any account.
+    Favorites,
     Filtered,
     Tags,
 }
@@ -92,6 +94,7 @@ enum UnifiedRow {
 fn row_title(row: UnifiedRow) -> String {
     match row {
         UnifiedRow::Kind(kind) => kind_label(kind),
+        UnifiedRow::Favorites => i18n("Favorites"),
         UnifiedRow::Filtered => i18n("Filters"),
         UnifiedRow::Tags => i18n("Tags"),
     }
@@ -101,6 +104,7 @@ fn row_title(row: UnifiedRow) -> String {
 fn row_icon(row: UnifiedRow) -> &'static str {
     match row {
         UnifiedRow::Kind(kind) => kind.icon(),
+        UnifiedRow::Favorites => "user-bookmarks-symbolic",
         UnifiedRow::Filtered => "filter-folder-symbolic",
         UnifiedRow::Tags => "tag-outline-symbolic",
     }
@@ -111,6 +115,9 @@ fn select_msg(row: UnifiedRow) -> SidebarInput {
     match row {
         UnifiedRow::Kind(FolderKind::Inbox) => SidebarInput::UnifiedRowSelected,
         UnifiedRow::Kind(kind) => SidebarInput::UnifiedKindRowSelected(kind),
+        // Folders of different accounts and kinds make no list together:
+        // the header only opens and folds them.
+        UnifiedRow::Favorites => SidebarInput::ToggleFavoritesExpand,
         UnifiedRow::Filtered => SidebarInput::UnifiedFilteredSelected,
         UnifiedRow::Tags => SidebarInput::UnifiedTagsSelected,
     }
@@ -121,6 +128,7 @@ fn toggle_msg(row: UnifiedRow) -> SidebarInput {
     match row {
         UnifiedRow::Kind(FolderKind::Inbox) => SidebarInput::ToggleUnifiedExpand,
         UnifiedRow::Kind(kind) => SidebarInput::ToggleKindExpand(kind),
+        UnifiedRow::Favorites => SidebarInput::ToggleFavoritesExpand,
         UnifiedRow::Filtered => SidebarInput::ToggleFilteredExpand(Slot::Unified),
         UnifiedRow::Tags => SidebarInput::ToggleTagsExpand(Slot::Unified),
     }
@@ -208,6 +216,7 @@ pub struct SidebarInit {
     pub archive_expanded: bool,
     pub junk_expanded: bool,
     pub trash_expanded: bool,
+    pub favorites_expanded: bool,
     /// Whether the "Attachments" row is shown.
     pub show_attachments: bool,
     /// Whether the "Contacts" row is shown.
@@ -252,6 +261,8 @@ pub enum Sel {
     /// An account's folder picked in a unified Starred / Sent / Drafts
     /// row's account list.
     UnifiedKindRow(FolderKind, u32),
+    /// A folder (account, path) picked in the Favorites list (#367).
+    Favorite(u32, String),
     /// A tag (its keyword) selected in a Tags section (#71): scoped to an
     /// account when picked from that account's own section.
     Tag(Option<u32>, String),
@@ -368,6 +379,9 @@ pub struct Sidebar {
     unified_folders: Vec<UnifiedFolderRef>,
     /// Whether the unified "Filtered Folders" section is open.
     unified_folders_expanded: bool,
+    /// The favorite folders (#367), in the order they were added.
+    favorite_folders: Vec<UnifiedFolderRef>,
+    favorites_expanded: bool,
     /// The rows of every Filtered Folders section (the unified one and each
     /// account's own), in row order, with the sections' widgets and badges.
     filtered_rows: HashMap<Slot, Vec<UnifiedFolderRef>>,
@@ -436,6 +450,8 @@ pub enum SidebarInput {
         /// Filter-rule folders to list inside All Inboxes (already
         /// narrowed to the rules that opt in and the Settings switch).
         unified_folders: Vec<UnifiedFolderRef>,
+        /// The favorite folders (#367), from every account.
+        favorite_folders: Vec<UnifiedFolderRef>,
         /// The tags (#71), for the Tags section.
         tags: Vec<crate::config::Tag>,
         /// Where the Filtered Folders and Tags sections are drawn.
@@ -486,6 +502,10 @@ pub enum SidebarInput {
     FilteredRowSelected { slot: Slot, index: i32 },
     /// Toggle a Filtered Folders section.
     ToggleFilteredExpand(Slot),
+    /// Open or fold the Favorites list (#367).
+    ToggleFavoritesExpand,
+    /// A folder picked in the Favorites list, by its index there.
+    FavoriteRowSelected(i32),
     ToggleCollapseLocal(u32),
     /// Set icon-only mode outright (the app's narrow-window breakpoint) —
     /// unlike ToggleCollapsed this never reports CollapsedChanged, so it can't
@@ -545,6 +565,7 @@ pub enum SidebarOutput {
         archive: bool,
         junk: bool,
         trash: bool,
+        favorites: bool,
     },
     /// A unified Starred / Sent / Drafts row was chosen: every account's
     /// folder of that kind, merged.
@@ -619,6 +640,10 @@ pub enum SidebarOutput {
 #[derive(Debug, Clone)]
 pub enum CtxAction {
     MarkFolderRead { account_id: u32, folder_id: u32 },
+    /// Keep a folder in the Favorites list at the top of the sidebar (#367),
+    /// or take it out.
+    AddFavorite { account_id: u32, path: String },
+    RemoveFavorite { account_id: u32, path: String },
     RefreshFolder { account_id: u32, folder_id: u32 },
     MarkAllInboxesRead,
     RefreshAllInboxes,
@@ -775,6 +800,8 @@ impl Component for Sidebar {
             unified_inbox_badges: HashMap::new(),
             unified_folders: Vec::new(),
             unified_folders_expanded: init.filtered_expanded,
+            favorite_folders: Vec::new(),
+            favorites_expanded: init.favorites_expanded,
             filtered_rows: HashMap::new(),
             filtered_sections: HashMap::new(),
             filtered_badges: HashMap::new(),
@@ -869,6 +896,7 @@ impl Sidebar {
                 rail_fold,
                 unified_unread,
                 unified_folders,
+                favorite_folders,
                 tags,
                 filtered_placement,
                 tags_placement,
@@ -901,6 +929,7 @@ impl Sidebar {
                 self.rail_fold = rail_fold;
                 self.unified_unread = unified_unread;
                 self.unified_folders = unified_folders;
+                self.favorite_folders = favorite_folders;
                 self.tags = tags;
                 self.filtered_placement = filtered_placement;
                 self.tags_placement = tags_placement;
@@ -979,6 +1008,12 @@ impl Sidebar {
                             .and_then(|s| s.folders.iter().find(|f| f.kind == kind))
                             .map(|f| f.path.clone());
                         self.selected = path.map_or(Sel::None, |p| Sel::Folder(acc, p));
+                    }
+                }
+                // A folder taken out of Favorites is still the open folder.
+                if let Sel::Favorite(acc, path) = &self.selected {
+                    if !self.favorite_folders.iter().any(|r| r.account_id == *acc && r.folder.path == *path) {
+                        self.selected = Sel::Folder(*acc, path.clone());
                     }
                 }
                 // Likewise a folder that left an account's own Filtered
@@ -1178,6 +1213,38 @@ impl Sidebar {
                 }
             }
 
+            SidebarInput::ToggleFavoritesExpand => {
+                self.toggle_row(UnifiedRow::Favorites, &sender);
+                // The header is a toggle, not a view: it never stays picked.
+                if let Some(w) = self.kind_widgets.get(&UnifiedRow::Favorites) {
+                    let header = w.header.clone();
+                    let quiet = self.quiet.clone();
+                    gtk::glib::idle_add_local_once(move || {
+                        quiet.set(true);
+                        header.unselect_all();
+                        quiet.set(false);
+                    });
+                }
+            }
+
+            SidebarInput::FavoriteRowSelected(index) => {
+                let Some(r) = self.favorite_folders.get(index as usize).cloned() else {
+                    return;
+                };
+                let key = Sel::Favorite(r.account_id, r.folder.path.clone());
+                if self.selected == key {
+                    return;
+                }
+                self.selected = key.clone();
+                self.clear_other_selections(key);
+                let _ = sender.output(SidebarOutput::FolderSelected {
+                    account_id: r.account_id,
+                    folder_id: r.folder.id,
+                    name: r.folder.name,
+                    path: r.folder.path,
+                });
+            }
+
             SidebarInput::ToggleFilteredExpand(slot) => {
                 if slot == Slot::Unified && self.kind_widgets.contains_key(&UnifiedRow::Filtered) {
                     self.toggle_row(UnifiedRow::Filtered, &sender);
@@ -1290,10 +1357,11 @@ impl Sidebar {
                     return;
                 }
                 // Likewise a click on a filtered folder in either kind of
-                // Filtered Folders section, or on an account's folder in a
-                // unified Starred / Sent / Drafts row's list.
+                // Filtered Folders section, on a favorite, or on an account's
+                // folder in a unified Starred / Sent / Drafts row's list.
                 if self.selected == Sel::UnifiedFolder(account_id, path.clone())
                     || self.selected == Sel::AccountFiltered(account_id, path.clone())
+                    || self.selected == Sel::Favorite(account_id, path.clone())
                 {
                     return;
                 }
@@ -1325,7 +1393,7 @@ impl Sidebar {
                 // rebuild draws them right (the account folders are done
                 // below).
                 let fresh = |aid: u32, fid: u32, cur: u32| folders.get(&(aid, fid)).copied().unwrap_or(cur);
-                for r in self.unified_folders.iter_mut() {
+                for r in self.unified_folders.iter_mut().chain(self.favorite_folders.iter_mut()) {
                     r.folder.unread = fresh(r.account_id, r.folder.id, r.folder.unread);
                 }
                 for rows in self.filtered_rows.values_mut() {
@@ -1715,6 +1783,18 @@ impl Sidebar {
         sender: &ComponentSender<Self>,
     ) {
         use crate::config::SectionPlacement::{self, AboveAccounts, AllInboxes, BelowAccounts};
+        // A list about to go keeps no keyboard focus: GTK would hand it to
+        // the first list left, All Inboxes, and a list selects the row it
+        // focuses, opening All Inboxes over the folder on screen. A folder's
+        // menu (Add to Favorites, #367) rebuilds right under its own list.
+        if let Some(root) = container.root() {
+            let doomed = root
+                .focus()
+                .is_some_and(|f| [pinned, container, footer].iter().any(|b| f.is_ancestor(*b)));
+            if doomed {
+                root.set_focus(None::<&gtk::Widget>);
+            }
+        }
         // Keep the scroll offset: rebuilding otherwise snaps the sidebar to
         // the top — felt on every folder drag-and-drop, whose optimistic move
         // rebuilds immediately under the pointer.
@@ -2062,6 +2142,11 @@ impl Sidebar {
         }
         unified_rows.extend(self.unified_kinds.listed().into_iter().map(UnifiedRow::Kind));
         let unified_shown = !unified_rows.is_empty();
+        // Favorites (#367) head the section under All Inboxes, and stand
+        // alone with a single account, where the rest is not shown.
+        if !self.favorite_folders.is_empty() {
+            unified_rows.insert(usize::from(self.show_unified), UnifiedRow::Favorites);
+        }
         if unified_shown && !self.unified_folders.is_empty() && self.filtered_placement == AllInboxes {
             unified_rows.push(UnifiedRow::Filtered);
         }
@@ -2604,6 +2689,7 @@ impl Sidebar {
                 id,
                 essential.iter().map(|f| (*f).clone()).collect(),
                 section.filtered.iter().map(|f| f.path.clone()).collect(),
+                self.favorite_paths(id),
                 section.has_filters,
                 sender,
             );
@@ -2734,6 +2820,7 @@ impl Sidebar {
                     id,
                     custom.iter().map(|f| (*f).clone()).collect(),
                     section.filtered.iter().map(|f| f.path.clone()).collect(),
+                    self.favorite_paths(id),
                     section.has_filters,
                     sender,
                 );
@@ -3019,7 +3106,7 @@ impl Sidebar {
         let toggle_tip = match row_kind {
             UnifiedRow::Kind(FolderKind::Inbox) => i18n("Show each inbox"),
             UnifiedRow::Kind(_) => i18n("Show each account"),
-            UnifiedRow::Filtered => i18n("Show each folder"),
+            UnifiedRow::Favorites | UnifiedRow::Filtered => i18n("Show each folder"),
             UnifiedRow::Tags => i18n("Show each tag"),
         };
 
@@ -3262,6 +3349,68 @@ impl Sidebar {
                 });
                 sub.add_controller(click);
             }
+            UnifiedRow::Favorites => {
+                // Every account's favorites, whether or not the account is
+                // in the unified section: picking one was choice enough.
+                let refs = self.favorite_folders.clone();
+                let all = self.sections.clone();
+                for r in &refs {
+                    let Some(section) = all.iter().find(|s| s.account.id == r.account_id) else {
+                        continue;
+                    };
+                    // The folder's own glyph, in the account's color.
+                    let icon = gtk::Image::from_icon_name(r.folder.kind.icon());
+                    icon.add_css_class(&format!("acct-tint-{}", section.account.id));
+                    pin_icon_size(&icon);
+                    let tip = format!("{} \u{2014} {}", r.folder.name, section.account.label);
+                    let counted = r.folder.kind != FolderKind::Sent;
+                    let (row, badge) = build_unified_sub_row(
+                        &icon,
+                        &r.folder.name,
+                        &tip,
+                        if counted { r.folder.unread } else { 0 },
+                        self.collapsed,
+                        self.chevrons_left,
+                        false,
+                    );
+                    row.add_controller(folder_drop_target(r.account_id, r.folder.path.clone(), sender));
+                    sub.append(&row);
+                    if counted {
+                        row_badges.insert((r.account_id, r.folder.id), badge);
+                    } else {
+                        badge.set_visible(false);
+                    }
+                }
+                let ss = sender.input_sender().clone();
+                let quiet = self.quiet.clone();
+                sub.connect_row_selected(move |_, row| {
+                    if quiet.get() {
+                        return;
+                    }
+                    if let Some(row) = row {
+                        let _ = ss.send(SidebarInput::FavoriteRowSelected(row.index()));
+                    }
+                });
+                // Right-click a favorite: the folder's own menu, which
+                // takes it out of Favorites too.
+                let click = gtk::GestureClick::new();
+                click.set_button(gtk::gdk::BUTTON_SECONDARY);
+                let cs = sender.clone();
+                let sub_w = sub.clone();
+                let filtered: Vec<(u32, String)> =
+                    self.unified_folders.iter().map(|r| (r.account_id, r.folder.path.clone())).collect();
+                click.connect_pressed(move |_, _, x, y| {
+                    if let Some(r) = sub_w
+                        .row_at_y(y as i32)
+                        .and_then(|row| refs.get(row.index() as usize))
+                    {
+                        let is_filtered = filtered.iter().any(|(a, p)| *a == r.account_id && *p == r.folder.path);
+                        let items = folder_menu_items(r.account_id, &r.folder, is_filtered, true, true);
+                        show_sidebar_menu(&sub_w, x, y, items, &cs);
+                    }
+                });
+                sub.add_controller(click);
+            }
             UnifiedRow::Filtered => {
                 let refs = self.unified_folders.clone();
                 for r in &refs {
@@ -3306,13 +3455,15 @@ impl Sidebar {
                 click.set_button(gtk::gdk::BUTTON_SECONDARY);
                 let cs = sender.clone();
                 let sub_w = sub.clone();
+                let favorites = self.favorite_keys();
                 click.connect_pressed(move |_, _, x, y| {
                     if let Some(r) = sub_w
                         .row_at_y(y as i32)
                         .and_then(|row| refs.get(row.index() as usize))
                     {
                         // The same menu the folder has under its account.
-                        let items = folder_menu_items(r.account_id, &r.folder, true, true);
+                        let favorite = favorites.iter().any(|(a, p)| *a == r.account_id && *p == r.folder.path);
+                        let items = folder_menu_items(r.account_id, &r.folder, true, true, favorite);
                         show_sidebar_menu(&sub_w, x, y, items, &cs);
                     }
                 });
@@ -3382,6 +3533,7 @@ impl Sidebar {
         match row {
             UnifiedRow::Kind(FolderKind::Inbox) => self.unified_expanded,
             UnifiedRow::Kind(kind) => self.kind_open(kind),
+            UnifiedRow::Favorites => self.favorites_expanded,
             UnifiedRow::Filtered => self.unified_folders_expanded,
             UnifiedRow::Tags => self.tags_expanded,
         }
@@ -3396,6 +3548,7 @@ impl Sidebar {
             || self.collapsed
                 && match row {
                     UnifiedRow::Kind(kind) => self.rail_fold.folds_kind(kind),
+                    UnifiedRow::Favorites => false,
                     UnifiedRow::Filtered => self.rail_fold.folds_filtered(),
                     UnifiedRow::Tags => self.rail_fold.folds_tags(),
                 }
@@ -3443,6 +3596,7 @@ impl Sidebar {
             UnifiedRow::Kind(kind) => {
                 self.kind_expanded.insert(kind, open);
             }
+            UnifiedRow::Favorites => self.favorites_expanded = open,
             UnifiedRow::Filtered => self.unified_folders_expanded = open,
             UnifiedRow::Tags => self.tags_expanded = open,
         }
@@ -3475,6 +3629,12 @@ impl Sidebar {
         match row {
             UnifiedRow::Kind(FolderKind::Inbox) => self.unified_unread,
             UnifiedRow::Kind(kind) => self.kind_unread(kind),
+            UnifiedRow::Favorites => self
+                .favorite_folders
+                .iter()
+                .filter(|r| r.folder.kind != FolderKind::Sent)
+                .map(|r| r.folder.unread)
+                .sum(),
             UnifiedRow::Filtered => self.filtered_unread(Slot::Unified),
             UnifiedRow::Tags => 0,
         }
@@ -3699,12 +3859,14 @@ impl Sidebar {
         let cs = sender.clone();
         let list_w = list.clone();
         let refs = rows.clone();
+        let favorites = self.favorite_keys();
         click.connect_pressed(move |_, _, x, y| {
             if let Some(r) = list_w
                 .row_at_y(y as i32)
                 .and_then(|row| refs.get(row.index() as usize))
             {
-                let items = folder_menu_items(r.account_id, &r.folder, true, true);
+                let favorite = favorites.iter().any(|(a, p)| *a == r.account_id && *p == r.folder.path);
+                let items = folder_menu_items(r.account_id, &r.folder, true, true, favorite);
                 show_sidebar_menu(&list_w, x, y, items, &cs);
             }
         });
@@ -3846,6 +4008,7 @@ impl Sidebar {
     fn chip_shown(&self, row: UnifiedRow) -> bool {
         match row {
             UnifiedRow::Kind(kind) => self.unified_chips.has(kind),
+            UnifiedRow::Favorites => true,
             UnifiedRow::Filtered => self.unified_chips.filtered,
             UnifiedRow::Tags => false,
         }
@@ -3907,6 +4070,20 @@ impl Sidebar {
     }
 
     /// Whether a unified Starred / Sent / Drafts row's account list is open.
+    /// The paths of an account's folders that are favorites.
+    fn favorite_paths(&self, account_id: u32) -> Vec<String> {
+        self.favorite_folders
+            .iter()
+            .filter(|r| r.account_id == account_id)
+            .map(|r| r.folder.path.clone())
+            .collect()
+    }
+
+    /// Every favorite as (account, path), for a menu built later.
+    fn favorite_keys(&self) -> Vec<(u32, String)> {
+        self.favorite_folders.iter().map(|r| (r.account_id, r.folder.path.clone())).collect()
+    }
+
     fn kind_open(&self, kind: FolderKind) -> bool {
         self.kind_expanded.get(&kind).copied().unwrap_or(false)
     }
@@ -3964,6 +4141,7 @@ impl Sidebar {
         for (row, w) in &self.kind_widgets {
             let keep_header = match row {
                 UnifiedRow::Kind(k) => keep == Sel::UnifiedKind(*k),
+                UnifiedRow::Favorites => false,
                 UnifiedRow::Filtered => keep == Sel::UnifiedFiltered,
                 UnifiedRow::Tags => keep == Sel::UnifiedTags,
             };
@@ -3972,6 +4150,7 @@ impl Sidebar {
             }
             let keep_list = match row {
                 UnifiedRow::Kind(k) => matches!(&keep, Sel::UnifiedKindRow(kk, _) if kk == k),
+                UnifiedRow::Favorites => matches!(keep, Sel::Favorite(..)),
                 UnifiedRow::Filtered => matches!(keep, Sel::UnifiedFolder(..)),
                 UnifiedRow::Tags => matches!(keep, Sel::Tag(None, _)),
             };
@@ -4091,6 +4270,15 @@ impl Sidebar {
             Sel::UnifiedKind(kind) => self.select_row_header(UnifiedRow::Kind(kind)),
             Sel::UnifiedFiltered => self.select_row_header(UnifiedRow::Filtered),
             Sel::UnifiedTags => self.select_row_header(UnifiedRow::Tags),
+            Sel::Favorite(acc, path) => {
+                if let Some(w) = self.kind_widgets.get(&UnifiedRow::Favorites) {
+                    if let Some(idx) =
+                        self.favorite_folders.iter().position(|r| r.account_id == acc && r.folder.path == path)
+                    {
+                        w.list.select_row(w.list.row_at_index(idx as i32).as_ref());
+                    }
+                }
+            }
             Sel::UnifiedKindRow(kind, acc) => {
                 if let Some(w) = self.kind_widgets.get(&UnifiedRow::Kind(kind)) {
                     if let Some(idx) = w.rows.iter().position(|r| r.account_id == acc) {
@@ -4692,11 +4880,18 @@ fn folder_menu_items(
     f: &Folder,
     filtered: bool,
     has_filters: bool,
+    favorite: bool,
 ) -> Vec<(&'static str, CtxAction)> {
     let mut items = vec![
         (i18n_noop("Mark as Read"), CtxAction::MarkFolderRead { account_id: id, folder_id: f.id }),
         (i18n_noop("Refresh"), CtxAction::RefreshFolder { account_id: id, folder_id: f.id }),
     ];
+    // Favorites (#367): any folder can be kept at the top of the sidebar.
+    items.push(if favorite {
+        (i18n_noop("Remove from Favorites"), CtxAction::RemoveFavorite { account_id: id, path: f.path.clone() })
+    } else {
+        (i18n_noop("Add to Favorites"), CtxAction::AddFavorite { account_id: id, path: f.path.clone() })
+    });
     // Rules normally only meet mail arriving in the Inbox; from here they
     // can be held up against whatever is already in this folder (#198).
     // Not on Drafts, Templates, Junk or Trash: filing mail *out* of those is
@@ -4790,6 +4985,7 @@ fn attach_folder_context_menu(
     id: u32,
     folders: Vec<Folder>,
     filtered: Vec<String>,
+    favorites: Vec<String>,
     has_filters: bool,
     sender: &ComponentSender<Sidebar>,
 ) {
@@ -4802,8 +4998,13 @@ fn attach_folder_context_menu(
             .row_at_y(y as i32)
             .and_then(|row| folders.get(row.index() as usize))
         {
-            let items =
-                folder_menu_items(id, f, filtered.iter().any(|p| *p == f.path), has_filters);
+            let items = folder_menu_items(
+                id,
+                f,
+                filtered.iter().any(|p| *p == f.path),
+                has_filters,
+                favorites.iter().any(|p| *p == f.path),
+            );
             show_sidebar_menu(&list_w, x, y, items, &cs);
         }
     });
@@ -5033,6 +5234,7 @@ impl Sidebar {
             archive: self.kind_open(FolderKind::Archive),
             junk: self.kind_open(FolderKind::Junk),
             trash: self.kind_open(FolderKind::Trash),
+            favorites: self.favorites_expanded,
         });
     }
 
@@ -5104,16 +5306,30 @@ fn show_sidebar_menu(
     items: Vec<(&str, CtxAction)>,
     sender: &ComponentSender<Sidebar>,
 ) {
+    // The pick goes out once the menu has closed: an action that rebuilds
+    // the sidebar would otherwise take the menu's parent list away while
+    // the menu is still closing, and GTK, handing focus back to it, gives
+    // it to the first list instead (see `rebuild_normal`).
+    let chosen: std::rc::Rc<std::cell::RefCell<Option<CtxAction>>> = Default::default();
     let entries = items
         .into_iter()
         .map(|(label, action)| {
-            let s = sender.clone();
+            let chosen = chosen.clone();
             MenuEntry::new(i18n(label), move || {
-                let _ = s.output(SidebarOutput::Context(action.clone()));
+                *chosen.borrow_mut() = Some(action.clone());
             })
         })
         .collect();
-    show_context_menu(parent, x, y, vec![entries]);
+    let popover = crate::ui::context_menu::show_context_menu_popover(parent, x, y, None, vec![entries]);
+    let s = sender.clone();
+    popover.connect_closed(move |_| {
+        if let Some(action) = chosen.borrow_mut().take() {
+            let s = s.clone();
+            gtk::glib::idle_add_local_once(move || {
+                let _ = s.output(SidebarOutput::Context(action));
+            });
+        }
+    });
 }
 
 /// A row in the "All Inboxes" sub-list: a small account pill, the account name,

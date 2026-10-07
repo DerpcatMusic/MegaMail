@@ -3188,6 +3188,12 @@ struct SidebarFile {
     junk_expanded: bool,
     #[serde(default)]
     trash_expanded: bool,
+    /// Folders picked as favorites (#367), as "email\tpath" entries in the
+    /// order they were added, and whether their list is open.
+    #[serde(default)]
+    favorites: Vec<String>,
+    #[serde(default = "default_on")]
+    favorites_expanded: bool,
     /// Account emails whose own Filtered Folders / Tags sections are open
     /// (closed by default, like their custom folders).
     #[serde(default)]
@@ -3228,6 +3234,9 @@ pub struct SidebarState {
     pub archive_expanded: bool,
     pub junk_expanded: bool,
     pub trash_expanded: bool,
+    /// Favorite folders (#367), as "email\tpath" entries.
+    pub favorites: Vec<String>,
+    pub favorites_expanded: bool,
     /// Account emails whose own Filtered Folders / Tags sections are open.
     pub filtered_expanded_accounts: Vec<String>,
     pub tags_expanded_accounts: Vec<String>,
@@ -3257,6 +3266,8 @@ pub fn load_sidebar_state() -> SidebarState {
             archive_expanded: s.archive_expanded,
             junk_expanded: s.junk_expanded,
             trash_expanded: s.trash_expanded,
+            favorites: s.favorites,
+            favorites_expanded: s.favorites_expanded,
             filtered_expanded_accounts: s.filtered_expanded_accounts,
             tags_expanded_accounts: s.tags_expanded_accounts,
         })
@@ -3286,6 +3297,8 @@ pub fn save_sidebar_state(state: &SidebarState) {
         archive_expanded: state.archive_expanded,
         junk_expanded: state.junk_expanded,
         trash_expanded: state.trash_expanded,
+        favorites: state.favorites.clone(),
+        favorites_expanded: state.favorites_expanded,
         filtered_expanded_accounts: state.filtered_expanded_accounts.clone(),
         tags_expanded_accounts: state.tags_expanded_accounts.clone(),
     };
@@ -3805,6 +3818,17 @@ pub fn save_contacts_pane_width(width: i32) {
 #[cfg(test)]
 mod tests {
     use super::{decode_gallery_folder, encode_gallery_folder, ConfigFile, ListColumn, PrivacyFile, StateFile};
+
+    /// #367: a sidebar file from before Favorites has none, and the list
+    /// starts open; the entries come back in the order they were added.
+    #[test]
+    fn favorites_load_in_order() {
+        let old: super::SidebarFile = toml::from_str("icon_only = false").expect("parses");
+        assert!(old.favorites.is_empty() && old.favorites_expanded);
+        let new: super::SidebarFile =
+            toml::from_str("favorites = [\"b@x\\tWork\", \"a@x\\tINBOX\"]").expect("parses");
+        assert_eq!(new.favorites, vec!["b@x\tWork".to_string(), "a@x\tINBOX".to_string()]);
+    }
 
     /// #369: unified Junk and Trash are off in a file that predates them,
     /// and list after Archive, in an account's own order.

@@ -176,6 +176,21 @@ Spam** and **Move to Inbox** send each message to its own account's Inbox,
 and the right-click menu of each account's row beneath has **Empty Junk…**
 or **Empty Trash…**.
 
+### Favorites
+
+Right-click any folder in the sidebar and choose **Add to Favorites** to list
+it in a Favorites row at the top of the sidebar, under Inboxes. Favorites can
+come from any account, keep the order they were added in, and show their
+unread counts; the folder's glyph takes its account's color. Clicking
+Favorites opens or closes the list. **Remove from Favorites**, in the same
+menu or on the favorite itself, takes it out, and the row goes when the last
+one does. Favorites show with a single account too, and for an account left
+out of All Inboxes.
+
+They are kept on this computer, in `sidebar.toml` as `favorites`. A folder
+renamed or moved in Hylki stays a favorite under its new name; one deleted
+leaves the list.
+
 ### Hiding folders
 
 Right-click a folder in the sidebar and choose **Hide Folder** to take it out
