@@ -2374,12 +2374,16 @@ impl Component for AccountsWindow {
                     widgets.oauth_status.set_label(&i18n("Complete the sign-in in the window that opened."));
                     let parent = root.root().and_downcast::<gtk::Window>();
                     let s = sender.clone();
-                    crate::ui::web_signin::run(parent.as_ref(), &settings.clone(), move |answer| {
+                    // The address typed so far names the identity broker's
+                    // account, where one is in charge of sign-ins.
+                    let user = Some(widgets.email_row.text().trim().to_string()).filter(|u| !u.is_empty());
+                    crate::ui::web_signin::run(parent.as_ref(), &settings.clone(), user.clone(), move |answer| {
                         s.oneshot_command(async move {
                             let r = tokio::task::spawn_blocking(move || {
                                 let (request, code) = answer?;
                                 let refresh = crate::oauth::exchange_code(&settings, &request, &code)?.refresh_token;
-                                let (name, address, refresh) = crate::oauth::microsoft_whoami(&settings, &refresh)?;
+                                let (name, address, refresh) =
+                                    crate::oauth::microsoft_whoami(&settings, &refresh, user.as_deref())?;
                                 Ok((refresh, Some((name, address))))
                             })
                             .await
@@ -2398,7 +2402,7 @@ impl Component for AccountsWindow {
                         // Microsoft says who signed in, so the account is named
                         // for the mailbox reached (#329).
                         if settings.token_url.contains("microsoftonline") {
-                            let (name, address, refresh) = crate::oauth::microsoft_whoami(&settings, &refresh)?;
+                            let (name, address, refresh) = crate::oauth::microsoft_whoami(&settings, &refresh, None)?;
                             return Ok((refresh, Some((name, address))));
                         }
                         Ok((refresh, None))

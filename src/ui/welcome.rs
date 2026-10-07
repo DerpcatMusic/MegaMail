@@ -1267,7 +1267,7 @@ impl Welcome {
             let result = tokio::task::spawn_blocking(move || {
                 let refresh = crate::oauth::run_flow(&settings)?.refresh_token;
                 if settings.token_url.contains("microsoftonline") {
-                    let (name, address, refresh) = crate::oauth::microsoft_whoami(&settings, &refresh)?;
+                    let (name, address, refresh) = crate::oauth::microsoft_whoami(&settings, &refresh, None)?;
                     return Ok((refresh, Some((name, address))));
                 }
                 Ok((refresh, None))

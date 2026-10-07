@@ -5282,8 +5282,9 @@ async fn fetch_oauth_token(account: &AccountConfig) -> Option<String> {
         return Some(token);
     }
     let email = account.email.clone();
+    let user = oauth_user(account);
     tokio::task::spawn_blocking(move || {
-        let fresh = crate::oauth::refresh_access_token(&settings, &refresh)
+        let fresh = crate::oauth::refresh_access_token_as(&settings, &refresh, Some(&user))
             .map_err(|e| tracing::warn!("OAuth token refresh for {email} failed: {e}"))
             .ok()?;
         // The provider spent the old refresh token and handed out another:

@@ -25,6 +25,7 @@ mod logo;
 mod memory_report;
 mod markdown;
 mod models;
+mod ms_broker;
 mod mutf7;
 mod nautilus_ext;
 mod notify;

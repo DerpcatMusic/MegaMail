@@ -307,6 +307,16 @@ sign-in run in a window of Hylki's instead of the browser, so the answer
 can be caught; that window keeps nothing once it closes. Evolution's
 registration is `20460e5d-ce91-49af-a3a5-70b6be7486d1` with that redirect.
 
+An organization whose Conditional Access lets only a managed device sign in
+refuses that window and any browser but its own. On a computer enrolled with
+Microsoft's identity broker (`microsoft-identity-broker` from Intune, or
+Himmelblau), Hylki asks the broker for a device sign-in cookie, as Evolution
+does, and sends it with the sign-in page and with every token refresh. The
+broker's account is the one with the address on the account's page, so enter
+the address before signing in. Without a broker nothing changes. The
+Flatpak is allowed to talk to the broker on the session bus
+(`com.microsoft.identity.broker1`) for this alone.
+
 **Google** signs in through **GNOME Online Accounts**. Add your Google account in
 *GNOME Settings → Online Accounts*, then import it in Hylki. Official builds don't
 bundle a Google OAuth client (Google's secret can't live in a public repo), so

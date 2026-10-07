@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Added: Microsoft sign-in on a managed device** (#329, requested by
+  erenoglu). Where an organization's Conditional Access lets only a managed
+  device sign in, Hylki asks Microsoft's identity broker
+  (`microsoft-identity-broker`, or Himmelblau) for a device sign-in cookie,
+  as Evolution does, and sends it with the sign-in window and with every
+  token refresh. The broker's account is the one with the account's address.
+  Without a broker, sign-in is unchanged.
 - **Added: spell checking in several languages at once** (#365, requested
   by amadeusp). **Settings → Composing → Languages** has a switch for the
   system language and one for each installed dictionary, in place of the
