@@ -2,6 +2,18 @@
 
 Hylki (formerly Vireo) is a clean, fast, GNOME-native email client built with Rust and libadwaita for Wayland desktops. Privacy-first: no telemetry, remote content blocked by default, and credentials kept in the system keyring.
 
+## What's new in 1.43.0-beta.7
+
+The seventh beta previewing 1.43.0.
+
+- **Accounts sign in again once the keyring answers** (#375, reported by
+  Michael-Zebratrix): a keyring that was locked or not ready at login no
+  longer leaves accounts failing until Hylki restarts, and the error now
+  names the keyring instead of the password.
+- **Translations:** Greek (#377, by
+  [@yioannides](https://github.com/yioannides)) and French (#373, by
+  [@frenchy82](https://github.com/frenchy82)) brought up to date.
+
 ## What's new in 1.43.0-beta.6
 
 The sixth beta previewing 1.43.0.

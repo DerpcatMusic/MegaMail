@@ -63,6 +63,11 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="1.43.0-beta.7" date="2026-10-07" type="development">
+      <description>
+        <p>Seventh preview of 1.43.0: accounts sign in again once a keyring that was locked or not ready at login answers, without restarting Hylki, and updated Greek and French translations.</p>
+      </description>
+    </release>
     <release version="1.43.0-beta.6" date="2026-10-07" type="development">
       <description>
         <p>Sixth preview of 1.43.0: favorite folders, Junk and Trash in the unified section, spell checking in several languages, right-to-left layout, Microsoft sign-in through the identity broker, addresses checked before sending, and faster message opening.</p>
