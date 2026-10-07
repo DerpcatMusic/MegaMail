@@ -25,6 +25,7 @@ mod logo;
 mod memory_report;
 mod markdown;
 mod models;
+mod ms_broker;
 mod mutf7;
 mod nautilus_ext;
 mod notify;
@@ -215,6 +216,21 @@ fn main() {
     {
         use gtk::gio::prelude::ApplicationExt;
         adw_app.connect_startup(|_| crate::ui::emoji::follow_all());
+    }
+    // GTK takes its direction from its own gtk40 catalogue ("default:LTR"
+    // translated as "default:RTL"), which a Flatpak runtime or a minimal
+    // install often lacks, and which a language chosen in Settings never
+    // reaches (#366). So the direction is set from the language here, after
+    // GTK's own init (the startup class handler runs first) and before
+    // relm4's startup handler builds any window.
+    {
+        use gtk::gio::prelude::ApplicationExt;
+        adw_app.connect_startup(|_| {
+            if i18n::ui_is_rtl() {
+                gtk::Widget::set_default_direction(gtk::TextDirection::Rtl);
+            }
+            i18n::set_rtl(gtk::Widget::default_direction() == gtk::TextDirection::Rtl);
+        });
     }
     let app = RelmApp::from_app(adw_app)
         .with_args(args)

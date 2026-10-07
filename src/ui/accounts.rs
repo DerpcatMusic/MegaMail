@@ -527,10 +527,6 @@ const SENT_COPY_HINT: &str =
     "Any folder, inbox included. Only applies to mail sent from this Hylki client \
      going forward. Not recursive.";
 
-fn goa_uses_graph(g: &crate::goa::GoaMailAccount) -> bool {
-    g.oauth2 && g.provider_type == "ms_graph"
-}
-
 /// GNOME Online Accounts mail accounts not (properly) configured in Hylki.
 /// A configured entry counts when it has an IMAP host or runs over Graph — an
 /// entry with neither is a broken pre-#36 Microsoft 365 import, so its GOA
@@ -546,7 +542,7 @@ fn importable_goa_accounts(configured: &[AccountConfig]) -> Vec<crate::goa::GoaM
                         || a.protocol == crate::config::Protocol::Graph)
             })
         })
-        .filter(|g| !g.imap_host.is_empty() || goa_uses_graph(g))
+        .filter(|g| g.can_connect())
         .collect()
 }
 
@@ -1522,7 +1518,7 @@ impl Component for AccountsWindow {
 
                                 #[name = "push_row"]
                                 adw::ComboRow {
-                                    set_title: &i18n("Instant new mail (IMAP push)"),
+                                    set_title: &i18n("Instant new mail (push)"),
                                     set_subtitle: &i18n("Turn off for servers that stall on push connections."),
                                 },
 
@@ -2004,6 +2000,7 @@ impl Component for AccountsWindow {
                 self.server_identities.clear();
                 self.rebuild_alias_list(&widgets.aliases_list, &sender);
                 clear_editor(widgets);
+                self.show_push_row(widgets);
                 self.populate_folder_combos(widgets, None);
                 set_connection_editable(widgets, true);
                 widgets.goa_banner.set_visible(false);
@@ -2053,6 +2050,7 @@ impl Component for AccountsWindow {
                 self.hidden_edits = acc.hidden_folders.clone();
                 self.rebuild_hidden_list(widgets, &sender);
                 fill_editor(widgets, &acc);
+                self.show_push_row(widgets);
                 // Hidden until this account's server answers; a page opened
                 // before it must not show the last account's figure.
                 show_quota(widgets, None);
@@ -2335,6 +2333,7 @@ impl Component for AccountsWindow {
 
             AccountsInput::ProtocolChanged => {
                 apply_protocol(widgets);
+                self.show_push_row(widgets);
                 self.refresh_provider_mark(widgets);
             }
             AccountsInput::ProviderChanged => {
@@ -2350,6 +2349,7 @@ impl Component for AccountsWindow {
                 if !editing_goa {
                     self.apply_provider(widgets);
                 }
+                self.show_push_row(widgets);
             }
 
             AccountsInput::OAuthSignIn => {
@@ -2374,12 +2374,16 @@ impl Component for AccountsWindow {
                     widgets.oauth_status.set_label(&i18n("Complete the sign-in in the window that opened."));
                     let parent = root.root().and_downcast::<gtk::Window>();
                     let s = sender.clone();
-                    crate::ui::web_signin::run(parent.as_ref(), &settings.clone(), move |answer| {
+                    // The address typed so far names the identity broker's
+                    // account, where one is in charge of sign-ins.
+                    let user = Some(widgets.email_row.text().trim().to_string()).filter(|u| !u.is_empty());
+                    crate::ui::web_signin::run(parent.as_ref(), &settings.clone(), user.clone(), move |answer| {
                         s.oneshot_command(async move {
                             let r = tokio::task::spawn_blocking(move || {
                                 let (request, code) = answer?;
                                 let refresh = crate::oauth::exchange_code(&settings, &request, &code)?.refresh_token;
-                                let (name, address, refresh) = crate::oauth::microsoft_whoami(&settings, &refresh)?;
+                                let (name, address, refresh) =
+                                    crate::oauth::microsoft_whoami(&settings, &refresh, user.as_deref())?;
                                 Ok((refresh, Some((name, address))))
                             })
                             .await
@@ -2398,7 +2402,7 @@ impl Component for AccountsWindow {
                         // Microsoft says who signed in, so the account is named
                         // for the mailbox reached (#329).
                         if settings.token_url.contains("microsoftonline") {
-                            let (name, address, refresh) = crate::oauth::microsoft_whoami(&settings, &refresh)?;
+                            let (name, address, refresh) = crate::oauth::microsoft_whoami(&settings, &refresh, None)?;
                             return Ok((refresh, Some((name, address))));
                         }
                         Ok((refresh, None))
@@ -3780,6 +3784,18 @@ impl AccountsWindow {
             widgets.provider_mark.remove(&child);
         }
         widgets.provider_mark.append(&crate::brand::mark(brand, 56, crate::brand::GENERIC_MAIL));
+    }
+
+    /// Push is IMAP IDLE or a JMAP event stream. Microsoft 365 polls and
+    /// POP3 has neither, so the row would be a switch that does nothing
+    /// (#329). An account from Online Accounts keeps its saved protocol: its
+    /// provider row isn't filled in, and reads as a plain IMAP account.
+    fn show_push_row(&self, widgets: &AccountsWindowWidgets) {
+        let protocol = match self.editing.and_then(|i| self.accounts.get(i)) {
+            Some(a) if a.goa_id.is_some() => a.protocol,
+            _ => form_protocol(widgets),
+        };
+        widgets.push_row.set_visible(matches!(protocol, Protocol::Imap | Protocol::Jmap));
     }
 
     fn apply_provider(&self, widgets: &AccountsWindowWidgets) {

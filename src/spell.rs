@@ -86,24 +86,117 @@ impl SpellChecker {
 }
 
 thread_local! {
-    /// The current checker, keyed by the language it was built for so a
-    /// settings change swaps it.
-    static CHECKER: RefCell<Option<(String, Option<Rc<SpellChecker>>)>> =
-        const { RefCell::new(None) };
+    /// One checker per language, built the first time the language is
+    /// asked for, so switching languages back and forth builds nothing
+    /// twice. A failed build is remembered too (`None`): a missing
+    /// dictionary is not looked for again on every keystroke.
+    static CHECKERS: RefCell<std::collections::HashMap<String, Option<Rc<SpellChecker>>>> =
+        RefCell::new(Default::default());
 }
 
-fn checker_for(lang: &str) -> Option<Rc<SpellChecker>> {
-    CHECKER.with(|c| {
-        let mut slot = c.borrow_mut();
-        match slot.as_ref() {
-            Some((l, found)) if l == lang => found.clone(),
-            _ => {
-                let built = SpellChecker::new(lang).map(Rc::new);
-                *slot = Some((lang.to_string(), built.clone()));
-                built
+/// The checkers for `langs` that could be built, in the same order.
+fn checkers_for(langs: &[String]) -> Vec<Rc<SpellChecker>> {
+    CHECKERS.with(|c| {
+        let mut map = c.borrow_mut();
+        langs
+            .iter()
+            .filter_map(|lang| {
+                map.entry(lang.clone())
+                    .or_insert_with(|| SpellChecker::new(lang).map(Rc::new))
+                    .clone()
+            })
+            .collect()
+    })
+}
+
+/// Forget every built checker, so the next check reloads the personal word
+/// lists from disk.
+fn reset_checkers() {
+    CHECKERS.with(|c| c.borrow_mut().clear());
+}
+
+/// Whether `word` is misspelled under several dictionaries at once (#365):
+/// only when every one of them rejects it. A message that mixes two
+/// languages has each word in one of them; no checker at all flags nothing.
+fn misspelled_in_all<C>(checkers: &[C], word: &str, rejects: impl Fn(&C, &str) -> bool) -> bool {
+    !checkers.is_empty() && checkers.iter().all(|c| rejects(c, word))
+}
+
+/// The language codes a spelling setting lists, in order and each once.
+/// Commas are the separator the app writes; semicolons and spaces are read
+/// too, for a hand-edited file.
+pub fn parse_languages(setting: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for code in setting.split([',', ';', ' ']).map(str::trim).filter(|s| !s.is_empty()) {
+        if !out.iter().any(|c| c == code) {
+            out.push(code.to_string());
+        }
+    }
+    out
+}
+
+/// The setting as it is written back: "en_US, de_DE".
+pub fn join_languages(codes: &[String]) -> String {
+    codes.join(", ")
+}
+
+/// The setting after one language is switched on or off (#365), the same
+/// way from Settings and from the composer's menu. `code` is empty for the
+/// system language. Choosing a dictionary leaves the system language for
+/// the list, and switching the last one off returns to it. Switching the
+/// system language off keeps checking in `system`, the dictionaries it was
+/// using, since checking in no language at all is not a choice.
+pub fn toggle_language(setting: &str, code: &str, on: bool, system: &[String]) -> String {
+    let mut codes = parse_languages(setting);
+    if code.is_empty() {
+        return match (on, codes.is_empty()) {
+            (true, _) => String::new(),
+            (false, true) => join_languages(system),
+            (false, false) => join_languages(&codes),
+        };
+    }
+    if on {
+        if !codes.iter().any(|c| c == code) {
+            codes.push(code.to_string());
+        }
+    } else {
+        codes.retain(|c| c != code);
+    }
+    join_languages(&codes)
+}
+
+/// The dictionaries checking runs with for `setting` (#365): each listed
+/// language, or `locale` when none is, mapped onto the installed
+/// dictionaries in `dicts`. A language without its exact dictionary takes a
+/// same-language one (en_GB for en_US); one with neither is left out, since
+/// a missing dictionary checks nothing. When nothing is left, any
+/// dictionary beats none. With no dictionaries visible at all the codes are
+/// passed on as they are.
+pub fn resolve_languages(setting: &str, locale: Option<String>, dicts: &[String]) -> Vec<String> {
+    let mut wanted = parse_languages(setting);
+    if wanted.is_empty() {
+        wanted.push(locale.unwrap_or_else(|| "en_US".to_string()));
+    }
+    if dicts.is_empty() {
+        return wanted;
+    }
+    let family = |c: &str| c.split(['_', '-']).next().unwrap_or(c).to_string();
+    let mut out: Vec<String> = Vec::new();
+    for want in &wanted {
+        let found = dicts
+            .iter()
+            .find(|d| *d == want)
+            .or_else(|| dicts.iter().find(|d| family(d) == family(want)));
+        if let Some(d) = found {
+            if !out.contains(d) {
+                out.push(d.clone());
             }
         }
-    })
+    }
+    if out.is_empty() {
+        out.extend(dicts.first().cloned());
+    }
+    out
 }
 
 /// Dictionary codes people actually encounter, named in the language itself
@@ -272,14 +365,14 @@ fn checkable_words(text: &str) -> Vec<(usize, usize, &str)> {
     out
 }
 
-/// Whether one word is misspelled under the current preference and language.
-/// `false` whenever checking is off or unavailable.
+/// Whether one word is misspelled under the current preference and
+/// languages. `false` whenever checking is off or unavailable.
 pub fn word_is_misspelled(word: &str) -> bool {
     if !crate::config::load_privacy().spellcheck {
         return false;
     }
-    let lang = crate::ui::rich_editor::resolved_spell_language();
-    checker_for(&lang).is_some_and(|c| c.is_misspelled(word))
+    let checkers = checkers_for(&crate::ui::rich_editor::resolved_spell_languages());
+    misspelled_in_all(&checkers, word, |c, w| c.is_misspelled(w))
 }
 
 /// Pango error-underline attributes for every misspelled word in `text` —
@@ -292,14 +385,16 @@ pub fn error_attrs(text: &str, cursor: Option<usize>) -> Option<gtk::pango::Attr
     if !crate::config::load_privacy().spellcheck {
         return None;
     }
-    let lang = crate::ui::rich_editor::resolved_spell_language();
-    let checker = checker_for(&lang)?;
+    let checkers = checkers_for(&crate::ui::rich_editor::resolved_spell_languages());
+    if checkers.is_empty() {
+        return None;
+    }
     let attrs = gtk::pango::AttrList::new();
     for (start, end, word) in checkable_words(text) {
         if cursor.is_some_and(|c| c >= start && c <= end) {
             continue;
         }
-        if checker.is_misspelled(word) {
+        if misspelled_in_all(&checkers, word, |c, w| c.is_misspelled(w)) {
             let mut a = gtk::pango::AttrInt::new_underline(gtk::pango::Underline::Error);
             a.set_start_index(start as u32);
             a.set_end_index(end as u32);
@@ -315,23 +410,29 @@ pub fn error_attrs(text: &str, cursor: Option<usize>) -> Option<gtk::pango::Attr
     Some(attrs)
 }
 
-/// The personal word list for the active language: the plain
-/// one-word-per-line file enchant keeps in the user config dir — the same
+/// The personal word list of each active language: the plain
+/// one-word-per-line file enchant keeps in the user config dir, the same
 /// list the body's "Learn Spelling" menu item feeds.
-fn personal_dict_path() -> std::path::PathBuf {
-    let lang = crate::ui::rich_editor::resolved_spell_language();
-    gtk::glib::user_config_dir().join("enchant").join(format!("{lang}.dic"))
+fn personal_dict_paths() -> Vec<std::path::PathBuf> {
+    let dir = gtk::glib::user_config_dir().join("enchant");
+    crate::ui::rich_editor::resolved_spell_languages()
+        .iter()
+        .map(|lang| dir.join(format!("{lang}.dic")))
+        .collect()
 }
 
-/// The words the user has taught the spell checker, for the active language.
+/// The words the user has taught the spell checker, across the active
+/// languages, each once.
 pub fn personal_words() -> Vec<String> {
-    std::fs::read_to_string(personal_dict_path())
-        .unwrap_or_default()
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .map(String::from)
-        .collect()
+    let mut out: Vec<String> = Vec::new();
+    for path in personal_dict_paths() {
+        for word in std::fs::read_to_string(path).unwrap_or_default().lines().map(str::trim) {
+            if !word.is_empty() && !out.iter().any(|w| w == word) {
+                out.push(word.to_string());
+            }
+        }
+    }
+    out
 }
 
 /// Every language's personal word list in the enchant config dir, for a
@@ -384,44 +485,48 @@ pub fn merge_personal_words(lang: &str, words: &[String]) {
         }
     }
     let _ = std::fs::write(&path, out);
-    CHECKER.with(|c| *c.borrow_mut() = None);
+    reset_checkers();
 }
 
 /// Teach the checker a word: through enchant itself, so the file is written
 /// the way its own tooling writes it, and the subject's checker accepts the
 /// word immediately. The message body's checker (WebKit's own enchant
-/// instance) picks it up at the next launch.
+/// instance) picks it up at the next launch. With several languages the
+/// word joins the first one's list, which is enough: a word any one of the
+/// dictionaries accepts is not underlined.
 pub fn add_personal_word(word: &str) {
     let word = word.trim();
     if word.is_empty() {
         return;
     }
-    let lang = crate::ui::rich_editor::resolved_spell_language();
-    if let Some(c) = checker_for(&lang) {
+    let langs = crate::ui::rich_editor::resolved_spell_languages();
+    if let Some(c) = checkers_for(&langs[..langs.len().min(1)]).first() {
         c.learn(word);
     }
 }
 
 /// Unlearn a word: enchant's own "remove" would blacklist it instead of
-/// forgetting it, so the personal list is rewritten without the word and the
-/// cached checker is dropped to reload the trimmed list. The message body
-/// applies the change at the next launch.
+/// forgetting it, so each active language's personal list is rewritten
+/// without the word (the body's Learn Spelling may have put it in any of
+/// them) and the cached checkers are dropped to reload the trimmed lists.
+/// The message body applies the change at the next launch.
 pub fn remove_personal_word(word: &str) {
-    let path = personal_dict_path();
-    let Ok(content) = std::fs::read_to_string(&path) else { return };
-    let kept: Vec<&str> =
-        content.lines().filter(|l| l.trim() != word && !l.trim().is_empty()).collect();
-    let mut out = kept.join("\n");
-    if !out.is_empty() {
-        out.push('\n');
+    for path in personal_dict_paths() {
+        let Ok(content) = std::fs::read_to_string(&path) else { continue };
+        let kept: Vec<&str> =
+            content.lines().filter(|l| l.trim() != word && !l.trim().is_empty()).collect();
+        let mut out = kept.join("\n");
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        let _ = std::fs::write(&path, out);
     }
-    let _ = std::fs::write(&path, out);
-    CHECKER.with(|c| *c.borrow_mut() = None);
+    reset_checkers();
 }
 
 #[cfg(test)]
 mod tests {
-    use super::checkable_words;
+    use super::{checkable_words, misspelled_in_all, resolve_languages, toggle_language};
 
     #[test]
     fn words_are_found_and_noise_is_skipped() {
@@ -443,5 +548,70 @@ mod tests {
             assert_eq!(&text[s..e], w);
         }
         assert_eq!(checkable_words(text).len(), 2);
+    }
+
+    fn codes(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn every_listed_language_resolves_once() {
+        let dicts = codes(&["de_DE", "en_GB", "en_US", "fr_FR"]);
+        assert_eq!(
+            resolve_languages("en_US, de_DE;fr_FR", None, &dicts),
+            ["en_US", "de_DE", "fr_FR"]
+        );
+        // Written twice, or twice through a same-language stand-in: once.
+        assert_eq!(resolve_languages("de_DE, de_DE", None, &dicts), ["de_DE"]);
+        assert_eq!(resolve_languages("de_AT, de_DE", None, &dicts), ["de_DE"]);
+    }
+
+    #[test]
+    fn a_missing_dictionary_falls_back_or_drops_out() {
+        let dicts = codes(&["de_DE", "en_GB"]);
+        // Same language, other region.
+        assert_eq!(resolve_languages("en_US, de_DE", None, &dicts), ["en_GB", "de_DE"]);
+        // No dictionary in that language: left out while another is there.
+        assert_eq!(resolve_languages("fi_FI, de_DE", None, &dicts), ["de_DE"]);
+        // Nothing usable at all: any dictionary beats checking nothing.
+        assert_eq!(resolve_languages("fi_FI", None, &dicts), ["de_DE"]);
+        // No dictionaries visible: the codes go through as written.
+        assert_eq!(resolve_languages("fi_FI, sv_SE", None, &[]), ["fi_FI", "sv_SE"]);
+    }
+
+    #[test]
+    fn an_empty_setting_follows_the_locale() {
+        let dicts = codes(&["de_DE", "en_US"]);
+        assert_eq!(resolve_languages("", Some("de_AT".into()), &dicts), ["de_DE"]);
+        assert_eq!(resolve_languages(" , ", None, &dicts), ["en_US"]);
+    }
+
+    #[test]
+    fn toggling_moves_between_the_system_language_and_a_list() {
+        let system = codes(&["en_US"]);
+        assert_eq!(toggle_language("", "de_DE", true, &system), "de_DE");
+        assert_eq!(toggle_language("de_DE", "fr_FR", true, &system), "de_DE, fr_FR");
+        assert_eq!(toggle_language("de_DE, fr_FR", "fr_FR", true, &system), "de_DE, fr_FR");
+        assert_eq!(toggle_language("de_DE, fr_FR", "de_DE", false, &system), "fr_FR");
+        // The last one off is the system language again.
+        assert_eq!(toggle_language("fr_FR", "fr_FR", false, &system), "");
+        // The system language on clears the list; off keeps what it checked.
+        assert_eq!(toggle_language("de_DE, fr_FR", "", true, &system), "");
+        assert_eq!(toggle_language("", "", false, &system), "en_US");
+        assert_eq!(toggle_language("de_DE", "", false, &system), "de_DE");
+    }
+
+    #[test]
+    fn a_word_is_correct_when_any_dictionary_knows_it() {
+        let en = ["hello", "world"];
+        let de = ["hallo", "welt"];
+        let both: [&[&str]; 2] = [&en, &de];
+        let rejects = |dict: &&[&str], w: &str| !dict.contains(&w);
+        assert!(!misspelled_in_all(&both, "hello", rejects));
+        assert!(!misspelled_in_all(&both, "welt", rejects));
+        assert!(misspelled_in_all(&both, "wrold", rejects));
+        // No dictionary at all flags nothing.
+        let none: [&[&str]; 0] = [];
+        assert!(!misspelled_in_all(&none, "wrold", rejects));
     }
 }

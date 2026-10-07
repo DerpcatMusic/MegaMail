@@ -1718,7 +1718,8 @@ msgstr "Importar ficheiro…"
 msgid "Syncing"
 msgstr "Sincronização"
 
-msgid "Instant new mail (IMAP push)"
+#, fuzzy
+msgid "Instant new mail (push)"
 msgstr "Receção imediata de novas mensagens (push IMAP)"
 
 msgid "Turn off for servers that stall on push connections."
@@ -3000,6 +3001,14 @@ msgstr "Não foi possível traduzir"
 msgid "Cannot send with OpenPGP"
 msgstr "Não é possível enviar com OpenPGP"
 
+#, fuzzy
+msgid "Check the address"
+msgstr "Verificar o endereço do campo De"
+
+#, fuzzy
+msgid "“{addr}” is not an email address."
+msgstr "“{address}” não é um endereço de e-mail."
+
 msgid "An attachment is missing"
 msgstr "Falta um anexo"
 
@@ -4111,6 +4120,9 @@ msgstr "A cada 15 minutos"
 msgid "Every 30 minutes"
 msgstr "A cada 30 minutos"
 
+msgid "System language — {language}"
+msgstr "Idioma do sistema — {language}"
+
 msgid "Drag to move"
 msgstr "Arraste para mover"
 
@@ -4267,8 +4279,10 @@ msgstr ""
 msgid "Check for new mail"
 msgstr "Procurar novas mensagens"
 
-msgid "Uses IMAP IDLE to receive messages the moment they arrive."
-msgstr "Utiliza IMAP IDLE para receber as mensagens assim que estas chegam."
+msgid ""
+"Receives messages the moment they arrive. Microsoft 365 accounts check at "
+"the interval above."
+msgstr ""
 
 msgid "Notifications"
 msgstr "Notificações"
@@ -4613,6 +4627,18 @@ msgstr ""
 "Reúne numa única lista os arquivos de todas as contas; ao expandir, mostra a "
 "pasta de cada conta."
 
+#, fuzzy
+msgid "Every account's junk mail as one list, opening to each account's own."
+msgstr ""
+"Reúne numa única lista as mensagens enviadas de todas as contas; ao "
+"expandir, mostra a pasta de cada conta."
+
+#, fuzzy
+msgid "Every account's trash as one list, opening to each account's own."
+msgstr ""
+"Reúne numa única lista os rascunhos de todas as contas; ao expandir, mostra "
+"a pasta de cada conta."
+
 msgid ""
 "List every folder your filter rules file into in a collapsible section of "
 "the unified view."
@@ -4699,6 +4725,14 @@ msgstr "A lista de contas sob a linha unificada Rascunhos."
 
 msgid "The account list under the unified Archive row."
 msgstr "A lista de contas sob a linha unificada Arquivo."
+
+#, fuzzy
+msgid "The account list under the unified Junk row."
+msgstr "A lista de contas sob a linha unificada Enviadas."
+
+#, fuzzy
+msgid "The account list under the unified Trash row."
+msgstr "A lista de contas sob a linha unificada Rascunhos."
 
 msgid "The folders under the Filters row."
 msgstr "As pastas sob a linha Filtros."
@@ -5238,11 +5272,9 @@ msgstr ""
 "As palavras com erros ortográficos no corpo da mensagem são sublinhadas; "
 "clique numa palavra com o botão direito para ver as correções."
 
-msgid "Language"
+#, fuzzy
+msgid "Languages"
 msgstr "Idioma"
-
-msgid "Dictionaries the app can see"
-msgstr "Dicionários visíveis para a aplicação"
 
 msgid "Added words"
 msgstr "Palavras adicionadas"
@@ -5338,6 +5370,9 @@ msgstr "Formato da data"
 
 msgid "Clock"
 msgstr "Relógio"
+
+msgid "Language"
+msgstr "Idioma"
 
 msgid ""
 "The language Hylki is shown in. \"System\" follows the desktop, with English "
@@ -5652,7 +5687,8 @@ msgstr "Abaixo das mensagens"
 msgid "Follows the reading order"
 msgstr "Segue a ordem de leitura"
 
-msgid "System language — {language}"
+#, fuzzy
+msgid "System language"
 msgstr "Idioma do sistema — {language}"
 
 msgid "Add a word"
@@ -5724,6 +5760,10 @@ msgstr "Conta {name} removida"
 
 msgid "Could not save the PDF: {error}"
 msgstr "Não foi possível guardar o PDF: {error}"
+
+#, fuzzy
+msgid "Spelling Language"
+msgstr "Ortografia"
 
 msgid "Send as Attachment Instead"
 msgstr "Enviar como anexo em alternativa"
@@ -5862,6 +5902,9 @@ msgstr "Inserir ligação"
 msgid "Insert"
 msgstr "Inserir"
 
+msgid "Favorites"
+msgstr ""
+
 msgid "Folder"
 msgstr "Pasta"
 
@@ -5931,6 +5974,12 @@ msgstr "Mostrar cada etiqueta"
 msgid "Long-press to expand or collapse"
 msgstr "Premir sem soltar para expandir ou recolher"
 
+msgid "Empty Trash…"
+msgstr "Esvaziar lixo…"
+
+msgid "Empty Junk…"
+msgstr "Esvaziar lixo eletrónico…"
+
 msgid "Show or hide filters"
 msgstr "Mostrar ou ocultar filtros"
 
@@ -5939,6 +5988,14 @@ msgstr "Mostrar ou ocultar etiquetas"
 
 msgid "Follow Settings: {sort}"
 msgstr "Seguir as definições: {sort}"
+
+#, fuzzy
+msgid "Remove from Favorites"
+msgstr "Remover filtro"
+
+#, fuzzy
+msgid "Add to Favorites"
+msgstr "Adicionar aos contactos"
 
 msgid "Apply Filters"
 msgstr "Aplicar filtros"
@@ -5956,12 +6013,6 @@ msgstr "Eliminar pasta…"
 #. of sight would still be where mail is filed to.
 msgid "Hide Folder"
 msgstr "Ocultar pasta"
-
-msgid "Empty Trash…"
-msgstr "Esvaziar lixo…"
-
-msgid "Empty Junk…"
-msgstr "Esvaziar lixo eletrónico…"
 
 msgid "Edit Tag…"
 msgstr "Editar etiqueta…"
@@ -6413,6 +6464,11 @@ msgstr ""
 msgid "no OpenPGP key for {addr}"
 msgstr "não existe uma chave OpenPGP para {addr}"
 
+msgid ""
+"This account has no IMAP server. Hylki can't use Exchange accounts from "
+"Online Accounts: remove it and add it as an IMAP or Microsoft 365 account."
+msgstr ""
+
 msgid "Could not delete message: {e}"
 msgstr "Não foi possível eliminar a mensagem: {e}"
 
@@ -6564,6 +6620,12 @@ msgstr "A caixa de entrada unificada no modo claro"
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid "Dictionaries the app can see"
+#~ msgstr "Dicionários visíveis para a aplicação"
+
+#~ msgid "Uses IMAP IDLE to receive messages the moment they arrive."
+#~ msgstr "Utiliza IMAP IDLE para receber as mensagens assim que estas chegam."
 
 #~ msgid "Load attachments from server"
 #~ msgstr "Carregar anexos do servidor"

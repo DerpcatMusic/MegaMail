@@ -1569,7 +1569,7 @@ msgstr ""
 msgid "Syncing"
 msgstr ""
 
-msgid "Instant new mail (IMAP push)"
+msgid "Instant new mail (push)"
 msgstr ""
 
 msgid "Turn off for servers that stall on push connections."
@@ -2703,6 +2703,12 @@ msgstr ""
 msgid "Cannot send with OpenPGP"
 msgstr ""
 
+msgid "Check the address"
+msgstr ""
+
+msgid "“{addr}” is not an email address."
+msgstr ""
+
 msgid "An attachment is missing"
 msgstr ""
 
@@ -3737,6 +3743,9 @@ msgstr ""
 msgid "Every 30 minutes"
 msgstr ""
 
+msgid "System language — {language}"
+msgstr ""
+
 msgid "Drag to move"
 msgstr ""
 
@@ -3872,7 +3881,9 @@ msgstr ""
 msgid "Check for new mail"
 msgstr ""
 
-msgid "Uses IMAP IDLE to receive messages the moment they arrive."
+msgid ""
+"Receives messages the moment they arrive. Microsoft 365 accounts check at "
+"the interval above."
 msgstr ""
 
 msgid "Notifications"
@@ -4148,6 +4159,12 @@ msgstr ""
 msgid "Every account's archive as one list, opening to each account's own."
 msgstr ""
 
+msgid "Every account's junk mail as one list, opening to each account's own."
+msgstr ""
+
+msgid "Every account's trash as one list, opening to each account's own."
+msgstr ""
+
 msgid ""
 "List every folder your filter rules file into in a collapsible section of "
 "the unified view."
@@ -4216,6 +4233,12 @@ msgid "The account list under the unified Drafts row."
 msgstr ""
 
 msgid "The account list under the unified Archive row."
+msgstr ""
+
+msgid "The account list under the unified Junk row."
+msgstr ""
+
+msgid "The account list under the unified Trash row."
 msgstr ""
 
 msgid "The folders under the Filters row."
@@ -4637,10 +4660,7 @@ msgid ""
 "corrections."
 msgstr ""
 
-msgid "Language"
-msgstr ""
-
-msgid "Dictionaries the app can see"
+msgid "Languages"
 msgstr ""
 
 msgid "Added words"
@@ -4711,6 +4731,9 @@ msgid "Date format"
 msgstr ""
 
 msgid "Clock"
+msgstr ""
+
+msgid "Language"
 msgstr ""
 
 msgid ""
@@ -4979,7 +5002,7 @@ msgstr ""
 msgid "Follows the reading order"
 msgstr ""
 
-msgid "System language — {language}"
+msgid "System language"
 msgstr ""
 
 msgid "Add a word"
@@ -5047,6 +5070,9 @@ msgid "Saved {name}"
 msgstr ""
 
 msgid "Could not save the PDF: {error}"
+msgstr ""
+
+msgid "Spelling Language"
 msgstr ""
 
 msgid "Send as Attachment Instead"
@@ -5174,6 +5200,9 @@ msgstr ""
 msgid "Insert"
 msgstr ""
 
+msgid "Favorites"
+msgstr ""
+
 msgid "Folder"
 msgstr ""
 
@@ -5243,6 +5272,12 @@ msgstr ""
 msgid "Long-press to expand or collapse"
 msgstr ""
 
+msgid "Empty Trash…"
+msgstr ""
+
+msgid "Empty Junk…"
+msgstr ""
+
 msgid "Show or hide filters"
 msgstr ""
 
@@ -5250,6 +5285,12 @@ msgid "Show or hide tags"
 msgstr ""
 
 msgid "Follow Settings: {sort}"
+msgstr ""
+
+msgid "Remove from Favorites"
+msgstr ""
+
+msgid "Add to Favorites"
 msgstr ""
 
 msgid "Apply Filters"
@@ -5267,12 +5308,6 @@ msgstr ""
 #. And hidden (#239): only a plain folder, since a role folder out
 #. of sight would still be where mail is filed to.
 msgid "Hide Folder"
-msgstr ""
-
-msgid "Empty Trash…"
-msgstr ""
-
-msgid "Empty Junk…"
 msgstr ""
 
 msgid "Edit Tag…"
@@ -5684,6 +5719,11 @@ msgid ""
 msgstr ""
 
 msgid "no OpenPGP key for {addr}"
+msgstr ""
+
+msgid ""
+"This account has no IMAP server. Hylki can't use Exchange accounts from "
+"Online Accounts: remove it and add it as an IMAP or Microsoft 365 account."
 msgstr ""
 
 msgid "Could not delete message: {e}"

@@ -16,10 +16,12 @@ use crate::oauth::Authorization;
 
 /// Open the sign-in for `settings` and hand `done` the request and the
 /// authorization code once the provider redirects, or why there is none
-/// (the window was closed, or the provider refused).
+/// (the window was closed, or the provider refused). `user` is the address
+/// being signed in, when known: it picks the identity broker's account.
 pub fn run(
     parent: Option<&gtk::Window>,
     settings: &OAuthSettings,
+    user: Option<String>,
     done: impl FnOnce(Result<(Authorization, String), String>) + 'static,
 ) {
     let extra = if settings.token_url.contains("microsoftonline") { "&prompt=select_account" } else { "" };
@@ -85,8 +87,27 @@ pub fn run(
             gtk::glib::Propagation::Proceed
         });
     }
-    if let Some(url) = request.borrow().as_ref().map(|r| r.url.clone()) {
-        view.load_uri(&url);
-    }
     window.present();
+    let Some(url) = request.borrow().as_ref().map(|r| r.url.clone()) else { return };
+    // Behind Conditional Access that wants a managed device, the identity
+    // broker's device cookie goes in first (#329, see `ms_broker`), as
+    // Evolution's sign-in window does it. Asking the broker can take a
+    // moment, so it is asked off the main thread; without one the page
+    // loads as it is.
+    let settings = settings.clone();
+    gtk::glib::spawn_future_local(async move {
+        let cookie = gtk::gio::spawn_blocking(move || crate::ms_broker::sso_cookie(&settings, user.as_deref()))
+            .await
+            .ok()
+            .flatten();
+        if let (Some(c), Some(jar)) = (cookie, session.cookie_manager()) {
+            let mut cookie = webkit6::soup::Cookie::new(&c.name, &c.value, "login.microsoftonline.com", "/", -1);
+            cookie.set_secure(true);
+            cookie.set_http_only(true);
+            if let Err(e) = jar.add_cookie_future(&cookie).await {
+                tracing::warn!(target: "hylki::oauth", "identity broker: the cookie was not taken: {e}");
+            }
+        }
+        view.load_uri(&url);
+    });
 }

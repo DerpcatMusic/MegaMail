@@ -1107,7 +1107,7 @@ pub(super) async fn run_graph(
                     }
                     Err(e) => {
                         emit(WorkerEvent::Status(String::new()));
-                        send_failed(cache.as_ref(), account_id, &account, &message, None, &e, &emit);
+                        send_failed(cache.as_ref(), account_id, &account, &message, None, &e, false, &emit);
                     }
                 }
             }

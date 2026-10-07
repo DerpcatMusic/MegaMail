@@ -611,6 +611,10 @@ pub enum ComposeOutput {
     /// Discarded, a new message that only automatic saves put in Drafts:
     /// take that copy out, and close.
     DiscardAutosave { id: u32, origin: DraftOrigin },
+    /// The spelling languages were changed from the body's right-click
+    /// menu (#365): the whole new setting, saved app-wide like the
+    /// Settings switches.
+    SetSpellcheckLangs(String),
 }
 
 #[relm4::component(pub)]
@@ -1159,6 +1163,13 @@ impl Component for Compose {
             });
         }
 
+        {
+            let s = sender.output_sender().clone();
+            editor.connect_spell_languages(move |langs| {
+                s.emit(ComposeOutput::SetSpellcheckLangs(langs));
+            });
+        }
+
         let mut model = Compose {
             accounts,
             editor,
@@ -1516,7 +1527,8 @@ impl Component for Compose {
             (&widgets.bcc_row, Field::Bcc),
         ] {
             let s = sender.clone();
-            row.connect_changed(move |_| {
+            row.connect_changed(move |row| {
+                row.remove_css_class("error");
                 s.input(ComposeInput::Suggest(field));
                 s.input(ComposeInput::MarkFieldsDirty);
             });
@@ -1527,6 +1539,7 @@ impl Component for Compose {
             focus.connect_leave(move |_| s.input(ComposeInput::CompletionClose));
             row.add_controller(focus);
         }
+        widgets.reply_to_row.connect_changed(|row| row.remove_css_class("error"));
         // Subject edits also count as dirtying the draft.
         let s = sender.clone();
         widgets
@@ -2651,6 +2664,32 @@ impl Component for Compose {
                     widgets.to_row.add_css_class("error");
                     break 'handle;
                 }
+                // The composer closes on Send, so an address the message
+                // cannot go to is caught here, while it can still be fixed
+                // (#368). Invisible characters pasted along with an address
+                // are taken out first, where the user can see the result.
+                let rows = [&widgets.to_row, &widgets.cc_row, &widgets.bcc_row, &widgets.reply_to_row];
+                for row in rows {
+                    if let Some(clean) = crate::worker::clean_recipient_field(&row.text()) {
+                        row.set_text(&clean);
+                    }
+                }
+                if let Some((row, addr)) = rows
+                    .into_iter()
+                    .find_map(|row| crate::worker::invalid_recipient(&row.text()).map(|addr| (row, addr)))
+                {
+                    row.add_css_class("error");
+                    let parent = widgets.to_row.root().and_downcast::<gtk::Window>();
+                    let dialog = adw::MessageDialog::new(
+                        parent.as_ref(),
+                        Some(&i18n("Check the address")),
+                        Some(&i18n_f("“{addr}” is not an email address.", &[("addr", &addr)])),
+                    );
+                    dialog.add_response("ok", &i18n("OK"));
+                    dialog.present();
+                    break 'handle;
+                }
+                let to = widgets.to_row.text().trim().to_string();
                 // A file moved or deleted since it was attached (#340): the
                 // composer closes on Send, so this is the last moment the
                 // message can still be fixed rather than lost.

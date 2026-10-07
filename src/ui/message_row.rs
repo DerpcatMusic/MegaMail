@@ -52,11 +52,12 @@ pub enum RowAction {
 /// one full drag (progress ±1.0) spans.
 pub const SWIPE_MAX: f64 = 120.0;
 
-/// How far a thread member's node dot reaches left of the row's content box
-/// (`.thread-node`: 8px wide, pulled 5px out by its negative margin, plus a
-/// 2px masking ring), where it sits centred on the group's rail. The last
-/// reply's rail stub reaches 2px the same way. The swipe surface's clip
-/// leaves this much room on the left, or both come out cut in half.
+/// How far a thread member's node dot reaches past the start of the row's
+/// content box (`.thread-node`: 8px wide, pulled 5px out by its negative
+/// margin, plus a 2px masking ring), where it sits centred on the group's
+/// rail. The last reply's rail stub reaches 2px the same way. The swipe
+/// surface's clip leaves this much room on that side, or both come out cut
+/// in half.
 const THREAD_NODE_REACH: f32 = 8.0;
 /// The single line's name columns, in pixels (#334): wide enough for most
 /// names, and fixed so the columns after them line up.
@@ -1141,7 +1142,10 @@ mod swipe_surface_imp {
             let obj = self.obj();
             let (w, h) = (obj.width() as f32, obj.height() as f32);
             let reach = super::THREAD_NODE_REACH;
-            snapshot.push_clip(&gtk::graphene::Rect::new(-reach, 0.0, w + reach, h));
+            // The rail runs down the start side: the right in a
+            // right-to-left window (#366).
+            let x = if obj.direction() == gtk::TextDirection::Rtl { 0.0 } else { -reach };
+            snapshot.push_clip(&gtk::graphene::Rect::new(x, 0.0, w + reach, h));
 
             let offset = self.visual_offset();
             if let (Some(bg), true) = (self.background(), offset != 0.0) {

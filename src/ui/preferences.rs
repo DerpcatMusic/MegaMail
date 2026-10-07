@@ -417,6 +417,77 @@ pub struct Preferences {
     /// but one set from `#[watch]` on every update hung GTK's list-item
     /// manager in the pre-warmed (unmapped) window.
     files_rows: Option<(adw::ComboRow, adw::ComboRow, adw::SpinRow)>,
+    /// Composing → Spelling → Languages, kept to follow a change made from
+    /// a composer's right-click menu (#365).
+    spell_langs: Option<SpellLangRows>,
+}
+
+/// The spelling language switches (#365): "System language", then one per
+/// installed dictionary, built a moment after the window is up. Moving
+/// them to match the setting fires their notify handlers like a click
+/// does; `syncing` tells the two apart.
+#[derive(Clone)]
+struct SpellLangRows {
+    expander: adw::ExpanderRow,
+    /// The setting the switches show: "" or "en_US, de_DE".
+    setting: Rc<std::cell::RefCell<String>>,
+    system: Rc<std::cell::RefCell<Option<adw::SwitchRow>>>,
+    dicts: Rc<std::cell::RefCell<Vec<(String, adw::SwitchRow)>>>,
+    syncing: Rc<std::cell::Cell<bool>>,
+}
+
+impl SpellLangRows {
+    fn new(expander: adw::ExpanderRow, setting: String) -> Self {
+        SpellLangRows {
+            expander,
+            setting: Rc::new(std::cell::RefCell::new(setting)),
+            system: Default::default(),
+            dicts: Default::default(),
+            syncing: Default::default(),
+        }
+    }
+
+    /// Show `setting` on the switches and in the row's subtitle.
+    fn show(&self, setting: &str) {
+        *self.setting.borrow_mut() = setting.to_string();
+        let chosen = crate::spell::parse_languages(setting);
+        self.syncing.set(true);
+        if let Some(row) = self.system.borrow().as_ref() {
+            row.set_active(chosen.is_empty());
+        }
+        for (code, row) in self.dicts.borrow().iter() {
+            row.set_active(chosen.contains(code));
+        }
+        self.syncing.set(false);
+        let subtitle = if chosen.is_empty() {
+            i18n_f(
+                "System language — {language}",
+                &[("language", &crate::ui::rich_editor::spell_language_names(
+                    &crate::ui::rich_editor::system_spell_languages(),
+                ))],
+            )
+        } else {
+            crate::ui::rich_editor::spell_language_names(&chosen)
+        };
+        self.expander.set_subtitle(&gtk::glib::markup_escape_text(&subtitle));
+    }
+
+    /// A switch was flipped by hand: the setting that results, after the
+    /// switches are moved to show it. `None` while they are being moved.
+    fn toggled(&self, code: &str, on: bool) -> Option<String> {
+        if self.syncing.get() {
+            return None;
+        }
+        let current = self.setting.borrow().clone();
+        let next = crate::spell::toggle_language(
+            &current,
+            code,
+            on,
+            &crate::ui::rich_editor::system_spell_languages(),
+        );
+        self.show(&next);
+        (next != current).then_some(next)
+    }
 }
 
 /// A drag-and-drop chip editor (Settings → Appearance → Toolbar, and
@@ -1003,6 +1074,8 @@ pub enum PrefInput {
     ChangeLinkBrowser(u32),
     /// The app changed the Files preferences (a dialog's "always do this").
     SetFilesPrefs(crate::config::FilesPrefs),
+    /// The spelling languages changed, possibly from a composer (#365).
+    SetSpellcheckLangs(String),
     /// Re-read the extension's state (the System page came into view; Files
     /// may have loaded the extension since).
     NautilusRefresh,
@@ -1034,11 +1107,15 @@ pub enum PrefInput {
     ToggleUnifiedChipStarred(bool),
     ToggleUnifiedChipDrafts(bool),
     ToggleUnifiedChipArchive(bool),
+    ToggleUnifiedChipJunk(bool),
+    ToggleUnifiedChipTrash(bool),
     ToggleUnifiedChipFiltered(bool),
     ToggleUnifiedStarred(bool),
     ToggleUnifiedSent(bool),
     ToggleUnifiedDrafts(bool),
     ToggleUnifiedArchive(bool),
+    ToggleUnifiedJunk(bool),
+    ToggleUnifiedTrash(bool),
     ToggleShowAccounts(bool),
     /// One of Focus Mode's switches.
     ToggleFocus(crate::config::FocusPart, bool),
@@ -1069,6 +1146,8 @@ pub enum PrefInput {
     ToggleRailFoldSent(bool),
     ToggleRailFoldDrafts(bool),
     ToggleRailFoldArchive(bool),
+    ToggleRailFoldJunk(bool),
+    ToggleRailFoldTrash(bool),
     ToggleRailFoldFiltered(bool),
     ToggleRailFoldTags(bool),
     ChangePreviewLines(u32),
@@ -1839,8 +1918,8 @@ impl Component for Preferences {
 
                                     #[name = "push_row"]
                                     adw::SwitchRow {
-                                        set_title: &i18n("Instant new mail (IMAP push)"),
-                                        set_subtitle: &i18n("Uses IMAP IDLE to receive messages the moment they arrive."),
+                                        set_title: &i18n("Instant new mail (push)"),
+                                        set_subtitle: &i18n("Receives messages the moment they arrive. Microsoft 365 accounts check at the interval above."),
                                         connect_active_notify[sender] => move |row| {
                                             let _ = sender.output(PrefOutput::SetPush(row.is_active()));
                                         },
@@ -2392,6 +2471,24 @@ impl Component for Preferences {
                                         },
                                     },
 
+                                    #[name = "unified_junk_row"]
+                                    adw::SwitchRow {
+                                        set_title: &i18n("Junk"),
+                                        set_subtitle: &i18n("Every account's junk mail as one list, opening to each account's own."),
+                                        connect_active_notify[sender] => move |row| {
+                                            sender.input(PrefInput::ToggleUnifiedJunk(row.is_active()));
+                                        },
+                                    },
+
+                                    #[name = "unified_trash_row"]
+                                    adw::SwitchRow {
+                                        set_title: &i18n("Trash"),
+                                        set_subtitle: &i18n("Every account's trash as one list, opening to each account's own."),
+                                        connect_active_notify[sender] => move |row| {
+                                            sender.input(PrefInput::ToggleUnifiedTrash(row.is_active()));
+                                        },
+                                    },
+
                                     #[name = "unified_filtered_row"]
                                     adw::SwitchRow {
                                         set_title: &i18n("Filters"),
@@ -2446,6 +2543,20 @@ impl Component for Preferences {
                                             set_title: &i18n("Archive"),
                                             connect_active_notify[sender] => move |row| {
                                                 sender.input(PrefInput::ToggleUnifiedChipArchive(row.is_active()));
+                                            },
+                                        },
+                                        #[name = "unified_chip_junk_row"]
+                                        add_row = &adw::SwitchRow {
+                                            set_title: &i18n("Junk"),
+                                            connect_active_notify[sender] => move |row| {
+                                                sender.input(PrefInput::ToggleUnifiedChipJunk(row.is_active()));
+                                            },
+                                        },
+                                        #[name = "unified_chip_trash_row"]
+                                        add_row = &adw::SwitchRow {
+                                            set_title: &i18n("Trash"),
+                                            connect_active_notify[sender] => move |row| {
+                                                sender.input(PrefInput::ToggleUnifiedChipTrash(row.is_active()));
                                             },
                                         },
                                         #[name = "unified_chip_filtered_row"]
@@ -2555,6 +2666,22 @@ impl Component for Preferences {
                                             set_subtitle: &i18n("The account list under the unified Archive row."),
                                             connect_active_notify[sender] => move |row| {
                                                 sender.input(PrefInput::ToggleRailFoldArchive(row.is_active()));
+                                            },
+                                        },
+                                        #[name = "rail_fold_junk_row"]
+                                        add_row = &adw::SwitchRow {
+                                            set_title: &i18n("Junk"),
+                                            set_subtitle: &i18n("The account list under the unified Junk row."),
+                                            connect_active_notify[sender] => move |row| {
+                                                sender.input(PrefInput::ToggleRailFoldJunk(row.is_active()));
+                                            },
+                                        },
+                                        #[name = "rail_fold_trash_row"]
+                                        add_row = &adw::SwitchRow {
+                                            set_title: &i18n("Trash"),
+                                            set_subtitle: &i18n("The account list under the unified Trash row."),
+                                            connect_active_notify[sender] => move |row| {
+                                                sender.input(PrefInput::ToggleRailFoldTrash(row.is_active()));
                                             },
                                         },
                                         #[name = "rail_fold_filtered_row"]
@@ -3238,10 +3365,12 @@ impl Component for Preferences {
                                         },
                                     },
 
+                                    // One switch per installed dictionary, filled
+                                    // in at init (#365); the subtitle names the
+                                    // languages in use.
                                     #[name = "spell_lang_row"]
-                                    adw::ComboRow {
-                                        set_title: &i18n("Language"),
-                                        set_subtitle: &i18n("Dictionaries the app can see"),
+                                    adw::ExpanderRow {
+                                        set_title: &i18n("Languages"),
                                     },
 
                                     // Words the user taught the checker ("Learn Spelling"
@@ -3649,6 +3778,7 @@ impl Component for Preferences {
             nautilus_cmd: crate::platform::nautilus_python_install_command(),
             files: init.files,
             files_rows: None,
+            spell_langs: None,
             browsers: crate::ui::launch::browsers(),
             notifications: init.notifications,
             notification_buttons: init.notification_buttons,
@@ -3798,12 +3928,16 @@ impl Component for Preferences {
         widgets.unified_chip_starred_row.set_active(init.unified_chips.starred);
         widgets.unified_chip_drafts_row.set_active(init.unified_chips.drafts);
         widgets.unified_chip_archive_row.set_active(init.unified_chips.archive);
+        widgets.unified_chip_junk_row.set_active(init.unified_chips.junk);
+        widgets.unified_chip_trash_row.set_active(init.unified_chips.trash);
         widgets.unified_chip_filtered_row.set_active(init.unified_chips.filtered);
         widgets.unified_filtered_row.set_active(init.unified_filtered);
         widgets.unified_starred_row.set_active(init.unified_kinds.starred);
         widgets.unified_sent_row.set_active(init.unified_kinds.sent);
         widgets.unified_drafts_row.set_active(init.unified_kinds.drafts);
         widgets.unified_archive_row.set_active(init.unified_kinds.archive);
+        widgets.unified_junk_row.set_active(init.unified_kinds.junk);
+        widgets.unified_trash_row.set_active(init.unified_kinds.trash);
         widgets.unified_tags_row.set_active(init.unified_tags);
         for (row, placement) in [
             (&widgets.filtered_placement_row, init.filtered_placement),
@@ -3844,6 +3978,8 @@ impl Component for Preferences {
         widgets.rail_fold_sent_row.set_active(init.rail_fold.sent);
         widgets.rail_fold_drafts_row.set_active(init.rail_fold.drafts);
         widgets.rail_fold_archive_row.set_active(init.rail_fold.archive);
+        widgets.rail_fold_junk_row.set_active(init.rail_fold.junk);
+        widgets.rail_fold_trash_row.set_active(init.rail_fold.trash);
         widgets.rail_fold_filtered_row.set_active(init.rail_fold.filtered);
         widgets.rail_fold_tags_row.set_active(init.rail_fold.tags);
         let preview_labels_owned = [i18n("Off"), i18n("1 line"), i18n("2 lines"), i18n("3 lines")];
@@ -4155,52 +4291,62 @@ impl Component for Preferences {
             crate::config::ReplyPosition::Follow => 2,
         });
         widgets.spellcheck_row.set_active(init.spellcheck);
-        // The language dropdown offers exactly what checking can use: the
+        // The language switches offer exactly what checking can use: the
         // installed dictionaries, behind a "System language" default. Typed
         // codes are gone — a language nobody has a dictionary for silently
-        // checks nothing, so only real options are offered (#114).
+        // checks nothing, so only real options are offered (#114). Any
+        // number of them can be on at once (#365).
         {
+            let rows = SpellLangRows::new(
+                widgets.spell_lang_row.clone(),
+                init.spellcheck_langs.clone(),
+            );
+            model.spell_langs = Some(rows.clone());
             // Listing the installed dictionaries reads several directories;
             // done a moment after the window is up, not before it.
-            let spell_lang_row = widgets.spell_lang_row.clone();
             let spelling_group = widgets.spelling_group.clone();
-            let spellcheck_langs = init.spellcheck_langs.clone();
             let sender = sender.clone();
             gtk::glib::idle_add_local_full(gtk::glib::Priority::LOW, move || {
-            let dicts = crate::ui::rich_editor::installed_dictionaries();
-            let list = gtk::StringList::new(&[]);
-            list.append(&i18n_f(
-                "System language — {language}",
-                &[("language", &crate::spell::language_display_name(
-                    &crate::ui::rich_editor::resolved_spell_language()
-                ))]
-            ));
-            for d in &dicts {
-                list.append(&crate::spell::language_display_name(d));
-            }
-            spell_lang_row.set_model(Some(&list));
-            let selected = dicts
-                .iter()
-                .position(|d| *d == spellcheck_langs)
-                .map(|i| i as u32 + 1)
-                .unwrap_or(0);
-            spell_lang_row.set_selected(selected);
-            if dicts.is_empty() {
-                spell_lang_row.set_sensitive(false);
-                spelling_group.set_description(Some(
-                    "No dictionaries are visible to the app. On Flatpak, add your \
-                     language with: flatpak config --set extra-languages <code>",
-                ));
-            }
-            let s = sender.clone();
-            // Connected after the initial set_selected, so restoring the
-            // saved choice doesn't immediately re-save it.
-            spell_lang_row.connect_selected_notify(move |row| {
-                let i = row.selected() as usize;
-                let code =
-                    if i == 0 { String::new() } else { dicts.get(i - 1).cloned().unwrap_or_default() };
-                let _ = s.output(PrefOutput::SetSpellcheckLangs(code));
-            });
+                let dicts = crate::ui::rich_editor::installed_dictionaries();
+                let system = adw::SwitchRow::builder()
+                    .title(i18n("System language"))
+                    .subtitle(gtk::glib::markup_escape_text(
+                        &crate::ui::rich_editor::spell_language_names(
+                            &crate::ui::rich_editor::system_spell_languages(),
+                        ),
+                    ))
+                    .build();
+                rows.expander.add_row(&system);
+                *rows.system.borrow_mut() = Some(system.clone());
+                for d in &dicts {
+                    let row = adw::SwitchRow::builder()
+                        .title(gtk::glib::markup_escape_text(&crate::spell::language_display_name(d)))
+                        .build();
+                    rows.expander.add_row(&row);
+                    rows.dicts.borrow_mut().push((d.clone(), row));
+                }
+                let current = rows.setting.borrow().clone();
+                rows.show(&current);
+                if dicts.is_empty() {
+                    rows.expander.set_sensitive(false);
+                    spelling_group.set_description(Some(
+                        "No dictionaries are visible to the app. On Flatpak, add your \
+                         language with: flatpak config --set extra-languages <code>",
+                    ));
+                }
+                // Connected after the switches show the saved choice, and
+                // guarded besides, so showing it never saves it again.
+                let switches = std::iter::once((String::new(), system))
+                    .chain(rows.dicts.borrow().iter().cloned())
+                    .collect::<Vec<_>>();
+                for (code, row) in switches {
+                    let (rows, s) = (rows.clone(), sender.clone());
+                    row.connect_active_notify(move |row| {
+                        if let Some(next) = rows.toggled(&code, row.is_active()) {
+                            let _ = s.output(PrefOutput::SetSpellcheckLangs(next));
+                        }
+                    });
+                }
                 gtk::glib::ControlFlow::Break
             });
         }
@@ -4579,6 +4725,13 @@ impl Component for Preferences {
                     }
                 }
             }
+            PrefInput::SetSpellcheckLangs(langs) => {
+                if let Some(rows) = self.spell_langs.as_ref() {
+                    if *rows.setting.borrow() != langs {
+                        rows.show(&langs);
+                    }
+                }
+            }
             PrefInput::NautilusRestartFiles => {
                 if let Err(e) = crate::nautilus_ext::quit_files() {
                     report(root, &i18n("Could not restart Files"), &e);
@@ -4744,6 +4897,14 @@ impl Component for Preferences {
                 self.unified_chips.archive = on;
                 let _ = sender.output(PrefOutput::SetUnifiedChips(self.unified_chips));
             }
+            PrefInput::ToggleUnifiedChipJunk(on) => {
+                self.unified_chips.junk = on;
+                let _ = sender.output(PrefOutput::SetUnifiedChips(self.unified_chips));
+            }
+            PrefInput::ToggleUnifiedChipTrash(on) => {
+                self.unified_chips.trash = on;
+                let _ = sender.output(PrefOutput::SetUnifiedChips(self.unified_chips));
+            }
             PrefInput::ToggleUnifiedChipFiltered(on) => {
                 self.unified_chips.filtered = on;
                 let _ = sender.output(PrefOutput::SetUnifiedChips(self.unified_chips));
@@ -4762,6 +4923,14 @@ impl Component for Preferences {
             }
             PrefInput::ToggleUnifiedArchive(on) => {
                 self.unified_kinds.archive = on;
+                let _ = sender.output(PrefOutput::SetUnifiedKinds(self.unified_kinds));
+            }
+            PrefInput::ToggleUnifiedJunk(on) => {
+                self.unified_kinds.junk = on;
+                let _ = sender.output(PrefOutput::SetUnifiedKinds(self.unified_kinds));
+            }
+            PrefInput::ToggleUnifiedTrash(on) => {
+                self.unified_kinds.trash = on;
                 let _ = sender.output(PrefOutput::SetUnifiedKinds(self.unified_kinds));
             }
             PrefInput::MountPages => self.mount_pages(),
@@ -4914,6 +5083,14 @@ impl Component for Preferences {
             }
             PrefInput::ToggleRailFoldArchive(on) => {
                 self.rail_fold.archive = on;
+                let _ = sender.output(PrefOutput::SetRailFold(self.rail_fold));
+            }
+            PrefInput::ToggleRailFoldJunk(on) => {
+                self.rail_fold.junk = on;
+                let _ = sender.output(PrefOutput::SetRailFold(self.rail_fold));
+            }
+            PrefInput::ToggleRailFoldTrash(on) => {
+                self.rail_fold.trash = on;
                 let _ = sender.output(PrefOutput::SetRailFold(self.rail_fold));
             }
             PrefInput::ToggleRailFoldFiltered(on) => {

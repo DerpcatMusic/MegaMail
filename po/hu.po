@@ -1710,7 +1710,8 @@ msgstr "Fájl importálása…"
 msgid "Syncing"
 msgstr "Szinkronizálás"
 
-msgid "Instant new mail (IMAP push)"
+#, fuzzy
+msgid "Instant new mail (push)"
 msgstr "Az új levelek azonnali megjelenítése (IMAP push)"
 
 msgid "Turn off for servers that stall on push connections."
@@ -3002,6 +3003,13 @@ msgid "Cannot send with OpenPGP"
 msgstr "Nem lehet küldeni OpenPGP-vel"
 
 #, fuzzy
+msgid "Check the address"
+msgstr "Feladó címe"
+
+msgid "“{addr}” is not an email address."
+msgstr ""
+
+#, fuzzy
 msgid "An attachment is missing"
 msgstr "{n} melléklet"
 
@@ -4127,6 +4135,9 @@ msgstr "15 percenként"
 msgid "Every 30 minutes"
 msgstr "30 percenként"
 
+msgid "System language — {language}"
+msgstr "Rendszer nyelve — {language}"
+
 msgid "Drag to move"
 msgstr "Húzás ide move"
 
@@ -4285,10 +4296,10 @@ msgstr ""
 msgid "Check for new mail"
 msgstr "Új levelek keresése"
 
-msgid "Uses IMAP IDLE to receive messages the moment they arrive."
+msgid ""
+"Receives messages the moment they arrive. Microsoft 365 accounts check at "
+"the interval above."
 msgstr ""
-"Az IMAP IDLE funkciót használja az üzenetek érkezésük pillanatában történő "
-"fogadására."
 
 msgid "Notifications"
 msgstr "Értesítések"
@@ -4630,6 +4641,18 @@ msgstr ""
 "Minden fiók archívuma egyetlen listában jelenik meg, amelyből az egyes "
 "fiókok saját archívumai nyithatók meg."
 
+#, fuzzy
+msgid "Every account's junk mail as one list, opening to each account's own."
+msgstr ""
+"Minden fiók elküldött levelei egyetlen listában jelennek meg, amely az egyes "
+"fiókok saját listájára nyílik."
+
+#, fuzzy
+msgid "Every account's trash as one list, opening to each account's own."
+msgstr ""
+"Minden fiók vázlatai egyetlen listában jelennek meg, amely az egyes fiókok "
+"saját vázlataihoz nyílik."
+
 msgid ""
 "List every folder your filter rules file into in a collapsible section of "
 "the unified view."
@@ -4717,6 +4740,14 @@ msgstr "A fióklista az egységes „Piszkozatok” sor alatt."
 
 msgid "The account list under the unified Archive row."
 msgstr "A fiókok listája az „Archívum” egységes sor alatt."
+
+#, fuzzy
+msgid "The account list under the unified Junk row."
+msgstr "A fióklista az egységesített „Elküldve” sor alatt."
+
+#, fuzzy
+msgid "The account list under the unified Trash row."
+msgstr "A fióklista az egységes „Piszkozatok” sor alatt."
 
 msgid "The folders under the Filters row."
 msgstr "A „Szűrők” sor alatt található mappák."
@@ -5244,11 +5275,9 @@ msgstr ""
 "Az üzenet törzsében a hibásan írt szavak alá vannak húzva; a javításokhoz "
 "kattintson jobb gombbal egy szóra."
 
-msgid "Language"
+#, fuzzy
+msgid "Languages"
 msgstr "Nyelv"
-
-msgid "Dictionaries the app can see"
-msgstr "Az alkalmazás által elérhető szótárak"
 
 msgid "Added words"
 msgstr "Hozzáadott szavak"
@@ -5346,6 +5375,9 @@ msgstr "Dátumformátum"
 
 msgid "Clock"
 msgstr "Óra"
+
+msgid "Language"
+msgstr "Nyelv"
 
 msgid ""
 "The language Hylki is shown in. \"System\" follows the desktop, with English "
@@ -5665,7 +5697,8 @@ msgstr "Az üzenetek alatt"
 msgid "Follows the reading order"
 msgstr "Az olvasási sorrendet követi"
 
-msgid "System language — {language}"
+#, fuzzy
+msgid "System language"
 msgstr "Rendszer nyelve — {language}"
 
 msgid "Add a word"
@@ -5737,6 +5770,10 @@ msgstr "Eltávolítva: {name}"
 
 msgid "Could not save the PDF: {error}"
 msgstr "A PDF nem menthető: {error}"
+
+#, fuzzy
+msgid "Spelling Language"
+msgstr "Helyesírás"
 
 msgid "Send as Attachment Instead"
 msgstr "Küldés inkább mellékletként"
@@ -5875,6 +5912,9 @@ msgstr "Hivatkozás Beszúrása"
 msgid "Insert"
 msgstr "Beszúrás"
 
+msgid "Favorites"
+msgstr ""
+
 msgid "Folder"
 msgstr "Mappa"
 
@@ -5944,6 +5984,12 @@ msgstr "Minden címke megjelenítése"
 msgid "Long-press to expand or collapse"
 msgstr "Hosszú gombnyomással kibontható vagy összecsukható"
 
+msgid "Empty Trash…"
+msgstr "Kuka kiürítése…"
+
+msgid "Empty Junk…"
+msgstr "Levélszemét kiürítése…"
+
 msgid "Show or hide filters"
 msgstr "Szűrők megjelenítése vagy elrejtése"
 
@@ -5952,6 +5998,14 @@ msgstr "Címkék megjelenítése vagy elrejtése"
 
 msgid "Follow Settings: {sort}"
 msgstr "Beállítások követése: {sort}"
+
+#, fuzzy
+msgid "Remove from Favorites"
+msgstr "Szűrő eltávolítása"
+
+#, fuzzy
+msgid "Add to Favorites"
+msgstr "Hozzáadás a névjegyekhez"
 
 msgid "Apply Filters"
 msgstr "Szűrők alkalmazása"
@@ -5969,12 +6023,6 @@ msgstr "Mappa törlése…"
 #. of sight would still be where mail is filed to.
 msgid "Hide Folder"
 msgstr "Mappa elrejtése"
-
-msgid "Empty Trash…"
-msgstr "Kuka kiürítése…"
-
-msgid "Empty Junk…"
-msgstr "Levélszemét kiürítése…"
 
 msgid "Edit Tag…"
 msgstr "Címke szerkesztése…"
@@ -6432,6 +6480,11 @@ msgstr ""
 msgid "no OpenPGP key for {addr}"
 msgstr "nincs OpenPGP-kulcs ehhez: {addr}"
 
+msgid ""
+"This account has no IMAP server. Hylki can't use Exchange accounts from "
+"Online Accounts: remove it and add it as an IMAP or Microsoft 365 account."
+msgstr ""
+
 msgid "Could not delete message: {e}"
 msgstr "Az üzenet nem törölhető: {e}"
 
@@ -6588,6 +6641,14 @@ msgstr "Az egységes beérkező levelek mappa világos üzemmódban"
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid "Dictionaries the app can see"
+#~ msgstr "Az alkalmazás által elérhető szótárak"
+
+#~ msgid "Uses IMAP IDLE to receive messages the moment they arrive."
+#~ msgstr ""
+#~ "Az IMAP IDLE funkciót használja az üzenetek érkezésük pillanatában "
+#~ "történő fogadására."
 
 #~ msgid "Load attachments from server"
 #~ msgstr "Mellékletek betöltése a kiszolgálóról"

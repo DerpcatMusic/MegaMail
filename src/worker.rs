@@ -811,11 +811,37 @@ fn cache_lane(
     protocol: Option<crate::config::Protocol>,
     mut rx: mpsc::UnboundedReceiver<MailRequest>,
     tx: mpsc::UnboundedSender<MailRequest>,
-    emit: impl Fn(WorkerEvent),
+    emit: impl Fn(WorkerEvent) + Clone + Send + 'static,
 ) {
     let cache = protocol.and_then(|_| {
         Cache::open().map_err(|e| tracing::warn!("cache lane unavailable: {e}")).ok()
     });
+    // Filling the list's conversation badges may scan the account once per
+    // thread. It must not hold cached bodies, or even cache misses, behind it.
+    // Give that work its own WAL reader; forwarded network requests keep their
+    // original ordering in this lane.
+    let summary_cache = cache.as_ref()
+        .filter(|_| protocol != Some(crate::config::Protocol::Pop3))
+        .and_then(|c| c.read_connection().ok());
+    let summaries = if let Some(cache) = summary_cache {
+        let (tx, mut rx) = mpsc::unbounded_channel::<Vec<(String, Vec<String>)>>();
+        let emit = emit.clone();
+        std::thread::Builder::new()
+            .name(format!("hylki-threads-{account_id}"))
+            .spawn(move || {
+                while let Some(groups) = rx.blocking_recv() {
+                    let start = std::time::Instant::now();
+                    let summaries = thread_summaries_with_members(&cache, account_id, &groups);
+                    tracing::debug!(account_id, groups = groups.len(), elapsed = ?start.elapsed(),
+                        "conversation badges loaded");
+                    emit(WorkerEvent::ThreadSummaries { summaries });
+                }
+            })
+            .expect("failed to spawn conversation cache thread");
+        Some(tx)
+    } else {
+        None
+    };
     while let Some(req) = rx.blocking_recv() {
         let Some(c) = cache.as_ref() else {
             if tx.send(req).is_err() {
@@ -868,9 +894,17 @@ fn cache_lane(
             MailRequest::LoadThreadSummaries { groups }
                 if protocol != Some(crate::config::Protocol::Pop3) =>
             {
-                emit(WorkerEvent::ThreadSummaries {
-                    summaries: thread_summaries_with_members(c, account_id, &groups),
-                });
+                // Fall back to the existing lane if the extra cache connection
+                // could not open. Do not lose the list's response.
+                let fallback = match summaries.as_ref() {
+                    Some(tx) => tx.send(groups).err().map(|e| e.0),
+                    None => Some(groups),
+                };
+                if let Some(groups) = fallback {
+                    emit(WorkerEvent::ThreadSummaries {
+                        summaries: thread_summaries_with_members(c, account_id, &groups),
+                    });
+                }
                 None
             }
             other => Some(other),
@@ -1011,6 +1045,12 @@ fn is_list_load(req: &MailRequest) -> bool {
     matches!(req, MailRequest::LoadMessages { .. } | MailRequest::SyncFolder { .. })
 }
 
+/// Refresh ticks now only schedule idle work, so they are no longer a
+/// barrier between a reader and a folder sync already in the backlog.
+fn can_yield_to_reader(req: &MailRequest) -> bool {
+    is_list_load(req) || matches!(req, MailRequest::RefreshUnread)
+}
+
 /// Take everything else already queued behind `first` and move the reader's
 /// loads ahead of the list syncs they sit behind, keeping every other order.
 ///
@@ -1019,8 +1059,8 @@ fn is_list_load(req: &MailRequest) -> bool {
 /// asks every account for its inbox, then opens the mail) waited for the
 /// whole list fetch — and the IDLE hand-off before it — before its body was
 /// even asked for. The body is what the user is looking at; the list can
-/// follow. A reader load only overtakes list fetches: it never passes a
-/// move, a flag change or a reconnect, so what it reads is what the
+/// follow. A reader load overtakes lists and deferred refresh ticks, never a
+/// move, flag change or reconnect, so what it reads is what the
 /// requests before it left.
 fn reorder_reader_loads(
     first: MailRequest,
@@ -1037,9 +1077,9 @@ fn reorder_reader_loads(
         let mut ordered: Vec<MailRequest> = Vec::with_capacity(queue.len());
         for req in queue {
             if is_reader_load(&req) {
-                // Slot in ahead of the run of list fetches at the tail.
+                // Slot in ahead of list fetches and deferred refresh ticks.
                 let mut at = ordered.len();
-                while at > 0 && is_list_load(&ordered[at - 1]) {
+                while at > 0 && can_yield_to_reader(&ordered[at - 1]) {
                     at -= 1;
                 }
                 ordered.insert(at, req);
@@ -1053,6 +1093,34 @@ fn reorder_reader_loads(
     let first = it.next().expect("queue holds at least the request taken");
     backlog.extend(it);
     first
+}
+
+/// Let a reader interrupt network reads, without overtaking queued mutations.
+/// Callers must own the session inside `work`, so cancellation drops a partially
+/// consumed IMAP response, and restore the interrupted job for a later retry.
+/// The reader then reconnects rather than reusing that response stream.
+async fn interrupt_read_for_reader<F: std::future::Future>(
+    work: F,
+    rx: &mut mpsc::UnboundedReceiver<MailRequest>,
+    backlog: &mut std::collections::VecDeque<MailRequest>,
+) -> Option<F::Output> {
+    tokio::pin!(work);
+    let mut closed = false;
+    loop {
+        tokio::select! {
+            result = &mut work => return Some(result),
+            req = rx.recv(), if !closed => {
+                let Some(req) = req else { closed = true; continue; };
+                let interrupt = is_reader_load(&req) && backlog.iter().all(|r| {
+                    is_reader_load(r) || can_yield_to_reader(r)
+                });
+                backlog.push_back(req);
+                if interrupt {
+                    return None;
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1172,7 +1240,7 @@ async fn run_imap(
     let push_enabled = account.push.unwrap_or_else(|| crate::config::load_privacy().push);
     let mut idle_folder: Option<(u32, String)> = None;
     // When the other folders' unread chips were last re-checked (None = not
-    // yet this session; connect_and_list's full listing covers startup itself).
+    // yet this session; the first idle pass counts the startup listing).
     let mut last_unread_sweep: Option<std::time::Instant> = None;
     // When the Junk / Trash auto-empty (#140) last ran for this connection.
     let mut last_auto_empty: Option<std::time::Instant> = None;
@@ -1193,7 +1261,9 @@ async fn run_imap(
     // owed: IDLE waking, or a sweep a request interrupted. It runs from the
     // idle chain below, after the new mail's body prefetch, never inline.
     let mut sweep_pending: Vec<crate::models::Folder> = Vec::new();
-    let mut sweep_due = false;
+    // Count folders from the idle chain, after queued reader requests.
+    let mut sweep_due = true;
+    let mut folder_refresh_due = false;
     // Set after prefetching; triggers one re-sync (to catch mail that arrived
     // while the connection was busy) before settling into the long IDLE.
     let mut pending_resync = false;
@@ -1272,30 +1342,8 @@ async fn run_imap(
                             emit.clone(),
                         ));
                     }
-                    // Seed the sweep baseline now rather than at the first
-                    // timer tick, so the very first change a sweep sees —
-                    // maybe the user's own manual refresh minutes from now —
-                    // already has something to differ from and earns its
-                    // folder a watcher. Also the first accurate (searched,
-                    // not STATUSed) chip pass for servers where STATUS lies.
-                    if let Some(sess) = session.as_mut() {
-                        let (changed, complete) = refresh_unread_counts(
-                            account_id,
-                            sess,
-                            cache.as_ref(),
-                            idle_folder.as_ref().map(|(_, p)| p.as_str()),
-                            &mut sweep_baseline,
-                            &mut sweep_pending,
-                            &rx,
-                            &emit,
-                        )
-                        .await;
-                        sweep_due = !complete;
-                        last_unread_sweep = Some(std::time::Instant::now());
-                        watch_changed_folders(&mut watchers, &account, &changed, &emit);
-                        auto_empty_imap(account_id, &account, sess, cache.as_ref(), &mut last_auto_empty, &emit)
-                            .await;
-                    }
+                    // The initial sweep is already owed. Seed its baseline in
+                    // the idle chain, after the startup reader requests.
                 }
                 // Connected but the listing hasn't landed in the cache yet
                 // (fresh account, first moments): check again next pass.
@@ -1315,7 +1363,8 @@ async fn run_imap(
                 if !body_prefetch.is_empty() {
                     // Highest priority: get new mail's body cached so opening it is
                     // instant (no network wait).
-                    run_one_body_prefetch(
+                    let interrupted_body = body_prefetch.front().cloned();
+                    let result = interrupt_read_for_reader(run_one_body_prefetch(
                         &mut body_prefetch,
                         &mut session,
                         &account,
@@ -1323,8 +1372,21 @@ async fn run_imap(
                         cache.as_ref(),
                         &mut body_emitted,
                         &emit,
-                    )
-                    .await;
+                    ), &mut rx, &mut backlog).await;
+                    if result.is_none() {
+                        if let Some(body) = interrupted_body {
+                            if !body_prefetch.contains(&body) {
+                                body_prefetch.push_front(body);
+                            }
+                        }
+                        tracing::debug!(account_id, "body prefetch yielded to the reader");
+                    }
+                    continue;
+                } else if folder_refresh_due && session.is_some() {
+                    folder_refresh_due = false;
+                    refresh_folder_names(
+                        account_id, &account, session.as_mut().unwrap(), cache.as_ref(), &emit,
+                    ).await;
                     continue;
                 } else if sweep_due && session.is_some() {
                     // The unread chips' re-count, owed since IDLE last woke
@@ -1346,6 +1408,9 @@ async fn run_imap(
                     if complete {
                         sweep_due = false;
                         last_unread_sweep = Some(std::time::Instant::now());
+                        auto_empty_imap(
+                            account_id, &account, sess, cache.as_ref(), &mut last_auto_empty, &emit,
+                        ).await;
                     }
                     continue;
                 } else if !prefetch.is_empty() {
@@ -1409,7 +1474,11 @@ async fn run_imap(
                             }
                         }
                     } else {
-                        run_one_backfill(
+                        // The job owns its remaining UIDs while pending. Keep
+                        // its original place so cancelling a network read cannot
+                        // skip a chunk of the search index.
+                        let interrupted_job = backfill.front().cloned();
+                        let result = interrupt_read_for_reader(run_one_backfill(
                             &mut backfill,
                             &mut session,
                             &account,
@@ -1418,8 +1487,13 @@ async fn run_imap(
                             &mut prefetch,
                             &mut use_envelope,
                             &emit,
-                        )
-                        .await;
+                        ), &mut rx, &mut backlog).await;
+                        if result.is_none() {
+                            if let Some(job) = interrupted_job {
+                                tracing::debug!(account_id, "background index yielded to the reader");
+                                restore_interrupted_backfill(&mut backfill, job);
+                            }
+                        }
                         continue;
                     }
                 } else if push_enabled && session.is_some() && idle_folder.is_some() {
@@ -1427,7 +1501,7 @@ async fn run_imap(
                     // Catch mail delivered while the connection was busy prefetching.
                     if pending_resync {
                         pending_resync = false;
-                        if let Ok(messages) = load_messages_retry(
+                        let result = interrupt_read_for_reader(load_messages_retry(
                             account_id,
                             &mut session,
                             &account,
@@ -1435,9 +1509,13 @@ async fn run_imap(
                             &fpath,
                             &mut use_envelope,
                             cache.as_ref(),
-                        )
-                        .await
-                        {
+                        ), &mut rx, &mut backlog).await;
+                        if result.is_none() {
+                            pending_resync = true;
+                            tracing::debug!(account_id, "idle resync yielded to the reader");
+                            continue;
+                        }
+                        if let Some(Ok(messages)) = result {
                             if let Some(c) = cache.as_ref() {
                                 c.upsert_messages(account_id, &fpath, &messages);
                             }
@@ -1512,6 +1590,7 @@ async fn run_imap(
 
         if matches!(req, MailRequest::Reconnect) {
             session = connect_and_list(account_id, &account, cache.as_ref(), &emit).await;
+            sweep_due = true;
             continue;
         }
         // Answered offline too: a move that could not run has still settled.
@@ -1630,6 +1709,14 @@ async fn run_imap(
         let mut lost = false;
         // A background resync keeps quiet and leaves IDLE/watching alone.
         let background = matches!(req, MailRequest::SyncFolder { .. });
+        let invalidates_selection = matches!(&req,
+            MailRequest::RenameFolder { .. } | MailRequest::DeleteFolder { .. }
+                | MailRequest::DeleteAttachment { .. });
+        if invalidates_selection {
+            if let Some(sess) = session.as_mut() {
+                sess.as_mut().set_selected_folder(None);
+            }
+        }
 
         match req {
             // Served from cache before this network match; never reached here.
@@ -1643,17 +1730,24 @@ async fn run_imap(
                 // index); the background backfill indexes the rest of the folder.
                 // Reads retry once across a reconnect, so an idle-dropped session
                 // recovers transparently instead of surfacing an EOF.
-                match load_messages_retry(
-                    account_id,
-                    &mut session,
-                    &account,
-                    folder_id,
-                    &path,
-                    &mut use_envelope,
-                    cache.as_ref(),
-                )
-                .await
-                {
+                let result = interrupt_read_for_reader(
+                    load_messages_retry(
+                        account_id, &mut session, &account, folder_id, &path,
+                        &mut use_envelope, cache.as_ref(),
+                    ),
+                    &mut rx,
+                    &mut backlog,
+                ).await;
+                let Some(result) = result else {
+                    tracing::debug!("folder sync yielded to the reader: {path}");
+                    backlog.push_back(if background {
+                        MailRequest::SyncFolder { folder_id, path }
+                    } else {
+                        MailRequest::LoadMessages { folder_id, path }
+                    });
+                    continue;
+                };
+                match result {
                     Ok(messages) => {
                         if let Some(c) = cache.as_ref() {
                             // Upsert (not replace) so the background-indexed tail
@@ -1943,27 +2037,13 @@ async fn run_imap(
             }
 
             MailRequest::RefreshUnread => {
-                let sess = session.as_mut().unwrap();
-                // The folder list too: a folder another client created, renamed
-                // or moved was otherwise only seen at the next connect. An
-                // unchanged list repaints nothing.
-                refresh_folders(account_id, &account, sess, cache.as_ref(), &emit).await;
-                let (changed, complete) = refresh_unread_counts(
-                    account_id,
-                    sess,
-                    cache.as_ref(),
-                    idle_folder.as_ref().map(|(_, p)| p.as_str()),
-                    &mut sweep_baseline,
-                    &mut sweep_pending,
-                    &rx,
-                    &emit,
-                )
-                .await;
-                sweep_due = !complete;
-                last_unread_sweep = Some(std::time::Instant::now());
-                watch_changed_folders(&mut watchers, &account, &changed, &emit);
-                auto_empty_imap(account_id, &account, sess, cache.as_ref(), &mut last_auto_empty, &emit)
-                    .await;
+                // reorder_reader_loads has moved queued requests into backlog,
+                // so rx alone cannot tell a sweep that the reader is waiting.
+                // Defer both the listing and counts to the idle chain, which
+                // runs only after backlog and rx have drained. Repeated refresh
+                // ticks coalesce instead of queuing another mailbox-wide walk.
+                folder_refresh_due = true;
+                sweep_due = true;
             }
 
             MailRequest::MarkSpam { path, uid, dest } => {
@@ -2602,7 +2682,7 @@ async fn run_imap(
                     }
                     Err(e) => {
                         emit(WorkerEvent::Status(String::new()));
-                        send_failed(cache.as_ref(), account_id, &account, &message, sent_path.as_deref(), &e.to_string(), &emit);
+                        send_failed(cache.as_ref(), account_id, &account, &message, sent_path.as_deref(), &e.to_string(), smtp_refused(&e), &emit);
                     }
                 }
             }
@@ -2701,6 +2781,11 @@ async fn run_imap(
             MailRequest::Reconnect | MailRequest::Settle { .. } => unreachable!("handled above"),
         }
 
+        if invalidates_selection {
+            if let Some(sess) = session.as_mut() {
+                sess.as_mut().set_selected_folder(None);
+            }
+        }
         if lost {
             session = None;
         }
@@ -2732,7 +2817,10 @@ async fn connect_and_list(
                 label: account.display_label(),
                 accent: accent_for(account_id).into(),
             }));
-            match list_folders(account_id, &mut session, &account.folder_roles, &account.hidden_folders).await {
+            let cached = cache.map(|c| c.load_folders(account_id)).unwrap_or_default();
+            match list_folder_metadata(
+                account_id, &mut session, &account.folder_roles, &account.hidden_folders, Some(&cached),
+            ).await {
                 // An empty LIST can't be right — INBOX always exists (RFC
                 // 3501). Keep whatever the cache has instead of wiping it.
                 Ok(folders) if folders.is_empty() => {}
@@ -2975,7 +3063,7 @@ async fn load_source(
     path: &str,
     uid: u32,
 ) -> Result<String, async_imap::error::Error> {
-    sel(session, path).await?;
+    select_for_read(session, path).await?;
     let raw = fetch_raw_message(session, uid).await?.ok_or_else(|| no_content_error(uid))?;
     Ok(String::from_utf8_lossy(&raw).into_owned())
 }
@@ -3640,7 +3728,7 @@ async fn load_raw(
     path: &str,
     uid: u32,
 ) -> Result<Vec<u8>, async_imap::error::Error> {
-    sel(session, path).await?;
+    select_for_read(session, path).await?;
     fetch_raw_message(session, uid).await?.ok_or_else(|| no_content_error(uid))
 }
 
@@ -3923,6 +4011,9 @@ fn drop_superseded_outbox(
 /// here is gone (issue #15). Being offline is the usual reason, which is
 /// exactly when saving to the server's Drafts folder would fail too. With no
 /// cache there is nowhere to keep it, and the error must not claim otherwise.
+/// `refused` is a server that read the message and said no, to a recipient
+/// most often (#368). Sending it again would only fail again, so the message
+/// goes back to the composer to be fixed, not to the Outbox to wait.
 fn send_failed(
     cache: Option<&Cache>,
     account_id: u32,
@@ -3930,9 +4021,10 @@ fn send_failed(
     msg: &OutgoingMessage,
     sent_path: Option<&str>,
     error: &str,
+    refused: bool,
     emit: &impl Fn(WorkerEvent),
 ) {
-    let queued = queue_outbox_message(cache, account_id, account, msg, sent_path, error, None);
+    let queued = !refused && queue_outbox_message(cache, account_id, account, msg, sent_path, error, None);
     // Queue first, drop the superseded row second: a crash in between leaves
     // the message queued twice, which is recoverable, rather than not at all.
     if let (true, Some(old), Some(c)) = (queued, msg.outbox_origin, cache) {
@@ -4433,13 +4525,65 @@ pub fn parse_recipients(s: &str) -> Vec<(String, String)> {
         }
         match (part.rfind('<'), part.rfind('>')) {
             (Some(lt), Some(gt)) if lt < gt => {
-                let email = part[lt + 1..gt].trim().to_string();
-                out.push((unquote_name(&part[..lt]), email));
+                out.push((unquote_name(&part[..lt]), clean_address(&part[lt + 1..gt])));
             }
-            _ => out.push((String::new(), part)),
+            _ => out.push((String::new(), clean_address(&part))),
         }
     }
     out
+}
+
+/// Characters that take no space on screen: zero-width spaces and joiners,
+/// direction marks and embeddings, the BOM and the soft hyphen.
+fn is_invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00ad}'
+            | '\u{061c}'
+            | '\u{180e}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{feff}'
+    )
+}
+
+/// An address as typed or pasted, without the invisible characters a copy
+/// from a web page or a chat brings along (#368). The server refuses an
+/// address with one inside, and nobody can see why. A display name keeps
+/// its characters: a zero-width non-joiner is part of how a Persian name is
+/// spelled.
+fn clean_address(raw: &str) -> String {
+    raw.chars()
+        .filter(|&c| !is_invisible(c))
+        .map(|c| if matches!(c, '\u{a0}' | '\u{2007}' | '\u{202f}') { ' ' } else { c })
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+/// The field with the invisible characters taken out of its addresses, when
+/// it had any: the composer shows the cleaned text before it sends.
+pub fn clean_recipient_field(field: &str) -> Option<String> {
+    if !field.chars().any(|c| is_invisible(c) || matches!(c, '\u{a0}' | '\u{2007}' | '\u{202f}')) {
+        return None;
+    }
+    let clean = parse_recipients(field)
+        .iter()
+        .map(|(name, addr)| format_recipient(name, addr))
+        .collect::<Vec<_>>()
+        .join(", ");
+    (clean != field.trim()).then_some(clean)
+}
+
+/// The first address in a recipient field that cannot be sent to, so the
+/// composer can say so while the message is still open.
+pub fn invalid_recipient(field: &str) -> Option<String> {
+    parse_recipients(field)
+        .into_iter()
+        .map(|(_, addr)| addr)
+        .find(|addr| addr.parse::<Address>().is_err())
 }
 
 /// A display name as written in a header, without its quotes and escapes.
@@ -4577,8 +4721,8 @@ fn build_message(
         ));
     }
     // Reply-To (#58): answers go where the sender asked, not to From.
-    for addr in msg.reply_to.split(',') {
-        if let Ok(mbox) = addr.trim().parse() {
+    for (name, addr) in parse_recipients(&msg.reply_to) {
+        if let Ok(mbox) = mailbox(&name, &addr) {
             builder = builder.reply_to(mbox);
         }
     }
@@ -5093,6 +5237,16 @@ async fn send_raw_smtp(
     Ok(())
 }
 
+/// A permanent (5xx) SMTP answer other than a failed sign-in. A wrong
+/// password is fixed in Settings and the queued message then goes; a refused
+/// recipient never will.
+fn smtp_refused(e: &SmtpError) -> bool {
+    e.downcast_ref::<lettre::transport::smtp::Error>()
+        .filter(|e| e.is_permanent())
+        .and_then(|e| e.status())
+        .is_some_and(|code| !(530..540).contains(&u16::from(code)))
+}
+
 async fn send_smtp(account: &AccountConfig, msg: &OutgoingMessage) -> Result<Vec<u8>, SmtpError> {
     let email = build_email(account, msg)?;
     let raw = email.formatted();
@@ -5128,8 +5282,9 @@ async fn fetch_oauth_token(account: &AccountConfig) -> Option<String> {
         return Some(token);
     }
     let email = account.email.clone();
+    let user = oauth_user(account);
     tokio::task::spawn_blocking(move || {
-        let fresh = crate::oauth::refresh_access_token(&settings, &refresh)
+        let fresh = crate::oauth::refresh_access_token_as(&settings, &refresh, Some(&user))
             .map_err(|e| tracing::warn!("OAuth token refresh for {email} failed: {e}"))
             .ok()?;
         // The provider spent the old refresh token and handed out another:
@@ -5388,7 +5543,11 @@ pub fn is_system_keyword(keyword: &str) -> bool {
 async fn sel(session: &mut ImapSession, path: &str) -> Result<async_imap::types::Mailbox, async_imap::error::Error> {
     let cmd = format!("SELECT {}", quote_mailbox(path));
     wire(&cmd);
+    session.as_mut().set_selected_folder(None);
     let r = session.select(path).await;
+    if r.is_ok() {
+        session.as_mut().set_selected_folder(Some(path));
+    }
     wired(&cmd, &r);
     r
 }
@@ -5396,9 +5555,24 @@ async fn sel(session: &mut ImapSession, path: &str) -> Result<async_imap::types:
 async fn exam(session: &mut ImapSession, path: &str) -> Result<async_imap::types::Mailbox, async_imap::error::Error> {
     let cmd = format!("EXAMINE {}", quote_mailbox(path));
     wire(&cmd);
+    session.as_mut().set_selected_folder(None);
     let r = session.examine(path).await;
+    if r.is_ok() {
+        session.as_mut().set_selected_folder(Some(path));
+    }
     wired(&cmd, &r);
     r
+}
+
+/// PEEK reads work in either SELECT or EXAMINE. Reusing the mailbox already
+/// selected on this connection avoids a round trip for every prefetched body.
+/// List syncs and mutations still select explicitly to get current metadata
+/// and the write mode they need. A new connection starts unselected.
+async fn select_for_read(session: &mut ImapSession, path: &str) -> Result<(), async_imap::error::Error> {
+    if !session.as_mut().is_selected(path) {
+        sel(session, path).await?;
+    }
+    Ok(())
 }
 
 async fn fetch_uids<'a, S1: AsRef<str>, S2: AsRef<str>>(
@@ -6062,6 +6236,15 @@ async fn connect(account: &AccountConfig) -> Result<ImapSession, Box<dyn std::er
 }
 
 async fn connect_inner(account: &AccountConfig) -> Result<ImapSession, Box<dyn std::error::Error>> {
+    // An Exchange (EWS) account imported from Online Accounts before #316
+    // has no IMAP server, and the resolver's answer for an empty name says
+    // nothing a user could act on.
+    if account.imap_host.trim().is_empty() {
+        return Err(i18n(
+            "This account has no IMAP server. Hylki can't use Exchange accounts from Online Accounts: remove it and add it as an IMAP or Microsoft 365 account.",
+        )
+        .into());
+    }
     let tcp = TcpStream::connect((account.imap_host.as_str(), account.imap_port)).await?;
     let accept_invalid = account.security.as_ref().is_some_and(|s| s.imap_accept_invalid_certs);
     let tls = tls_connector(&account.imap_host, account.tls_accept_hostname_mismatch, accept_invalid);
@@ -6292,6 +6475,18 @@ async fn list_folders(
     roles: &std::collections::BTreeMap<String, String>,
     hidden: &[String],
 ) -> Result<Vec<Folder>, async_imap::error::Error> {
+    list_folder_metadata(account_id, session, roles, hidden, None).await
+}
+
+/// Discover folders without a serial STATUS round trip for every folder when
+/// cached counts are supplied. The interruptible idle sweep refreshes counts.
+async fn list_folder_metadata(
+    account_id: u32,
+    session: &mut ImapSession,
+    roles: &std::collections::BTreeMap<String, String>,
+    hidden: &[String],
+    cached_counts: Option<&[Folder]>,
+) -> Result<Vec<Folder>, async_imap::error::Error> {
     let names: Vec<async_imap::types::Name> = session
         .list(Some(""), Some("*"))
         .await?
@@ -6367,6 +6562,14 @@ async fn list_folders(
     // the app re-sorts its own copy.
     crate::models::assign_folder_roles(roles, &mut folders);
 
+    if let Some(cached) = cached_counts {
+        for folder in &mut folders {
+            folder.unread = cached.iter().find(|f| f.path == folder.path)
+                .map_or(0, |f| f.unread);
+        }
+        return Ok(folders);
+    }
+
     // Ask the server for each folder's true unread count. STATUS is cheap and
     // downloads no message content, so this stays fast even for huge mailboxes.
     for f in folders.iter_mut() {
@@ -6378,8 +6581,8 @@ async fn list_folders(
     // STATUS is unreliable on some servers (notably iCloud), which leaves stale
     // inbox chips in the sidebar until the folder is opened. The inbox is the only
     // folder whose unread count is shown, so refine just that one up front with the
-    // accurate EXAMINE + SEARCH UNSEEN (read-only; leaves the mailbox unselected
-    // for the main loop to re-select as needed).
+    // accurate EXAMINE + SEARCH UNSEEN (read-only; subsequent mutations must
+    // re-select the mailbox in write mode).
     if let Some(inbox) = folders.iter_mut().find(|f| f.kind == FolderKind::Inbox) {
         if exam(session, &inbox.path).await.is_ok() {
             if let Some(n) = selected_unseen(session).await {
@@ -6501,6 +6704,27 @@ async fn auto_empty_imap(
     }
 }
 
+async fn refresh_folder_names(
+    account_id: u32,
+    account: &AccountConfig,
+    session: &mut ImapSession,
+    cache: Option<&Cache>,
+    emit: &impl Fn(WorkerEvent),
+) {
+    let cached = cache.map(|c| c.load_folders(account_id)).unwrap_or_default();
+    if let Ok(folders) = list_folder_metadata(
+        account_id, session, &account.folder_roles, &account.hidden_folders, Some(&cached),
+    ).await {
+        if folders.is_empty() || crate::cache::folders_equal(&cached, &folders) {
+            return;
+        }
+        if let Some(c) = cache {
+            c.save_folders(account_id, &folders);
+        }
+        emit(WorkerEvent::Folders(folders));
+    }
+}
+
 async fn refresh_folders(
     account_id: u32,
     account: &AccountConfig,
@@ -6535,7 +6759,7 @@ async fn refresh_folders(
 /// [`list_folders`]) — stale numbers left chips unmoved and, worse, blinded
 /// the change detection below. The read-only EXAMINE walk costs a second
 /// round trip per folder and leaves the session's selection wherever it ends;
-/// every other network path re-selects what it needs first.
+/// subsequent reads check that selection and mutations re-select explicitly.
 ///
 /// `selected` (the mailbox the main loop is working) is skipped: its count is
 /// already refreshed by every load and IDLE pass, and examining it out from
@@ -7858,6 +8082,7 @@ async fn run_one_refs_repair(
 /// A background job to index the rest of a folder (everything past the fast first
 /// page) so search covers the whole mailbox. `remaining` is the still-to-fetch
 /// UIDs (newest first), computed lazily on the first drain.
+#[derive(Clone)]
 struct Backfill {
     folder_id: u32,
     path: String,
@@ -7865,6 +8090,15 @@ struct Backfill {
     /// Whether this folder feeds the attachments gallery (not Trash/Junk/Drafts);
     /// if so, its backfilled messages' attachments are prefetched too.
     gallery: bool,
+}
+
+// select! may receive a reader before polling the job at all. In that case
+// the original is still queued; otherwise restore the snapshot, including any
+// chunk the cancelled future drained before the network response arrived.
+fn restore_interrupted_backfill(queue: &mut std::collections::VecDeque<Backfill>, job: Backfill) {
+    if !queue.iter().any(|queued| queued.path == job.path) {
+        queue.push_front(job);
+    }
 }
 
 /// Determine which UIDs still need indexing: everything on the server not already
@@ -8031,7 +8265,7 @@ async fn load_body(
     path: &str,
     uid: u32,
 ) -> Result<(String, crate::models::SenderCheck, bool), async_imap::error::Error> {
-    sel(session, path).await?;
+    select_for_read(session, path).await?;
 
     // Fetch the whole message (PEEK so \Seen isn't set) and extract the body with
     // mail-parser. We deliberately avoid a BODYSTRUCTURE-based "text part only"
@@ -8065,7 +8299,7 @@ async fn load_bodies(
     std::collections::HashMap<u32, (String, crate::models::SenderCheck, bool)>,
     async_imap::error::Error,
 > {
-    sel(session, path).await?;
+    select_for_read(session, path).await?;
     let set = uid_set(uids);
     let fetches: Vec<Fetch> = fetch_uids(session, set, "(BODY.PEEK[])")
         .await?
@@ -9029,7 +9263,7 @@ async fn run_pop3(
                     Err(e) => {
                         // POP3 has no Sent folder to copy to, but the message is held
                         // exactly as it is for IMAP accounts.
-                        send_failed(cache.as_ref(), account_id, &account, &message, None, &e.to_string(), &emit);
+                        send_failed(cache.as_ref(), account_id, &account, &message, None, &e.to_string(), smtp_refused(&e), &emit);
                     }
                 }
             }
@@ -10748,7 +10982,7 @@ NIL NIL NIL NIL NIL NIL NIL))\r\n";
         msg.to = "ann@example.com".into();
         msg.attachments = vec!["/nonexistent/hylki-test/moved.pdf".into()];
         let events = std::cell::RefCell::new(Vec::new());
-        send_failed(Some(&cache), 1, &account, &msg, None, "could not read the attachment", &|e| {
+        send_failed(Some(&cache), 1, &account, &msg, None, "could not read the attachment", false, &|e| {
             events.borrow_mut().push(e)
         });
         let events = events.into_inner();
@@ -10759,8 +10993,44 @@ NIL NIL NIL NIL NIL NIL NIL))\r\n";
         // A message that does build is queued and not handed back.
         msg.attachments.clear();
         let events = std::cell::RefCell::new(Vec::new());
-        send_failed(Some(&cache), 1, &account, &msg, None, "offline", &|e| events.borrow_mut().push(e));
+        send_failed(Some(&cache), 1, &account, &msg, None, "offline", false, &|e| events.borrow_mut().push(e));
         assert!(!events.into_inner().iter().any(|e| matches!(e, WorkerEvent::Unsent(_))));
+    }
+
+    /// #368: a recipient the server refuses comes back to the composer and
+    /// is not queued, where it would fail again on every retry.
+    #[test]
+    fn a_refused_send_comes_back_unqueued() {
+        let cache = Cache::in_memory().expect("cache");
+        let account = sample_account();
+        let mut msg = sample_outgoing();
+        msg.to = "ann@example.com".into();
+        let events = std::cell::RefCell::new(Vec::new());
+        send_failed(Some(&cache), 1, &account, &msg, None, "550 no such user", true, &|e| {
+            events.borrow_mut().push(e)
+        });
+        assert!(events.into_inner().iter().any(|e| matches!(e, WorkerEvent::Unsent(_))));
+        assert!(cache.outbox_items(1).is_empty());
+    }
+
+    /// #368: invisible characters pasted along with an address are dropped
+    /// from the address, and kept in a name.
+    #[test]
+    fn pasted_addresses_lose_invisible_characters() {
+        assert_eq!(
+            parse_recipients("\u{200b}ann\u{200b}@example.com\u{200e}, Bob <\u{feff}bob@example.com\u{a0}>"),
+            vec![(String::new(), "ann@example.com".to_string()), ("Bob".to_string(), "bob@example.com".to_string())],
+        );
+        let persian = "\u{0645}\u{06cc}\u{200c}\u{0631}\u{0648}\u{062f}";
+        assert_eq!(parse_recipients(&format!("{persian} <a@b.com>"))[0].0, persian);
+        assert_eq!(
+            clean_recipient_field("ann\u{200b}@example.com, Bob <bob@example.com>").as_deref(),
+            Some("ann@example.com, Bob <bob@example.com>")
+        );
+        assert_eq!(clean_recipient_field("ann@example.com"), None);
+        assert_eq!(invalid_recipient("ann@example.com, Bob <bob@example.com>"), None);
+        assert_eq!(invalid_recipient("ann@example.com, bob@"), Some("bob@".to_string()));
+        assert_eq!(invalid_recipient("ann example.com"), Some("ann example.com".to_string()));
     }
 
     /// A draft saved before any address is typed: the bytes build without a
@@ -12877,5 +13147,159 @@ mod fetch_mode_tests {
         // 4: nothing left.
         assert!(!step_fetch_mode(account_id, &mut use_envelope));
         assert!(!use_envelope);
+    }
+}
+
+#[cfg(test)]
+mod reader_preemption_tests {
+    use super::*;
+
+    fn body() -> MailRequest {
+        MailRequest::LoadBody { message_id: 42, path: "INBOX".into(), uid: 42 }
+    }
+
+    #[test]
+    fn a_refresh_tick_does_not_leave_a_folder_sync_ahead_of_the_reader() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tx.send(MailRequest::RefreshUnread).unwrap();
+        tx.send(MailRequest::LoadMessages { folder_id: 1, path: "INBOX".into() }).unwrap();
+        tx.send(body()).unwrap();
+        let mut backlog = std::collections::VecDeque::new();
+        let first = reorder_reader_loads(
+            MailRequest::SyncFolder { folder_id: 1, path: "INBOX".into() }, &mut rx, &mut backlog,
+        );
+        assert!(matches!(first, MailRequest::LoadBody { .. }));
+        assert!(matches!(backlog.pop_front(), Some(MailRequest::SyncFolder { .. })));
+        assert!(matches!(backlog.pop_front(), Some(MailRequest::RefreshUnread)));
+        assert!(matches!(backlog.pop_front(), Some(MailRequest::LoadMessages { .. })));
+    }
+
+    #[test]
+    fn overtaking_refresh_ticks_still_preserves_mutation_order() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tx.send(MailRequest::RefreshUnread).unwrap();
+        tx.send(MailRequest::SetSeen { path: "INBOX".into(), uid: 42, seen: true }).unwrap();
+        tx.send(MailRequest::LoadMessages { folder_id: 1, path: "INBOX".into() }).unwrap();
+        tx.send(MailRequest::RefreshUnread).unwrap();
+        tx.send(body()).unwrap();
+        let mut backlog = std::collections::VecDeque::new();
+        let first = reorder_reader_loads(
+            MailRequest::SyncFolder { folder_id: 1, path: "INBOX".into() }, &mut rx, &mut backlog,
+        );
+        assert!(matches!(first, MailRequest::SyncFolder { .. }));
+        assert!(matches!(backlog.pop_front(), Some(MailRequest::RefreshUnread)));
+        assert!(matches!(backlog.pop_front(), Some(MailRequest::SetSeen { .. })));
+        assert!(matches!(backlog.pop_front(), Some(MailRequest::LoadBody { .. })));
+        assert!(matches!(backlog.pop_front(), Some(MailRequest::LoadMessages { .. })));
+        assert!(matches!(backlog.pop_front(), Some(MailRequest::RefreshUnread)));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_reader_cancels_an_inflight_folder_read() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut backlog = std::collections::VecDeque::new();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            tx.send(body()).unwrap();
+        });
+        let start = tokio::time::Instant::now();
+        let result = interrupt_read_for_reader(
+            tokio::time::sleep(Duration::from_secs(10)), &mut rx, &mut backlog,
+        ).await;
+        assert!(result.is_none());
+        assert_eq!(start.elapsed(), Duration::from_millis(20));
+        assert!(matches!(backlog.pop_front(), Some(MailRequest::LoadBody { uid: 42, .. })));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_reader_does_not_overtake_a_queued_mutation() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut backlog = std::collections::VecDeque::from([
+            MailRequest::SetSeen { path: "INBOX".into(), uid: 42, seen: true },
+        ]);
+        tx.send(body()).unwrap();
+        let result = interrupt_read_for_reader(async {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            7
+        }, &mut rx, &mut backlog).await;
+        assert_eq!(result, Some(7));
+        assert!(matches!(backlog.pop_front(), Some(MailRequest::SetSeen { .. })));
+        assert!(matches!(backlog.pop_front(), Some(MailRequest::LoadBody { .. })));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_arriving_mutation_remains_a_barrier_to_a_later_reader() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut backlog = std::collections::VecDeque::new();
+        tx.send(MailRequest::SetSeen { path: "INBOX".into(), uid: 42, seen: true }).unwrap();
+        tx.send(body()).unwrap();
+        let result = interrupt_read_for_reader(async {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            7
+        }, &mut rx, &mut backlog).await;
+        assert_eq!(result, Some(7));
+        assert!(matches!(backlog.pop_front(), Some(MailRequest::SetSeen { .. })));
+        assert!(matches!(backlog.pop_front(), Some(MailRequest::LoadBody { .. })));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelling_an_owned_read_drops_the_connection() {
+        use tokio::io::AsyncReadExt;
+        let (client, mut server) = tokio::io::duplex(16);
+        let mut session = Some(client);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut backlog = std::collections::VecDeque::new();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            tx.send(body()).unwrap();
+        });
+        let result = interrupt_read_for_reader(async {
+            let mut owned = session.take().unwrap();
+            let result = owned.read(&mut [0]).await;
+            session = Some(owned);
+            result
+        }, &mut rx, &mut backlog).await;
+        assert!(result.is_none());
+        assert!(session.is_none());
+        // EOF proves the reader cannot accidentally reuse an interrupted stream.
+        assert_eq!(server.read(&mut [0]).await.unwrap(), 0);
+        assert!(matches!(backlog.pop_front(), Some(MailRequest::LoadBody { .. })));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelled_backfill_restores_drained_uids_without_duplicate_jobs() {
+        let job = Backfill {
+            folder_id: 1, path: "INBOX".into(), remaining: Some(vec![3, 2, 1]), gallery: false,
+        };
+        let mut queue = std::collections::VecDeque::from([job.clone()]);
+        // Cancellation before the future's first poll leaves the job queued.
+        restore_interrupted_backfill(&mut queue, job.clone());
+        assert_eq!(queue.len(), 1);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            tx.send(body()).unwrap();
+        });
+        let result = interrupt_read_for_reader(async {
+            let mut owned = queue.pop_front().unwrap();
+            owned.remaining.as_mut().unwrap().drain(..2);
+            std::future::pending::<()>().await;
+        }, &mut rx, &mut Default::default()).await;
+        assert!(result.is_none());
+        assert!(queue.is_empty());
+        restore_interrupted_backfill(&mut queue, job);
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue.front().unwrap().remaining.as_deref(), Some([3, 2, 1].as_slice()));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_closed_queue_does_not_spin_or_cancel_the_read() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        drop(tx);
+        let result = interrupt_read_for_reader(async {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            7
+        }, &mut rx, &mut Default::default()).await;
+        assert_eq!(result, Some(7));
     }
 }

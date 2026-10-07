@@ -46,10 +46,17 @@ row.compose-row .account-name {
 row.compose-row .compose-split {
   padding-right: 0;
 }
+row.compose-row .compose-split:dir(rtl) {
+  padding-left: 0;
+  padding-right: 8px;
+}
 row.compose-row .compose-split > separator {
   background-color: alpha(white, 0.55);
   min-width: 1px;
   margin: 3px 4px 3px 8px;
+}
+row.compose-row .compose-split > separator:dir(rtl) {
+  margin: 3px 8px 3px 4px;
 }
 row.compose-row .compose-caret {
   color: white;
@@ -59,6 +66,10 @@ row.compose-row .compose-caret {
   margin-top: -4px;
   margin-right: -3px;
   margin-bottom: -4px;
+}
+row.compose-row .compose-caret:dir(rtl) {
+  margin-right: 0;
+  margin-left: -3px;
 }
 row.compose-row .compose-caret:hover {
   background-color: alpha(white, 0.15);
@@ -162,6 +173,10 @@ headerbar.rail-header {
 .unified-subrow {
   margin-left: -2px;
 }
+.unified-subrow:dir(rtl) {
+  margin-left: 0;
+  margin-right: -2px;
+}
 
 /* The unified rows (All Inboxes, Starred, Sent, Drafts) and their account
    lists are each a list of their own; without their vertical padding the
@@ -195,6 +210,10 @@ headerbar.rail-header {
   margin-left: -5px;
   opacity: 0.6;
 }
+.row-disclosure-chevron:dir(rtl) {
+  margin-left: 0;
+  margin-right: -5px;
+}
 
 /* The account header applies its own left padding (12px, `.account-header`)
    around the chevron's overlay, on top of the margin above — "All Inboxes"
@@ -202,6 +221,10 @@ headerbar.rail-header {
    apart. This pulls the header's back in to match. */
 .account-header .row-disclosure-chevron {
   margin-left: -4px;
+}
+.account-header .row-disclosure-chevron:dir(rtl) {
+  margin-left: 0;
+  margin-right: -4px;
 }
 
 /* Left placement: match the account headers' height below it (avatar + two-
@@ -213,16 +236,26 @@ headerbar.rail-header {
 
 /* Chevron placement: Right — the classic layout: trailing 32px target whose
    negative end margin slides into the row padding. */
-.unified-row.chev-right {
+.unified-row.chev-right:dir(ltr) {
   padding-right: 0;
 }
-.unified-row.chev-right .folder-row {
+.unified-row.chev-right:dir(rtl) {
+  padding-left: 0;
+}
+.unified-row.chev-right .folder-row:dir(ltr) {
   padding-right: 12px;
+}
+.unified-row.chev-right .folder-row:dir(rtl) {
+  padding-left: 12px;
 }
 .unified-row.chev-right .chevron-btn {
   min-width: 32px;
   min-height: 32px;
   margin-right: -8px;
+}
+.unified-row.chev-right .chevron-btn:dir(rtl) {
+  margin-right: 0;
+  margin-left: -8px;
 }
 
 /* Filter rule rows in the Accounts window: extra breathing room around the
@@ -339,6 +372,9 @@ levelbar block.quota-full {
   padding: 3px 4px 3px 6px;
   border-radius: 14px;
   background: alpha(currentColor, 0.08);
+}
+.attach-chip:dir(rtl) {
+  padding: 3px 6px 3px 4px;
 }
 .attach-chip:hover {
   background: alpha(currentColor, 0.12);
@@ -581,9 +617,14 @@ flowbox.attach-flow > flowboxchild {
   /* 5px of pill above and below the text (Jason, 2026-09-07). */
   padding-top: 5px;
   padding-bottom: 5px;
-  /* Its folded-up chip onto the folder rows' chip column: the heading's
-     button padding otherwise leaves it 2px short. */
+}
+/* Its folded-up chip onto the folder rows' chip column: the heading's
+   button padding otherwise leaves it 2px short. */
+.unified-folders-toggle .folder-row:dir(ltr) {
   padding-right: 6px;
+}
+.unified-folders-toggle .folder-row:dir(rtl) {
+  padding-left: 6px;
 }
 
 
@@ -598,8 +639,11 @@ flowbox.attach-flow > flowboxchild {
 /* Icon rail: the two headings' rows would keep the full sidebar's extra
    right padding above, which sat their glyphs 2px left of every other rail
    item. Same 2px each side as the rail's folder rows. */
-.rail-collapsed .unified-folders-toggle .folder-row {
+.rail-collapsed .unified-folders-toggle .folder-row:dir(ltr) {
   padding-right: 2px;
+}
+.rail-collapsed .unified-folders-toggle .folder-row:dir(rtl) {
+  padding-left: 2px;
 }
 
 /* Icon rail, "Unread dots instead of counts": every mini chip becomes a dot
@@ -615,6 +659,10 @@ flowbox.attach-flow > flowboxchild {
   margin-top: -2px;
   margin-right: -4px;
 }
+.rail-dots .unread-badge-mini:dir(rtl) {
+  margin-right: 0;
+  margin-left: -4px;
+}
 
 /* Unread count: a perfect circle for a single digit that grows horizontally
    into a pill for larger numbers, but never taller. */
@@ -626,6 +674,10 @@ flowbox.attach-flow > flowboxchild {
   background: @sidebar_bg_color;
   border-radius: 9999px;
   padding: 1px;
+}
+.filter-mark:dir(rtl) {
+  margin-right: 0;
+  margin-left: -6px;
 }
 
 .unread-badge {
@@ -657,6 +709,10 @@ flowbox.attach-flow > flowboxchild {
   margin-right: -14px;
   box-shadow: 0 0 0 2px @sidebar_bg_color;
 }
+.unread-badge-mini:dir(rtl) {
+  margin-right: 0;
+  margin-left: -14px;
+}
 
 /* ---- Message list ---- */
 
@@ -687,6 +743,9 @@ flowbox.attach-flow > flowboxchild {
 .bulk-bar {
   padding: 4px 8px 6px 12px;
   border-bottom: 1px solid alpha(currentColor, 0.08);
+}
+.bulk-bar:dir(rtl) {
+  padding: 4px 12px 6px 8px;
 }
 
 .bulk-count {
@@ -757,6 +816,9 @@ flowbox.attach-flow > flowboxchild {
   border-radius: 12px;
   padding: 13px 8px 13px 10px;
 }
+.message-row:dir(rtl) {
+  padding: 13px 10px 13px 8px;
+}
 
 /* Selected rows: every text element fully white at full strength, in both
    schemes — the accent ground (see install_scheme_css) carries the
@@ -794,6 +856,10 @@ flowbox.attach-flow > flowboxchild {
      Actions Palette rides. */
   padding-top: 6px;
 }
+.message-row.no-avatar:dir(rtl) {
+  padding-left: 8px;
+  padding-right: 8px;
+}
 
 /* With the palette on, the no-avatar pill grows at the bottom so the
    floating ⋯ clears the text; palette off, the room isn't needed
@@ -808,6 +874,10 @@ flowbox.attach-flow > flowboxchild {
   /* Valign Start plus this nudge centres the 10px dot on the sender name's
      ~20px first line (with avatars on, the dot centres in the row instead). */
   margin-top: 5px;
+}
+.message-row.no-avatar .unread-dot:dir(rtl) {
+  margin-left: -2px;
+  margin-right: 1px;
 }
 
 /* Palette + avatars + previews off: a two-line row is too short for
@@ -826,8 +896,12 @@ flowbox.attach-flow > flowboxchild {
   margin: 1px 6px;
   padding: 5px 10px 5px 8px;
 }
+.message-row.single-line:dir(rtl) {
+  padding: 5px 8px 5px 10px;
+}
 
-.message-row.single-line .unread-dot {
+.message-row.single-line .unread-dot,
+.message-row.single-line .unread-dot:dir(rtl) {
   margin: 0;
 }
 
@@ -965,6 +1039,12 @@ flowbox.attach-flow > flowboxchild {
      white selection foreground, which made the rail vanish under selection. */
   border-left: 2px dotted alpha(@window_fg_color, 0.3);
 }
+.message-item.thread-child:dir(rtl) {
+  margin-left: 0;
+  margin-right: 10px;
+  border-left: none;
+  border-right: 2px dotted alpha(@window_fg_color, 0.3);
+}
 
 /* The LAST reply: its rail stops at the node dot (row centre) instead of
    running on below it. The row's own border goes transparent (keeping its
@@ -973,12 +1053,21 @@ flowbox.attach-flow > flowboxchild {
 .message-item.thread-child.thread-last {
   border-left-color: transparent;
 }
+.message-item.thread-child.thread-last:dir(rtl) {
+  border-right-color: transparent;
+}
 
 /* Identical stroke to the sibling rows' rails; the negative margin moves it
    from the row's content box back onto the border's own axis. */
 .thread-rail-stub {
   border-left: 2px dotted alpha(@window_fg_color, 0.3);
   margin-left: -2px;
+}
+.thread-rail-stub:dir(rtl) {
+  border-left: none;
+  margin-left: 0;
+  border-right: 2px dotted alpha(@window_fg_color, 0.3);
+  margin-right: -2px;
 }
 
 
@@ -991,12 +1080,20 @@ flowbox.attach-flow > flowboxchild {
   border-radius: 12px;
   padding: 13px 8px 13px 10px;
 }
+.message-item.thread-child .message-row:dir(rtl) {
+  margin: 2px 10px 2px 6px;
+  padding: 13px 10px 13px 8px;
+}
 
 /* A reply on one line (#334) keeps the single-line pill's height, indented
    onto the rail like any reply. */
 .message-item.thread-child .message-row.single-line {
   margin: 1px 6px 1px 10px;
   padding: 5px 10px 5px 8px;
+}
+.message-item.thread-child .message-row.single-line:dir(rtl) {
+  margin: 1px 10px 1px 6px;
+  padding: 5px 8px 5px 10px;
 }
 
 /* Node dot where each member meets the rail: an 8px circle whose negative
@@ -1012,6 +1109,10 @@ flowbox.attach-flow > flowboxchild {
      alpha — a translucent dot let the rail line strike through it. */
   background-color: mix(@window_bg_color, currentColor, 0.5);
   box-shadow: 0 0 0 2px @window_bg_color;
+}
+.thread-node:dir(rtl) {
+  margin-left: 0;
+  margin-right: -5px;
 }
 
 .message-list > row:hover:not(:selected) > .message-item.thread-child:not(.swiping) .message-row {
@@ -1049,6 +1150,9 @@ flowbox.attach-flow > flowboxchild {
 
 .actions-palette {
   padding: 1px 4px 1px 0;
+}
+.actions-palette:dir(rtl) {
+  padding: 1px 0 1px 4px;
 }
 
 .actions-palette button {
@@ -1296,6 +1400,9 @@ headerbar.compose-toolbar button.image-button {
 .notify-bar {
   padding: 8px 10px 8px 14px;
 }
+.notify-bar:dir(rtl) {
+  padding: 8px 14px 8px 10px;
+}
 
 .notify-bar button.flat {
   color: inherit;
@@ -1314,6 +1421,9 @@ headerbar.compose-toolbar button.image-button {
   border-radius: 12px;
   padding: 10px 8px 10px 14px;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+.toast-card:dir(rtl) {
+  padding: 10px 14px 10px 8px;
 }
 
 .toast-card label {
@@ -1349,6 +1459,9 @@ headerbar.compose-toolbar button.image-button {
   min-height: 42px;
   font-size: 0.9em;
 }
+.remote-alert:dir(rtl) {
+  padding: 3px 14px 3px 10px;
+}
 
 .remote-alert image {
   /* Amber, deepened to orange on light mode by the scheme-dependent provider
@@ -1372,6 +1485,9 @@ headerbar.compose-toolbar button.image-button {
   background-color: #c01c28;
   color: #ffffff;
   padding: 8px 10px 8px 14px;
+}
+.spoof-alert:dir(rtl) {
+  padding: 8px 14px 8px 10px;
 }
 
 .spoof-alert image {
@@ -1415,6 +1531,9 @@ headerbar.compose-toolbar button.image-button {
   border-radius: 6px 6px 0 0;
   font-size: 0.85em;
   margin: 0 0 0 4px;
+}
+.link-preview:dir(rtl) {
+  margin: 0 4px 0 0;
 }
 
 /* ---- Compose ---- */
@@ -1465,8 +1584,11 @@ headerbar.compose-toolbar button.image-button {
 .gallery-footer {
   padding: 4px 10px;
 }
-.gallery-footer scale {
+.gallery-footer scale:dir(ltr) {
   margin-left: 8px;
+}
+.gallery-footer scale:dir(rtl) {
+  margin-right: 8px;
 }
 /* The folder list's per-account headings. They sit in the same boxed list as
    the folder rows so the whole thing scrolls as one, so they need the padding
@@ -1478,8 +1600,11 @@ headerbar.compose-toolbar button.image-button {
   font-size: 0.85em;
   opacity: 0.7;
 }
-.gallery-folders-popover label.heading {
+.gallery-folders-popover label.heading:dir(ltr) {
   margin-left: 2px;
+}
+.gallery-folders-popover label.heading:dir(rtl) {
+  margin-right: 2px;
 }
 .gallery-table-header {
   padding: 2px 18px;
@@ -1808,7 +1933,12 @@ window.welcome-window,
   font-weight: 700;
   font-size: 0.9em;
   color: alpha(#ffffff, 0.8);
+}
+.welcome-section:dir(ltr) {
   margin-left: 6px;
+}
+.welcome-section:dir(rtl) {
+  margin-right: 6px;
 }
 
 /* Content cards: the theme's card surface, lifted off the blue. */
@@ -2035,15 +2165,22 @@ textview.console-view text selection {
   background: @accent_bg_color;
   border-radius: 6px;
 }
-.send-split > button:first-child,
-.send-split > menubutton:first-child > button {
+.send-split > button:dir(ltr):first-child,
+.send-split > menubutton:dir(ltr):first-child > button,
+.send-split > button:dir(rtl):last-child,
+.send-split > menubutton:dir(rtl):last-child > button {
   border-top-right-radius: 0;
   border-bottom-right-radius: 0;
 }
-.send-split > button:last-child,
-.send-split > menubutton:last-child > button {
+.send-split > button:dir(ltr):last-child,
+.send-split > menubutton:dir(ltr):last-child > button,
+.send-split > button:dir(rtl):first-child,
+.send-split > menubutton:dir(rtl):first-child > button {
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
+}
+.send-split > button:last-child,
+.send-split > menubutton:last-child > button {
   padding-left: 6px;
   padding-right: 6px;
   min-width: 0;

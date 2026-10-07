@@ -1737,7 +1737,8 @@ msgstr "Εισαγωγή αρχείου…"
 msgid "Syncing"
 msgstr "Συγχρονισμός"
 
-msgid "Instant new mail (IMAP push)"
+#, fuzzy
+msgid "Instant new mail (push)"
 msgstr "Άμεση λήψη νέων μηνυμάτων (ώθηση IMAP)"
 
 msgid "Turn off for servers that stall on push connections."
@@ -3030,6 +3031,13 @@ msgid "Cannot send with OpenPGP"
 msgstr "Δεν είναι δυνατή η αποστολή με OpenPGP"
 
 #, fuzzy
+msgid "Check the address"
+msgstr "DMARC (είναι γνήσια η διεύθυνση Από:)"
+
+msgid "“{addr}” is not an email address."
+msgstr ""
+
+#, fuzzy
 msgid "An attachment is missing"
 msgstr "{n} συνημμένο"
 
@@ -4148,6 +4156,9 @@ msgstr "Κάθε 15 λεπτά"
 msgid "Every 30 minutes"
 msgstr "Κάθε 30 λεπτά"
 
+msgid "System language — {language}"
+msgstr "Γλώσσα συστήματος — {language}"
+
 msgid "Drag to move"
 msgstr "Σύρετε για μετακίνηση"
 
@@ -4305,8 +4316,10 @@ msgstr ""
 msgid "Check for new mail"
 msgstr "Έλεγχος για νέα μηνύματα"
 
-msgid "Uses IMAP IDLE to receive messages the moment they arrive."
-msgstr "Χρησιμοποιεί IMAP IDLE για τη λήψη μηνυμάτων τη στιγμή που φτάνουν."
+msgid ""
+"Receives messages the moment they arrive. Microsoft 365 accounts check at "
+"the interval above."
+msgstr ""
 
 msgid "Notifications"
 msgstr "Ειδοποιήσεις"
@@ -4646,6 +4659,18 @@ msgstr ""
 "Το αρχείο όλων των λογαριασμών σε μία λίστα, με άνοιγμα στο αρχείο κάθε "
 "λογαριασμού."
 
+#, fuzzy
+msgid "Every account's junk mail as one list, opening to each account's own."
+msgstr ""
+"Τα απεσταλμένα όλων των λογαριασμών σε μία λίστα, με άνοιγμα στα απεσταλμένα "
+"κάθε λογαριασμού."
+
+#, fuzzy
+msgid "Every account's trash as one list, opening to each account's own."
+msgstr ""
+"Τα πρόχειρα όλων των λογαριασμών σε μία λίστα, με άνοιγμα στα πρόχειρα κάθε "
+"λογαριασμού."
+
 msgid ""
 "List every folder your filter rules file into in a collapsible section of "
 "the unified view."
@@ -4734,6 +4759,14 @@ msgstr "Η λίστα λογαριασμών κάτω από την ενοποι
 
 msgid "The account list under the unified Archive row."
 msgstr "Η λίστα λογαριασμών κάτω από την ενοποιημένη σειρά Αρχείο."
+
+#, fuzzy
+msgid "The account list under the unified Junk row."
+msgstr "Η λίστα λογαριασμών κάτω από την ενοποιημένη σειρά Απεσταλμένα."
+
+#, fuzzy
+msgid "The account list under the unified Trash row."
+msgstr "Η λίστα λογαριασμών κάτω από την ενοποιημένη σειρά Πρόχειρα."
 
 msgid "The folders under the Filters row."
 msgstr "Οι φάκελοι κάτω από τη σειρά Φίλτρα."
@@ -5256,11 +5289,9 @@ msgstr ""
 "Οι ανορθόγραφες λέξεις στο σώμα του μηνύματος υπογραμμίζονται· κάντε δεξί "
 "κλικ σε μια λέξη για διορθώσεις."
 
-msgid "Language"
+#, fuzzy
+msgid "Languages"
 msgstr "Γλώσσα"
-
-msgid "Dictionaries the app can see"
-msgstr "Λεξικά που μπορεί να δει η εφαρμογή"
 
 msgid "Added words"
 msgstr "Λέξεις που προστέθηκαν"
@@ -5360,6 +5391,9 @@ msgstr "Μορφή ημερομηνίας"
 
 msgid "Clock"
 msgstr "Ρολόι"
+
+msgid "Language"
+msgstr "Γλώσσα"
 
 msgid ""
 "The language Hylki is shown in. \"System\" follows the desktop, with English "
@@ -5680,7 +5714,8 @@ msgstr "Κάτω από τα μηνύματα"
 msgid "Follows the reading order"
 msgstr "Ακολουθεί τη σειρά ανάγνωσης"
 
-msgid "System language — {language}"
+#, fuzzy
+msgid "System language"
 msgstr "Γλώσσα συστήματος — {language}"
 
 msgid "Add a word"
@@ -5752,6 +5787,10 @@ msgstr "Αφαιρέθηκε το {name}"
 
 msgid "Could not save the PDF: {error}"
 msgstr "Δεν ήταν δυνατή η αποθήκευση του PDF: {error}"
+
+#, fuzzy
+msgid "Spelling Language"
+msgstr "Ορθογραφία"
 
 msgid "Send as Attachment Instead"
 msgstr "Αποστολή ως συνημμένο αντί για σύνδεσμο"
@@ -5890,6 +5929,9 @@ msgstr "Εισαγωγή συνδέσμου"
 msgid "Insert"
 msgstr "Εισαγωγή"
 
+msgid "Favorites"
+msgstr ""
+
 msgid "Folder"
 msgstr "Φάκελος"
 
@@ -5959,6 +6001,12 @@ msgstr "Εμφάνιση κάθε ετικέτας"
 msgid "Long-press to expand or collapse"
 msgstr "Παρατεταμένο πάτημα για ανάπτυξη ή σύμπτυξη"
 
+msgid "Empty Trash…"
+msgstr "Άδειασμα κάδου…"
+
+msgid "Empty Junk…"
+msgstr "Άδειασμα ανεπιθύμητων…"
+
 msgid "Show or hide filters"
 msgstr ""
 
@@ -5967,6 +6015,14 @@ msgstr ""
 
 msgid "Follow Settings: {sort}"
 msgstr ""
+
+#, fuzzy
+msgid "Remove from Favorites"
+msgstr "Αφαίρεση φίλτρου"
+
+#, fuzzy
+msgid "Add to Favorites"
+msgstr "Προσθήκη στις επαφές"
 
 msgid "Apply Filters"
 msgstr "Εφαρμογή φίλτρων"
@@ -5984,12 +6040,6 @@ msgstr "Διαγραφή φακέλου…"
 #. of sight would still be where mail is filed to.
 msgid "Hide Folder"
 msgstr "Απόκρυψη φακέλου"
-
-msgid "Empty Trash…"
-msgstr "Άδειασμα κάδου…"
-
-msgid "Empty Junk…"
-msgstr "Άδειασμα ανεπιθύμητων…"
 
 msgid "Edit Tag…"
 msgstr "Επεξεργασία ετικέτας…"
@@ -6458,6 +6508,11 @@ msgstr ""
 msgid "no OpenPGP key for {addr}"
 msgstr "δεν υπάρχει κλειδί OpenPGP για τη διεύθυνση {addr}"
 
+msgid ""
+"This account has no IMAP server. Hylki can't use Exchange accounts from "
+"Online Accounts: remove it and add it as an IMAP or Microsoft 365 account."
+msgstr ""
+
 msgid "Could not delete message: {e}"
 msgstr "Δεν ήταν δυνατή η διαγραφή του μηνύματος: {e}"
 
@@ -6614,6 +6669,12 @@ msgstr "Τα ενοποιημένα εισερχόμενα σε φωτεινή �
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid "Dictionaries the app can see"
+#~ msgstr "Λεξικά που μπορεί να δει η εφαρμογή"
+
+#~ msgid "Uses IMAP IDLE to receive messages the moment they arrive."
+#~ msgstr "Χρησιμοποιεί IMAP IDLE για τη λήψη μηνυμάτων τη στιγμή που φτάνουν."
 
 #~ msgid "Load attachments from server"
 #~ msgstr "Φόρτωση συνημμένων από τον διακομιστή"

@@ -59,8 +59,16 @@ pub fn strip(selected: &str, tile: i32, on_pick: Rc<dyn Fn(&str)>) -> gtk::Overl
         f.set_opacity(0.0);
         f
     };
-    let left = fade("left", gtk::Align::Start);
-    let right = fade("right", gtk::Align::End);
+    // The scroll position is physical (0 = the left end) in either
+    // direction, so each fade is pinned to its physical side: Start is
+    // the right edge in a right-to-left window (#366).
+    let (start, end) = if gtk::Widget::default_direction() == gtk::TextDirection::Rtl {
+        (gtk::Align::End, gtk::Align::Start)
+    } else {
+        (gtk::Align::Start, gtk::Align::End)
+    };
+    let left = fade("left", start);
+    let right = fade("right", end);
     let overlay = gtk::Overlay::new();
     overlay.set_child(Some(&sw));
     overlay.add_overlay(&left);

@@ -164,10 +164,32 @@ Only the chevrons open and close the items in the sidebar. Clicking a
 folder opens it and leaves its sub-folders as they were. Clicking the name
 of the Folders, Filters or Tags heading does nothing; the chevron beside it
 opens or closes the section. Clicking Inboxes, Starred, Sent, Drafts,
-Archive, Filters or Tags in the unified section opens the combined list
-without showing each account's folder under it. In the icon rail, which
-has no chevrons, a click on a section's icon opens or closes it, and a
-long press opens or closes the unified rows.
+Archive, Junk, Trash, Filters or Tags in the unified section opens the
+combined list without showing each account's folder under it. In the icon
+rail, which has no chevrons, a click on a section's icon opens or closes it,
+and a long press opens or closes the unified rows.
+
+**Settings → Sidebar → Unified** chooses the unified section's rows.
+Inboxes, Starred, Sent, Drafts and Archive are on until switched off; Junk
+and Trash are off until switched on. In the unified Junk and Trash, **Not
+Spam** and **Move to Inbox** send each message to its own account's Inbox,
+and the right-click menu of each account's row beneath has **Empty Junk…**
+or **Empty Trash…**.
+
+### Favorites
+
+Right-click any folder in the sidebar and choose **Add to Favorites** to list
+it in a Favorites row at the top of the sidebar, under Inboxes. Favorites can
+come from any account, keep the order they were added in, and show their
+unread counts; the folder's glyph takes its account's color. Clicking
+Favorites opens or closes the list. **Remove from Favorites**, in the same
+menu or on the favorite itself, takes it out, and the row goes when the last
+one does. Favorites show with a single account too, and for an account left
+out of All Inboxes.
+
+They are kept on this computer, in `sidebar.toml` as `favorites`. A folder
+renamed or moved in Hylki stays a favorite under its new name; one deleted
+leaves the list.
 
 ### Hiding folders
 
@@ -196,7 +218,7 @@ stays back.
 **Settings → Accounts → the account → Show in All Inboxes** decides whether
 the account's mail is merged into the unified section at the top of the
 sidebar. Switched off, the account's folders are left out of the unified
-Inboxes, Starred, Sent, Drafts and Archive rows, their account lists and
+Inboxes, Starred, Sent, Drafts, Archive, Junk and Trash rows, their account lists and
 unread counts, and the account's filter folders and tagged mail are left
 out of the unified Filters and Tags. The account keeps its own section in
 the sidebar, and a search still covers its mail.
@@ -284,6 +306,16 @@ address, such as Evolution's
 sign-in run in a window of Hylki's instead of the browser, so the answer
 can be caught; that window keeps nothing once it closes. Evolution's
 registration is `20460e5d-ce91-49af-a3a5-70b6be7486d1` with that redirect.
+
+An organization whose Conditional Access lets only a managed device sign in
+refuses that window and any browser but its own. On a computer enrolled with
+Microsoft's identity broker (`microsoft-identity-broker` from Intune, or
+Himmelblau), Hylki asks the broker for a device sign-in cookie, as Evolution
+does, and sends it with the sign-in page and with every token refresh. The
+broker's account is the one with the address on the account's page, so enter
+the address before signing in. Without a broker nothing changes. The
+Flatpak is allowed to talk to the broker on the session bus
+(`com.microsoft.identity.broker1`) for this alone.
 
 **Google** signs in through **GNOME Online Accounts**. Add your Google account in
 *GNOME Settings → Online Accounts*, then import it in Hylki. Official builds don't
@@ -592,6 +624,27 @@ says whether a new message starts with these tools shown (Always expanded)
 or hidden behind the chevron (Always collapsed, the default); the chevron
 changes it for the message at hand. When the composer is narrow, the
 toolbar wraps onto a second row.
+
+### Spell checking
+
+**Settings → Composing → Check spelling as you type** underlines misspelled
+words in the subject and the message body. Right-clicking a word in the body
+offers corrections.
+
+**Settings → Composing → Languages** has a switch for the system language
+and one for each dictionary the app can see, and any number of them can be
+on. A word is underlined only when none of the chosen dictionaries knows it,
+so a message can mix languages. Switching a dictionary on switches the
+system language off, and switching the last one off switches it back on.
+The system language is the session's own, or the nearest dictionary to it.
+
+The **Spelling Language** submenu at the bottom of the body's right-click
+menu has the same choices, ticked as they stand. A choice made there is
+saved as the setting and applies to every open composer at once.
+
+A word added under **Added words** goes into the first chosen language's
+word list. The subject accepts it at once, and the message body after a
+restart.
 
 ### Writing in Markdown or HTML
 

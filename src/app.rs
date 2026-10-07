@@ -666,6 +666,12 @@ pub struct AppModel {
     sent_expanded: bool,
     drafts_expanded: bool,
     archive_expanded: bool,
+    junk_expanded: bool,
+    trash_expanded: bool,
+    /// Favorite folders (#367), as "email\tpath" entries in the order they
+    /// were added, and whether their list is open.
+    favorites: Vec<String>,
+    favorites_expanded: bool,
     /// Account emails whose own Filtered Folders / Tags sections are open.
     filtered_expanded_accounts: Vec<String>,
     tags_expanded_accounts: Vec<String>,
@@ -1472,6 +1478,9 @@ pub enum AppMsg {
         sent: bool,
         drafts: bool,
         archive: bool,
+        junk: bool,
+        trash: bool,
+        favorites: bool,
     },
     /// A tag view's rows, read from the index off the main thread: the
     /// view they answer and, per message, its account and folder path.
@@ -2559,6 +2568,10 @@ impl SimpleComponent for AppModel {
         let sent_expanded = sidebar_state.sent_expanded;
         let drafts_expanded = sidebar_state.drafts_expanded;
         let archive_expanded = sidebar_state.archive_expanded;
+        let junk_expanded = sidebar_state.junk_expanded;
+        let trash_expanded = sidebar_state.trash_expanded;
+        let favorites_expanded = sidebar_state.favorites_expanded;
+        let favorites = sidebar_state.favorites.clone();
 
         // Load accounts, then reconcile against GNOME Online Accounts: drop any
         // imported account GOA no longer has, pause any whose Mail service is
@@ -2630,6 +2643,9 @@ impl SimpleComponent for AppModel {
                 sent_expanded,
                 drafts_expanded,
                 archive_expanded,
+                junk_expanded,
+                trash_expanded,
+                favorites_expanded,
                 show_attachments,
                 show_contacts,
                 start,
@@ -2655,6 +2671,9 @@ impl SimpleComponent for AppModel {
                 sent_expanded,
                 drafts_expanded,
                 archive_expanded,
+                junk_expanded,
+                trash_expanded,
+                favorites_expanded,
                 show_attachments,
                 show_contacts,
                 start: None,
@@ -3091,6 +3110,10 @@ impl SimpleComponent for AppModel {
             sent_expanded,
             drafts_expanded,
             archive_expanded,
+            junk_expanded,
+            trash_expanded,
+            favorites,
+            favorites_expanded,
             filtered_expanded_accounts,
             tags_expanded_accounts,
             rail_dots: prefs.rail_dots,
@@ -4481,7 +4504,7 @@ impl SimpleComponent for AppModel {
                         });
                     });
                 }
-                // HYLKI_SHOWCASE_UNIFIED=sent|starred|drafts opens that unified
+                // HYLKI_SHOWCASE_UNIFIED=sent|starred|drafts|archive|junk|trash opens that unified
                 // row at 3s, All Inboxes at 6s and the row again at 9s, so the
                 // timing logs show a cold and a warm open.
                 if let Ok(which) = std::env::var("HYLKI_SHOWCASE_UNIFIED") {
@@ -4489,6 +4512,8 @@ impl SimpleComponent for AppModel {
                         "starred" => SidebarInput::UnifiedKindRowSelected(FolderKind::Starred),
                         "drafts" => SidebarInput::UnifiedKindRowSelected(FolderKind::Drafts),
                         "archive" => SidebarInput::UnifiedKindRowSelected(FolderKind::Archive),
+                        "junk" => SidebarInput::UnifiedKindRowSelected(FolderKind::Junk),
+                        "trash" => SidebarInput::UnifiedKindRowSelected(FolderKind::Trash),
                         "filtered" => SidebarInput::UnifiedFilteredSelected,
                         "tags" => SidebarInput::UnifiedTagsSelected,
                         _ => SidebarInput::UnifiedKindRowSelected(FolderKind::Sent),
@@ -5812,8 +5837,11 @@ impl SimpleComponent for AppModel {
                 sent,
                 drafts,
                 archive,
+                junk,
+                trash,
+                favorites,
             } => {
-                let now = (all_inboxes, filtered, tags, starred, sent, drafts, archive);
+                let now = (all_inboxes, filtered, tags, starred, sent, drafts, archive, junk, trash, favorites);
                 let was = (
                     self.unified_expanded,
                     self.filtered_expanded,
@@ -5822,6 +5850,9 @@ impl SimpleComponent for AppModel {
                     self.sent_expanded,
                     self.drafts_expanded,
                     self.archive_expanded,
+                    self.junk_expanded,
+                    self.trash_expanded,
+                    self.favorites_expanded,
                 );
                 if now != was {
                     self.unified_expanded = all_inboxes;
@@ -5831,6 +5862,9 @@ impl SimpleComponent for AppModel {
                     self.sent_expanded = sent;
                     self.drafts_expanded = drafts;
                     self.archive_expanded = archive;
+                    self.junk_expanded = junk;
+                    self.trash_expanded = trash;
+                    self.favorites_expanded = favorites;
                     self.save_sidebar_state();
                 }
             }
@@ -5987,6 +6021,28 @@ impl SimpleComponent for AppModel {
                 }
                 CtxAction::HideFolder { account_id, path } => {
                     self.hide_folders(account_id, vec![path]);
+                }
+                CtxAction::AddFavorite { account_id, path } => {
+                    if let Some(email) = self.email_of(account_id) {
+                        let key = format!("{email}\t{path}");
+                        if !self.favorites.contains(&key) {
+                            // The first favorite shows its list open.
+                            if self.favorites.is_empty() {
+                                self.favorites_expanded = true;
+                            }
+                            self.favorites.push(key);
+                            self.save_sidebar_state();
+                            self.rebuild_sidebar();
+                        }
+                    }
+                }
+                CtxAction::RemoveFavorite { account_id, path } => {
+                    if let Some(email) = self.email_of(account_id) {
+                        let key = format!("{email}\t{path}");
+                        self.favorites.retain(|k| *k != key);
+                        self.save_sidebar_state();
+                        self.rebuild_sidebar();
+                    }
                 }
                 CtxAction::ResetFolderOrder(account_id) => {
                     if let Some(email) = self.email_of(account_id) {
@@ -8115,6 +8171,11 @@ impl SimpleComponent for AppModel {
             AppMsg::Pref(PrefOutput::SetSpellcheckLangs(langs)) => {
                 if pref!(self.spellcheck_langs = langs) {
                     crate::ui::rich_editor::apply_spellcheck();
+                    // A composer's right-click menu changes it too (#365):
+                    // the Settings window, built once and kept, follows.
+                    if let Some(p) = &self.prefs {
+                        p.emit(PrefInput::SetSpellcheckLangs(self.spellcheck_langs.clone()));
+                    }
                 }
             }
 
@@ -12634,6 +12695,10 @@ impl AppModel {
             sent_expanded: self.sent_expanded,
             drafts_expanded: self.drafts_expanded,
             archive_expanded: self.archive_expanded,
+            junk_expanded: self.junk_expanded,
+            trash_expanded: self.trash_expanded,
+            favorites: self.favorites.clone(),
+            favorites_expanded: self.favorites_expanded,
             filtered_expanded_accounts: self.filtered_expanded_accounts.clone(),
             tags_expanded_accounts: self.tags_expanded_accounts.clone(),
         });
@@ -13202,6 +13267,7 @@ impl AppModel {
             if multi_account { self.unified_kinds } else { config::UnifiedKinds::NONE };
         let unified_unread = self.unified_inboxes_unread();
         let unified_folders = self.unified_folder_refs();
+        let favorite_folders = self.favorite_folder_refs();
         self.sidebars_emit(SidebarInput::SetContents {
             sections,
             show_unified,
@@ -13214,6 +13280,7 @@ impl AppModel {
             rail_fold: self.rail_fold,
             unified_unread,
             unified_folders,
+            favorite_folders,
             tags: self.tags.clone(),
             filtered_placement: self.filtered_placement,
             tags_placement: self.tags_placement,
@@ -13978,8 +14045,11 @@ impl AppModel {
         self.message_list.emit(MessageListInput::SetShowRecipient(
             view == UnifiedView::Kind(FolderKind::Sent),
         ));
-        self.message_list.emit(MessageListInput::SetRestorable(false));
-        self.message_list.emit(MessageListInput::SetInJunk(false));
+        // Unified Trash and Junk offer the way back as each account's own
+        // folder does (#369); the move and Not Spam go per message.
+        let restorable = matches!(view, UnifiedView::Kind(FolderKind::Trash | FolderKind::Junk));
+        self.message_list.emit(MessageListInput::SetRestorable(restorable));
+        self.message_list.emit(MessageListInput::SetInJunk(view == UnifiedView::Kind(FolderKind::Junk)));
         self.message_list
             .emit(MessageListInput::SetInDrafts(view == UnifiedView::Kind(FolderKind::Drafts)));
         self.message_list.emit(MessageListInput::SetInTemplates(false));
@@ -15440,6 +15510,9 @@ impl AppModel {
                 ComposeOutput::Close(id) => AppMsg::ComposeClosed(id),
                 ComposeOutput::History { id, undo, redo } => {
                     AppMsg::ComposeHistory { id, undo, redo }
+                }
+                ComposeOutput::SetSpellcheckLangs(langs) => {
+                    AppMsg::Pref(PrefOutput::SetSpellcheckLangs(langs))
                 }
             })
     }
@@ -17077,6 +17150,17 @@ impl AppModel {
             self.show_message(None, false);
             self.message_list.emit(MessageListInput::SetLoading);
         }
+        // A deleted folder leaves Favorites (#367), with what was inside it.
+        if let Some(email) = self.email_of(account_id) {
+            let own = format!("{email}\t{path}");
+            let inside = format!("{own}{}", self.folder_delimiter(account_id));
+            let before = self.favorites.len();
+            self.favorites.retain(|k| *k != own && !k.starts_with(&inside));
+            if self.favorites.len() != before {
+                self.save_sidebar_state();
+                self.rebuild_sidebar();
+            }
+        }
         self.send_to(account_id, MailRequest::DeleteFolder { path, trash });
     }
 
@@ -17212,6 +17296,16 @@ impl AppModel {
         {
             let key_prefix = format!("{email}\t");
             for k in self.tree_collapsed.iter_mut() {
+                if let Some(rest) = k.strip_prefix(&key_prefix) {
+                    if rest == path {
+                        *k = format!("{key_prefix}{new_path}");
+                    } else if let Some(r) = rest.strip_prefix(&old_prefix) {
+                        *k = format!("{key_prefix}{new_prefix}{r}");
+                    }
+                }
+            }
+            // So do favorites (#367), keeping their place in the list.
+            for k in self.favorites.iter_mut() {
                 if let Some(rest) = k.strip_prefix(&key_prefix) {
                     if rest == path {
                         *k = format!("{key_prefix}{new_path}");
@@ -20273,6 +20367,23 @@ impl AppModel {
     /// inbox destination is already an All Inboxes row and is skipped, and
     /// an account left out of the unified section (#267) lists its rules'
     /// folders under its own section only.
+    /// The favorite folders (#367) as the sidebar draws them, in the order
+    /// they were added. One whose account or folder is not listed (offline
+    /// with nothing cached, hidden) is left out until it is.
+    fn favorite_folder_refs(&self) -> Vec<UnifiedFolderRef> {
+        self.favorites
+            .iter()
+            .filter_map(|key| {
+                let (email, path) = key.split_once('\t')?;
+                let account = self.accounts.iter().find(|a| a.email == email)?;
+                let f = self.folders.get(&account.id)?.iter().find(|f| f.path == path)?;
+                let mut folder = f.clone();
+                folder.unread = self.folder_unread_of(f);
+                Some(UnifiedFolderRef { account_id: account.id, folder })
+            })
+            .collect()
+    }
+
     fn unified_folder_refs(&self) -> Vec<UnifiedFolderRef> {
         let mut out: Vec<UnifiedFolderRef> = Vec::new();
         if !self.unified_filtered {
@@ -21565,6 +21676,9 @@ fn sidebar_output_msg(out: SidebarOutput) -> AppMsg {
             sent,
             drafts,
             archive,
+            junk,
+            trash,
+            favorites,
         } => AppMsg::SidebarSectionsOpen {
             all_inboxes,
             filtered,
@@ -21573,6 +21687,9 @@ fn sidebar_output_msg(out: SidebarOutput) -> AppMsg {
             sent,
             drafts,
             archive,
+            junk,
+            trash,
+            favorites,
         },
         SidebarOutput::FolderNodeCollapsed { account_id, path, collapsed } => {
             AppMsg::FolderNodeCollapsed { account_id, path, collapsed }
@@ -22513,7 +22630,7 @@ fn hard_wrap_plain_regions(html: &str) -> String {
 }
 
 /// Does this document set `white-space: pre-wrap` on `body` itself?
-fn body_is_pre_wrap(html: &str) -> bool {
+pub(crate) fn body_is_pre_wrap(html: &str) -> bool {
     let mut rest = html;
     while let Some(at) = rest.find("<style") {
         let Some(open) = rest[at..].find('>').map(|i| at + i + 1) else { return false };

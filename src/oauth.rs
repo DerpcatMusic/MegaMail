@@ -543,8 +543,12 @@ pub fn exchange_code(settings: &OAuthSettings, request: &Authorization, code: &s
 /// address Graph reports, and the refresh token to keep, rotated by the
 /// refresh this takes. Fills the account in after a sign-in, so it is named
 /// by the mailbox actually reached rather than by what was typed.
-pub fn microsoft_whoami(settings: &OAuthSettings, refresh: &str) -> Result<(String, String, String), String> {
-    let fresh = refresh_access_token(settings, refresh)?;
+pub fn microsoft_whoami(
+    settings: &OAuthSettings,
+    refresh: &str,
+    user: Option<&str>,
+) -> Result<(String, String, String), String> {
+    let fresh = refresh_access_token_as(settings, refresh, user)?;
     let me: serde_json::Value = ureq::get("https://graph.microsoft.com/v1.0/me?$select=displayName,mail,userPrincipalName")
         .set("Authorization", &format!("Bearer {}", fresh.access_token))
         .call()
@@ -563,6 +567,18 @@ pub fn microsoft_whoami(settings: &OAuthSettings, refresh: &str) -> Result<(Stri
 
 /// Mint a fresh access token from a stored refresh token (blocking).
 pub fn refresh_access_token(settings: &OAuthSettings, refresh_token: &str) -> Result<Refreshed, String> {
+    refresh_access_token_as(settings, refresh_token, None)
+}
+
+/// [`refresh_access_token`] for the account `user` signs in as. Behind
+/// Conditional Access that wants a managed device, Entra checks every
+/// refresh again: the identity broker's device cookie goes with it, as a
+/// header of its own name (#329, see `ms_broker`).
+pub fn refresh_access_token_as(
+    settings: &OAuthSettings,
+    refresh_token: &str,
+    user: Option<&str>,
+) -> Result<Refreshed, String> {
     let mut form: Vec<(&str, &str)> = vec![
         ("grant_type", "refresh_token"),
         ("refresh_token", refresh_token),
@@ -571,7 +587,11 @@ pub fn refresh_access_token(settings: &OAuthSettings, refresh_token: &str) -> Re
     if !settings.client_secret.is_empty() {
         form.push(("client_secret", &settings.client_secret));
     }
-    let token: TokenResponse = ureq::post(&settings.token_url)
+    let mut post = ureq::post(&settings.token_url);
+    if let Some(cookie) = crate::ms_broker::sso_cookie(settings, user) {
+        post = post.set(&cookie.name, &cookie.value);
+    }
+    let token: TokenResponse = post
         .send_form(&form)
         .map_err(|e| e.to_string())?
         .into_json()
