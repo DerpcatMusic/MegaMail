@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Fixed: opening a message could wait behind background syncing** (#370,
+  by Salem Sayed Abdel Gawad). A body that is not cached yet no longer waits
+  for folder syncs, body prefetch, search indexing or unread counts that
+  were already running: they stop for it, reconnect and pick up where they
+  left off, though never ahead of a move or flag change still queued.
+  Connecting and refreshing list folders with their cached counts and
+  re-count them afterwards, in place of a STATUS command per folder first.
+  Conversation badges are read from the cache on a connection of their own,
+  and reading bodies from the mailbox already selected skips a SELECT each.
 - **Added: templates** (#360, requested by amadeusp). A Templates folder is
   now a special folder like Drafts and Sent: found by its name, or chosen
   under **Special Folders** in the account's settings, and listed after
