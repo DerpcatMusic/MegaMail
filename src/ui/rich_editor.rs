@@ -2582,8 +2582,11 @@ fn document(content: &str, webview: &webkit6::WebView, image_policy: &str) -> St
            ::highlight(vireo-misspell){{\
              text-decoration:underline wavy #e01b24;\
              background-color:rgba(224,27,36,0.10);}}\
-           blockquote{{margin:0 0 0 8px;padding-left:10px;\
-             border-left:3px solid rgba(128,128,128,0.4);}}\
+           blockquote{{margin:0;margin-inline-start:8px;padding-inline-start:10px;\
+             border-inline-start:3px solid rgba(128,128,128,0.4);}}\
+           /* Each paragraph written here takes the direction of its own\
+              text (#366): Persian under English, or the other way round. */\
+           body,body>div,body>p,li{{unicode-bidi:plaintext;}}\
            /* A paragraph's space goes below it, so the first line of the\
               message sits where it would in a <div>. */\
            body>p:first-child{{margin-top:0;}}\
@@ -2598,7 +2601,7 @@ fn document(content: &str, webview: &webkit6::WebView, image_policy: &str) -> St
          <script>window.__hylkiDirty=false;\
            document.addEventListener('input',function(){{window.__hylkiDirty=true;}},true);\
          </script></head>\
-         <body contenteditable=\"true\">{content}</body></html>"
+         <body contenteditable=\"true\" dir=\"auto\">{content}</body></html>"
     )
 }
 
@@ -2628,7 +2631,7 @@ fn source_document(text: &str, webview: &webkit6::WebView) -> String {
              font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;\
              tab-size:2;}}\
          </style></head><body>\
-         <textarea id=\"src\" spellcheck=\"true\" autocapitalize=\"off\" \
+         <textarea id=\"src\" dir=\"auto\" spellcheck=\"true\" autocapitalize=\"off\" \
            autocorrect=\"off\">\n{text}</textarea>\
          <script>\
          (function(){{\

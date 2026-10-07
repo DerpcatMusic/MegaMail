@@ -22630,7 +22630,7 @@ fn hard_wrap_plain_regions(html: &str) -> String {
 }
 
 /// Does this document set `white-space: pre-wrap` on `body` itself?
-fn body_is_pre_wrap(html: &str) -> bool {
+pub(crate) fn body_is_pre_wrap(html: &str) -> bool {
     let mut rest = html;
     while let Some(at) = rest.find("<style") {
         let Some(open) = rest[at..].find('>').map(|i| at + i + 1) else { return false };

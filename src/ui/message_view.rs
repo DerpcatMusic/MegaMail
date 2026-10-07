@@ -6577,6 +6577,61 @@ fn inject_reader_style(doc: &str, css: &str) -> String {
     format!("{doc}{block}")
 }
 
+/// Where a document's real `tag` opens ("<body", say), skipping longer
+/// names that merely start the same ("<bodyguard"). `lower` is the
+/// document lowercased, so offsets match.
+fn find_tag(lower: &str, tag: &str) -> Option<usize> {
+    let mut from = 0;
+    while let Some(at) = lower[from..].find(tag).map(|i| from + i) {
+        let next = lower.as_bytes().get(at + tag.len()).copied().unwrap_or(b'>');
+        if next == b'>' || next == b'/' || next.is_ascii_whitespace() {
+            return Some(at);
+        }
+        from = at + tag.len();
+    }
+    None
+}
+
+/// Whether the tag opening at `at` carries a `dir` attribute.
+fn tag_has_dir(lower: &str, at: usize) -> bool {
+    let end = lower[at..].find('>').map_or(lower.len(), |i| at + i);
+    let tag = &lower[at..end];
+    tag.match_indices("dir").any(|(i, _)| {
+        tag[..i].ends_with(|c: char| c.is_ascii_whitespace())
+            && tag[i + 3..].trim_start().starts_with('=')
+    })
+}
+
+/// Let a message take the direction of its own text (#366): `dir="auto"`
+/// on its body, so Persian or Hebrew mail reads right to left whatever the
+/// interface language, unless the sender set a direction on `<html>` or
+/// `<body>`, which stands. Plain text is set line by line (`plaintext`
+/// bidi), so an English reply over a Persian quote reads right in both.
+fn auto_direction(doc: &str) -> String {
+    let lower = doc.to_ascii_lowercase();
+    let html = find_tag(&lower, "<html");
+    let body = find_tag(&lower, "<body");
+    let doc = if html.is_some_and(|at| tag_has_dir(&lower, at))
+        || body.is_some_and(|at| tag_has_dir(&lower, at))
+    {
+        doc.to_string()
+    } else if let Some(at) = body.or(html) {
+        // Both "<body" and "<html" are five bytes long.
+        let at = at + 5;
+        format!("{} dir=\"auto\"{}", &doc[..at], &doc[at..])
+    } else {
+        doc.to_string()
+    };
+    let plain = if crate::app::body_is_pre_wrap(&doc) {
+        "body,.vireo-plain"
+    } else if lower.contains("vireo-plain") {
+        ".vireo-plain"
+    } else {
+        return doc;
+    };
+    inject_reader_style(&doc, &format!("{plain}{{unicode-bidi:plaintext;}}"))
+}
+
 fn inject_csp(html: &str, allow_remote: bool, dark: bool) -> String {
     let policy = if allow_remote {
         "default-src 'none'; img-src http: https: data: cid:; \
@@ -7198,7 +7253,7 @@ fn message_frame(
         css.push_str(&format!("html{{zoom:{};}}", zoom as f64 / 100.0));
     }
     let doc = inject_reader_style(&doc, &css);
-    let doc = inject_csp(&doc, !restrict, dark);
+    let doc = auto_direction(&inject_csp(&doc, !restrict, dark));
     format!(
         // `allow-same-origin` lets our wrapper script measure the frame height;
         // `allow-popups` lets `_blank` links reach the policy handler (which opens
@@ -7530,6 +7585,37 @@ fn sanitize_filename(subject: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A message takes the direction of its text unless it names one (#366).
+    #[test]
+    fn a_message_takes_its_own_direction() {
+        let plain = auto_direction(&body_html("سلام\nHello"));
+        assert!(plain.contains("<body dir=\"auto\" class=\"vireo-plain\">"), "{plain}");
+        assert!(plain.contains("body,.vireo-plain{unicode-bidi:plaintext;}"), "{plain}");
+
+        let html = auto_direction("<html><head></head><body class=\"x\"><p>x</p></body></html>");
+        assert!(html.contains("<body dir=\"auto\" class=\"x\">"), "{html}");
+        assert!(!html.contains("unicode-bidi"), "{html}");
+
+        let parts = auto_direction("<html><body><div class=\"vireo-plain\">a</div></body></html>");
+        assert!(parts.contains(".vireo-plain{unicode-bidi:plaintext;}"), "{parts}");
+        assert!(!parts.contains("body,.vireo-plain"), "{parts}");
+
+        // The sender's own direction stands, on either element.
+        for own in [
+            "<html dir=\"rtl\"><body><p>x</p></body></html>",
+            "<html><body DIR='ltr'><p>x</p></body></html>",
+            "<html><body style=\"x\" dir = \"rtl\"><p>x</p></body></html>",
+        ] {
+            assert_eq!(auto_direction(own), own);
+        }
+        // Not a dir attribute, and not a body tag.
+        let tricky = auto_direction("<html><body data-dir=\"x\"><bodyguard>y</bodyguard></body></html>");
+        assert!(tricky.contains("<body dir=\"auto\" data-dir=\"x\">"), "{tricky}");
+        // No body tag: the root carries it.
+        let bare = auto_direction("<html><p>x</p></html>");
+        assert!(bare.starts_with("<html dir=\"auto\">"), "{bare}");
+    }
 
     /// The page's answer to a right-click: the card it landed on (or the
     /// nearest) and any selected text. An empty or broken answer names no

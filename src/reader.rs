@@ -86,7 +86,8 @@ fn stylesheet(dark: bool, accent: &str) -> String {
          a{{color:{accent};text-decoration:none;}}a:hover{{text-decoration:underline;}}\
          img{{display:block;max-width:100%;height:auto;margin:1em auto;border-radius:8px;}}\
          a img{{margin:0.5em 0;}}\
-         blockquote{{padding:0.1em 0 0.1em 1em;border-left:3px solid {RULE};color:{muted};}}\
+         blockquote{{padding-block:0.1em;padding-inline:1em 0;border-inline-start:3px solid {RULE};\
+           color:{muted};}}\
          blockquote blockquote{{margin:0.5em 0;}}\
          pre,code,kbd,samp{{font-family:ui-monospace,\"Adwaita Mono\",monospace;font-size:0.9em;}}\
          pre{{background:{SOFT};padding:12px 14px;border-radius:8px;overflow-x:auto;\
@@ -94,16 +95,17 @@ fn stylesheet(dark: bool, accent: &str) -> String {
          code,kbd,samp{{background:{SOFT};padding:0.1em 0.3em;border-radius:4px;}}\
          pre code{{background:none;padding:0;}}\
          hr{{border:0;border-top:1px solid {RULE};margin:1.6em 0;}}\
-         ul,ol{{padding-left:1.5em;}}li{{margin:0.25em 0;}}\
-         dt{{font-weight:700;}}dd{{margin:0 0 0.5em 1.5em;}}\
+         ul,ol{{padding-inline-start:1.5em;}}li{{margin:0.25em 0;}}\
+         dt{{font-weight:700;}}dd{{margin:0 0 0.5em;margin-inline-start:1.5em;}}\
          table{{border-collapse:collapse;max-width:100%;font-size:0.95em;display:block;\
            overflow-x:auto;}}\
-         th,td{{padding:6px 10px;border-bottom:1px solid {RULE};text-align:left;\
+         th,td{{padding:6px 10px;border-bottom:1px solid {RULE};text-align:start;\
            vertical-align:top;}}\
          th{{font-weight:700;}}\
          figcaption,small{{font-size:0.85em;color:{muted};}}\
          .vireo-plain{{white-space:pre-wrap;}}\
-         mark{{background:rgba(229,165,10,0.35);color:inherit;}}"
+         mark{{background:rgba(229,165,10,0.35);color:inherit;}}\
+         p,li,dt,dd,h1,h2,h3,h4,h5,h6,th,td,figcaption,div,pre{{unicode-bidi:plaintext;}}"
     )
 }
 
