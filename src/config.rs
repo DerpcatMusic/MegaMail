@@ -1691,7 +1691,8 @@ pub fn load_unified_chips() -> UnifiedChips {
 
 /// Which of the unified section's folder rows are shown besides All
 /// Inboxes: each combines that folder across every account, and opens to
-/// the accounts' own. All on until switched off.
+/// the accounts' own. Starred, Sent, Drafts and Archive are on until
+/// switched off; Trash and Junk (#369) are off until switched on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UnifiedKinds {
     #[serde(default = "default_on")]
@@ -1702,11 +1703,15 @@ pub struct UnifiedKinds {
     pub drafts: bool,
     #[serde(default = "default_on")]
     pub archive: bool,
+    #[serde(default)]
+    pub junk: bool,
+    #[serde(default)]
+    pub trash: bool,
 }
 
 impl Default for UnifiedKinds {
     fn default() -> Self {
-        UnifiedKinds { starred: true, sent: true, drafts: true, archive: true }
+        UnifiedKinds { starred: true, sent: true, drafts: true, archive: true, junk: false, trash: false }
     }
 }
 
@@ -1745,12 +1750,24 @@ pub struct UnifiedChips {
     #[serde(default = "default_on")]
     pub archive: bool,
     #[serde(default = "default_on")]
+    pub junk: bool,
+    #[serde(default = "default_on")]
+    pub trash: bool,
+    #[serde(default = "default_on")]
     pub filtered: bool,
 }
 
 impl Default for UnifiedChips {
     fn default() -> Self {
-        UnifiedChips { all_inboxes: true, starred: true, drafts: true, archive: true, filtered: true }
+        UnifiedChips {
+            all_inboxes: true,
+            starred: true,
+            drafts: true,
+            archive: true,
+            junk: true,
+            trash: true,
+            filtered: true,
+        }
     }
 }
 
@@ -1763,6 +1780,8 @@ impl UnifiedChips {
             Starred => self.starred,
             Drafts => self.drafts,
             Archive => self.archive,
+            Junk => self.junk,
+            Trash => self.trash,
             _ => false,
         }
     }
@@ -1770,14 +1789,14 @@ impl UnifiedChips {
 
 impl UnifiedKinds {
     pub const NONE: UnifiedKinds =
-        UnifiedKinds { starred: false, sent: false, drafts: false, archive: false };
+        UnifiedKinds { starred: false, sent: false, drafts: false, archive: false, junk: false, trash: false };
 
     pub fn any(self) -> bool {
-        self.starred || self.sent || self.drafts || self.archive
+        self.starred || self.sent || self.drafts || self.archive || self.junk || self.trash
     }
 
-    /// Whether the row for `kind` is on (only Starred, Sent and Drafts have
-    /// one; anything else is `false`).
+    /// Whether the row for `kind` is on (Inbox and custom folders have none
+    /// of their own here, so they are `false`).
     pub fn has(self, kind: crate::models::FolderKind) -> bool {
         use crate::models::FolderKind::*;
         match kind {
@@ -1785,14 +1804,16 @@ impl UnifiedKinds {
             Sent => self.sent,
             Drafts => self.drafts,
             Archive => self.archive,
+            Junk => self.junk,
+            Trash => self.trash,
             _ => false,
         }
     }
 
-    /// The kinds with a row, in sidebar order.
+    /// The kinds with a row, in sidebar order: an account's own order.
     pub fn listed(self) -> Vec<crate::models::FolderKind> {
         use crate::models::FolderKind::*;
-        [Starred, Sent, Drafts, Archive].into_iter().filter(|k| self.has(*k)).collect()
+        [Starred, Sent, Drafts, Archive, Junk, Trash].into_iter().filter(|k| self.has(*k)).collect()
     }
 }
 
@@ -2830,6 +2851,10 @@ pub struct RailFold {
     pub drafts: bool,
     #[serde(default = "default_on")]
     pub archive: bool,
+    #[serde(default = "default_on")]
+    pub junk: bool,
+    #[serde(default = "default_on")]
+    pub trash: bool,
     /// The Filtered Folders section.
     #[serde(default = "default_on")]
     pub filtered: bool,
@@ -2852,6 +2877,8 @@ impl Default for RailFold {
             sent: true,
             drafts: true,
             archive: true,
+            junk: true,
+            trash: true,
             filtered: true,
             tags: true,
         }
@@ -2875,6 +2902,8 @@ impl RailFold {
                 Sent => self.sent,
                 Drafts => self.drafts,
                 Archive => self.archive,
+                Junk => self.junk,
+                Trash => self.trash,
                 _ => false,
             }
     }
@@ -3155,6 +3184,10 @@ struct SidebarFile {
     drafts_expanded: bool,
     #[serde(default)]
     archive_expanded: bool,
+    #[serde(default)]
+    junk_expanded: bool,
+    #[serde(default)]
+    trash_expanded: bool,
     /// Account emails whose own Filtered Folders / Tags sections are open
     /// (closed by default, like their custom folders).
     #[serde(default)]
@@ -3193,6 +3226,8 @@ pub struct SidebarState {
     pub sent_expanded: bool,
     pub drafts_expanded: bool,
     pub archive_expanded: bool,
+    pub junk_expanded: bool,
+    pub trash_expanded: bool,
     /// Account emails whose own Filtered Folders / Tags sections are open.
     pub filtered_expanded_accounts: Vec<String>,
     pub tags_expanded_accounts: Vec<String>,
@@ -3220,6 +3255,8 @@ pub fn load_sidebar_state() -> SidebarState {
             sent_expanded: s.sent_expanded,
             drafts_expanded: s.drafts_expanded,
             archive_expanded: s.archive_expanded,
+            junk_expanded: s.junk_expanded,
+            trash_expanded: s.trash_expanded,
             filtered_expanded_accounts: s.filtered_expanded_accounts,
             tags_expanded_accounts: s.tags_expanded_accounts,
         })
@@ -3247,6 +3284,8 @@ pub fn save_sidebar_state(state: &SidebarState) {
         sent_expanded: state.sent_expanded,
         drafts_expanded: state.drafts_expanded,
         archive_expanded: state.archive_expanded,
+        junk_expanded: state.junk_expanded,
+        trash_expanded: state.trash_expanded,
         filtered_expanded_accounts: state.filtered_expanded_accounts.clone(),
         tags_expanded_accounts: state.tags_expanded_accounts.clone(),
     };
@@ -3766,6 +3805,19 @@ pub fn save_contacts_pane_width(width: i32) {
 #[cfg(test)]
 mod tests {
     use super::{decode_gallery_folder, encode_gallery_folder, ConfigFile, ListColumn, PrivacyFile, StateFile};
+
+    /// #369: unified Junk and Trash are off in a file that predates them,
+    /// and list after Archive, in an account's own order.
+    #[test]
+    fn unified_junk_and_trash_start_off() {
+        use crate::models::FolderKind::*;
+        let kinds: super::UnifiedKinds = toml::from_str("starred = false").expect("parses");
+        assert!(!kinds.junk && !kinds.trash && kinds.archive);
+        assert_eq!(kinds.listed(), vec![Sent, Drafts, Archive]);
+        let all = super::UnifiedKinds { junk: true, trash: true, ..Default::default() };
+        assert_eq!(all.listed(), vec![Starred, Sent, Drafts, Archive, Junk, Trash]);
+        assert!(super::UnifiedKinds { trash: true, ..super::UnifiedKinds::NONE }.any());
+    }
 
     /// #334: the saved columns come back in order; a name this version does
     /// not know, or a repeat, is dropped, and the subject is never missing.

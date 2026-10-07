@@ -164,10 +164,17 @@ Only the chevrons open and close the items in the sidebar. Clicking a
 folder opens it and leaves its sub-folders as they were. Clicking the name
 of the Folders, Filters or Tags heading does nothing; the chevron beside it
 opens or closes the section. Clicking Inboxes, Starred, Sent, Drafts,
-Archive, Filters or Tags in the unified section opens the combined list
-without showing each account's folder under it. In the icon rail, which
-has no chevrons, a click on a section's icon opens or closes it, and a
-long press opens or closes the unified rows.
+Archive, Junk, Trash, Filters or Tags in the unified section opens the
+combined list without showing each account's folder under it. In the icon
+rail, which has no chevrons, a click on a section's icon opens or closes it,
+and a long press opens or closes the unified rows.
+
+**Settings → Sidebar → Unified** chooses the unified section's rows.
+Inboxes, Starred, Sent, Drafts and Archive are on until switched off; Junk
+and Trash are off until switched on. In the unified Junk and Trash, **Not
+Spam** and **Move to Inbox** send each message to its own account's Inbox,
+and the right-click menu of each account's row beneath has **Empty Junk…**
+or **Empty Trash…**.
 
 ### Hiding folders
 
@@ -196,7 +203,7 @@ stays back.
 **Settings → Accounts → the account → Show in All Inboxes** decides whether
 the account's mail is merged into the unified section at the top of the
 sidebar. Switched off, the account's folders are left out of the unified
-Inboxes, Starred, Sent, Drafts and Archive rows, their account lists and
+Inboxes, Starred, Sent, Drafts, Archive, Junk and Trash rows, their account lists and
 unread counts, and the account's filter folders and tagged mail are left
 out of the unified Filters and Tags. The account keeps its own section in
 the sidebar, and a search still covers its mail.

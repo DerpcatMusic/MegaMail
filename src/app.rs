@@ -666,6 +666,8 @@ pub struct AppModel {
     sent_expanded: bool,
     drafts_expanded: bool,
     archive_expanded: bool,
+    junk_expanded: bool,
+    trash_expanded: bool,
     /// Account emails whose own Filtered Folders / Tags sections are open.
     filtered_expanded_accounts: Vec<String>,
     tags_expanded_accounts: Vec<String>,
@@ -1472,6 +1474,8 @@ pub enum AppMsg {
         sent: bool,
         drafts: bool,
         archive: bool,
+        junk: bool,
+        trash: bool,
     },
     /// A tag view's rows, read from the index off the main thread: the
     /// view they answer and, per message, its account and folder path.
@@ -2559,6 +2563,8 @@ impl SimpleComponent for AppModel {
         let sent_expanded = sidebar_state.sent_expanded;
         let drafts_expanded = sidebar_state.drafts_expanded;
         let archive_expanded = sidebar_state.archive_expanded;
+        let junk_expanded = sidebar_state.junk_expanded;
+        let trash_expanded = sidebar_state.trash_expanded;
 
         // Load accounts, then reconcile against GNOME Online Accounts: drop any
         // imported account GOA no longer has, pause any whose Mail service is
@@ -2630,6 +2636,8 @@ impl SimpleComponent for AppModel {
                 sent_expanded,
                 drafts_expanded,
                 archive_expanded,
+                junk_expanded,
+                trash_expanded,
                 show_attachments,
                 show_contacts,
                 start,
@@ -2655,6 +2663,8 @@ impl SimpleComponent for AppModel {
                 sent_expanded,
                 drafts_expanded,
                 archive_expanded,
+                junk_expanded,
+                trash_expanded,
                 show_attachments,
                 show_contacts,
                 start: None,
@@ -3091,6 +3101,8 @@ impl SimpleComponent for AppModel {
             sent_expanded,
             drafts_expanded,
             archive_expanded,
+            junk_expanded,
+            trash_expanded,
             filtered_expanded_accounts,
             tags_expanded_accounts,
             rail_dots: prefs.rail_dots,
@@ -4481,7 +4493,7 @@ impl SimpleComponent for AppModel {
                         });
                     });
                 }
-                // HYLKI_SHOWCASE_UNIFIED=sent|starred|drafts opens that unified
+                // HYLKI_SHOWCASE_UNIFIED=sent|starred|drafts|archive|junk|trash opens that unified
                 // row at 3s, All Inboxes at 6s and the row again at 9s, so the
                 // timing logs show a cold and a warm open.
                 if let Ok(which) = std::env::var("HYLKI_SHOWCASE_UNIFIED") {
@@ -4489,6 +4501,8 @@ impl SimpleComponent for AppModel {
                         "starred" => SidebarInput::UnifiedKindRowSelected(FolderKind::Starred),
                         "drafts" => SidebarInput::UnifiedKindRowSelected(FolderKind::Drafts),
                         "archive" => SidebarInput::UnifiedKindRowSelected(FolderKind::Archive),
+                        "junk" => SidebarInput::UnifiedKindRowSelected(FolderKind::Junk),
+                        "trash" => SidebarInput::UnifiedKindRowSelected(FolderKind::Trash),
                         "filtered" => SidebarInput::UnifiedFilteredSelected,
                         "tags" => SidebarInput::UnifiedTagsSelected,
                         _ => SidebarInput::UnifiedKindRowSelected(FolderKind::Sent),
@@ -5812,8 +5826,10 @@ impl SimpleComponent for AppModel {
                 sent,
                 drafts,
                 archive,
+                junk,
+                trash,
             } => {
-                let now = (all_inboxes, filtered, tags, starred, sent, drafts, archive);
+                let now = (all_inboxes, filtered, tags, starred, sent, drafts, archive, junk, trash);
                 let was = (
                     self.unified_expanded,
                     self.filtered_expanded,
@@ -5822,6 +5838,8 @@ impl SimpleComponent for AppModel {
                     self.sent_expanded,
                     self.drafts_expanded,
                     self.archive_expanded,
+                    self.junk_expanded,
+                    self.trash_expanded,
                 );
                 if now != was {
                     self.unified_expanded = all_inboxes;
@@ -5831,6 +5849,8 @@ impl SimpleComponent for AppModel {
                     self.sent_expanded = sent;
                     self.drafts_expanded = drafts;
                     self.archive_expanded = archive;
+                    self.junk_expanded = junk;
+                    self.trash_expanded = trash;
                     self.save_sidebar_state();
                 }
             }
@@ -12634,6 +12654,8 @@ impl AppModel {
             sent_expanded: self.sent_expanded,
             drafts_expanded: self.drafts_expanded,
             archive_expanded: self.archive_expanded,
+            junk_expanded: self.junk_expanded,
+            trash_expanded: self.trash_expanded,
             filtered_expanded_accounts: self.filtered_expanded_accounts.clone(),
             tags_expanded_accounts: self.tags_expanded_accounts.clone(),
         });
@@ -13978,8 +14000,11 @@ impl AppModel {
         self.message_list.emit(MessageListInput::SetShowRecipient(
             view == UnifiedView::Kind(FolderKind::Sent),
         ));
-        self.message_list.emit(MessageListInput::SetRestorable(false));
-        self.message_list.emit(MessageListInput::SetInJunk(false));
+        // Unified Trash and Junk offer the way back as each account's own
+        // folder does (#369); the move and Not Spam go per message.
+        let restorable = matches!(view, UnifiedView::Kind(FolderKind::Trash | FolderKind::Junk));
+        self.message_list.emit(MessageListInput::SetRestorable(restorable));
+        self.message_list.emit(MessageListInput::SetInJunk(view == UnifiedView::Kind(FolderKind::Junk)));
         self.message_list
             .emit(MessageListInput::SetInDrafts(view == UnifiedView::Kind(FolderKind::Drafts)));
         self.message_list.emit(MessageListInput::SetInTemplates(false));
@@ -21565,6 +21590,8 @@ fn sidebar_output_msg(out: SidebarOutput) -> AppMsg {
             sent,
             drafts,
             archive,
+            junk,
+            trash,
         } => AppMsg::SidebarSectionsOpen {
             all_inboxes,
             filtered,
@@ -21573,6 +21600,8 @@ fn sidebar_output_msg(out: SidebarOutput) -> AppMsg {
             sent,
             drafts,
             archive,
+            junk,
+            trash,
         },
         SidebarOutput::FolderNodeCollapsed { account_id, path, collapsed } => {
             AppMsg::FolderNodeCollapsed { account_id, path, collapsed }

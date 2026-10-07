@@ -1034,11 +1034,15 @@ pub enum PrefInput {
     ToggleUnifiedChipStarred(bool),
     ToggleUnifiedChipDrafts(bool),
     ToggleUnifiedChipArchive(bool),
+    ToggleUnifiedChipJunk(bool),
+    ToggleUnifiedChipTrash(bool),
     ToggleUnifiedChipFiltered(bool),
     ToggleUnifiedStarred(bool),
     ToggleUnifiedSent(bool),
     ToggleUnifiedDrafts(bool),
     ToggleUnifiedArchive(bool),
+    ToggleUnifiedJunk(bool),
+    ToggleUnifiedTrash(bool),
     ToggleShowAccounts(bool),
     /// One of Focus Mode's switches.
     ToggleFocus(crate::config::FocusPart, bool),
@@ -1069,6 +1073,8 @@ pub enum PrefInput {
     ToggleRailFoldSent(bool),
     ToggleRailFoldDrafts(bool),
     ToggleRailFoldArchive(bool),
+    ToggleRailFoldJunk(bool),
+    ToggleRailFoldTrash(bool),
     ToggleRailFoldFiltered(bool),
     ToggleRailFoldTags(bool),
     ChangePreviewLines(u32),
@@ -2392,6 +2398,24 @@ impl Component for Preferences {
                                         },
                                     },
 
+                                    #[name = "unified_junk_row"]
+                                    adw::SwitchRow {
+                                        set_title: &i18n("Junk"),
+                                        set_subtitle: &i18n("Every account's junk mail as one list, opening to each account's own."),
+                                        connect_active_notify[sender] => move |row| {
+                                            sender.input(PrefInput::ToggleUnifiedJunk(row.is_active()));
+                                        },
+                                    },
+
+                                    #[name = "unified_trash_row"]
+                                    adw::SwitchRow {
+                                        set_title: &i18n("Trash"),
+                                        set_subtitle: &i18n("Every account's trash as one list, opening to each account's own."),
+                                        connect_active_notify[sender] => move |row| {
+                                            sender.input(PrefInput::ToggleUnifiedTrash(row.is_active()));
+                                        },
+                                    },
+
                                     #[name = "unified_filtered_row"]
                                     adw::SwitchRow {
                                         set_title: &i18n("Filters"),
@@ -2446,6 +2470,20 @@ impl Component for Preferences {
                                             set_title: &i18n("Archive"),
                                             connect_active_notify[sender] => move |row| {
                                                 sender.input(PrefInput::ToggleUnifiedChipArchive(row.is_active()));
+                                            },
+                                        },
+                                        #[name = "unified_chip_junk_row"]
+                                        add_row = &adw::SwitchRow {
+                                            set_title: &i18n("Junk"),
+                                            connect_active_notify[sender] => move |row| {
+                                                sender.input(PrefInput::ToggleUnifiedChipJunk(row.is_active()));
+                                            },
+                                        },
+                                        #[name = "unified_chip_trash_row"]
+                                        add_row = &adw::SwitchRow {
+                                            set_title: &i18n("Trash"),
+                                            connect_active_notify[sender] => move |row| {
+                                                sender.input(PrefInput::ToggleUnifiedChipTrash(row.is_active()));
                                             },
                                         },
                                         #[name = "unified_chip_filtered_row"]
@@ -2555,6 +2593,22 @@ impl Component for Preferences {
                                             set_subtitle: &i18n("The account list under the unified Archive row."),
                                             connect_active_notify[sender] => move |row| {
                                                 sender.input(PrefInput::ToggleRailFoldArchive(row.is_active()));
+                                            },
+                                        },
+                                        #[name = "rail_fold_junk_row"]
+                                        add_row = &adw::SwitchRow {
+                                            set_title: &i18n("Junk"),
+                                            set_subtitle: &i18n("The account list under the unified Junk row."),
+                                            connect_active_notify[sender] => move |row| {
+                                                sender.input(PrefInput::ToggleRailFoldJunk(row.is_active()));
+                                            },
+                                        },
+                                        #[name = "rail_fold_trash_row"]
+                                        add_row = &adw::SwitchRow {
+                                            set_title: &i18n("Trash"),
+                                            set_subtitle: &i18n("The account list under the unified Trash row."),
+                                            connect_active_notify[sender] => move |row| {
+                                                sender.input(PrefInput::ToggleRailFoldTrash(row.is_active()));
                                             },
                                         },
                                         #[name = "rail_fold_filtered_row"]
@@ -3798,12 +3852,16 @@ impl Component for Preferences {
         widgets.unified_chip_starred_row.set_active(init.unified_chips.starred);
         widgets.unified_chip_drafts_row.set_active(init.unified_chips.drafts);
         widgets.unified_chip_archive_row.set_active(init.unified_chips.archive);
+        widgets.unified_chip_junk_row.set_active(init.unified_chips.junk);
+        widgets.unified_chip_trash_row.set_active(init.unified_chips.trash);
         widgets.unified_chip_filtered_row.set_active(init.unified_chips.filtered);
         widgets.unified_filtered_row.set_active(init.unified_filtered);
         widgets.unified_starred_row.set_active(init.unified_kinds.starred);
         widgets.unified_sent_row.set_active(init.unified_kinds.sent);
         widgets.unified_drafts_row.set_active(init.unified_kinds.drafts);
         widgets.unified_archive_row.set_active(init.unified_kinds.archive);
+        widgets.unified_junk_row.set_active(init.unified_kinds.junk);
+        widgets.unified_trash_row.set_active(init.unified_kinds.trash);
         widgets.unified_tags_row.set_active(init.unified_tags);
         for (row, placement) in [
             (&widgets.filtered_placement_row, init.filtered_placement),
@@ -3844,6 +3902,8 @@ impl Component for Preferences {
         widgets.rail_fold_sent_row.set_active(init.rail_fold.sent);
         widgets.rail_fold_drafts_row.set_active(init.rail_fold.drafts);
         widgets.rail_fold_archive_row.set_active(init.rail_fold.archive);
+        widgets.rail_fold_junk_row.set_active(init.rail_fold.junk);
+        widgets.rail_fold_trash_row.set_active(init.rail_fold.trash);
         widgets.rail_fold_filtered_row.set_active(init.rail_fold.filtered);
         widgets.rail_fold_tags_row.set_active(init.rail_fold.tags);
         let preview_labels_owned = [i18n("Off"), i18n("1 line"), i18n("2 lines"), i18n("3 lines")];
@@ -4744,6 +4804,14 @@ impl Component for Preferences {
                 self.unified_chips.archive = on;
                 let _ = sender.output(PrefOutput::SetUnifiedChips(self.unified_chips));
             }
+            PrefInput::ToggleUnifiedChipJunk(on) => {
+                self.unified_chips.junk = on;
+                let _ = sender.output(PrefOutput::SetUnifiedChips(self.unified_chips));
+            }
+            PrefInput::ToggleUnifiedChipTrash(on) => {
+                self.unified_chips.trash = on;
+                let _ = sender.output(PrefOutput::SetUnifiedChips(self.unified_chips));
+            }
             PrefInput::ToggleUnifiedChipFiltered(on) => {
                 self.unified_chips.filtered = on;
                 let _ = sender.output(PrefOutput::SetUnifiedChips(self.unified_chips));
@@ -4762,6 +4830,14 @@ impl Component for Preferences {
             }
             PrefInput::ToggleUnifiedArchive(on) => {
                 self.unified_kinds.archive = on;
+                let _ = sender.output(PrefOutput::SetUnifiedKinds(self.unified_kinds));
+            }
+            PrefInput::ToggleUnifiedJunk(on) => {
+                self.unified_kinds.junk = on;
+                let _ = sender.output(PrefOutput::SetUnifiedKinds(self.unified_kinds));
+            }
+            PrefInput::ToggleUnifiedTrash(on) => {
+                self.unified_kinds.trash = on;
                 let _ = sender.output(PrefOutput::SetUnifiedKinds(self.unified_kinds));
             }
             PrefInput::MountPages => self.mount_pages(),
@@ -4914,6 +4990,14 @@ impl Component for Preferences {
             }
             PrefInput::ToggleRailFoldArchive(on) => {
                 self.rail_fold.archive = on;
+                let _ = sender.output(PrefOutput::SetRailFold(self.rail_fold));
+            }
+            PrefInput::ToggleRailFoldJunk(on) => {
+                self.rail_fold.junk = on;
+                let _ = sender.output(PrefOutput::SetRailFold(self.rail_fold));
+            }
+            PrefInput::ToggleRailFoldTrash(on) => {
+                self.rail_fold.trash = on;
                 let _ = sender.output(PrefOutput::SetRailFold(self.rail_fold));
             }
             PrefInput::ToggleRailFoldFiltered(on) => {

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Added: Junk and Trash in the unified section** (#369, requested by
+  amadeusp). **Settings → Sidebar → Unified** has a switch for each, off
+  until switched on, along with their unread counts and the icon rail's
+  fold-up. In the combined lists **Not Spam** and **Move to Inbox** send
+  each message to its own account's Inbox and Delete in Trash deletes for
+  good, as in an account's own folders. Each account's row beneath has
+  **Empty Junk…** or **Empty Trash…** in its right-click menu.
 - **Fixed: a message could be lost to an address that cannot be sent to**
   (#368, reported by martin-ribot). **Send** now checks every address in
   To, Cc, Bcc and Reply-To first, and an address that is not one keeps the

@@ -139,6 +139,8 @@ fn kind_label(kind: FolderKind) -> String {
         FolderKind::Sent => i18n("Sent"),
         FolderKind::Drafts => i18n("Drafts"),
         FolderKind::Archive => i18n("Archive"),
+        FolderKind::Junk => i18n("Junk"),
+        FolderKind::Trash => i18n("Trash"),
         _ => i18n("Folder"),
     }
 }
@@ -204,6 +206,8 @@ pub struct SidebarInit {
     pub sent_expanded: bool,
     pub drafts_expanded: bool,
     pub archive_expanded: bool,
+    pub junk_expanded: bool,
+    pub trash_expanded: bool,
     /// Whether the "Attachments" row is shown.
     pub show_attachments: bool,
     /// Whether the "Contacts" row is shown.
@@ -539,6 +543,8 @@ pub enum SidebarOutput {
         sent: bool,
         drafts: bool,
         archive: bool,
+        junk: bool,
+        trash: bool,
     },
     /// A unified Starred / Sent / Drafts row was chosen: every account's
     /// folder of that kind, merged.
@@ -782,6 +788,8 @@ impl Component for Sidebar {
                 (FolderKind::Sent, init.sent_expanded),
                 (FolderKind::Drafts, init.drafts_expanded),
                 (FolderKind::Archive, init.archive_expanded),
+                (FolderKind::Junk, init.junk_expanded),
+                (FolderKind::Trash, init.trash_expanded),
             ]),
             kind_widgets: HashMap::new(),
             rail_open: HashMap::new(),
@@ -3223,23 +3231,33 @@ impl Sidebar {
                         .row_at_y(y as i32)
                         .and_then(|row| refs.get(row.index() as usize))
                     {
-                        show_sidebar_menu(
-                            &sub_w,
-                            x,
-                            y,
-                            vec![
-                                (i18n_noop("Mark as Read"), CtxAction::MarkFolderRead {
-                                    account_id: r.account_id,
-                                    folder_id: r.folder_id,
-                                }),
-                                (i18n_noop("Refresh"), CtxAction::RefreshFolder {
-                                    account_id: r.account_id,
-                                    folder_id: r.folder_id,
-                                }),
-                                (i18n_noop("Account Settings…"), CtxAction::OpenAccountSettings(r.account_id)),
-                            ],
-                            &cs,
-                        );
+                        let mut items = vec![
+                            (i18n_noop("Mark as Read"), CtxAction::MarkFolderRead {
+                                account_id: r.account_id,
+                                folder_id: r.folder_id,
+                            }),
+                            (i18n_noop("Refresh"), CtxAction::RefreshFolder {
+                                account_id: r.account_id,
+                                folder_id: r.folder_id,
+                            }),
+                        ];
+                        // Each account's Trash and Junk empties from here
+                        // too (#369), as from its own section.
+                        let empty_label = match kind {
+                            FolderKind::Trash => Some(i18n_noop("Empty Trash…")),
+                            FolderKind::Junk => Some(i18n_noop("Empty Junk…")),
+                            _ => None,
+                        };
+                        if let Some(label) = empty_label {
+                            items.push((label, CtxAction::EmptyFolder {
+                                account_id: r.account_id,
+                                folder_id: r.folder_id,
+                                name: r.name.clone(),
+                                path: r.path.clone(),
+                            }));
+                        }
+                        items.push((i18n_noop("Account Settings…"), CtxAction::OpenAccountSettings(r.account_id)));
+                        show_sidebar_menu(&sub_w, x, y, items, &cs);
                     }
                 });
                 sub.add_controller(click);
@@ -5013,6 +5031,8 @@ impl Sidebar {
             sent: self.kind_open(FolderKind::Sent),
             drafts: self.kind_open(FolderKind::Drafts),
             archive: self.kind_open(FolderKind::Archive),
+            junk: self.kind_open(FolderKind::Junk),
+            trash: self.kind_open(FolderKind::Trash),
         });
     }
 
