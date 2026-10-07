@@ -527,10 +527,6 @@ const SENT_COPY_HINT: &str =
     "Any folder, inbox included. Only applies to mail sent from this Hylki client \
      going forward. Not recursive.";
 
-fn goa_uses_graph(g: &crate::goa::GoaMailAccount) -> bool {
-    g.oauth2 && g.provider_type == "ms_graph"
-}
-
 /// GNOME Online Accounts mail accounts not (properly) configured in Hylki.
 /// A configured entry counts when it has an IMAP host or runs over Graph — an
 /// entry with neither is a broken pre-#36 Microsoft 365 import, so its GOA
@@ -546,7 +542,7 @@ fn importable_goa_accounts(configured: &[AccountConfig]) -> Vec<crate::goa::GoaM
                         || a.protocol == crate::config::Protocol::Graph)
             })
         })
-        .filter(|g| !g.imap_host.is_empty() || goa_uses_graph(g))
+        .filter(|g| g.can_connect())
         .collect()
 }
 

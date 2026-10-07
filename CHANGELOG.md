@@ -11,6 +11,11 @@
   result. A recipient the server refuses brings the message back in a
   composer to be fixed, where before it went to the Outbox and failed again
   on every retry.
+- **Fixed: Exchange accounts from Online Accounts failed with "No address
+  associated with hostname"** (#316, reported by wil-m). Hylki can't use
+  Exchange (EWS) accounts, which have no IMAP server: the welcome window no
+  longer offers them for import, as Settings already didn't, and one
+  imported before now says what to do instead.
 - **Fixed: opening a message could wait behind background syncing** (#370,
   by Salem Sayed Abdel Gawad). A body that is not cached yet no longer waits
   for folder syncs, body prefetch, search indexing or unread counts that

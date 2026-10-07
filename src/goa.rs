@@ -49,6 +49,13 @@ pub struct GoaMailAccount {
 }
 
 impl GoaMailAccount {
+    /// Whether Hylki can reach this account's mail: over IMAP, or over Graph
+    /// for Microsoft 365. An Exchange (EWS) account fills in the address
+    /// and nothing else, and an import of it would only fail to connect (#316).
+    pub fn can_connect(&self) -> bool {
+        !self.imap_host.is_empty() || (self.oauth2 && self.provider_type == "ms_graph")
+    }
+
     /// Turn a discovered GOA account into a Hylki [`AccountConfig`]. Pass the
     /// password for password-based providers, or `oauth = true` for OAuth ones
     /// (the token is fetched from GOA at connect time).

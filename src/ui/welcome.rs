@@ -392,7 +392,7 @@ impl Component for Welcome {
             .map(|a| a.email.to_ascii_lowercase())
             .collect();
         let mut goa = crate::goa::list_mail_accounts();
-        goa.retain(|g| !existing.contains(&g.email.to_ascii_lowercase()));
+        goa.retain(|g| g.can_connect() && !existing.contains(&g.email.to_ascii_lowercase()));
         let model = Welcome {
             goa,
             added: Vec::new(),
@@ -1082,7 +1082,7 @@ impl Component for Welcome {
             }
             WelcomeInput::RescanGoa => {
                 self.goa = crate::goa::list_mail_accounts();
-                self.goa.retain(|g| !self.added.contains(&g.email));
+                self.goa.retain(|g| g.can_connect() && !self.added.contains(&g.email));
                 rebuild_goa_rows(&widgets.goa_list, &self.goa, &sender);
                 widgets.goa_list.set_visible(!self.goa.is_empty());
                 // Everything found was added already: say so, not "none found".

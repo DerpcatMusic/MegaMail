@@ -6235,6 +6235,15 @@ async fn connect(account: &AccountConfig) -> Result<ImapSession, Box<dyn std::er
 }
 
 async fn connect_inner(account: &AccountConfig) -> Result<ImapSession, Box<dyn std::error::Error>> {
+    // An Exchange (EWS) account imported from Online Accounts before #316
+    // has no IMAP server, and the resolver's answer for an empty name says
+    // nothing a user could act on.
+    if account.imap_host.trim().is_empty() {
+        return Err(i18n(
+            "This account has no IMAP server. Hylki can't use Exchange accounts from Online Accounts: remove it and add it as an IMAP or Microsoft 365 account.",
+        )
+        .into());
+    }
     let tcp = TcpStream::connect((account.imap_host.as_str(), account.imap_port)).await?;
     let accept_invalid = account.security.as_ref().is_some_and(|s| s.imap_accept_invalid_certs);
     let tls = tls_connector(&account.imap_host, account.tls_accept_hostname_mismatch, accept_invalid);
