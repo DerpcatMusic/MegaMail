@@ -2,6 +2,35 @@
 
 Hylki (formerly Vireo) is a clean, fast, GNOME-native email client built with Rust and libadwaita for Wayland desktops. Privacy-first: no telemetry, remote content blocked by default, and credentials kept in the system keyring.
 
+## What's new in 1.43.0-beta.6
+
+The sixth beta previewing 1.43.0.
+
+- **Favorites** (#367, requested by eirinn1975): Add to Favorites in a
+  folder's right-click menu keeps it in a Favorites row at the top of the
+  sidebar, from any account.
+- **Junk and Trash in the unified section** (#369, requested by amadeusp),
+  switched on in Settings > Sidebar > Unified.
+- **Spell checking in several languages at once** (#365, requested by
+  amadeusp): Settings > Composing > Languages, or Spelling Language in the
+  composer's right-click menu.
+- **Right-to-left layout** for Persian, Arabic, Hebrew and other
+  right-to-left languages (#366, reported by OmidAmirkhani), and mail that
+  takes the direction of its own text.
+- **Microsoft sign-in on a managed device** (#329, requested by erenoglu):
+  where Conditional Access requires one, Hylki uses Microsoft's identity
+  broker, as Evolution does.
+- **A message is no longer lost to an address that cannot be sent to**
+  (#368, reported by martin-ribot): Send checks the addresses first and
+  removes invisible characters pasted along with them.
+- **Opening a message no longer waits behind background syncing** (#370, by
+  [@salemsayed](https://github.com/salemsayed)).
+- **Fixed:** Exchange accounts from Online Accounts are no longer offered
+  for import (#316), and Microsoft 365 accounts no longer show an IMAP push
+  setting (#329).
+- **Translations:** Russian brought up to date (#371, by
+  [@iliasen](https://github.com/iliasen)).
+
 ## What's new in 1.43.0-beta.5
 
 The fifth beta previewing 1.43.0.

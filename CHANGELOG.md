@@ -1,5 +1,83 @@
 # Changelog
 
+## 1.43.0-beta.6 — 2026-10-07
+
+The sixth beta previewing 1.43.0.
+
+- **Added: Microsoft sign-in on a managed device** (#329, requested by
+  erenoglu). Where an organization's Conditional Access lets only a managed
+  device sign in, Hylki asks Microsoft's identity broker
+  (`microsoft-identity-broker`, or Himmelblau) for a device sign-in cookie,
+  as Evolution does, and sends it with the sign-in window and with every
+  token refresh. The broker's account is the one with the account's address.
+  Without a broker, sign-in is unchanged.
+- **Added: spell checking in several languages at once** (#365, requested
+  by amadeusp). **Settings → Composing → Languages** has a switch for the
+  system language and one for each installed dictionary, in place of the
+  single language list, and any number can be on. A word in the subject or
+  the body is underlined only when none of the chosen dictionaries knows it.
+  The body's right-click menu has a **Spelling Language** submenu with the
+  same choices, which changes the setting for every open composer. A
+  language without its own dictionary uses another of the same language, or
+  is left out; a word added to the spell checker goes into the first
+  language's word list.
+- **Added: Favorites** (#367, requested by eirinn1975). **Add to
+  Favorites** in a folder's right-click menu lists it in a Favorites row at
+  the top of the sidebar, under Inboxes, whichever account it belongs to.
+  Favorites keep the order they were added in, show unread counts and
+  open or close from their row; **Remove from Favorites** takes one out. The
+  row shows with a single account too. A folder renamed in Hylki stays a
+  favorite; one deleted leaves the list.
+- **Added: Junk and Trash in the unified section** (#369, requested by
+  amadeusp). **Settings → Sidebar → Unified** has a switch for each, off
+  until switched on, along with their unread counts and the icon rail's
+  fold-up. In the combined lists **Not Spam** and **Move to Inbox** send
+  each message to its own account's Inbox and Delete in Trash deletes for
+  good, as in an account's own folders. Each account's row beneath has
+  **Empty Junk…** or **Empty Trash…** in its right-click menu.
+- **Fixed: the window stayed left to right in Persian and other
+  right-to-left languages** (#366, reported by OmidAmirkhani). GTK takes
+  the direction from its own translations, which the Flatpak runtime often
+  lacks, and a language chosen in Settings never reached them. The window
+  now follows the interface language: Arabic, Persian, Hebrew, Urdu and the
+  other right-to-left languages lay it out from the right, sidebar, list,
+  reader headers and composer included. Messages take the direction of
+  their own text whatever the interface language, unless the sender set
+  one; plain text, the Reader View and the composer decide it paragraph by
+  paragraph, so Persian and English mixed in one message both read right.
+  The interface text stays in English until Hylki is translated into
+  Persian.
+- **Fixed: a message could be lost to an address that cannot be sent to**
+  (#368, reported by martin-ribot). **Send** now checks every address in
+  To, Cc, Bcc and Reply-To first, and an address that is not one keeps the
+  composer open with its field marked and the address named. Invisible
+  characters pasted along with an address (zero-width spaces, direction
+  marks, no-break spaces) are taken out of it, and the field shows the
+  result. A recipient the server refuses brings the message back in a
+  composer to be fixed, where before it went to the Outbox and failed again
+  on every retry.
+- **Fixed: Exchange accounts from Online Accounts failed with "No address
+  associated with hostname"** (#316, reported by wil-m). Hylki can't use
+  Exchange (EWS) accounts, which have no IMAP server: the welcome window no
+  longer offers them for import, as Settings already didn't, and one
+  imported before now says what to do instead.
+- **Fixed: Microsoft 365 accounts showed an "Instant new mail (IMAP push)"
+  setting** (#329, reported by erenoglu). Microsoft 365 has no push and
+  checks at the fetch interval, so the row is gone from those accounts and
+  from POP3 ones, and is now called "Instant new mail (push)", since JMAP
+  accounts use it too.
+- **Fixed: opening a message could wait behind background syncing** (#370,
+  by Salem Sayed Abdel Gawad). A body that is not cached yet no longer waits
+  for folder syncs, body prefetch, search indexing or unread counts that
+  were already running: they stop for it, reconnect and pick up where they
+  left off, though never ahead of a move or flag change still queued.
+  Connecting and refreshing list folders with their cached counts and
+  re-count them afterwards, in place of a STATUS command per folder first.
+  Conversation badges are read from the cache on a connection of their own,
+  and reading bodies from the mailbox already selected skips a SELECT each.
+- **Translations:** Russian brought up to date with 1.43.0-beta.5 (PR #371
+  by Ilya Semenkovich).
+
 ## 1.43.0-beta.5 — 2026-10-06
 
 The fifth beta previewing 1.43.0.
