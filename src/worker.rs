@@ -5194,10 +5194,11 @@ async fn smtp_transport(
         // sign-in (#254); offering one it does not advertise would fail.
     } else {
         // Use the separate SMTP credentials when configured, else the IMAP ones.
+        let password = sign_in_password(account, true).await?;
         let creds = if account.smtp_separate {
-            Credentials::new(account.smtp_username.clone(), account.smtp_password.clone())
+            Credentials::new(account.smtp_username.clone(), password)
         } else {
-            Credentials::new(account.username.clone(), account.password.clone())
+            Credentials::new(account.username.clone(), password)
         };
         builder = builder.credentials(creds);
     }
@@ -6223,8 +6224,50 @@ fn imap_uses_starttls(account: &AccountConfig) -> bool {
 /// would otherwise hang the worker with no error ever surfacing.
 const IMAP_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// The password an account signs in with: the one the worker holds or, when
+/// it holds none, the keyring's, read again at every sign-in. The worker reads
+/// the keyring once when it starts, and a keyring locked or still starting at
+/// login then left the account signing in with an empty password until Hylki
+/// restarted (#375). A keyring that cannot be read is reported as such, and
+/// no sign-in goes out without the password.
+pub(super) fn sign_in_password_blocking(account: &AccountConfig, smtp: bool) -> Result<String, String> {
+    let separate = smtp && account.smtp_separate;
+    let held = if separate { &account.smtp_password } else { &account.password };
+    if !held.is_empty() || account.oauth {
+        return Ok(held.clone());
+    }
+    let read = if separate {
+        crate::config::read_smtp_password(&account.email)
+    } else {
+        crate::config::read_password(&account.email)
+    };
+    read.map(Option::unwrap_or_default).map_err(|e| {
+        tracing::warn!("could not read the keyring for {}: {e}", account.email);
+        i18n_f(
+            "Could not read the password for {email} from the keyring ({e}). Hylki tries again at the next connection.",
+            &[("email", &account.email), ("e", &e)],
+        )
+    })
+}
+
+/// [`sign_in_password_blocking`] off the async runtime's threads: a keyring
+/// that does not answer holds its caller for the whole D-Bus timeout.
+async fn sign_in_password(account: &AccountConfig, smtp: bool) -> Result<String, String> {
+    let held = if smtp && account.smtp_separate { &account.smtp_password } else { &account.password };
+    if !held.is_empty() || account.oauth {
+        return Ok(held.clone());
+    }
+    let account = account.clone();
+    tokio::task::spawn_blocking(move || sign_in_password_blocking(&account, smtp))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 async fn connect(account: &AccountConfig) -> Result<ImapSession, Box<dyn std::error::Error>> {
-    match tokio::time::timeout(IMAP_CONNECT_TIMEOUT, connect_inner(account)).await {
+    // Read before the connect timeout starts: the keyring's own wait is not
+    // the server's, and must not be reported as one.
+    let password = sign_in_password(account, false).await?;
+    match tokio::time::timeout(IMAP_CONNECT_TIMEOUT, connect_inner(account, &password)).await {
         Ok(result) => result,
         Err(_) => Err(format!(
             "connecting to {} timed out after {} seconds",
@@ -6235,7 +6278,10 @@ async fn connect(account: &AccountConfig) -> Result<ImapSession, Box<dyn std::er
     }
 }
 
-async fn connect_inner(account: &AccountConfig) -> Result<ImapSession, Box<dyn std::error::Error>> {
+async fn connect_inner(
+    account: &AccountConfig,
+    password: &str,
+) -> Result<ImapSession, Box<dyn std::error::Error>> {
     // An Exchange (EWS) account imported from Online Accounts before #316
     // has no IMAP server, and the resolver's answer for an empty name says
     // nothing a user could act on.
@@ -6290,7 +6336,7 @@ async fn connect_inner(account: &AccountConfig) -> Result<ImapSession, Box<dyn s
         r?
     } else {
         tracing::debug!(target: "hylki::imap", "> LOGIN {} ****", account.username);
-        let r = client.login(&account.username, &account.password).await.map_err(|(e, _client)| e);
+        let r = client.login(&account.username, password).await.map_err(|(e, _client)| e);
         match &r {
             Ok(_) => tracing::debug!(target: "hylki::imap", "< OK (LOGIN)"),
             Err(e) => tracing::warn!(target: "hylki::imap", "< {e} (LOGIN)"),
@@ -6327,7 +6373,7 @@ pub async fn test_connection(account: &AccountConfig) -> ConnTest {
 
 async fn test_pop3(account: &AccountConfig) -> Result<(), String> {
     let mut pop = Pop3::connect(account).await?;
-    pop.login(&account.username, &account.password).await?;
+    pop.login(&account.username, &sign_in_password(account, false).await?).await?;
     pop.quit().await;
     Ok(())
 }
@@ -6369,16 +6415,10 @@ async fn test_smtp(account: &AccountConfig) -> Result<(), String> {
             .await
             .ok_or_else(|| "could not get an OAuth token".to_string())?;
         (Credentials::new(oauth_user(account), token), &[Mechanism::Xoauth2])
-    } else if account.smtp_separate {
-        (
-            Credentials::new(account.smtp_username.clone(), account.smtp_password.clone()),
-            &[Mechanism::Plain, Mechanism::Login],
-        )
     } else {
-        (
-            Credentials::new(account.username.clone(), account.password.clone()),
-            &[Mechanism::Plain, Mechanism::Login],
-        )
+        let password = sign_in_password(account, true).await?;
+        let user = if account.smtp_separate { &account.smtp_username } else { &account.username };
+        (Credentials::new(user.clone(), password), &[Mechanism::Plain, Mechanism::Login])
     };
     smtp_auth_check(&host, account.smtp_port, Some(&creds), mechanisms, SmtpTls::for_account(account)).await
 }
@@ -9327,7 +9367,7 @@ async fn pop3_sync(
 ) -> Result<Vec<Message>, String> {
     const INBOX: &str = "INBOX";
     let mut pop = Pop3::connect(account).await?;
-    pop.login(&account.username, &account.password).await?;
+    pop.login(&account.username, &sign_in_password(account, false).await?).await?;
     let mut entries = pop.uidl().await?;
     // Newest first; bound how many we index.
     entries.sort_by(|a, b| b.0.cmp(&a.0));
@@ -9375,7 +9415,7 @@ async fn pop3_sync(
 /// Fetch one message's raw bytes by its hashed UID (reconnects + maps UID→num).
 async fn pop3_fetch_raw(account: &AccountConfig, uid: u32) -> Result<Vec<u8>, String> {
     let mut pop = Pop3::connect(account).await?;
-    pop.login(&account.username, &account.password).await?;
+    pop.login(&account.username, &sign_in_password(account, false).await?).await?;
     let num = pop
         .uidl()
         .await?
@@ -9391,7 +9431,7 @@ async fn pop3_fetch_raw(account: &AccountConfig, uid: u32) -> Result<Vec<u8>, St
 /// Delete a message from the POP3 server (DELE, committed on QUIT).
 async fn pop3_delete(account: &AccountConfig, uid: u32) -> Result<(), String> {
     let mut pop = Pop3::connect(account).await?;
-    pop.login(&account.username, &account.password).await?;
+    pop.login(&account.username, &sign_in_password(account, false).await?).await?;
     let num = pop
         .uidl()
         .await?
@@ -10528,6 +10568,82 @@ NIL NIL NIL NIL NIL NIL NIL))\r\n";
             resources: vec![QuotaResource { name: QuotaResourceName::Storage, usage: 5, limit: 0 }],
         }];
         assert_eq!(imap_storage_quota(&unlimited), None);
+    }
+
+    /// A password the worker holds is used as it is, and an OAuth account
+    /// needs none, so neither reads the keyring (#375).
+    #[test]
+    fn sign_in_password_prefers_the_held_one() {
+        let held = AccountConfig {
+            password: "pw".into(),
+            smtp_separate: true,
+            smtp_password: "smtp".into(),
+            ..sample_account()
+        };
+        assert_eq!(sign_in_password_blocking(&held, false).as_deref(), Ok("pw"));
+        assert_eq!(sign_in_password_blocking(&held, true).as_deref(), Ok("smtp"));
+        let oauth = AccountConfig { oauth: true, password: String::new(), ..sample_account() };
+        assert_eq!(sign_in_password_blocking(&oauth, false).as_deref(), Ok(""));
+    }
+
+    /// A keyring that cannot be read at sign-in (#375), with
+    /// `IMAP_LIVE=host,port,user,password` and `KEYRING_LIVE=1`. Run it in a
+    /// throwaway session bus with scratch `XDG_DATA_HOME` and `XDG_RUNTIME_DIR`
+    /// under /tmp (`dbus-run-session -- cargo test ...`): it starts its own
+    /// gnome-keyring-daemon and stores the password there.
+    /// No sign-in goes out without the password, and once the keyring answers
+    /// the next sign-in reads it again.
+    #[test]
+    #[ignore]
+    fn live_keyring_read_again() {
+        let (Ok(spec), Ok(_)) = (std::env::var("IMAP_LIVE"), std::env::var("KEYRING_LIVE")) else { return };
+        let scratch = std::env::var("XDG_DATA_HOME").unwrap_or_default();
+        let runtime = std::env::var("XDG_RUNTIME_DIR").unwrap_or_default();
+        assert!(
+            scratch.starts_with("/tmp/") && runtime.starts_with("/tmp/"),
+            "needs a scratch XDG_DATA_HOME and XDG_RUNTIME_DIR, not the desktop's keyring"
+        );
+        let p: Vec<&str> = spec.splitn(4, ',').collect();
+        let account = AccountConfig {
+            email: p[2].into(),
+            imap_host: p[0].into(),
+            imap_port: p[1].parse().expect("port"),
+            username: p[2].into(),
+            password: String::new(),
+            security: Some(crate::config::ServerSecurity {
+                imap_starttls: false,
+                imap_accept_invalid_certs: true,
+                ..Default::default()
+            }),
+            ..sample_account()
+        };
+        // The login keyring, once there, is the default collection entries go to.
+        let keyrings = std::path::Path::new(&scratch).join("keyrings");
+        std::fs::create_dir_all(&keyrings).unwrap();
+        std::fs::write(keyrings.join("default"), "login").unwrap();
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let err = rt.block_on(connect(&account)).err().expect("no keyring, no sign-in").to_string();
+        assert!(err.contains("keyring"), "{err}");
+
+        use std::io::Write;
+        let mut daemon = std::process::Command::new("gnome-keyring-daemon")
+            .args(["--replace", "--unlock", "--components=secrets"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("gnome-keyring-daemon");
+        daemon.stdin.take().unwrap().write_all(b"scratch\n").unwrap();
+        daemon.wait().unwrap();
+        let mut stored = crate::config::store_password(&account.email, p[3]);
+        for _ in 0..20 {
+            if stored.is_ok() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+            stored = crate::config::store_password(&account.email, p[3]);
+        }
+        stored.expect("store");
+        rt.block_on(connect(&account)).expect("signs in with the keyring's password");
     }
 
     /// Removing an attachment on a real server (#289), with
