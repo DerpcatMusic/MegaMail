@@ -16,6 +16,11 @@
   Exchange (EWS) accounts, which have no IMAP server: the welcome window no
   longer offers them for import, as Settings already didn't, and one
   imported before now says what to do instead.
+- **Fixed: Microsoft 365 accounts showed an "Instant new mail (IMAP push)"
+  setting** (#329, reported by erenoglu). Microsoft 365 has no push and
+  checks at the fetch interval, so the row is gone from those accounts and
+  from POP3 ones, and is now called "Instant new mail (push)", since JMAP
+  accounts use it too.
 - **Fixed: opening a message could wait behind background syncing** (#370,
   by Salem Sayed Abdel Gawad). A body that is not cached yet no longer waits
   for folder syncs, body prefetch, search indexing or unread counts that

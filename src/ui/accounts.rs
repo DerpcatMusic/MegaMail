@@ -1518,7 +1518,7 @@ impl Component for AccountsWindow {
 
                                 #[name = "push_row"]
                                 adw::ComboRow {
-                                    set_title: &i18n("Instant new mail (IMAP push)"),
+                                    set_title: &i18n("Instant new mail (push)"),
                                     set_subtitle: &i18n("Turn off for servers that stall on push connections."),
                                 },
 
@@ -2000,6 +2000,7 @@ impl Component for AccountsWindow {
                 self.server_identities.clear();
                 self.rebuild_alias_list(&widgets.aliases_list, &sender);
                 clear_editor(widgets);
+                self.show_push_row(widgets);
                 self.populate_folder_combos(widgets, None);
                 set_connection_editable(widgets, true);
                 widgets.goa_banner.set_visible(false);
@@ -2049,6 +2050,7 @@ impl Component for AccountsWindow {
                 self.hidden_edits = acc.hidden_folders.clone();
                 self.rebuild_hidden_list(widgets, &sender);
                 fill_editor(widgets, &acc);
+                self.show_push_row(widgets);
                 // Hidden until this account's server answers; a page opened
                 // before it must not show the last account's figure.
                 show_quota(widgets, None);
@@ -2331,6 +2333,7 @@ impl Component for AccountsWindow {
 
             AccountsInput::ProtocolChanged => {
                 apply_protocol(widgets);
+                self.show_push_row(widgets);
                 self.refresh_provider_mark(widgets);
             }
             AccountsInput::ProviderChanged => {
@@ -2346,6 +2349,7 @@ impl Component for AccountsWindow {
                 if !editing_goa {
                     self.apply_provider(widgets);
                 }
+                self.show_push_row(widgets);
             }
 
             AccountsInput::OAuthSignIn => {
@@ -3776,6 +3780,18 @@ impl AccountsWindow {
             widgets.provider_mark.remove(&child);
         }
         widgets.provider_mark.append(&crate::brand::mark(brand, 56, crate::brand::GENERIC_MAIL));
+    }
+
+    /// Push is IMAP IDLE or a JMAP event stream. Microsoft 365 polls and
+    /// POP3 has neither, so the row would be a switch that does nothing
+    /// (#329). An account from Online Accounts keeps its saved protocol: its
+    /// provider row isn't filled in, and reads as a plain IMAP account.
+    fn show_push_row(&self, widgets: &AccountsWindowWidgets) {
+        let protocol = match self.editing.and_then(|i| self.accounts.get(i)) {
+            Some(a) if a.goa_id.is_some() => a.protocol,
+            _ => form_protocol(widgets),
+        };
+        widgets.push_row.set_visible(matches!(protocol, Protocol::Imap | Protocol::Jmap));
     }
 
     fn apply_provider(&self, widgets: &AccountsWindowWidgets) {
