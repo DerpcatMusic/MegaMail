@@ -4,7 +4,7 @@
 
 use adw::prelude::*;
 use webkit6::prelude::WebViewExt;
-use crate::i18n::{i18n, i18n_noop};
+use crate::i18n::{i18n, i18n_f, i18n_noop};
 
 /// A rich-text editor widget. Add `widget` to a container; read the content back
 /// with [`RichEditor::extract_html`] (asynchronous, since it queries the WebView).
@@ -44,6 +44,10 @@ pub struct RichEditor {
     /// Told whenever that pair changes, so a host can fold the body's text
     /// history into an undo stack of its own.
     history_cb: std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn(bool, bool)>>>>,
+    /// Where the right-click menu's Spelling Language choice goes, as the
+    /// whole new setting (#365). The submenu is only offered once a host
+    /// has connected it ([`RichEditor::connect_spell_languages`]).
+    spell_langs_cb: SpellLangsCallback,
     /// The style manager's dark-notify handler that re-grounds the document
     /// on a live theme flip; disconnected when the last clone of the editor
     /// goes (the editor is a cloneable handle, so the guard is shared).
@@ -61,6 +65,8 @@ pub enum SourceKind {
     Html,
 }
 
+type SpellLangsCallback = std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn(String)>>>>;
+
 /// Disconnects a style-manager handler on drop.
 struct ThemeHandlerGuard(Option<gtk::glib::SignalHandlerId>);
 
@@ -76,12 +82,12 @@ impl Drop for ThemeHandlerGuard {
 /// Checking only happens in editable views, so the reader — which shares the
 /// context — is unaffected.
 ///
-/// The language is ALWAYS set when checking is on: enchant is given no
+/// The languages are ALWAYS set when checking is on: enchant is given no
 /// language at all until told, so "enabled" without this call underlines
-/// nothing. The configured language wins; blank follows the session locale;
-/// and either is swapped for the closest installed dictionary when its own
+/// nothing. The configured languages win; blank follows the session locale;
+/// and each is swapped for the closest installed dictionary when its own
 /// is missing, since a language without a dictionary silently checks
-/// nothing.
+/// nothing. WebKit accepts a word any of the languages knows (#365).
 pub fn apply_spellcheck() {
     let ctx = super::message_view::shared_web_context();
     let on = crate::config::load_privacy().spellcheck;
@@ -89,34 +95,21 @@ pub fn apply_spellcheck() {
     if !on {
         return;
     }
-    let lang = resolved_spell_language();
-    ctx.set_spell_checking_languages(&[&lang]);
+    let langs = resolved_spell_languages();
+    let langs: Vec<&str> = langs.iter().map(String::as_str).collect();
+    ctx.set_spell_checking_languages(&langs);
 }
 
-/// The language checking actually runs with: the configured one, else the
-/// session locale, either mapped onto an installed dictionary.
-pub fn resolved_spell_language() -> String {
+/// The dictionaries checking actually runs with: the configured languages,
+/// else the session locale, mapped onto the installed dictionaries.
+pub fn resolved_spell_languages() -> Vec<String> {
     let configured = crate::config::load_privacy().spellcheck_langs;
-    let want = configured
-        .split([',', ';', ' '])
-        .map(str::trim)
-        .find(|s| !s.is_empty())
-        .map(String::from)
-        .or_else(locale_language)
-        .unwrap_or_else(|| "en_US".to_string());
-    let dicts = installed_dictionaries();
-    if dicts.is_empty() || dicts.iter().any(|d| *d == want) {
-        return want;
-    }
-    // No dictionary for the exact code: any same-language variant beats
-    // checking nothing (en_GB for en_US), and any dictionary beats none.
-    let prefix = want.split('_').next().unwrap_or(&want).to_string();
-    dicts
-        .iter()
-        .find(|d| d.starts_with(&prefix))
-        .or_else(|| dicts.first())
-        .cloned()
-        .unwrap_or(want)
+    crate::spell::resolve_languages(&configured, locale_language(), &installed_dictionaries())
+}
+
+/// The dictionaries "System language" stands for: the session locale's.
+pub fn system_spell_languages() -> Vec<String> {
+    crate::spell::resolve_languages("", locale_language(), &installed_dictionaries())
 }
 
 /// The session locale as a dictionary-style code ("en_US.UTF-8" → "en_US").
@@ -170,6 +163,59 @@ pub fn installed_dictionaries() -> Vec<String> {
             c.split('_').next() != Some("en") || KEPT_ENGLISH.contains(&c.as_str())
         })
         .collect()
+}
+
+/// The right-click menu's Spelling Language submenu (#365): the system
+/// language, then a check item per installed dictionary, ticked as the
+/// setting stands. Choosing one switches it as the matching switch in
+/// Settings does, and `cb` takes the setting that results.
+fn append_spelling_menu(menu: &webkit6::ContextMenu, cb: &SpellLangsCallback) {
+    use gtk::prelude::ToVariant;
+    if !crate::config::load_privacy().spellcheck {
+        return;
+    }
+    let dicts = installed_dictionaries();
+    if dicts.is_empty() {
+        return;
+    }
+    let setting = crate::config::load_privacy().spellcheck_langs;
+    let chosen = crate::spell::parse_languages(&setting);
+    let system = system_spell_languages();
+    let system_label = i18n_f(
+        "System language — {language}",
+        &[("language", &spell_language_names(&system))],
+    );
+    let entries = std::iter::once((String::new(), system_label, chosen.is_empty())).chain(
+        dicts.iter().map(|d| (d.clone(), crate::spell::language_display_name(d), chosen.contains(d))),
+    );
+    let sub = webkit6::ContextMenu::new();
+    for (i, (code, label, on)) in entries.enumerate() {
+        // A boolean state is what makes WebKit draw a check item.
+        let action = gtk::gio::SimpleAction::new_stateful(
+            &format!("hylki-spell-lang-{i}"),
+            None,
+            &on.to_variant(),
+        );
+        let (cb, setting, system) = (cb.clone(), setting.clone(), system.clone());
+        action.connect_activate(move |_, _| {
+            let next = crate::spell::toggle_language(&setting, &code, !on, &system);
+            if let Some(f) = cb.borrow().as_ref() {
+                f(next);
+            }
+        });
+        sub.append(&webkit6::ContextMenuItem::from_gaction(&action, &label, None));
+        if i == 0 {
+            sub.append(&webkit6::ContextMenuItem::new_separator());
+        }
+    }
+    menu.append(&webkit6::ContextMenuItem::new_separator());
+    menu.append(&webkit6::ContextMenuItem::with_submenu(&i18n("Spelling Language"), &sub));
+}
+
+/// Dictionary codes as the names people read, joined: "Deutsch
+/// (Deutschland), Français (France)".
+pub fn spell_language_names(codes: &[String]) -> String {
+    codes.iter().map(|c| crate::spell::language_display_name(c)).collect::<Vec<_>>().join(", ")
 }
 
 impl RichEditor {
@@ -365,6 +411,8 @@ impl RichEditor {
             std::rc::Rc::new(std::cell::Cell::new(None));
         let menu_attach_cb = attach_cb.clone();
         let menu_history = text_history.clone();
+        let spell_langs_cb: SpellLangsCallback = Default::default();
+        let menu_spell_cb = spell_langs_cb.clone();
         webview.connect_context_menu(move |view, menu, hit| {
             crate::ui::message_view::strip_navigation_items(menu);
             if hit.context_is_image() {
@@ -444,6 +492,12 @@ impl RichEditor {
                     at += 1;
                 }
                 menu.insert(&webkit6::ContextMenuItem::new_separator(), at);
+            }
+            // Which dictionaries check the message, switched one at a time
+            // without a trip to Settings (#365). It is the app-wide setting,
+            // so every open composer follows.
+            if !hit.context_is_image() && menu_spell_cb.borrow().is_some() {
+                append_spelling_menu(menu, &menu_spell_cb);
             }
             let items = menu.items();
             let Some(pos) = items
@@ -597,6 +651,7 @@ impl RichEditor {
             pending_files,
             text_history,
             history_cb,
+            spell_langs_cb,
             _theme_handler: std::rc::Rc::new(ThemeHandlerGuard(Some(theme_handler))),
             image_policy,
         }
@@ -637,6 +692,13 @@ impl RichEditor {
     /// changes: an edit, a command, or a reload that drops it.
     pub fn connect_history_changed(&self, f: impl Fn(bool, bool) + 'static) {
         *self.history_cb.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Offer the Spelling Language submenu, and receive the setting it
+    /// makes: the comma-separated language list, empty for the system
+    /// language (#365).
+    pub fn connect_spell_languages(&self, f: impl Fn(String) + 'static) {
+        *self.spell_langs_cb.borrow_mut() = Some(Box::new(f));
     }
 
     /// What "Send as Attachment Instead" does with the lifted image: the

@@ -615,6 +615,27 @@ or hidden behind the chevron (Always collapsed, the default); the chevron
 changes it for the message at hand. When the composer is narrow, the
 toolbar wraps onto a second row.
 
+### Spell checking
+
+**Settings → Composing → Check spelling as you type** underlines misspelled
+words in the subject and the message body. Right-clicking a word in the body
+offers corrections.
+
+**Settings → Composing → Languages** has a switch for the system language
+and one for each dictionary the app can see, and any number of them can be
+on. A word is underlined only when none of the chosen dictionaries knows it,
+so a message can mix languages. Switching a dictionary on switches the
+system language off, and switching the last one off switches it back on.
+The system language is the session's own, or the nearest dictionary to it.
+
+The **Spelling Language** submenu at the bottom of the body's right-click
+menu has the same choices, ticked as they stand. A choice made there is
+saved as the setting and applies to every open composer at once.
+
+A word added under **Added words** goes into the first chosen language's
+word list. The subject accepts it at once, and the message body after a
+restart.
+
 ### Writing in Markdown or HTML
 
 A message can be written in any of four formats, chosen in **Settings →

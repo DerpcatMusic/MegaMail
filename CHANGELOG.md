@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Added: spell checking in several languages at once** (#365, requested
+  by amadeusp). **Settings → Composing → Languages** has a switch for the
+  system language and one for each installed dictionary, in place of the
+  single language list, and any number can be on. A word in the subject or
+  the body is underlined only when none of the chosen dictionaries knows it.
+  The body's right-click menu has a **Spelling Language** submenu with the
+  same choices, which changes the setting for every open composer. A
+  language without its own dictionary uses another of the same language, or
+  is left out; a word added to the spell checker goes into the first
+  language's word list.
 - **Added: Favorites** (#367, requested by eirinn1975). **Add to
   Favorites** in a folder's right-click menu lists it in a Favorites row at
   the top of the sidebar, under Inboxes, whichever account it belongs to.

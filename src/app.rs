@@ -8171,6 +8171,11 @@ impl SimpleComponent for AppModel {
             AppMsg::Pref(PrefOutput::SetSpellcheckLangs(langs)) => {
                 if pref!(self.spellcheck_langs = langs) {
                     crate::ui::rich_editor::apply_spellcheck();
+                    // A composer's right-click menu changes it too (#365):
+                    // the Settings window, built once and kept, follows.
+                    if let Some(p) = &self.prefs {
+                        p.emit(PrefInput::SetSpellcheckLangs(self.spellcheck_langs.clone()));
+                    }
                 }
             }
 
@@ -15505,6 +15510,9 @@ impl AppModel {
                 ComposeOutput::Close(id) => AppMsg::ComposeClosed(id),
                 ComposeOutput::History { id, undo, redo } => {
                     AppMsg::ComposeHistory { id, undo, redo }
+                }
+                ComposeOutput::SetSpellcheckLangs(langs) => {
+                    AppMsg::Pref(PrefOutput::SetSpellcheckLangs(langs))
                 }
             })
     }

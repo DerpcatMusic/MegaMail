@@ -417,6 +417,77 @@ pub struct Preferences {
     /// but one set from `#[watch]` on every update hung GTK's list-item
     /// manager in the pre-warmed (unmapped) window.
     files_rows: Option<(adw::ComboRow, adw::ComboRow, adw::SpinRow)>,
+    /// Composing → Spelling → Languages, kept to follow a change made from
+    /// a composer's right-click menu (#365).
+    spell_langs: Option<SpellLangRows>,
+}
+
+/// The spelling language switches (#365): "System language", then one per
+/// installed dictionary, built a moment after the window is up. Moving
+/// them to match the setting fires their notify handlers like a click
+/// does; `syncing` tells the two apart.
+#[derive(Clone)]
+struct SpellLangRows {
+    expander: adw::ExpanderRow,
+    /// The setting the switches show: "" or "en_US, de_DE".
+    setting: Rc<std::cell::RefCell<String>>,
+    system: Rc<std::cell::RefCell<Option<adw::SwitchRow>>>,
+    dicts: Rc<std::cell::RefCell<Vec<(String, adw::SwitchRow)>>>,
+    syncing: Rc<std::cell::Cell<bool>>,
+}
+
+impl SpellLangRows {
+    fn new(expander: adw::ExpanderRow, setting: String) -> Self {
+        SpellLangRows {
+            expander,
+            setting: Rc::new(std::cell::RefCell::new(setting)),
+            system: Default::default(),
+            dicts: Default::default(),
+            syncing: Default::default(),
+        }
+    }
+
+    /// Show `setting` on the switches and in the row's subtitle.
+    fn show(&self, setting: &str) {
+        *self.setting.borrow_mut() = setting.to_string();
+        let chosen = crate::spell::parse_languages(setting);
+        self.syncing.set(true);
+        if let Some(row) = self.system.borrow().as_ref() {
+            row.set_active(chosen.is_empty());
+        }
+        for (code, row) in self.dicts.borrow().iter() {
+            row.set_active(chosen.contains(code));
+        }
+        self.syncing.set(false);
+        let subtitle = if chosen.is_empty() {
+            i18n_f(
+                "System language — {language}",
+                &[("language", &crate::ui::rich_editor::spell_language_names(
+                    &crate::ui::rich_editor::system_spell_languages(),
+                ))],
+            )
+        } else {
+            crate::ui::rich_editor::spell_language_names(&chosen)
+        };
+        self.expander.set_subtitle(&gtk::glib::markup_escape_text(&subtitle));
+    }
+
+    /// A switch was flipped by hand: the setting that results, after the
+    /// switches are moved to show it. `None` while they are being moved.
+    fn toggled(&self, code: &str, on: bool) -> Option<String> {
+        if self.syncing.get() {
+            return None;
+        }
+        let current = self.setting.borrow().clone();
+        let next = crate::spell::toggle_language(
+            &current,
+            code,
+            on,
+            &crate::ui::rich_editor::system_spell_languages(),
+        );
+        self.show(&next);
+        (next != current).then_some(next)
+    }
 }
 
 /// A drag-and-drop chip editor (Settings → Appearance → Toolbar, and
@@ -1003,6 +1074,8 @@ pub enum PrefInput {
     ChangeLinkBrowser(u32),
     /// The app changed the Files preferences (a dialog's "always do this").
     SetFilesPrefs(crate::config::FilesPrefs),
+    /// The spelling languages changed, possibly from a composer (#365).
+    SetSpellcheckLangs(String),
     /// Re-read the extension's state (the System page came into view; Files
     /// may have loaded the extension since).
     NautilusRefresh,
@@ -3292,10 +3365,12 @@ impl Component for Preferences {
                                         },
                                     },
 
+                                    // One switch per installed dictionary, filled
+                                    // in at init (#365); the subtitle names the
+                                    // languages in use.
                                     #[name = "spell_lang_row"]
-                                    adw::ComboRow {
-                                        set_title: &i18n("Language"),
-                                        set_subtitle: &i18n("Dictionaries the app can see"),
+                                    adw::ExpanderRow {
+                                        set_title: &i18n("Languages"),
                                     },
 
                                     // Words the user taught the checker ("Learn Spelling"
@@ -3703,6 +3778,7 @@ impl Component for Preferences {
             nautilus_cmd: crate::platform::nautilus_python_install_command(),
             files: init.files,
             files_rows: None,
+            spell_langs: None,
             browsers: crate::ui::launch::browsers(),
             notifications: init.notifications,
             notification_buttons: init.notification_buttons,
@@ -4215,52 +4291,62 @@ impl Component for Preferences {
             crate::config::ReplyPosition::Follow => 2,
         });
         widgets.spellcheck_row.set_active(init.spellcheck);
-        // The language dropdown offers exactly what checking can use: the
+        // The language switches offer exactly what checking can use: the
         // installed dictionaries, behind a "System language" default. Typed
         // codes are gone — a language nobody has a dictionary for silently
-        // checks nothing, so only real options are offered (#114).
+        // checks nothing, so only real options are offered (#114). Any
+        // number of them can be on at once (#365).
         {
+            let rows = SpellLangRows::new(
+                widgets.spell_lang_row.clone(),
+                init.spellcheck_langs.clone(),
+            );
+            model.spell_langs = Some(rows.clone());
             // Listing the installed dictionaries reads several directories;
             // done a moment after the window is up, not before it.
-            let spell_lang_row = widgets.spell_lang_row.clone();
             let spelling_group = widgets.spelling_group.clone();
-            let spellcheck_langs = init.spellcheck_langs.clone();
             let sender = sender.clone();
             gtk::glib::idle_add_local_full(gtk::glib::Priority::LOW, move || {
-            let dicts = crate::ui::rich_editor::installed_dictionaries();
-            let list = gtk::StringList::new(&[]);
-            list.append(&i18n_f(
-                "System language — {language}",
-                &[("language", &crate::spell::language_display_name(
-                    &crate::ui::rich_editor::resolved_spell_language()
-                ))]
-            ));
-            for d in &dicts {
-                list.append(&crate::spell::language_display_name(d));
-            }
-            spell_lang_row.set_model(Some(&list));
-            let selected = dicts
-                .iter()
-                .position(|d| *d == spellcheck_langs)
-                .map(|i| i as u32 + 1)
-                .unwrap_or(0);
-            spell_lang_row.set_selected(selected);
-            if dicts.is_empty() {
-                spell_lang_row.set_sensitive(false);
-                spelling_group.set_description(Some(
-                    "No dictionaries are visible to the app. On Flatpak, add your \
-                     language with: flatpak config --set extra-languages <code>",
-                ));
-            }
-            let s = sender.clone();
-            // Connected after the initial set_selected, so restoring the
-            // saved choice doesn't immediately re-save it.
-            spell_lang_row.connect_selected_notify(move |row| {
-                let i = row.selected() as usize;
-                let code =
-                    if i == 0 { String::new() } else { dicts.get(i - 1).cloned().unwrap_or_default() };
-                let _ = s.output(PrefOutput::SetSpellcheckLangs(code));
-            });
+                let dicts = crate::ui::rich_editor::installed_dictionaries();
+                let system = adw::SwitchRow::builder()
+                    .title(i18n("System language"))
+                    .subtitle(gtk::glib::markup_escape_text(
+                        &crate::ui::rich_editor::spell_language_names(
+                            &crate::ui::rich_editor::system_spell_languages(),
+                        ),
+                    ))
+                    .build();
+                rows.expander.add_row(&system);
+                *rows.system.borrow_mut() = Some(system.clone());
+                for d in &dicts {
+                    let row = adw::SwitchRow::builder()
+                        .title(gtk::glib::markup_escape_text(&crate::spell::language_display_name(d)))
+                        .build();
+                    rows.expander.add_row(&row);
+                    rows.dicts.borrow_mut().push((d.clone(), row));
+                }
+                let current = rows.setting.borrow().clone();
+                rows.show(&current);
+                if dicts.is_empty() {
+                    rows.expander.set_sensitive(false);
+                    spelling_group.set_description(Some(
+                        "No dictionaries are visible to the app. On Flatpak, add your \
+                         language with: flatpak config --set extra-languages <code>",
+                    ));
+                }
+                // Connected after the switches show the saved choice, and
+                // guarded besides, so showing it never saves it again.
+                let switches = std::iter::once((String::new(), system))
+                    .chain(rows.dicts.borrow().iter().cloned())
+                    .collect::<Vec<_>>();
+                for (code, row) in switches {
+                    let (rows, s) = (rows.clone(), sender.clone());
+                    row.connect_active_notify(move |row| {
+                        if let Some(next) = rows.toggled(&code, row.is_active()) {
+                            let _ = s.output(PrefOutput::SetSpellcheckLangs(next));
+                        }
+                    });
+                }
                 gtk::glib::ControlFlow::Break
             });
         }
@@ -4636,6 +4722,13 @@ impl Component for Preferences {
                     }
                     if limit.value().round() as u32 != p.limit_mb {
                         limit.set_value(p.limit_mb as f64);
+                    }
+                }
+            }
+            PrefInput::SetSpellcheckLangs(langs) => {
+                if let Some(rows) = self.spell_langs.as_ref() {
+                    if *rows.setting.borrow() != langs {
+                        rows.show(&langs);
                     }
                 }
             }

@@ -611,6 +611,10 @@ pub enum ComposeOutput {
     /// Discarded, a new message that only automatic saves put in Drafts:
     /// take that copy out, and close.
     DiscardAutosave { id: u32, origin: DraftOrigin },
+    /// The spelling languages were changed from the body's right-click
+    /// menu (#365): the whole new setting, saved app-wide like the
+    /// Settings switches.
+    SetSpellcheckLangs(String),
 }
 
 #[relm4::component(pub)]
@@ -1156,6 +1160,13 @@ impl Component for Compose {
             let s = sender.input_sender().clone();
             editor.connect_history_changed(move |can_undo, _| {
                 let _ = s.send(ComposeInput::BodyHistory(can_undo));
+            });
+        }
+
+        {
+            let s = sender.output_sender().clone();
+            editor.connect_spell_languages(move |langs| {
+                s.emit(ComposeOutput::SetSpellcheckLangs(langs));
             });
         }
 
