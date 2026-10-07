@@ -33,6 +33,14 @@
   each message to its own account's Inbox and Delete in Trash deletes for
   good, as in an account's own folders. Each account's row beneath has
   **Empty Junk…** or **Empty Trash…** in its right-click menu.
+- **Fixed: accounts failed to sign in until Hylki restarted when the
+  keyring did not answer at login** (#375, reported by Michael-Zebratrix).
+  A keyring that was locked or still starting when Hylki read an account's
+  password left the account signing in with an empty one, which the server
+  refused as a wrong password, for the rest of the session. Hylki now reads
+  the keyring again at every sign-in until it answers, sends no sign-in
+  without the password, and says the keyring could not be read instead of
+  reporting a failed login. IMAP, POP3, JMAP and sending are all covered.
 - **Fixed: the window stayed left to right in Persian and other
   right-to-left languages** (#366, reported by OmidAmirkhani). GTK takes
   the direction from its own translations, which the Flatpak runtime often

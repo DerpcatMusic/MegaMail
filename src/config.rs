@@ -867,14 +867,32 @@ pub fn delete_account_secrets(account: &AccountConfig) {
 }
 
 fn load_key(key: &str) -> Option<String> {
+    read_key(key).unwrap_or_else(|e| {
+        tracing::warn!("could not read keyring entry for {key}: {e}");
+        None
+    })
+}
+
+/// Read a keyring entry, telling one that is not there (`Ok(None)`) apart
+/// from a keyring that did not answer (`Err`). At login the keyring can be
+/// locked or still starting, and taking that for "no password" signed the
+/// account in with an empty one until Hylki restarted (#375).
+fn read_key(key: &str) -> Result<Option<String>, String> {
     match keyring_entry(key).and_then(|e| e.get_password()) {
-        Ok(password) => Some(password),
-        Err(keyring::Error::NoEntry) => load_legacy_key(key),
-        Err(e) => {
-            tracing::warn!("could not read keyring entry for {key}: {e}");
-            None
-        }
+        Ok(password) => Ok(Some(password)),
+        Err(keyring::Error::NoEntry) => Ok(load_legacy_key(key)),
+        Err(e) => Err(e.to_string()),
     }
+}
+
+/// [`load_password`], with a keyring that could not be read as an error.
+pub fn read_password(email: &str) -> Result<Option<String>, String> {
+    read_key(email)
+}
+
+/// [`load_smtp_password`], with a keyring that could not be read as an error.
+pub fn read_smtp_password(email: &str) -> Result<Option<String>, String> {
+    read_key(&smtp_key(email))
 }
 
 /// Fall back to an entry stored under an earlier name's service (Vireo,

@@ -206,6 +206,14 @@ fn agent() -> ureq::Agent {
 pub(super) fn jmap_connect(account: &AccountConfig) -> Result<JmapSession, String> {
     let base = jmap_base_url(account);
     let origin = origin_of(&base).to_string();
+    // A password the worker could not read at start is read again (#375).
+    let filled;
+    let account = if account.password.is_empty() {
+        filled = AccountConfig { password: super::sign_in_password_blocking(account, false)?, ..account.clone() };
+        &filled
+    } else {
+        account
+    };
     let auth = jmap_auth(account);
     // A server given with a path may be the session resource itself
     // (Fastmail's is https://api.fastmail.com/jmap/session, #356); when it
