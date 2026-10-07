@@ -143,3 +143,44 @@ fn fill(mut s: String, args: &[(&str, &str)]) -> String {
     }
     s
 }
+
+/// Languages written right to left, by their ISO 639 code.
+const RTL_LANGUAGES: &[&str] =
+    &["ar", "fa", "he", "iw", "ur", "ps", "ckb", "yi", "dv", "sd", "ug", "syr"];
+
+/// Whether a locale or LANGUAGE value ("fa_IR.UTF-8", "he:en", "ar")
+/// names a right-to-left language first.
+pub fn is_rtl_locale(value: &str) -> bool {
+    let first = value.split(':').map(str::trim).find(|s| !s.is_empty()).unwrap_or("");
+    let lang = first.split(['_', '.', '@', '-']).next().unwrap_or("");
+    RTL_LANGUAGES.iter().any(|l| lang.eq_ignore_ascii_case(l))
+}
+
+/// Whether the interface language is right to left: the language chosen
+/// in Settings, else the first one the session names.
+pub fn ui_is_rtl() -> bool {
+    let chosen = crate::config::load_language();
+    if !chosen.is_empty() {
+        return is_rtl_locale(&chosen);
+    }
+    ["LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG"]
+        .iter()
+        .filter_map(|k| std::env::var(k).ok())
+        .find(|v| !v.trim().is_empty())
+        .is_some_and(|v| is_rtl_locale(&v))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_rtl_locale;
+
+    #[test]
+    fn rtl_locales() {
+        for rtl in ["fa_IR.UTF-8", "fa", "ar", "ar_EG.UTF-8", "he:en", "ur_PK", "ckb_IQ", "sd@devanagari"] {
+            assert!(is_rtl_locale(rtl), "{rtl}");
+        }
+        for ltr in ["en_US", "en_US.UTF-8", "C", "C.UTF-8", "POSIX", "", "en:fa", "fr_FR", "fil_PH", "ha"] {
+            assert!(!is_rtl_locale(ltr), "{ltr}");
+        }
+    }
+}
