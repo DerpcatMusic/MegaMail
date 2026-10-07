@@ -4183,6 +4183,9 @@ msgstr "Co 15 minut"
 msgid "Every 30 minutes"
 msgstr "Co 30 minut"
 
+msgid "System language — {language}"
+msgstr "Język systemu – {language}"
+
 msgid "Drag to move"
 msgstr "Przeciągnij, aby przenieść"
 
@@ -4684,6 +4687,18 @@ msgstr ""
 "Archiwum wszystkich kont na jednej liście, z możliwością rozwinięcia do "
 "katalogów poszczególnych kont."
 
+#, fuzzy
+msgid "Every account's junk mail as one list, opening to each account's own."
+msgstr ""
+"Wysłana poczta ze wszystkich kont na jednej liście, z możliwością "
+"rozwinięcia do katalogów poszczególnych kont."
+
+#, fuzzy
+msgid "Every account's trash as one list, opening to each account's own."
+msgstr ""
+"Szkice ze wszystkich kont na jednej liście, z możliwością rozwinięcia do "
+"katalogów poszczególnych kont."
+
 msgid ""
 "List every folder your filter rules file into in a collapsible section of "
 "the unified view."
@@ -4768,6 +4783,14 @@ msgstr "Lista kont pod zbiorczym wierszem „Szkice”."
 
 msgid "The account list under the unified Archive row."
 msgstr "Lista kont pod zbiorczym wierszem „Archiwum”."
+
+#, fuzzy
+msgid "The account list under the unified Junk row."
+msgstr "Lista kont pod zbiorczym wierszem „Wysłane”."
+
+#, fuzzy
+msgid "The account list under the unified Trash row."
+msgstr "Lista kont pod zbiorczym wierszem „Szkice”."
 
 msgid "The folders under the Filters row."
 msgstr "Katalogi pod wierszem „Filtry”."
@@ -5282,11 +5305,9 @@ msgstr ""
 "Błędnie napisane słowa w treści wiadomości są podkreślane; poprawki są "
 "dostępne w menu kontekstowym słowa."
 
-msgid "Language"
+#, fuzzy
+msgid "Languages"
 msgstr "Język"
-
-msgid "Dictionaries the app can see"
-msgstr "Słowniki dostępne dla aplikacji"
 
 msgid "Added words"
 msgstr "Dodane słowa"
@@ -5382,6 +5403,9 @@ msgstr "Format daty"
 
 msgid "Clock"
 msgstr "Zegar"
+
+msgid "Language"
+msgstr "Język"
 
 msgid ""
 "The language Hylki is shown in. \"System\" follows the desktop, with English "
@@ -5701,7 +5725,8 @@ msgstr "Pod wiadomościami"
 msgid "Follows the reading order"
 msgstr "Zgodnie z kolejnością czytania"
 
-msgid "System language — {language}"
+#, fuzzy
+msgid "System language"
 msgstr "Język systemu – {language}"
 
 msgid "Add a word"
@@ -5773,6 +5798,10 @@ msgstr "Usunięto konto {name}"
 
 msgid "Could not save the PDF: {error}"
 msgstr "Nie udało się zapisać pliku PDF: {error}"
+
+#, fuzzy
+msgid "Spelling Language"
+msgstr "Pisownia"
 
 msgid "Send as Attachment Instead"
 msgstr "Wyślij jako załącznik"
@@ -5913,6 +5942,9 @@ msgstr "Wstaw odnośnik"
 msgid "Insert"
 msgstr "Wstaw"
 
+msgid "Favorites"
+msgstr ""
+
 msgid "Folder"
 msgstr "Katalog"
 
@@ -5982,6 +6014,12 @@ msgstr "Wyświetl poszczególne etykiety"
 msgid "Long-press to expand or collapse"
 msgstr "Przytrzymaj, aby rozwinąć lub zwinąć"
 
+msgid "Empty Trash…"
+msgstr "Opróżnij kosz…"
+
+msgid "Empty Junk…"
+msgstr "Opróżnij katalog spamu…"
+
 msgid "Show or hide filters"
 msgstr "Wyświetl lub ukryj filtry"
 
@@ -5990,6 +6028,14 @@ msgstr "Wyświetl lub ukryj etykiety"
 
 msgid "Follow Settings: {sort}"
 msgstr "Zgodnie z ustawieniami: {sort}"
+
+#, fuzzy
+msgid "Remove from Favorites"
+msgstr "Usuń filtr"
+
+#, fuzzy
+msgid "Add to Favorites"
+msgstr "Dodaj do kontaktów"
 
 msgid "Apply Filters"
 msgstr "Zastosuj filtry"
@@ -6007,12 +6053,6 @@ msgstr "Usuń katalog…"
 #. of sight would still be where mail is filed to.
 msgid "Hide Folder"
 msgstr "Ukryj katalog"
-
-msgid "Empty Trash…"
-msgstr "Opróżnij kosz…"
-
-msgid "Empty Junk…"
-msgstr "Opróżnij katalog spamu…"
 
 msgid "Edit Tag…"
 msgstr "Modyfikuj etykietę…"
@@ -6624,6 +6664,9 @@ msgstr "Zbiorcza skrzynka odbiorcza w jasnym motywie"
 
 msgid "Hyprlab"
 msgstr "Hyprlab"
+
+#~ msgid "Dictionaries the app can see"
+#~ msgstr "Słowniki dostępne dla aplikacji"
 
 #~ msgid "Uses IMAP IDLE to receive messages the moment they arrive."
 #~ msgstr ""
