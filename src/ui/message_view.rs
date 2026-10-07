@@ -4460,8 +4460,12 @@ impl MessageView {
         } else {
             String::new()
         };
+        // The headers around the messages are the window's own chrome, so
+        // they follow its direction; the messages inside their frames take
+        // their own (#366).
+        let dir = if crate::i18n::is_rtl() { " dir=\"rtl\"" } else { "" };
         format!(
-            "<!doctype html><html><head><meta charset=\"utf-8\">{csp}\
+            "<!doctype html><html{dir}><head><meta charset=\"utf-8\">{csp}\
              <meta name=\"color-scheme\" content=\"{scheme}\">\
              <style>\
                :root{{color-scheme:{scheme};}}\
@@ -4494,7 +4498,7 @@ impl MessageView {
                .vireo-fbar-ico svg{{width:16px;height:16px;}}\
                .vireo-fbar-none{{width:16px;height:16px;}}\
                .vireo-fbar-ico svg,.vireo-fbar-ico svg *{{fill:currentColor;}}\
-               .vireo-fbar-date{{flex:none;min-width:6.5em;text-align:right;opacity:0.7;\
+               .vireo-fbar-date{{flex:none;min-width:6.5em;text-align:end;opacity:0.7;\
                  font-size:0.92em;white-space:nowrap;}}\
                .vireo-msg.vireo-folded>:not(.vireo-fbar){{display:none;}}\
                body.vireo-folds .vireo-msg-hdr{{cursor:pointer;}}\
@@ -4509,7 +4513,7 @@ impl MessageView {
                  align-items:baseline;flex-wrap:nowrap;\
                  min-width:0;position:relative;}}\
                .vireo-hdr-meta{{display:flex;gap:8px;align-items:baseline;flex:none;\
-                 margin-left:auto;}}\
+                 margin-inline-start:auto;}}\
                /* Narrow pane: the meta group (folder chip, recipients chip, date)\
                   drops to its own line as one unit — no mid-text wrapping — while\
                   the sender and the action palette hold the first line. */\
@@ -4520,14 +4524,14 @@ impl MessageView {
                  body.vireo-conv{{padding:10px;}}\
                  body.vireo-conv .vireo-msg-hdr{{padding:12px 10px;}}\
                  .vireo-hdr-line{{flex-wrap:wrap;}}\
-                 .vireo-hdr-meta{{order:10;flex-basis:100%;margin-left:34px;\
+                 .vireo-hdr-meta{{order:10;flex-basis:100%;margin-inline-start:34px;\
                    justify-content:flex-start;}}\
                  /* Below the wrapped meta line the recipients need a touch\
                     more air than the wide layout's 2px. */\
                  .vireo-rcpt{{margin-top:6px;}}\
                  /* With the meta group gone from the first line, the palette\
                     pins itself to the corner (the \u{22ef} is already absolute). */\
-                 body:not([data-vireo-acts=\"toggle\"]) .vireo-acts{{margin-left:auto;}}\
+                 body:not([data-vireo-acts=\"toggle\"]) .vireo-acts{{margin-inline-start:auto;}}\
                }}\
                body:not(.vireo-conv) .vireo-msg-hdr{{background-color:{chrome};}}\
                {plain_css}\
@@ -4613,7 +4617,7 @@ impl MessageView {
                .vireo-attn{{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}}\
                .vireo-attz{{opacity:0.55;white-space:nowrap;flex:none;}}\
                .vireo-attsave{{display:inline-flex;align-items:center;padding:0 7px;border:none;\
-                 border-left:1px solid rgba(128,128,128,0.35);background:none;color:inherit;\
+                 border-inline-start:1px solid rgba(128,128,128,0.35);background:none;color:inherit;\
                  cursor:pointer;opacity:0.6;}}\
                .vireo-attsave:hover{{opacity:1;background:rgba(128,128,128,0.18);}}\
                .vireo-attsave svg{{width:14px;height:14px;display:block;}}\
@@ -4648,7 +4652,7 @@ impl MessageView {
                   visibly low whenever a GNOME text scaling factor shrank the\
                   type around it. */\
                .vireo-verify{{display:none;background:none;border:none;\
-                 padding:0 2px;margin-left:2px;cursor:pointer;line-height:0;\
+                 padding:0 2px;margin-inline-start:2px;cursor:pointer;line-height:0;\
                  align-self:baseline;transform:translateY(0.18em);flex:none;}}\
                .vireo-verify.on{{display:inline-flex;}}\
                .vireo-verify svg{{width:0.95em;height:0.95em;display:block;}}\
@@ -4662,8 +4666,8 @@ impl MessageView {
                   own, so it sits on the name's baseline without the seal's\
                   nudge. */\
                .vireo-pgp{{display:none;font:inherit;font-size:0.78em;font-weight:600;\
-                 border:none;border-radius:999px;padding:0.1em 0.6em 0.1em 0.45em;\
-                 margin-left:4px;cursor:pointer;align-items:center;gap:0.3em;\
+                 border:none;border-radius:999px;padding-block:0.1em;padding-inline:0.45em 0.6em;\
+                 margin-inline-start:4px;cursor:pointer;align-items:center;gap:0.3em;\
                  align-self:baseline;white-space:nowrap;flex:none;color:inherit;\
                  background:rgba(128,128,128,0.16);}}\
                .vireo-pgp.on{{display:inline-flex;}}\
@@ -4678,7 +4682,7 @@ impl MessageView {
                /* The icons alone (Settings, #300): the chip as it was before\
                   it had words, sitting on the name's line like the seal. */\
                body[data-vireo-pgpicons] .vireo-pgp{{background:none;padding:0 2px;\
-                 margin-left:2px;gap:1px;font-size:inherit;line-height:0;\
+                 margin-inline-start:2px;gap:1px;font-size:inherit;line-height:0;\
                  transform:translateY(0.18em);}}\
                body[data-vireo-pgpicons] .vireo-pgp svg{{width:0.95em;height:0.95em;}}\
                body[data-vireo-pgpicons] .vireo-pgp-text{{display:none;}}\
@@ -4693,12 +4697,12 @@ impl MessageView {
                  border:1px solid rgba(128,128,128,0.2);border-radius:12px;\
                  box-shadow:0 6px 24px rgba(0,0,0,0.22);padding:6px;\
                  min-width:190px;font-size:0.95em;}}\
-               .vireo-mailmenu button{{display:block;width:100%;text-align:left;\
+               .vireo-mailmenu button{{display:block;width:100%;text-align:start;\
                  background:none;border:none;padding:8px 10px;border-radius:6px;\
                  color:inherit;cursor:pointer;font:inherit;font-weight:normal;}}\
                .vireo-mailmenu button:hover{{background:rgba(128,128,128,0.14);}}\
                .vireo-addr.clipped:hover::after{{content:attr(data-addr);\
-                 position:absolute;left:-6px;top:50%;transform:translateY(-50%);\
+                 position:absolute;inset-inline-start:-6px;top:50%;transform:translateY(-50%);\
                  background:{bg};border-radius:6px;padding:1px 6px;\
                  white-space:nowrap;text-decoration:underline;}}\
                body:not(.vireo-conv) .vireo-addr.clipped:hover::after{{\
@@ -4712,8 +4716,8 @@ impl MessageView {
                  color:inherit;opacity:0.6;background:rgba(128,128,128,0.16);\
                  border:0;border-radius:999px;cursor:pointer;}}\
                .vireo-quote:hover{{opacity:0.95;background:rgba(128,128,128,0.28);}}\
-               .vireo-quote.open{{opacity:0.95;position:absolute;left:0;z-index:2;}}\
-               .vireo-acts{{display:flex;gap:2px;flex:none;align-self:center;margin-left:4px;}}\
+               .vireo-quote.open{{opacity:0.95;position:absolute;inset-inline-start:0;z-index:2;}}\
+               .vireo-acts{{display:flex;gap:2px;flex:none;align-self:center;margin-inline-start:4px;}}\
                /* Read-toggle: the icon showing is the ACTION (read envelope\
                   means mark-as-read); the section's unread class decides. */\
                .vireo-act .tr-when-unread,.vireo-act .tr-when-read{{display:none;line-height:0;}}\
@@ -4736,9 +4740,9 @@ impl MessageView {
                   the text beneath (never pushing it), its left edge fading in\
                   from transparent. The \u{22ef} itself never moves. */\
                body[data-vireo-acts=\"toggle\"] .vireo-acts{{position:absolute;\
-                 right:34px;top:13px;transform:translateY(-50%) scaleX(0.6);\
+                 inset-inline-end:34px;top:13px;transform:translateY(-50%) scaleX(0.6);\
                  transform-origin:right center;margin:0;\
-                 padding:2px 6px 2px 30px;border-radius:8px;\
+                 padding-block:2px;padding-inline:30px 6px;border-radius:8px;\
                  background:linear-gradient(to right,transparent,{bg} 26px);\
                  opacity:0;pointer-events:none;\
                  transition:opacity 140ms ease,transform 180ms ease;}}\
@@ -4750,12 +4754,12 @@ impl MessageView {
                   absolutely pinned to the header's right edge, so no amount of\
                   header content can push or wrap it. The line reserves the\
                   button's footprint as fixed right padding instead. */\
-               body[data-vireo-acts=\"toggle\"] .vireo-hdr-line{{padding-right:38px;}}\
+               body[data-vireo-acts=\"toggle\"] .vireo-hdr-line{{padding-inline-end:38px;}}\
                /* Anchored to the FIRST row's centre (the 26px avatar/sender\
                   line), not the line box's — when the meta row wraps beneath,\
                   the box grows downward but the button must not move. */\
                body[data-vireo-acts=\"toggle\"] .vireo-acts-toggle{{display:block;\
-                 position:absolute;right:0;top:13px;transform:translateY(-50%);\
+                 position:absolute;inset-inline-end:0;top:13px;transform:translateY(-50%);\
                  color:{toggle_color};background:none;border:none;border-radius:6px;\
                  padding:4px 8px;margin:0;cursor:pointer;\
                  opacity:0.65;transition:opacity 120ms ease,background 120ms ease;}}\
@@ -4782,7 +4786,7 @@ impl MessageView {
                /* Indented past the avatar (26px + 8px gap), so the recipients\
                   align with the sender's name — as does the wrapped meta line. */\
                .vireo-rcpt{{font-size:0.85em;opacity:0.75;\
-                 user-select:text;overflow-wrap:anywhere;margin:2px 0 0 34px;}}\
+                 user-select:text;overflow-wrap:anywhere;margin:2px 0 0;margin-inline-start:34px;}}\
                .vireo-rcpt div{{margin-top:2px;}}\
                .vireo-loading{{opacity:0.5;padding:16px;}}\
                /* The Copied pill after Ctrl+C: a toast the page draws itself,\
@@ -4792,6 +4796,22 @@ impl MessageView {
                  font:inherit;font-size:0.9em;box-shadow:0 2px 10px rgba(0,0,0,0.25);\
                  opacity:0;pointer-events:none;transition:opacity 180ms ease,transform 180ms ease;z-index:50;}}\
                .vireo-copied.on{{opacity:1;transform:translateX(-50%) translateY(0);}}\
+               /* Right to left (#366): what logical properties cannot say. */\
+               html[dir=rtl] .vireo-addr.clipped{{\
+                 -webkit-mask-image:linear-gradient(to left,#000 calc(100% - 18px),transparent);\
+                 mask-image:linear-gradient(to left,#000 calc(100% - 18px),transparent);}}\
+               html[dir=rtl] .vireo-addr.clipped:hover{{-webkit-mask-image:none;mask-image:none;}}\
+               html[dir=rtl] body[data-vireo-acts=\"toggle\"] .vireo-acts{{\
+                 transform-origin:left center;\
+                 background:linear-gradient(to left,transparent,{bg} 26px);}}\
+               html[dir=rtl] body:not(.vireo-conv)[data-vireo-acts=\"toggle\"] .vireo-acts{{\
+                 background:linear-gradient(to left,transparent,{chrome} 26px);}}\
+               /* Each chip's words in their own direction, as a GTK label\
+                  has them: an English 1 recipient in a right-to-left line\
+                  otherwise reads recipient 1. */\
+               html[dir=rtl] :is(.vireo-rcpt-toggle,.vireo-date,.vireo-fbar-date,\
+                 .vireo-folder,.vireo-rcpt div){{unicode-bidi:plaintext;}}\
+               html[dir=rtl] .vireo-fbar-date{{text-align:left;}}\
              </style>{sizer}\
              </head><body{body_class}>{sections}</body></html>"
         )
@@ -8481,10 +8501,10 @@ mod tests {
         let labels = std::collections::HashMap::from([((1u32, 2u32), "Sent".to_string())]);
         let doc = MessageView::conversation_document(&[a, b], &labels, &Default::default(), &Default::default(), &[], "#3584e4", true, false, false, false, &crate::config::ReaderStyle::NONE, &Default::default(), false, 100);
         assert_eq!(
-            doc.matches("vireo-folder").count(),
-            // once in the stylesheet, once on the message that came from Sent —
-            // and never on the one the reader is already showing the folder of.
-            2,
+            doc.matches("class=\"vireo-folder\"").count(),
+            // on the message that came from Sent, and never on the one the
+            // reader is already showing the folder of.
+            1,
             "only the message from another folder should carry a folder badge"
         );
         assert!(doc.contains(">Sent</span>"), "the badge should name the folder");

@@ -228,6 +228,7 @@ fn main() {
             if i18n::ui_is_rtl() {
                 gtk::Widget::set_default_direction(gtk::TextDirection::Rtl);
             }
+            i18n::set_rtl(gtk::Widget::default_direction() == gtk::TextDirection::Rtl);
         });
     }
     let app = RelmApp::from_app(adw_app)

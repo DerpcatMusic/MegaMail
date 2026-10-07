@@ -156,6 +156,20 @@ pub fn is_rtl_locale(value: &str) -> bool {
     RTL_LANGUAGES.iter().any(|l| lang.eq_ignore_ascii_case(l))
 }
 
+static RTL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Record the window's direction once GTK has settled it, for the parts of
+/// the window drawn in HTML (the reader's message headers), which have no
+/// widget to ask.
+pub fn set_rtl(rtl: bool) {
+    RTL.store(rtl, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether the window is laid out right to left.
+pub fn is_rtl() -> bool {
+    RTL.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Whether the interface language is right to left: the language chosen
 /// in Settings, else the first one the session names.
 pub fn ui_is_rtl() -> bool {

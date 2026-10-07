@@ -26,6 +26,18 @@
   each message to its own account's Inbox and Delete in Trash deletes for
   good, as in an account's own folders. Each account's row beneath has
   **Empty Junk…** or **Empty Trash…** in its right-click menu.
+- **Fixed: the window stayed left to right in Persian and other
+  right-to-left languages** (#366, reported by OmidAmirkhani). GTK takes
+  the direction from its own translations, which the Flatpak runtime often
+  lacks, and a language chosen in Settings never reached them. The window
+  now follows the interface language: Arabic, Persian, Hebrew, Urdu and the
+  other right-to-left languages lay it out from the right, sidebar, list,
+  reader headers and composer included. Messages take the direction of
+  their own text whatever the interface language, unless the sender set
+  one; plain text, the Reader View and the composer decide it paragraph by
+  paragraph, so Persian and English mixed in one message both read right.
+  The interface text stays in English until Hylki is translated into
+  Persian.
 - **Fixed: a message could be lost to an address that cannot be sent to**
   (#368, reported by martin-ribot). **Send** now checks every address in
   To, Cc, Bcc and Reply-To first, and an address that is not one keeps the
