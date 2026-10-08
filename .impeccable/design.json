@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-08T13:40:22Z",
+  "generatedAt": "2026-10-09T00:00:00Z",
   "title": "Design System: MegaMail",
   "extensions": {
     "colorMeta": {
@@ -405,13 +405,38 @@
     },
     "platform": "Linux desktop; native GPUI Kit window; no web or mobile breakpoint contract.",
     "appearanceMeta": {
-      "paletteSource": "apps/megamail/src/main.rs#L77",
-      "paletteUse": "Native Rust colors are base palette/tint roles. Visible rail, list, and reader planes composite these colors over the background layer.",
+      "paletteSource": "Selected Zeron theme variant in apps/megamail/src/theme.rs; frontmatter colors describe the default palette.",
+      "themeModel": {
+        "source": "crates/zeron-theme",
+        "upstreamCommit": "0c4835d2b73aa632b7b4d626ee0826a25ec1c9b9",
+        "license": "MIT",
+        "builtInFamilies": 19,
+        "builtInVariants": 30,
+        "mode": [
+          "System",
+          "Light",
+          "Dark"
+        ],
+        "variantSelection": "Light and Dark variants are persisted independently; System follows the desktop appearance.",
+        "accent": "Theme default or user-selected accent preset.",
+        "surface": [
+          "Theme default",
+          "Frosted",
+          "Opaque"
+        ],
+        "import": "VS Code JSON/JSONC theme files and extension package.json manifests; imports normalize into the Zeron model. Native Zeron theme JSON is not imported.",
+        "libraryActions": "Remove imported families or reset preferences while retaining the library."
+      },
       "defaults": {
-        "theme": "dark",
+        "theme": "System",
         "background": "Aurora",
-        "customWallpaperStrength": "86%",
-        "customWallpaperBlur": "Blur 10"
+        "effect": "Original",
+        "effectStrength": "100%",
+        "wallpaperOpacity": "86%",
+        "blur": "10",
+        "bottomFade": "42%",
+        "accent": "Theme default",
+        "surface": "Theme default"
       },
       "presets": [
         "Aurora",
@@ -426,6 +451,18 @@
         "Halftone",
         "Scanlines"
       ],
+      "wallpaperControls": {
+        "treatmentStrength": "0–100%",
+        "opacity": "0–100%",
+        "blur": [
+          "0",
+          "10",
+          "16"
+        ],
+        "bottomFade": "0–100%",
+        "backgrounds": "All effects and controls apply to built-in and custom backgrounds.",
+        "processing": "Background processing into a cached static image; image changes crossfade over 240 ms."
+      },
       "customWallpaper": {
         "inputFormats": [
           "PNG",
@@ -441,49 +478,29 @@
         "privateStorage": "$XDG_CONFIG_HOME/megamail/wallpapers/",
         "preferences": "$XDG_CONFIG_HOME/megamail/appearance.v1"
       },
-      "wallpaperControls": {
-        "strength": [
-          "72%",
-          "86%",
-          "96%"
-        ],
-        "blur": [
-          "Sharp",
-          "Blur 10",
-          "Blur 16"
-        ],
-        "processing": "Background processing into one cached static GPUI RenderImage; no live compositor blur."
-      },
       "paneSurfaces": {
         "navigationRail": {
-          "nominalTintAlpha": "80%",
-          "maxWallpaperBleed": "20%"
+          "maxWallpaperBleed": "24%"
         },
         "messageList": {
-          "nominalTintAlpha": "95%",
-          "maxWallpaperBleed": "5%"
+          "maxWallpaperBleed": "10%"
         },
         "reader": {
-          "nominalTintAlpha": "95%",
           "maxWallpaperBleed": "5%"
         },
-        "contrastGuard": "For custom wallpaper, limit artwork opacity using a sampled 5th/95th-percentile estimate targeting at least 4.5:1 for the sampled worst color. This is not a per-pixel contrast guarantee."
+        "contrastGuard": "The selected theme bounds wallpaper visibility using sampled contrast. This is not a per-pixel contrast guarantee."
       },
+      "renderingLimit": "MegaMail does not use Zeron renderer-specific backdrop blur or per-primitive edge fades.",
+      "themePreferences": "$XDG_CONFIG_HOME/megamail/theme.v1",
       "sourceAnchors": {
-        "wallpaperLimitsAndPresets": "apps/megamail/src/appearance.rs#L27",
-        "wallpaperEffects": "apps/megamail/src/zeron_wallpaper.rs#L35",
-        "wallpaperBackground": "apps/megamail/src/zeron_background.rs#L40",
-        "paneBleedAndGuard": "apps/megamail/src/zeron_background.rs#L81",
-        "contrastEstimate": "apps/megamail/src/zeron_wallpaper.rs#L232",
-        "navigationRowsAndTextRoles": "apps/megamail/src/zeron_style.rs#L82",
-        "windowBounds": "apps/megamail/src/main.rs#L5794",
-        "fontRegistration": "apps/megamail/src/main.rs#L5786",
-        "navigationRail": "apps/megamail/src/main.rs#L2096",
-        "collapsedRail": "apps/megamail/src/main.rs#L2286",
-        "messageList": "apps/megamail/src/main.rs#L2465",
-        "messageRow": "apps/megamail/src/main.rs#L2425",
-        "readerWidth": "apps/megamail/src/main.rs#L3105",
-        "windowChrome": "apps/megamail/src/main.rs#L4801"
+        "themeModel": "crates/zeron-theme",
+        "themeAdapter": "apps/megamail/src/theme.rs",
+        "appearanceView": "apps/megamail/src/appearance_view.rs",
+        "appearanceProcessing": "apps/megamail/src/appearance.rs",
+        "wallpaperEffects": "apps/megamail/src/zeron_wallpaper.rs",
+        "paneSurfaces": "apps/megamail/src/zeron_background.rs",
+        "layoutAndRows": "apps/megamail/src/main.rs",
+        "searchAndFilters": "apps/megamail/src/live.rs"
       }
     }
   },
@@ -492,23 +509,23 @@
       "name": "Folder navigation row",
       "kind": "nav",
       "refersTo": "folder-selected-dark",
-      "description": "Selected and hover examples for a folder button in both native theme palettes.",
+      "description": "Flat selected and hover states with a restrained 4px row corner and no surrounding card.",
       "html": "<div class=\"ds-themes\"><div class=\"ds-panel ds-dark\"><button class=\"ds-folder ds-folder-dark\" type=\"button\" aria-current=\"page\"><span>Inbox</span><span class=\"ds-count\">3</span></button></div><div class=\"ds-panel ds-light\"><button class=\"ds-folder ds-folder-light\" type=\"button\" aria-current=\"page\"><span>Inbox</span><span class=\"ds-count\">3</span></button></div></div>",
-      "css": ".ds-themes{display:grid;grid-template-columns:1fr 1fr;gap:8px;font:13px Geist,sans-serif}.ds-panel{padding:8px;border-radius:8px}.ds-dark{background:#0d0d0d;color:#e8e8ea}.ds-light{background:#f7f7f9;color:#303035}.ds-folder{display:flex;width:100%;height:32px;align-items:center;justify-content:space-between;padding:0 8px;border:0;border-radius:8px;font:13px Geist,sans-serif;text-align:left;cursor:pointer}.ds-folder-dark{background:rgb(235 235 235 / 11%);color:#e8e8ea}.ds-folder-light{background:rgb(26 26 26 / 6%);color:#303035}.ds-count{font-size:11px;opacity:.82}.ds-folder-dark:hover{background:rgb(235 235 235 / 11%)}.ds-folder-light:hover{background:rgb(26 26 26 / 6%)}.ds-folder:focus-visible{outline:2px solid #7c86ff;outline-offset:2px}.ds-folder-light:focus-visible{outline-color:#5b43e8}"
+      "css": ".ds-themes{display:grid;grid-template-columns:1fr 1fr;gap:8px;font:13px Geist,sans-serif}.ds-panel{padding:8px;border-radius:4px}.ds-dark{background:#0d0d0d;color:#e8e8ea}.ds-light{background:#f7f7f9;color:#303035}.ds-folder{display:flex;width:100%;height:32px;align-items:center;justify-content:space-between;padding:0 8px;border:0;border-radius:4px;font:13px Geist,sans-serif;text-align:left;cursor:pointer}.ds-folder-dark{background:rgb(235 235 235 / 11%);color:#e8e8ea}.ds-folder-light{background:rgb(26 26 26 / 6%);color:#303035}.ds-count{font-size:11px;opacity:.82}.ds-folder-dark:hover{background:rgb(235 235 235 / 11%)}.ds-folder-light:hover{background:rgb(26 26 26 / 6%)}.ds-folder:focus-visible{outline:2px solid #7c86ff;outline-offset:2px}.ds-folder-light:focus-visible{outline-color:#5b43e8}"
     },
     {
       "name": "Selected message row",
       "kind": "custom",
       "refersTo": "message-row-selected-dark",
-      "description": "Three-line sender, subject, and snippet hierarchy with selected and hover states in both themes.",
+      "description": "78px three-line sender, subject, and snippet hierarchy with 4px corners and distinct selected/hover states.",
       "html": "<div class=\"ds-themes\"><div class=\"ds-list ds-dark\"><button class=\"ds-row ds-row-dark\" type=\"button\" aria-pressed=\"true\"><span class=\"ds-first\"><span class=\"ds-dot\"></span><span class=\"ds-sender\">Maya Chen</span><span class=\"ds-time\">10:42 AM</span></span><span class=\"ds-subject\">The new identity system is ready</span><span class=\"ds-preview\">I pulled the final typography and color studies into one clear direction.</span></button></div><div class=\"ds-list ds-light\"><button class=\"ds-row ds-row-light\" type=\"button\" aria-pressed=\"true\"><span class=\"ds-first\"><span class=\"ds-dot\"></span><span class=\"ds-sender\">Maya Chen</span><span class=\"ds-time\">10:42 AM</span></span><span class=\"ds-subject\">The new identity system is ready</span><span class=\"ds-preview\">I pulled the final typography and color studies into one clear direction.</span></button></div></div>",
-      "css": ".ds-themes{display:grid;grid-template-columns:1fr 1fr;gap:8px;font:13px Geist,sans-serif}.ds-list{padding:8px}.ds-dark{background:#090909;color:#e8e8ea}.ds-light{background:#fcfcfd;color:#303035}.ds-row{display:flex;box-sizing:border-box;width:100%;height:86px;flex-direction:column;justify-content:center;gap:4px;padding:8px 12px;border:0;border-radius:10px;text-align:left;font-family:Geist,sans-serif;cursor:pointer}.ds-row-dark{background:#2e2e30;color:#e8e8ea}.ds-row-light{background:#e8e8eb;color:#303035}.ds-first{display:flex;align-items:center;gap:8px}.ds-sender{flex:1;overflow:hidden;font-size:13px;font-weight:600;white-space:nowrap}.ds-time,.ds-preview{color:#a9a9ae;font-size:10px}.ds-light .ds-time,.ds-light .ds-preview{color:#62626a}.ds-dot{width:6px;height:6px;border-radius:9999px;background:#7c86ff}.ds-light .ds-dot{background:#5b43e8}.ds-subject{overflow:hidden;font-size:12px;font-weight:500;text-overflow:ellipsis;white-space:nowrap}.ds-preview{overflow:hidden;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.ds-row-dark:hover{background:#252527}.ds-row-light:hover{background:#efeff2}.ds-row:focus-visible{outline:2px solid #7c86ff;outline-offset:1px}.ds-row-light:focus-visible{outline-color:#5b43e8}"
+      "css": ".ds-themes{display:grid;grid-template-columns:1fr 1fr;gap:8px;font:13px Geist,sans-serif}.ds-list{padding:8px}.ds-dark{background:#090909;color:#e8e8ea}.ds-light{background:#fcfcfd;color:#303035}.ds-row{display:flex;box-sizing:border-box;width:100%;height:78px;flex-direction:column;justify-content:center;gap:4px;padding:8px 12px;border:0;border-radius:4px;text-align:left;font-family:Geist,sans-serif;cursor:pointer}.ds-row-dark{background:#2e2e30;color:#e8e8ea}.ds-row-light{background:#e8e8eb;color:#303035}.ds-first{display:flex;align-items:center;gap:8px}.ds-sender{flex:1;overflow:hidden;font-size:13px;font-weight:600;white-space:nowrap}.ds-time,.ds-preview{color:#a9a9ae;font-size:10px}.ds-light .ds-time,.ds-light .ds-preview{color:#62626a}.ds-dot{width:6px;height:6px;border-radius:9999px;background:#7c86ff}.ds-light .ds-dot{background:#5b43e8}.ds-subject{overflow:hidden;font-size:12px;font-weight:500;text-overflow:ellipsis;white-space:nowrap}.ds-preview{overflow:hidden;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.ds-row-dark:hover{background:#252527}.ds-row-light:hover{background:#efeff2}.ds-row:focus-visible{outline:2px solid #7c86ff;outline-offset:1px}.ds-row-light:focus-visible{outline-color:#5b43e8}"
     },
     {
       "name": "Message search input",
       "kind": "input",
       "refersTo": "input-search-dark",
-      "description": "Search field with visible focus, Kit-style border treatment, and a clear affordance.",
+      "description": "Search and filters operate on loaded messages in the current folder; they do not query the server-wide mailbox.",
       "html": "<div class=\"ds-themes\"><label class=\"ds-search ds-dark\"><svg class=\"ds-search-icon\" viewBox=\"0 0 16 16\" aria-hidden=\"true\"><circle cx=\"7\" cy=\"7\" r=\"4.5\"></circle><path d=\"m10.5 10.5 3 3\"></path></svg><input type=\"search\" aria-label=\"Search sample messages\" placeholder=\"Search sample mail\"><button class=\"ds-clear\" type=\"button\" aria-label=\"Clear search\">×</button></label><label class=\"ds-search ds-light\"><svg class=\"ds-search-icon\" viewBox=\"0 0 16 16\" aria-hidden=\"true\"><circle cx=\"7\" cy=\"7\" r=\"4.5\"></circle><path d=\"m10.5 10.5 3 3\"></path></svg><input type=\"search\" aria-label=\"Search sample messages\" placeholder=\"Search sample mail\"><button class=\"ds-clear\" type=\"button\" aria-label=\"Clear search\">×</button></label></div>",
       "css": ".ds-themes{display:grid;gap:8px;font:14px Geist,sans-serif}.ds-search{display:flex;height:32px;align-items:center;gap:8px;padding:0 10px;border:1px solid #202020;border-radius:8px;background:#0e0e0e;color:#e8e8ea}.ds-search.ds-light{border-color:#e5e5e9;background:#fff;color:#303035}.ds-search-icon{width:14px;height:14px;flex:none;fill:none;stroke:#85858a;stroke-width:1.5}.ds-light .ds-search-icon{stroke:#73737a}.ds-search input{min-width:0;flex:1;border:0;outline:0;background:transparent;color:inherit;font:14px Geist,sans-serif}.ds-search input::placeholder{color:#a9a9ae}.ds-light input::placeholder{color:#62626a}.ds-clear{border:0;background:transparent;color:inherit;font-size:16px;cursor:pointer}.ds-search:focus-within{outline:2px solid #7c86ff;outline-offset:1px}.ds-search.ds-light:focus-within{outline-color:#5b43e8}"
     },
@@ -530,13 +547,13 @@
     }
   ],
   "narrative": {
-    "northStar": "Zeron’s quiet, continuous work canvas.",
-    "overview": "MegaMail carries Zeron’s calm surface hierarchy, compact controls, and careful text ladder into a native email workspace. Its desktop layout maps Zeron’s navigation-plus-work-area logic to an account and folder rail, a message list, and a continuous reading pane. The native Rust palette is the source for each pane’s base tint; Zeron’s upstream values are cited separately wherever the implementation adapts them. The product is Linux-first and built with official GPUI Kit. Dark and light modes remap the same semantic roles. Optional backgrounds sit below translucent pane tints: the navigation rail allows up to 20% wallpaper bleed, while the message list and reading pane allow up to 5% each. For custom images, a sampled contrast estimate can reduce artwork opacity further. Wallpaper blur and treatments are baked into a cached still image, not supplied by the Linux compositor. This system describes a native desktop window. The dark, light, and focused-search images in docs/preview are prior sample-data fixtures, not current native captures.",
+    "northStar": "Zeron’s quiet canvas, adapted to the three-pane mail workflow.",
+    "overview": "MegaMail is a Linux desktop email client using official GPUI Kit 0.7.1. The desktop layout uses a 232px navigation rail, a 332px message list, and a continuous reading pane; rows are 78px high with 4px corners. The standalone MIT Zeron theme model at commit 0c4835d2b73aa632b7b4d626ee0826a25ec1c9b9 supplies 19 families and 30 variants. System mode follows the desktop appearance, Light and Dark selections are independent, and accent/surface settings can override the selected theme. Wallpaper processing is static and cached, with pane bleed capped at 24/10/5% by a theme-based contrast estimate. These materials do not implement Zeron’s renderer-specific backdrop blur or per-primitive edge fades. Current preview captures use fictional demo messages.",
     "keyCharacteristics": [
-      "A continuous reading canvas with a quiet navigation shell and one message-list plane.",
-      "Dense but legible email rows, with sender, subject, and snippet in clear order.",
-      "Indigo reserved for focus and identity cues; neutral fills show hover and selection.",
-      "Wallpaper-backed tinted panes with a contrast-aware cap on background bleed."
+      "Continuous three-pane work surface with a quiet navigation rail and compact message list.",
+      "78px email rows with 4px corners; hairlines and spacing define the panes instead of repeated cards.",
+      "Nineteen built-in Zeron theme families with thirty variants, independent Light/Dark choices, and accent/surface overrides.",
+      "Cached wallpaper treatments and theme-contrast-bounded pane tints."
     ],
     "rules": [
       {
@@ -551,12 +568,12 @@
       },
       {
         "name": "The Tinted Pane Rule",
-        "body": "Keep pane tint roles and their bleed limits explicit; allow the custom-image guard to reduce wallpaper visibility whenever its sampled contrast estimate requires it.",
+        "body": "Keep the 24/10/5% rail/list/reader bleed caps explicit; the selected theme contrast estimate may reduce them further.",
         "section": "elevation"
       },
       {
         "name": "The Static Material Rule",
-        "body": "Apply wallpaper blur and treatments before caching the image. Do not make Linux compositor blur a runtime dependency.",
+        "body": "Cache wallpaper blur and treatments before painting. MegaMail does not implement Zeron renderer-specific backdrop blur or per-primitive edge fades.",
         "section": "elevation"
       }
     ],

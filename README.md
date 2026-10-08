@@ -12,9 +12,11 @@ cache, and keyring paths separate. MegaMail does not automatically read or
 import an existing Hylki profile.
 
 The client connects Gmail with an app password and other IMAP mailboxes through
-provider discovery or manually entered IMAP and SMTP settings. It syncs and
-searches cached mail, reads messages, archives and restores them, saves drafts,
-and sends plain-text messages through SMTP. SMTP can use password
+provider discovery or manually entered IMAP and SMTP settings. It syncs mail
+and searches the loaded messages in the current folder, reads messages,
+archives and restores them, saves drafts, and sends plain-text messages through
+SMTP. Search and the All, Unread, Starred, and Attachments filters narrow that
+loaded folder result; they are not server-wide search. SMTP can use password
 authentication, a separate SMTP username and password, or no SMTP login.
 For direct accounts, failed or offline sends can be retained in the durable
 Outbox for retry or discard. Imported Thunderbird accounts keep queued messages
@@ -59,11 +61,21 @@ send or delivery test was run.
 Standalone Gmail setup remains available with an app password; no GNOME
 Online Accounts or MegaMail-owned Google OAuth flow is provided.
 
-The Appearance view includes dark and light themes, three built-in backgrounds
-(Aurora, Midnight, and Paper), and an optional private custom wallpaper. For
-custom images, MegaMail offers five static treatments, wallpaper strength,
-and blur settings, then caches the processed image; it does not depend on
-Linux compositor blur.
+Appearance follows Zeron's theme model: the standalone MIT theme crate is
+copied from commit `0c4835d2b73aa632b7b4d626ee0826a25ec1c9b9` and supplies 19
+built-in families with 30 variants. System mode follows the desktop appearance;
+Light and Dark variants are selected independently. Accent and surface
+overrides, imported-theme removal, and preference reset are available. Theme
+imports accept VS Code JSON/JSONC theme files or extension `package.json`
+files; they are normalized into MegaMail's model, not loaded as native Zeron
+theme JSON.
+
+The Appearance view also offers Aurora, Midnight, and Paper backgrounds plus
+private custom wallpaper. Original, Dither, ASCII, Halftone, and Scanlines
+work with built-in and custom backgrounds. Effect strength, wallpaper opacity,
+and bottom fade range from 0–100%; blur is 0/10/16. Images are processed into
+a static cache and crossfade over 240 ms. The window does not use Zeron's
+renderer-specific backdrop blur or per-primitive edge fades.
 
 ```sh
 cargo run --manifest-path apps/megamail/Cargo.toml --locked
@@ -78,10 +90,12 @@ To inspect the desktop shell without configuring an account, run
 Demo messages are fictional and demo mode disables sending, drafts, archive,
 restore, and Outbox operations.
 
-The images currently in `docs/preview/` are **sample-data visual fixtures**
-from the earlier preview, not captures of the current account-connected client:
-[dark](docs/preview/dark.png), [light](docs/preview/light.png), and
-[search](docs/preview/search.png). Current implementation and design decisions
+The images in `docs/preview/` are captures of the current release in demo
+mode. They use fictional messages and contain no personal mailbox data; they
+show the current interface rather than a live provider session:
+[dark](docs/preview/dark.png), [light](docs/preview/light.png),
+[search](docs/preview/search.png), and
+[appearance](docs/preview/appearance.png). Current implementation and design decisions
 are documented in the [visual contract](DESIGN.md). See
 the [validation report](docs/MEGAMAIL_VALIDATION.md) for the tested scope and
 limits; it does not establish provider-wide compatibility.
@@ -102,10 +116,11 @@ rendering techniques—not only its palette.
   and [product scope](PRODUCT.md).
 
 MegaMail translates Zeron's compact hierarchy, text roles, interaction washes,
-and layered materials into its native GPUI Kit shell. Optional wallpaper is
-processed into a cached still image beneath contrast-checked tinted panes; the
-app does not use live Linux compositor blur. MegaMail is a native desktop app;
-this repository makes no web or mobile breakpoint promises.
+and layered materials into the official GPUI Kit 0.7.1 shell. Its standalone
+theme model is preserved from the pinned Zeron source, while wallpaper is
+processed into a cached still image beneath theme-contrast-bounded pane tints.
+MegaMail is a native desktop app; this repository makes no web or mobile
+breakpoint promises.
 
 Current work is focused on broadening provider coverage and verifying
 failure recovery against real providers. Performance figures in the research

@@ -1,6 +1,6 @@
 ---
 name: MegaMail
-description: Linux-first native email workspace adapted from Zeron's quiet canvas and compact hierarchy.
+description: Native Linux email workspace carrying Zeron's quiet canvas, compact hierarchy, and theme model into GPUI Kit.
 colors:
   canvas-dark: "#060606"
   shell-dark: "#0d0d0d"
@@ -60,10 +60,10 @@ typography:
     fontFamily: "Geist, sans-serif"
     fontSize: "11px"
 rounded:
-  sm: "6px"
-  md: "8px"
+  sm: "4px"
+  md: "6px"
   lg: "10px"
-  xl: "16px"
+  xl: "10px"
   full: "9999px"
 spacing:
   xs: "4px"
@@ -104,16 +104,16 @@ components:
   message-row-selected-dark:
     backgroundColor: "{colors.selected-dark}"
     textColor: "{colors.text-dark}"
-    rounded: "{rounded.lg}"
+    rounded: "{rounded.sm}"
     padding: "12px"
-    height: "86px"
+    height: "78px"
     typography: "{typography.row-sender}"
   message-row-selected-light:
     backgroundColor: "{colors.selected-light}"
     textColor: "{colors.text-light}"
-    rounded: "{rounded.lg}"
+    rounded: "{rounded.sm}"
     padding: "12px"
-    height: "86px"
+    height: "78px"
     typography: "{typography.row-sender}"
   input-search-dark:
     backgroundColor: "{colors.surface-dark}"
@@ -157,9 +157,9 @@ components:
 
 **Creative North Star: “Zeron’s quiet, continuous work canvas.”**
 
-MegaMail carries Zeron’s calm surface hierarchy, compact controls, and careful text ladder into a native email workspace. Its desktop layout maps Zeron’s navigation-plus-work-area logic to an account and folder rail, a message list, and a continuous reading pane. The native Rust palette is the source for each pane's base tint; Zeron’s upstream values are cited separately wherever the implementation adapts them.
+MegaMail carries Zeron’s calm surface hierarchy, compact controls, and careful text ladder into a native email workspace. The desktop layout is a 232px account/folder rail, a 332px message list, and a continuous reading pane. Rows are 78px high with 4px corners. The panes read as one work surface separated by hairlines, not as a stack of cards.
 
-The product is Linux-first and built with official GPUI Kit. Dark and light modes remap the same semantic roles. Optional backgrounds sit below translucent pane tints: the navigation rail allows up to 20% wallpaper bleed, while the message list and reading pane allow up to 5% each. For custom images, a sampled contrast estimate can reduce artwork opacity further. Wallpaper blur and treatments are baked into a cached still image, not supplied by the Linux compositor; the processing path is in [`appearance.rs`](apps/megamail/src/appearance.rs#L27) and [`zeron_wallpaper.rs`](apps/megamail/src/zeron_wallpaper.rs#L35). This system describes a native desktop window. The [dark](docs/preview/dark.png), [light](docs/preview/light.png), and [focused search](docs/preview/search.png) images remain sample-data visual fixtures until replaced with current native captures.
+The app uses official GPUI Kit 0.7.1 and the complete standalone Zeron theme model copied from MIT-licensed source commit `0c4835d2b73aa632b7b4d626ee0826a25ec1c9b9`: 19 families and 30 built-in variants. System mode follows the desktop appearance; Light and Dark variant selections are independent. Accent and surface treatments can be overridden. The [dark](docs/preview/dark.png), [light](docs/preview/light.png), [search](docs/preview/search.png), and [appearance](docs/preview/appearance.png) captures show the current release in fictional demo mode.
 
 **Key Characteristics:**
 - A continuous reading canvas with a quiet navigation shell and one message-list plane.
@@ -169,7 +169,7 @@ The product is Linux-first and built with official GPUI Kit. Dark and light mode
 
 ## Colors
 
-The YAML palette transcribes `Palette::new` in [`main.rs`](apps/megamail/src/main.rs#L77): those values are the actual native Rust palette tokens used as surface tints and text/control roles. The dark canvas (`#060606`), shell (`#0d0d0d`), and indigo (`#7c86ff`) match Zeron’s corresponding source roles. The dark list tint, border, neutral text values, selection and hover fills, and complete light palette are MegaMail adaptations. The final rail/list/reader colors are these values composited with the background layer at the documented pane opacity. Zeron’s source neutral lightness and alpha-wash roles remain documented in the [hierarchy research](docs/research/zeron-hierarchy.md); they do not override this table.
+The YAML palette records MegaMail’s default dark and light roles. Selecting another Zeron family or imported VS Code theme replaces those values; the accent selector and surface setting can override the selected variant. Zeron’s source roles remain documented in the [hierarchy research](docs/research/zeron-hierarchy.md) and the copied [`zeron-theme` crate](crates/zeron-theme/README.md).
 
 | Role | Dark native token | Light native token | Assignment |
 | --- | --- | --- | --- |
@@ -187,7 +187,7 @@ The YAML palette transcribes `Palette::new` in [`main.rs`](apps/megamail/src/mai
 | Hover fill | `#252527` | `#efeff2` | Hovered controls and message rows; folder rows use Zeron's shared neutral wash |
 | Text on accent | `#101014` | `#ffffff` | Inverse text when a filled accent action is used |
 
-The source Zeron hierarchy uses neutral lightness roles, translucent white/black hairlines, and translucent hover/selection washes. MegaMail keeps its native palette values for base colors, then adapts Zeron’s neutral interaction washes in [`zeron_style.rs`](apps/megamail/src/zeron_style.rs#L82); background-backed pane surfaces use separate tint alpha in [`zeron_background.rs`](apps/megamail/src/zeron_background.rs#L81). Its light accent is `#5b43e8`; the source’s dark accent remains `#7c86ff`.
+Zeron uses neutral lightness roles, translucent hairlines, and restrained hover/selection washes. MegaMail resolves roles from the selected theme and caps wallpaper bleed at 24% in the rail, 10% in the list, and 5% in the reader. The sampled theme-contrast guard can reduce it further.
 
 **The Role Remap Rule.** Keep semantic roles stable across modes and use each mode’s own value. Do not mechanically invert the dark palette.
 
@@ -217,53 +217,51 @@ Zeron’s source hierarchy and its contrast targets are captured in the [design-
 
 ## Layout
 
-The native app opens at 1280×800 and declares a 1060×640 minimum ([window setup](apps/megamail/src/main.rs#L5794)). Its desktop composition uses a 38px titlebar or fallback toolbar ([chrome](apps/megamail/src/main.rs#L4801)), a 256px account/folder rail that can collapse to 60px ([rail](apps/megamail/src/main.rs#L2096), [collapsed rail](apps/megamail/src/main.rs#L2286)), a 360px message list ([list](apps/megamail/src/main.rs#L2465)), and a reading pane that takes the remaining width. Message rows are 86px high ([row](apps/megamail/src/main.rs#L2425)); the reader body is capped at 680px ([reader](apps/megamail/src/main.rs#L3105)). The open rail uses Zeron-derived navigation dimensions; no web or mobile breakpoints are defined for this native window.
-
-Both the message-list header and reader toolbar are 44px high. Message rows are 86px high, inset from the list edge, and virtualized through GPUI Kit’s uniform list. The reader body is capped at 680px and padded by 24px so long lines do not fill a wide monitor. The expandable sidebar groups accounts, pinned folders, and additional folders, with mailbox status and Appearance controls in its footer. Keep the three panes readable at the declared minimum window size; any future pane collapse or narrower-window behavior needs a native desktop design decision.
+At the 1280×800 reference size, the open sidebar is 232px and the message list is 332px; the reader takes the remaining width. The sidebar groups account and folder navigation, while search and the filter menu stay in the list header. Message rows are 78px high and inset from the edge; the reader content remains centered and capped at 680px. These are native desktop dimensions, not responsive web breakpoints.
 
 Use the observed 4/8/12/16/20/24px spacing steps for the app’s grouping. Tighten icon-and-label pairs, then give separate controls and content groups more room. Keep the window controls, search field, folder actions, focus, and keyboard message navigation native to GPUI Kit.
 
 ## Elevation & Depth
 
-The app conveys depth with its full-window background layer, translucent pane tints, and 1px separators. Dark-mode base values are `#060606` for the reading plane, `#0d0d0d` for the sidebar, `#090909` for the message list, and `#0e0e0e` for raised controls. The rail permits up to 20% background bleed; the list and reader permit up to 5%. Custom wallpaper opacity is further limited using the sampled 5th/95th-percentile estimate from Zeron’s contrast guard, which targets 4.5:1 for the sampled worst color and does not promise per-pixel contrast. The [materials research](docs/research/zeron-materials.md) explains Zeron’s source window materials. MegaMail composites the wallpaper beneath tinted panes in [`zeron_background.rs`](apps/megamail/src/zeron_background.rs#L40); optional image blur is preprocessed into a static cached image, with no live compositor blur.
+The app conveys depth with a full-window background, theme-derived pane tints, and 1px separators. Wallpaper bleed is capped at 24% in the rail, 10% in the list, and 5% in the reader, then bounded by a sampled contrast estimate for the selected theme. This is a sampled safeguard, not a per-pixel contrast guarantee. Wallpaper blur and treatments are preprocessed into cached images; image changes crossfade over 240ms. The [materials research](docs/research/zeron-materials.md) explains the distinction from Zeron’s renderer implementation.
 
-**The Tinted Pane Rule.** Keep pane tint roles and their bleed limits explicit; allow the custom-image guard to reduce wallpaper visibility whenever its sampled contrast estimate requires it.
+**The Tinted Pane Rule.** Keep pane tint roles and the 24/10/5% bleed caps explicit; allow the theme-based contrast estimate to reduce wallpaper visibility further.
 
-**The Static Material Rule.** Apply wallpaper blur and treatments before caching the image. Do not make Linux compositor blur a runtime dependency.
+**The Static Material Rule.** Apply wallpaper blur and treatments before caching. MegaMail does not implement Zeron’s renderer-specific backdrop blur or per-primitive edge fades.
 
 ## Shapes
 
-MegaMail uses an 8px radius for folder controls, search, and secondary buttons; 10px for selected message rows; 6px for small notice chips; and 16px for the large theme radius. Avatars, unread dots, and the titlebar status mark are circular. Pane edges stay square and use hairlines instead of rounded cards. Zeron’s reference uses 6px small controls, 10px panels, and 16px larger action surfaces; MegaMail retains the 10/16px steps and adapts the small control radius to the 8px Kit theme radius.
+Message and navigation rows use a restrained 4px corner. GPUI Kit’s shared component radii remain 6px and 10px where its controls and larger surfaces use them. Avatars and unread dots are circular. Pane edges stay square and use hairlines rather than rounded cards.
 
 ## Components
 
 ### Folder navigation
 
-A quiet row with a clear active state. Use a 32px-high GPUI Kit ghost button, 8px radius and 8px horizontal inset. Selected and hovered rows share Zeron’s soft neutral wash; selection remains distinct in model and accessibility state, while selected folder text and icons use the primary text role. Keep the folder icon, name, and nonzero count aligned, and preserve the accessible folder name.
+A quiet, compact row with a clear active state. Use a 4px radius and a soft theme-derived neutral wash for selected or hovered state. Keep the folder icon, name, and nonzero count aligned, and preserve the accessible folder name.
 
 ### Message row
 
-A compact text hierarchy rather than a card stack. Rows are 86px high with 10px corners and 12px inner padding. Put sender and time first, subject and optional star second, and a one-line snippet last. Use a small accent dot plus semibold sender for unread mail; selected and hover fills remain distinct. Keep timestamp and status at the trailing edge.
+A compact text hierarchy rather than a card stack. Rows are 78px high with 4px corners. Put sender and time first, subject and optional star second, and a one-line snippet last. Use a small accent dot plus semibold sender for unread mail; selected and hover fills remain distinct. Keep timestamp and status at the trailing edge.
 
 ### Search field
 
-Use the GPUI Kit input with its search prefix and clear action. The field is about 32px high, rounded 8px, and uses a one-pixel role border. Keep the Kit focus ring visible in both themes; the sample-data search fixture shows the light-mode indigo focus state.
+Search is scoped to messages loaded in the current folder. The All, Unread, Starred, and Attachments filters intersect with the search text over that same loaded set. Keep the focus indicator visible in every theme; do not imply a server-wide search result.
 
 ### Archive and restore action
 
-Use a compact secondary button with the Kit icon, short label, tooltip, and accessible action name. Its fill comes from the raised surface role, with a separate hover state. In the native client, archive and restore act on the connected mailbox; the older screenshots remain sample-data fixtures.
+Use a compact secondary button with the Kit icon, short label, tooltip, and accessible action name. Its fill comes from the raised surface role, with a separate hover state. In the native client, archive and restore act on the connected mailbox. The current release captures use fictional demo data.
 
 ### Reading pane
 
-Keep the body on the continuous reading plane. Use a 22px semibold subject, a 13px sender, 11px address/time metadata, a single hairline, and 14px body text at 1.5 line height. Center the content column and cap it at 680px. The 95%-opaque reader tint sits above the selected background. The reader displays a safe plain-text body, with extracted links and attachments in separate panels. Opening a validated link, downloading an attachment, and saving a file each require an explicit user action. This does not imply full-fidelity incoming HTML rendering or automatic remote-content loading.
+Keep the body on the continuous reading plane. Use a 22px semibold subject, a 13px sender, 11px address/time metadata, a single hairline, and 14px body text at 1.5 line height. Center the content column and cap it at 680px. The reader tint follows the selected theme and stays within the 5% wallpaper-bleed cap. The reader displays a safe plain-text body, with extracted links and attachments in separate panels. Opening a validated link, downloading an attachment, and saving a file each require an explicit user action. This does not imply full-fidelity incoming HTML rendering or automatic remote-content loading.
 
 ### Appearance
 
-The Appearance view combines the native dark/light palette with Aurora, Midnight, and Paper backgrounds or a custom wallpaper. Custom images support PNG, JPEG, and WebP source files up to 24 MiB and 16 million decoded pixels; decoding is capped at 96 MiB of allocation. MegaMail keeps one normalized PNG copy in its private configuration directory, limits the stored file to 32 MiB, and resizes the longest edge to at most 2500px. It does not persist the original path.
+The Appearance view offers System, Light, and Dark modes; Light and Dark variants are chosen independently from the 19 built-in families or imported themes. Accent and surface choices can override the variant defaults. Users can import VS Code theme JSON/JSONC or an extension package manifest, remove an imported family, and reset preferences without deleting the theme library. This import path normalizes those formats into Zeron’s theme model; it does not import native Zeron theme JSON.
 
-Original, Dither, ASCII, Halftone, and Scanlines are the custom-image treatments. Wallpaper strength is 72%, 86%, or 96%; blur choices are Sharp, Blur 10, and Blur 16. Image decode, blur, and treatment run away from the UI/render path and produce a cached static image; strength controls how that image is painted. Appearance preferences persist in `appearance.v1`; the custom image is stored in the adjacent private `wallpapers/` directory. These are in-window materials, not platform compositor effects. The app stores appearance preferences and image-processing limits in [`appearance.rs`](apps/megamail/src/appearance.rs#L27), pane fills in [`zeron_background.rs`](apps/megamail/src/zeron_background.rs#L81), and the five pixel effects in [`zeron_wallpaper.rs`](apps/megamail/src/zeron_wallpaper.rs#L35).
+Aurora, Midnight, Paper, and custom wallpapers all support Original, Dither, ASCII, Halftone, and Scanlines. Treatment strength, wallpaper opacity, and bottom fade each range from 0–100%; blur choices are 0, 10, or 16. Image decode, blur, and treatment run away from the UI/render path and produce a cached static image. Background changes crossfade over 240ms. Custom images accept PNG, JPEG, and WebP up to 24 MiB and 16 million decoded pixels; decoding is capped at 96 MiB, the stored normalized PNG at 32 MiB, and the longest edge at 2500px. The original file path is not retained. Theme preferences use `theme.v1`; appearance and wallpaper preferences use `appearance.v1`, with private image data under MegaMail’s configuration directory. These are in-window materials, not Zeron’s renderer-level backdrop blur or per-primitive edge fade.
 
-The native app uses GPUI Kit’s existing icon assets. Zeron’s icon catalog has separate attribution and license terms; copy individual assets only with their applicable notices. The [existing captures](docs/preview/) are sample-data fixtures from the earlier preview; they do not document the wallpaper materials or serve as current native captures.
+The native app uses GPUI Kit’s existing icon assets. Zeron’s icon catalog has separate attribution and license terms; copy individual assets only with their applicable notices. The [current release captures](docs/preview/) show fictional demo messages in dark and light modes, search/filter, and Appearance; they contain no private mailbox data and are not live provider sessions.
 
 ## Do's and Don'ts
 
@@ -271,7 +269,7 @@ The native app uses GPUI Kit’s existing icon assets. Zeron’s icon catalog ha
 - **Do** use the native palette values in the YAML as the source for text and tint roles; label Zeron source values separately.
 - **Do** keep the reading pane continuous and reserve raised surfaces for controls and overlays.
 - **Do** distinguish hover from selection, and pair unread weight with its dot cue.
-- **Do** preserve the rail/list/reader wallpaper bleed caps.
+- **Do** preserve the rail/list/reader wallpaper bleed caps of 24/10/5%.
 - **Do** let the sampled custom-image contrast estimate reduce wallpaper opacity beneath text.
 - **Do** keep keyboard navigation, Kit focus treatment, accessible action labels, and Linux caption behavior intact.
 - **Do** distinguish live account state and operation results from sample-data visual fixtures.
@@ -281,6 +279,6 @@ The native app uses GPUI Kit’s existing icon assets. Zeron’s icon catalog ha
 ### Don't:
 - **Don't** wrap every pane or message row in a card.
 - **Don't** use accent as a large surface or rely on color alone for unread state.
-- **Don't** exceed the pane bleed caps or rely on a compositor effect for text contrast.
+- **Don't** exceed the pane bleed caps or imply a per-pixel contrast guarantee.
 - **Don't** imply web/mobile responsiveness or measured performance from this native desktop app.
 - **Don't** add idle decorative animation or copy Zeron icons without their license and attribution.

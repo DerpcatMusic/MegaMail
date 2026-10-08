@@ -4,20 +4,21 @@
 
 ## Platform
 
-Linux desktop first. Windows and macOS remain future ports, not verified
-targets of the initial foundation. This is a native desktop product; the
-mobile/web platform categories do not describe it.
+Native Linux desktop. The visual language is Zeron's quiet, continuous canvas
+and compact hierarchy adapted to email; Windows and macOS are future ports,
+not verified targets.
 
 ## Stack
 
-Rust and the official GPUI Kit, as explicitly requested. Hylki is the mail
-implementation source and history; Zeron is the binding visual reference.
+Rust with official GPUI Kit 0.7.1. Hylki supplies the mail implementation and
+history. MegaMail includes a standalone MIT copy of Zeron's theme crate from
+commit `0c4835d2b73aa632b7b4d626ee0826a25ec1c9b9`.
 
 ## Product Purpose
 
-Create a beautiful, highly performant native email client called MegaMail
-as a fork of Hylki. The user explicitly asks for deep source research into
-Hylki, Zeron and the required GPUI implementation, with multiple agents.
+Build MegaMail as a dependable native Linux email client from Hylki's mail
+engine, with Zeron's visual hierarchy and theme model expressed in official
+GPUI Kit.
 
 ## Capabilities and Constraints
 
@@ -55,10 +56,15 @@ credential-store files remain with Thunderbird in its isolated profile and do
 not provide a MegaMail OAuth client registration. Performance claims require
 representative measurements.
 
-The appearance system retains dark/light semantic palette roles and Zeron's
-compact hierarchy. It includes three built-in backgrounds and optional private
-custom wallpaper with static image processing and contrast-guarded pane tints;
-it does not rely on live desktop compositor blur.
+Appearance includes 19 built-in theme families with 30 variants, independent
+Light and Dark selections, System mode, accent and surface controls, and local
+VS Code JSON/JSONC or extension-package theme import. Imported themes can be
+removed; Reset restores preferences while retaining the theme library. Aurora,
+Midnight, Paper, and custom wallpaper support Original, Dither, ASCII,
+Halftone, and Scanlines, 0–100% treatment strength and wallpaper opacity, blur
+values 0/10/16, and bottom fade. Cached wallpaper crossfades over 240 ms below
+pane surfaces capped at 24/10/5% bleed by a theme-based contrast estimate. This
+does not include Zeron's renderer-level backdrop blur or per-primitive edge fade.
 
 ## Brand Commitments
 
@@ -70,8 +76,9 @@ visual identity. Preserve upstream attribution and applicable licenses.
 ## Evidence on Hand
 
 The full Hylki history is retained. Source-pinned research lives in
-`docs/research/`. Zeron screenshots and implementation are inspected as
-references; its screenshots are not MegaMail screenshots. The native application is separate from Hylki's existing GTK package.
+`docs/research/`. Zeron screenshots remain reference material; current
+MegaMail screenshots are release captures using fictional demo data. The native
+application is separate from Hylki's existing GTK package.
 
 ## Open Decisions
 
