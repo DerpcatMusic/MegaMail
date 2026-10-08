@@ -28,6 +28,7 @@ MAX_UPSTREAM_LICENSE_BYTES = 4 * 1024 * 1024
 
 PROJECT_NOTICES = (
     ("LICENSE", "project/LICENSE"),
+    ("crates/zeron-theme/LICENSE-MIT", "project/zeron-theme/LICENSE-MIT"),
     ("THIRD_PARTY_NOTICES.md", "project/THIRD_PARTY_NOTICES.md"),
     (
         "apps/megamail/assets/fonts/licenses/Geist-OFL.txt",

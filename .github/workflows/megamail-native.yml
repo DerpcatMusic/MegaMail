@@ -5,6 +5,7 @@ on:
     paths:
       - 'apps/megamail/**'
       - 'crates/mail-core/**'
+      - 'crates/zeron-theme/**'
       - 'src/**'
       - 'tools/install-megamail.sh'
       - 'tools/license-inventory.py'
@@ -15,6 +16,7 @@ on:
     paths:
       - 'apps/megamail/**'
       - 'crates/mail-core/**'
+      - 'crates/zeron-theme/**'
       - 'src/**'
       - 'tools/install-megamail.sh'
       - 'tools/license-inventory.py'
@@ -29,7 +31,7 @@ permissions:
 jobs:
   linux:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.98.1
@@ -45,6 +47,7 @@ jobs:
         with:
           workspaces: |
             crates/mail-core
+            crates/zeron-theme
             apps/megamail
       - name: Check formatting
         run: cargo fmt --manifest-path apps/megamail/Cargo.toml --check
@@ -54,6 +57,8 @@ jobs:
         run: node tools/thunderbird-bridge/extension.test.cjs
       - name: Test portable mail core
         run: cargo test --manifest-path crates/mail-core/Cargo.toml --locked -j 2
+      - name: Test Zeron theme model and importer
+        run: cargo test --manifest-path crates/zeron-theme/Cargo.toml --locked -j 2
       - name: Test native mailbox and composer
         run: cargo test --manifest-path apps/megamail/Cargo.toml --locked -j 2
       - name: Check native executable

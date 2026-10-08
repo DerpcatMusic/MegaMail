@@ -13,7 +13,7 @@ use std::io::{self, Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui_kit::RenderImage;
 use image::{
@@ -31,6 +31,9 @@ const MAX_DECODE_ALLOC: u64 = 96 * 1024 * 1024;
 const MAX_RENDER_EDGE: u32 = 2500;
 const MAX_BLUR_SIGMA: f32 = 24.0;
 const MAX_PREFS_BYTES: u64 = 16 * 1024;
+const PRESET_WIDTH: u32 = 1280;
+const PRESET_HEIGHT: u32 = 800;
+const WALLPAPER_CROSSFADE: Duration = Duration::from_millis(240);
 static WALLPAPER_FILE_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Built-in backgrounds included with MegaMail, plus the user's private image.
@@ -81,11 +84,23 @@ pub(crate) struct AppearanceState {
     dark: bool,
     preset: AppearancePreset,
     effect: WallpaperEffect,
+    effect_strength: f32,
+    fade: f32,
     opacity: f32,
     blur_sigma: f32,
+    accent_rgb: u32,
+    contrast_primary_rgb: u32,
+    contrast_muted_rgb: u32,
+    contrast_canvas_rgb: u32,
     wallpaper_file: Option<String>,
     wallpaper_name: Option<String>,
     image: Option<Arc<RenderImage>>,
+    image_preset: Option<AppearancePreset>,
+    previous_image: Option<Arc<RenderImage>>,
+    previous_preset: Option<AppearancePreset>,
+    previous_safe_opacity: f32,
+    transition_started: Option<Instant>,
+    transition_mix: f32,
     safe_opacity: f32,
 }
 
@@ -95,11 +110,23 @@ impl Default for AppearanceState {
             dark: true,
             preset: AppearancePreset::Aurora,
             effect: WallpaperEffect::None,
+            effect_strength: 1.0,
+            fade: 0.42,
             opacity: 0.86,
             blur_sigma: 10.0,
+            accent_rgb: 0x7c86ff,
+            contrast_primary_rgb: 0xe8e8ea,
+            contrast_muted_rgb: 0xa9a9ae,
+            contrast_canvas_rgb: 0x060606,
             wallpaper_file: None,
             wallpaper_name: None,
             image: None,
+            image_preset: None,
+            previous_image: None,
+            previous_preset: None,
+            previous_safe_opacity: 1.0,
+            transition_started: None,
+            transition_mix: 1.0,
             safe_opacity: 1.0,
         }
     }
@@ -156,10 +183,19 @@ impl AppearanceState {
                 _ => None,
             })
             .unwrap_or(state.dark);
+        state.accent_rgb = if state.dark { 0x7c86ff } else { 0x5b43e8 };
+        let (primary, muted, canvas) = if state.dark {
+            (0xe8e8ea, 0xa9a9ae, 0x060606)
+        } else {
+            (0x303035, 0x62626a, 0xf7f7f9)
+        };
+        state.set_contrast_colors(primary, muted, canvas);
         state.effect = values
             .get("effect")
             .and_then(|value| WallpaperEffect::from_key(value))
             .unwrap_or_default();
+        state.effect_strength = preference_unit(&values, "effect_strength", state.effect_strength);
+        state.fade = preference_unit(&values, "fade", state.fade);
         state.opacity = values
             .get("opacity")
             .and_then(|value| value.parse::<f32>().ok())
@@ -205,6 +241,14 @@ impl AppearanceState {
         self.opacity
     }
 
+    pub(crate) fn effect_strength(&self) -> f32 {
+        self.effect_strength
+    }
+
+    pub(crate) fn fade(&self) -> f32 {
+        self.fade
+    }
+
     pub(crate) fn blur_sigma(&self) -> f32 {
         self.blur_sigma
     }
@@ -221,6 +265,33 @@ impl AppearanceState {
         self.wallpaper_file.is_some()
     }
 
+    pub(crate) fn has_cached_image(&self) -> bool {
+        self.image.is_some()
+    }
+
+    pub(crate) fn set_accent_rgb(&mut self, rgb: u32) {
+        self.accent_rgb = rgb & 0x00ff_ffff;
+    }
+
+    pub(crate) fn set_contrast_colors(
+        &mut self,
+        primary_rgb: u32,
+        muted_rgb: u32,
+        canvas_rgb: u32,
+    ) {
+        self.contrast_primary_rgb = primary_rgb & 0x00ff_ffff;
+        self.contrast_muted_rgb = muted_rgb & 0x00ff_ffff;
+        self.contrast_canvas_rgb = canvas_rgb & 0x00ff_ffff;
+    }
+
+    pub(crate) fn contrast_colors(&self) -> (u32, u32, u32) {
+        (
+            self.contrast_primary_rgb,
+            self.contrast_muted_rgb,
+            self.contrast_canvas_rgb,
+        )
+    }
+
     pub(crate) fn set_preset(&mut self, preset: AppearancePreset) {
         self.preset = if preset == AppearancePreset::Custom && !self.has_wallpaper() {
             AppearancePreset::Aurora
@@ -231,10 +302,29 @@ impl AppearanceState {
 
     pub(crate) fn set_dark(&mut self, dark: bool) {
         self.dark = dark;
+        self.accent_rgb = if dark { 0x7c86ff } else { 0x5b43e8 };
+        let (primary, muted, canvas) = if dark {
+            (0xe8e8ea, 0xa9a9ae, 0x060606)
+        } else {
+            (0x303035, 0x62626a, 0xf7f7f9)
+        };
+        self.set_contrast_colors(primary, muted, canvas);
     }
 
     pub(crate) fn set_effect(&mut self, effect: WallpaperEffect) {
         self.effect = effect;
+    }
+
+    pub(crate) fn set_effect_strength(&mut self, strength: f32) {
+        if strength.is_finite() {
+            self.effect_strength = clamp_unit(strength);
+        }
+    }
+
+    pub(crate) fn set_fade(&mut self, fade: f32) {
+        if fade.is_finite() {
+            self.fade = clamp_unit(fade);
+        }
     }
 
     pub(crate) fn set_opacity(&mut self, opacity: f32) {
@@ -253,6 +343,48 @@ impl AppearanceState {
         self.image.clone()
     }
 
+    pub(crate) fn wallpaper_frame(&self) -> WallpaperFrame {
+        WallpaperFrame {
+            previous: self.previous_image.clone(),
+            current: self.image.clone(),
+            mix: self.transition_mix,
+            previous_opacity: render_opacity(self.previous_preset, self.opacity),
+            current_opacity: render_opacity(self.image_preset, self.opacity),
+        }
+    }
+
+    pub(crate) fn visual_wallpaper_opacity(&self) -> f32 {
+        let frame = self.wallpaper_frame();
+        if frame.current.is_none() {
+            return 1.0;
+        }
+        if frame.previous.is_some() {
+            frame.previous_opacity * (1.0 - frame.mix) + frame.current_opacity * frame.mix
+        } else {
+            frame.current_opacity
+        }
+    }
+
+    /// Tick only while a wallpaper is changing; callers can then redraw at a
+    /// modest rate and stop scheduling frames as soon as the blend completes.
+    pub(crate) fn tick_transition(&mut self, now: Instant) -> bool {
+        let Some(started) = self.transition_started else {
+            return false;
+        };
+        let t = (now.saturating_duration_since(started).as_secs_f32()
+            / WALLPAPER_CROSSFADE.as_secs_f32())
+        .clamp(0.0, 1.0);
+        if t >= 1.0 {
+            self.previous_image = None;
+            self.previous_preset = None;
+            self.transition_started = None;
+            self.transition_mix = 1.0;
+            return false;
+        }
+        self.transition_mix = t * t * (3.0 - 2.0 * t);
+        true
+    }
+
     /// Return a safe, serializable snapshot for persistence on a background
     /// executor. The selected wallpaper itself remains a separate private PNG.
     pub(crate) fn preference_snapshot(&self) -> AppearancePreferences {
@@ -260,6 +392,8 @@ impl AppearanceState {
             dark: self.dark,
             preset: self.preset,
             effect: self.effect,
+            effect_strength: self.effect_strength,
+            fade: self.fade,
             opacity: self.opacity,
             blur_sigma: self.blur_sigma,
             wallpaper_file: self.wallpaper_file.clone(),
@@ -267,22 +401,34 @@ impl AppearanceState {
         }
     }
 
-    /// Build the startup processing request if a saved wallpaper exists.
+    /// Build the startup render request for the selected preset or saved image.
     pub(crate) fn restore_request(&self, light: bool) -> Option<WallpaperRequest> {
-        if self.preset != AppearancePreset::Custom {
-            return None;
-        }
-        let file = self.wallpaper_file.clone()?;
-        if !safe_wallpaper_filename(&file) {
+        let file = (self.preset == AppearancePreset::Custom)
+            .then(|| self.wallpaper_file.clone())
+            .flatten();
+        if self.preset == AppearancePreset::Custom
+            && file
+                .as_deref()
+                .is_none_or(|file| !safe_wallpaper_filename(file))
+        {
             return None;
         }
         Some(WallpaperRequest {
+            preset: self.preset,
             file,
-            name: self
-                .wallpaper_name
-                .clone()
-                .unwrap_or_else(|| "Custom wallpaper".to_owned()),
+            name: if self.preset == AppearancePreset::Custom {
+                self.wallpaper_name
+                    .clone()
+                    .unwrap_or_else(|| "Custom wallpaper".to_owned())
+            } else {
+                self.preset.label().to_owned()
+            },
             effect: self.effect,
+            effect_strength: self.effect_strength,
+            accent_rgb: self.accent_rgb,
+            contrast_primary_rgb: self.contrast_primary_rgb,
+            contrast_muted_rgb: self.contrast_muted_rgb,
+            contrast_canvas_rgb: self.contrast_canvas_rgb,
             light,
             blur_sigma: self.blur_sigma,
         })
@@ -292,7 +438,7 @@ impl AppearanceState {
     /// image. The caller should persist `preference_snapshot()` off-thread.
     pub(crate) fn install_wallpaper(&mut self, result: WallpaperJobResult) {
         self.preset = AppearancePreset::Custom;
-        self.wallpaper_file = Some(result.file.clone());
+        self.wallpaper_file = result.file.clone();
         self.wallpaper_name = Some(result.name.clone());
         self.install_render_result(result);
     }
@@ -304,9 +450,15 @@ impl AppearanceState {
         result: WallpaperJobResult,
         expected_light: bool,
     ) -> bool {
-        if self.preset != AppearancePreset::Custom
-            || self.wallpaper_file.as_deref() != Some(result.file.as_str())
+        if self.preset != result.preset
+            || (self.preset == AppearancePreset::Custom
+                && self.wallpaper_file.as_deref() != result.file.as_deref())
             || self.effect != result.effect
+            || !same_strength(self.effect_strength, result.effect_strength)
+            || self.accent_rgb != result.accent_rgb
+            || self.contrast_primary_rgb != result.contrast_primary_rgb
+            || self.contrast_muted_rgb != result.contrast_muted_rgb
+            || self.contrast_canvas_rgb != result.contrast_canvas_rgb
             || !same_sigma(self.blur_sigma, result.blur_sigma)
             || result.light != expected_light
         {
@@ -317,13 +469,40 @@ impl AppearanceState {
     }
 
     fn install_render_result(&mut self, result: WallpaperJobResult) {
+        self.previous_image = self.image.take();
+        self.previous_preset = self.image_preset.take();
+        self.previous_safe_opacity = self.safe_opacity;
         self.image = Some(result.image);
+        self.image_preset = Some(result.preset);
         self.safe_opacity = result.safe_opacity;
+        if self.previous_image.is_some() {
+            self.transition_started = Some(Instant::now());
+            self.transition_mix = 0.0;
+        } else {
+            self.transition_started = None;
+            self.transition_mix = 1.0;
+        }
     }
 
     pub(crate) fn safe_opacity(&self) -> f32 {
-        self.safe_opacity
+        if self.previous_image.is_some() {
+            self.safe_opacity.min(self.previous_safe_opacity)
+        } else {
+            self.safe_opacity
+        }
     }
+}
+
+pub(crate) struct WallpaperFrame {
+    pub(crate) previous: Option<Arc<RenderImage>>,
+    pub(crate) current: Option<Arc<RenderImage>>,
+    pub(crate) mix: f32,
+    pub(crate) previous_opacity: f32,
+    pub(crate) current_opacity: f32,
+}
+
+fn render_opacity(_preset: Option<AppearancePreset>, opacity: f32) -> f32 {
+    clamp_opacity(opacity)
 }
 
 #[derive(Clone, Debug)]
@@ -331,6 +510,8 @@ pub(crate) struct AppearancePreferences {
     dark: bool,
     preset: AppearancePreset,
     effect: WallpaperEffect,
+    effect_strength: f32,
+    fade: f32,
     opacity: f32,
     blur_sigma: f32,
     wallpaper_file: Option<String>,
@@ -359,10 +540,12 @@ fn serialize_preferences(preferences: &AppearancePreferences) -> String {
         .map(encode_preference_text)
         .unwrap_or_default();
     format!(
-        "version=1\ntheme={}\npreset={}\neffect={}\nopacity={:.3}\nblur_sigma={:.2}\nwallpaper_file={}\nwallpaper_name={}\n",
+        "version=1\ntheme={}\npreset={}\neffect={}\neffect_strength={:.3}\nfade={:.3}\nopacity={:.3}\nblur_sigma={:.2}\nwallpaper_file={}\nwallpaper_name={}\n",
         if preferences.dark { "dark" } else { "light" },
         preferences.preset.as_key(),
         preferences.effect.as_key(),
+        clamp_unit(preferences.effect_strength),
+        clamp_unit(preferences.fade),
         clamp_opacity(preferences.opacity),
         clamp_blur_sigma(preferences.blur_sigma),
         file,
@@ -372,17 +555,29 @@ fn serialize_preferences(preferences: &AppearancePreferences) -> String {
 
 #[derive(Clone, Debug)]
 pub(crate) struct WallpaperRequest {
-    file: String,
+    preset: AppearancePreset,
+    file: Option<String>,
     name: String,
     effect: WallpaperEffect,
+    effect_strength: f32,
+    accent_rgb: u32,
+    contrast_primary_rgb: u32,
+    contrast_muted_rgb: u32,
+    contrast_canvas_rgb: u32,
     light: bool,
     blur_sigma: f32,
 }
 
 pub(crate) struct WallpaperJobResult {
-    file: String,
+    preset: AppearancePreset,
+    file: Option<String>,
     name: String,
     effect: WallpaperEffect,
+    effect_strength: f32,
+    accent_rgb: u32,
+    contrast_primary_rgb: u32,
+    contrast_muted_rgb: u32,
+    contrast_canvas_rgb: u32,
     light: bool,
     blur_sigma: f32,
     safe_opacity: f32,
@@ -397,6 +592,8 @@ pub(crate) fn begin_wallpaper_import(
     effect: WallpaperEffect,
     light: bool,
     blur_sigma: f32,
+    effect_strength: f32,
+    contrast: (u32, u32, u32),
 ) -> Result<WallpaperJobResult, String> {
     let directory = wallpaper_dir()?;
     let previous = saved_wallpaper_file();
@@ -405,8 +602,10 @@ pub(crate) fn begin_wallpaper_import(
         &directory,
         previous.as_deref(),
         effect,
+        effect_strength,
         light,
         blur_sigma,
+        contrast,
     )
 }
 
@@ -415,8 +614,10 @@ fn import_wallpaper_to_directory(
     directory: &Path,
     keep_file: Option<&str>,
     effect: WallpaperEffect,
+    effect_strength: f32,
     light: bool,
     blur_sigma: f32,
+    contrast: (u32, u32, u32),
 ) -> Result<WallpaperJobResult, String> {
     let bytes = read_limited_image(&source, MAX_SOURCE_BYTES)?;
     let format = image::guess_format(&bytes)
@@ -439,7 +640,17 @@ fn import_wallpaper_to_directory(
         .map(|name| clean_display_name(&name))
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "Custom wallpaper".to_owned());
-    let (image, safe_opacity) = process_wallpaper(&normalized, effect, light, blur_sigma)?;
+    let (primary_rgb, muted_rgb, canvas_rgb) = contrast;
+    let (image, safe_opacity) = process_wallpaper(
+        &normalized,
+        effect,
+        effect_strength,
+        light,
+        blur_sigma,
+        primary_rgb,
+        muted_rgb,
+        canvas_rgb,
+    )?;
     let file = new_wallpaper_filename();
     let destination = directory.join(&file);
     cleanup_wallpapers_in(directory, keep_file);
@@ -447,9 +658,15 @@ fn import_wallpaper_to_directory(
         format!("could not store wallpaper in MegaMail's private config directory: {error}")
     })?;
     Ok(WallpaperJobResult {
-        file,
+        preset: AppearancePreset::Custom,
+        file: Some(file),
         name,
         effect,
+        effect_strength: clamp_unit(effect_strength),
+        accent_rgb: 0,
+        contrast_primary_rgb: primary_rgb,
+        contrast_muted_rgb: muted_rgb,
+        contrast_canvas_rgb: canvas_rgb,
         light,
         blur_sigma: clamp_blur_sigma(blur_sigma),
         safe_opacity,
@@ -463,30 +680,56 @@ fn import_wallpaper_to_directory(
 pub(crate) fn begin_wallpaper_restore(
     request: WallpaperRequest,
 ) -> Result<WallpaperJobResult, String> {
-    restore_wallpaper_from_directory(&wallpaper_dir()?, request)
+    let directory = if request.preset == AppearancePreset::Custom {
+        Some(wallpaper_dir()?)
+    } else {
+        None
+    };
+    restore_wallpaper_from_directory(directory.as_deref(), request)
 }
 
 fn restore_wallpaper_from_directory(
-    directory: &Path,
+    directory: Option<&Path>,
     request: WallpaperRequest,
 ) -> Result<WallpaperJobResult, String> {
-    if !safe_wallpaper_filename(&request.file) {
-        return Err("The saved wallpaper reference is invalid".to_owned());
-    }
-    let path = directory.join(&request.file);
-    let bytes = read_limited_image(&path, MAX_STORED_BYTES)?;
-    if image::guess_format(&bytes).ok() != Some(ImageFormat::Png) {
-        return Err("The saved wallpaper file is not a normalized PNG".to_owned());
-    }
-    let decoded = decode_bounded(&bytes, ImageFormat::Png)?;
-    let normalized = normalize_size(decoded);
+    let source = if request.preset == AppearancePreset::Custom {
+        let file = request
+            .file
+            .as_deref()
+            .filter(|file| safe_wallpaper_filename(file))
+            .ok_or_else(|| "The saved wallpaper reference is invalid".to_owned())?;
+        let directory =
+            directory.ok_or_else(|| "The saved wallpaper directory is unavailable".to_owned())?;
+        let bytes = read_limited_image(&directory.join(file), MAX_STORED_BYTES)?;
+        if image::guess_format(&bytes).ok() != Some(ImageFormat::Png) {
+            return Err("The saved wallpaper file is not a normalized PNG".to_owned());
+        }
+        normalize_size(decode_bounded(&bytes, ImageFormat::Png)?)
+    } else {
+        builtin_wallpaper(request.preset, request.light, request.accent_rgb)
+    };
     let blur_sigma = clamp_blur_sigma(request.blur_sigma);
-    let (image, safe_opacity) =
-        process_wallpaper(&normalized, request.effect, request.light, blur_sigma)?;
+    let effect_strength = clamp_unit(request.effect_strength);
+    let (image, safe_opacity) = process_wallpaper(
+        &source,
+        request.effect,
+        effect_strength,
+        request.light,
+        blur_sigma,
+        request.contrast_primary_rgb,
+        request.contrast_muted_rgb,
+        request.contrast_canvas_rgb,
+    )?;
     Ok(WallpaperJobResult {
+        preset: request.preset,
         file: request.file,
         name: clean_display_name(&request.name),
         effect: request.effect,
+        effect_strength,
+        accent_rgb: request.accent_rgb,
+        contrast_primary_rgb: request.contrast_primary_rgb,
+        contrast_muted_rgb: request.contrast_muted_rgb,
+        contrast_canvas_rgb: request.contrast_canvas_rgb,
         light: request.light,
         blur_sigma,
         safe_opacity,
@@ -497,8 +740,12 @@ fn restore_wallpaper_from_directory(
 fn process_wallpaper(
     source: &RgbaImage,
     effect: WallpaperEffect,
+    effect_strength: f32,
     light: bool,
     blur_sigma: f32,
+    primary_rgb: u32,
+    muted_rgb: u32,
+    canvas_rgb: u32,
 ) -> Result<(Arc<RenderImage>, f32), String> {
     let blur_sigma = clamp_blur_sigma(blur_sigma);
     let blurred = if blur_sigma > 0.01 {
@@ -506,21 +753,137 @@ fn process_wallpaper(
     } else {
         source.clone()
     };
-    let effected = zeron_wallpaper::render(&blurred, effect, light);
-    let safe_opacity = zeron_wallpaper::safe_opacity(
-        &effected,
-        if light { 0x62626A } else { 0xA9A9AE },
-        if light { 0xF7F7F9 } else { 0x060606 },
-        1.0,
-        4.5,
-        1.0,
-    );
+    let effected = zeron_wallpaper::render_with_strength(&blurred, effect, light, effect_strength);
+    let safe_opacity = [primary_rgb, muted_rgb]
+        .into_iter()
+        .map(|text_rgb| {
+            zeron_wallpaper::safe_opacity(&effected, text_rgb, canvas_rgb, 1.0, 4.5, 1.0)
+        })
+        .fold(1.0, f32::min);
     let mut bgra = effected;
     for pixel in bgra.pixels_mut() {
         pixel.0.swap(0, 2);
     }
     let image = Arc::new(RenderImage::new([Frame::new(bgra)]));
     Ok((image, safe_opacity))
+}
+
+fn builtin_wallpaper(preset: AppearancePreset, light: bool, accent: u32) -> RgbaImage {
+    let base = match (preset, light) {
+        (AppearancePreset::Aurora, true) => 0xf4f2f8,
+        (AppearancePreset::Aurora, false) => 0x07090d,
+        (AppearancePreset::Midnight, true) => 0xeef1f8,
+        (AppearancePreset::Midnight, false) => 0x050812,
+        (AppearancePreset::Paper, true) => 0xf2ecdf,
+        (AppearancePreset::Paper, false) => 0x17120f,
+        (AppearancePreset::Custom, true) => 0xf7f7f9,
+        (AppearancePreset::Custom, false) => 0x060606,
+    };
+    let mut image = solid(base);
+    match preset {
+        AppearancePreset::Aurora => {
+            overlay_linear(
+                &mut image,
+                180.0,
+                if light { 0x000000 } else { 0xffffff },
+                if light { 0.025 } else { 0.055 },
+            );
+            overlay_linear(
+                &mut image,
+                140.0,
+                if light { 0x795ce6 } else { 0x9c84ff },
+                if light { 0.24 } else { 0.52 },
+            );
+            overlay_linear(
+                &mut image,
+                310.0,
+                if light { 0x41b5aa } else { 0x52d6c8 },
+                if light { 0.16 } else { 0.30 },
+            );
+            overlay_linear(&mut image, 42.0, accent, if light { 0.07 } else { 0.12 });
+        }
+        AppearancePreset::Midnight => {
+            overlay_linear(
+                &mut image,
+                180.0,
+                if light { 0x000000 } else { 0xffffff },
+                if light { 0.018 } else { 0.06 },
+            );
+            overlay_linear(
+                &mut image,
+                126.0,
+                if light { 0x6a8cd8 } else { 0x1b2f64 },
+                if light { 0.24 } else { 0.68 },
+            );
+            overlay_linear(
+                &mut image,
+                305.0,
+                if light { 0x71b9c3 } else { 0x174964 },
+                if light { 0.13 } else { 0.28 },
+            );
+            overlay_linear(
+                &mut image,
+                54.0,
+                if light { 0x8b80ca } else { 0x27204d },
+                if light { 0.12 } else { 0.26 },
+            );
+        }
+        AppearancePreset::Paper => {
+            overlay_linear(
+                &mut image,
+                180.0,
+                if light { 0xffffff } else { 0xf3dcb6 },
+                if light { 0.09 } else { 0.05 },
+            );
+            overlay_linear(
+                &mut image,
+                128.0,
+                if light { 0xc9955c } else { 0x8d5a32 },
+                if light { 0.30 } else { 0.45 },
+            );
+            overlay_linear(
+                &mut image,
+                320.0,
+                if light { 0xd3a18d } else { 0x5b3028 },
+                if light { 0.19 } else { 0.28 },
+            );
+        }
+        AppearancePreset::Custom => {}
+    }
+    image
+}
+
+fn solid(rgb: u32) -> RgbaImage {
+    RgbaImage::from_pixel(
+        PRESET_WIDTH,
+        PRESET_HEIGHT,
+        image::Rgba([(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8, 255]),
+    )
+}
+
+/// Approximate the existing two-stop GPUI gradients in bounded source space
+/// so presets can use the same off-thread Zeron pixel treatments as images.
+fn overlay_linear(image: &mut RgbaImage, angle: f32, color: u32, strength: f32) {
+    let (width, height) = image.dimensions();
+    let radians = angle.to_radians();
+    let dx = radians.sin();
+    let dy = -radians.cos();
+    let extent = (dx.abs() + dy.abs()).max(0.001) * 0.5;
+    let rgb = [(color >> 16) as u8, (color >> 8) as u8, color as u8];
+    for y in 0..height {
+        let ny = y as f32 / (height - 1).max(1) as f32 - 0.5;
+        for x in 0..width {
+            let nx = x as f32 / (width - 1).max(1) as f32 - 0.5;
+            let t = (0.5 + (dx * nx + dy * ny) / (2.0 * extent)).clamp(0.0, 1.0);
+            let alpha = strength * (1.0 - t);
+            let pixel = image.get_pixel_mut(x, y);
+            for channel in 0..3 {
+                pixel[channel] = (f32::from(rgb[channel]) * alpha
+                    + f32::from(pixel[channel]) * (1.0 - alpha))
+                    .round() as u8;
+            }
+        }
+    }
 }
 
 fn decode_bounded(bytes: &[u8], format: ImageFormat) -> Result<RgbaImage, String> {
@@ -668,12 +1031,29 @@ fn clamp_opacity(value: f32) -> f32 {
     value.clamp(0.0, 1.0)
 }
 
+fn clamp_unit(value: f32) -> f32 {
+    value.clamp(0.0, 1.0)
+}
+
+fn preference_unit(values: &std::collections::HashMap<&str, &str>, key: &str, default: f32) -> f32 {
+    values
+        .get(key)
+        .and_then(|value| value.parse::<f32>().ok())
+        .filter(|value| value.is_finite())
+        .map(clamp_unit)
+        .unwrap_or(default)
+}
+
 fn clamp_blur_sigma(value: f32) -> f32 {
     value.clamp(0.0, MAX_BLUR_SIGMA)
 }
 
 fn same_sigma(left: f32, right: f32) -> bool {
     (left - right).abs() < 0.01
+}
+
+fn same_strength(left: f32, right: f32) -> bool {
+    (left - right).abs() < 0.001
 }
 
 fn preference_path() -> Option<PathBuf> {
@@ -841,6 +1221,20 @@ mod tests {
     }
 
     #[test]
+    fn effect_strength_and_fade_are_bounded_and_persist_independently() {
+        let mut state = AppearanceState::default();
+        state.set_effect_strength(0.31);
+        state.set_fade(0.67);
+        let saved = serialize_preferences(&state.preference_snapshot());
+        assert!(saved.contains("effect_strength=0.310\n"));
+        assert!(saved.contains("fade=0.670\n"));
+        state.set_effect_strength(f32::INFINITY);
+        state.set_fade(-0.5);
+        assert_eq!(state.effect_strength(), 0.31);
+        assert_eq!(state.fade(), 0.0);
+    }
+
+    #[test]
     fn image_size_is_reduced_without_changing_its_aspect() {
         let image = RgbaImage::new(4000, 2000);
         let scaled = normalize_size(image);
@@ -887,12 +1281,15 @@ mod tests {
             &directory.0,
             None,
             WallpaperEffect::Scanlines,
+            0.8,
             false,
             1.5,
+            (0xe8e8ea, 0xa9a9ae, 0x060606),
         )
         .unwrap();
-        assert!(safe_wallpaper_filename(&imported.file));
-        let stored_path = directory.0.join(&imported.file);
+        let imported_file = imported.file.as_deref().unwrap();
+        assert!(safe_wallpaper_filename(imported_file));
+        let stored_path = directory.0.join(imported_file);
         let stored = fs::metadata(&stored_path).unwrap();
         assert!(stored.is_file());
         #[cfg(unix)]
@@ -902,11 +1299,17 @@ mod tests {
         }
 
         let restored = restore_wallpaper_from_directory(
-            &directory.0,
+            Some(&directory.0),
             WallpaperRequest {
+                preset: AppearancePreset::Custom,
                 file: imported.file.clone(),
                 name: imported.name.clone(),
                 effect: imported.effect,
+                effect_strength: imported.effect_strength,
+                accent_rgb: imported.accent_rgb,
+                contrast_primary_rgb: imported.contrast_primary_rgb,
+                contrast_muted_rgb: imported.contrast_muted_rgb,
+                contrast_canvas_rgb: imported.contrast_canvas_rgb,
                 light: imported.light,
                 blur_sigma: imported.blur_sigma,
             },
@@ -918,8 +1321,96 @@ mod tests {
         assert_eq!(restored.image.as_bytes(0).unwrap().len(), 16 * 8 * 4);
 
         let solid_red = RgbaImage::from_pixel(2, 1, Rgba([220, 70, 35, 255]));
-        let (render, _) = process_wallpaper(&solid_red, WallpaperEffect::None, false, 0.0).unwrap();
+        let (render, _) = process_wallpaper(
+            &solid_red,
+            WallpaperEffect::None,
+            1.0,
+            false,
+            0.0,
+            0xe8e8ea,
+            0xa9a9ae,
+            0x060606,
+        )
+        .unwrap();
         assert_eq!(&render.as_bytes(0).unwrap()[..4], &[35, 70, 220, 255]);
+    }
+
+    #[test]
+    fn missing_wallpaper_controls_keep_v1_defaults_and_presets_render_offscreen() {
+        let old_preferences = std::collections::HashMap::from([("version", "1")]);
+        assert_eq!(
+            preference_unit(&old_preferences, "effect_strength", 1.0),
+            1.0
+        );
+        assert_eq!(preference_unit(&old_preferences, "fade", 0.42), 0.42);
+        assert_eq!(
+            preference_unit(
+                &std::collections::HashMap::from([("fade", "2.0")]),
+                "fade",
+                0.4
+            ),
+            1.0
+        );
+        assert_eq!(
+            preference_unit(
+                &std::collections::HashMap::from([("fade", "NaN")]),
+                "fade",
+                0.4
+            ),
+            0.4
+        );
+
+        for preset in AppearancePreset::ALL {
+            for light in [false, true] {
+                let image = builtin_wallpaper(preset, light, 0x7c86ff);
+                assert_eq!(image.dimensions(), (PRESET_WIDTH, PRESET_HEIGHT));
+                let effect = zeron_wallpaper::render_with_strength(
+                    &image,
+                    WallpaperEffect::Dither,
+                    light,
+                    1.0,
+                );
+                assert_eq!(effect.dimensions(), image.dimensions());
+            }
+        }
+    }
+
+    #[test]
+    fn wallpaper_transition_drops_the_previous_image_after_240ms() {
+        let image = || {
+            Arc::new(RenderImage::new([Frame::new(RgbaImage::from_pixel(
+                1,
+                1,
+                Rgba([0, 0, 0, 255]),
+            ))]))
+        };
+        let mut state = AppearanceState::default();
+        state.image = Some(image());
+        state.image_preset = Some(AppearancePreset::Aurora);
+        state.safe_opacity = 0.72;
+        state.install_render_result(WallpaperJobResult {
+            preset: AppearancePreset::Midnight,
+            file: None,
+            name: "Midnight".into(),
+            effect: WallpaperEffect::None,
+            effect_strength: 1.0,
+            accent_rgb: state.accent_rgb,
+            contrast_primary_rgb: state.contrast_primary_rgb,
+            contrast_muted_rgb: state.contrast_muted_rgb,
+            contrast_canvas_rgb: state.contrast_canvas_rgb,
+            light: false,
+            blur_sigma: 0.0,
+            safe_opacity: 0.91,
+            image: image(),
+        });
+        assert_eq!(state.safe_opacity(), 0.72);
+        let start = state.transition_started.unwrap();
+        let halfway = start + Duration::from_millis(120);
+        let _ = state.tick_transition(halfway);
+        assert!(state.previous_image.is_some());
+        assert!((state.transition_mix - 0.5).abs() < 0.01);
+        assert!(!state.tick_transition(start + WALLPAPER_CROSSFADE));
+        assert!(state.previous_image.is_none());
     }
 
     #[test]

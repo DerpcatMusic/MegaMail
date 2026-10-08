@@ -21,6 +21,15 @@ copyright notice retained in their headers:
   and contrast-based wallpaper opacity processing from
   `crates/mobile/src/wallpaper.rs`, adapted to bounded `image::RgbaImage` data.
 
+The standalone theme model, thirty built-in variants, custom-theme library,
+and offline VS Code importer are copied from Zeron commit
+`0c4835d2b73aa632b7b4d626ee0826a25ec1c9b9` in `crates/zeron-theme`.
+Its MIT license is retained in `crates/zeron-theme/LICENSE-MIT`; curated
+variants retain source URLs, exact upstream revisions, license identifiers,
+and definition hashes. The GPUI adapter and compact settings rows are
+MegaMail's adaptations of that semantic model. Zeron's renderer fork is not
+bundled: MegaMail remains on the official GPUI Kit.
+
 No Zeron logo or upstream wallpaper artwork is used as a MegaMail product
 asset. Custom artwork is selected by the user. Retain this notice with copied
 material.

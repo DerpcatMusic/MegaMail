@@ -64,6 +64,28 @@ pub struct MessageRow {
     pub message: Message,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MessageFilter {
+    #[default]
+    All,
+    Unread,
+    Starred,
+    Attachments,
+}
+
+impl MessageFilter {
+    pub const ALL: [Self; 4] = [Self::All, Self::Unread, Self::Starred, Self::Attachments];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Unread => "Unread",
+            Self::Starred => "Starred",
+            Self::Attachments => "Attachments",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct OutboxSummary {
     pub id: u32,
@@ -131,6 +153,9 @@ pub struct MailboxSnapshot {
     pub attachment_state: AttachmentState,
     pub draft_source: Option<DraftSourceSnapshot>,
     pub search_query: String,
+    pub filter: MessageFilter,
+    /// Number of rows in the active search result page/cache, before this local filter.
+    pub loaded_count: usize,
     pub status: String,
     pub loading: bool,
     pub loading_more: bool,
@@ -304,6 +329,7 @@ pub struct LiveMailbox {
     next_send_id: u64,
     outbox_by_account: HashMap<u32, Vec<OutboxSummary>>,
     search_query: String,
+    filter: MessageFilter,
     status: String,
     loading: bool,
     loading_more: bool,
@@ -416,6 +442,7 @@ impl LiveMailbox {
             next_send_id: 1,
             outbox_by_account: HashMap::new(),
             search_query: String::new(),
+            filter: MessageFilter::All,
             status: String::new(),
             loading: !account_ids.is_empty(),
             loading_more: false,
@@ -486,6 +513,8 @@ impl LiveMailbox {
             attachment_state: self.attachment_state.clone(),
             draft_source: self.draft_source.clone(),
             search_query: self.search_query.clone(),
+            filter: self.filter,
+            loaded_count: self.messages.len(),
             status: self.status.clone(),
             loading: self.loading,
             loading_more: self.loading_more,
@@ -764,6 +793,18 @@ impl LiveMailbox {
         }
         self.request_page(None, false, cx);
         cx.notify();
+    }
+
+    /// Filter the currently loaded current-folder result set without changing its search or cursor.
+    pub fn set_filter(&mut self, filter: MessageFilter, cx: &mut Context<Self>) -> bool {
+        if self.filter == filter {
+            return false;
+        }
+        self.filter = filter;
+        self.rebuild_visible();
+        self.ensure_visible_selection(cx);
+        cx.notify();
+        true
     }
 
     pub fn load_more(&mut self, cx: &mut Context<Self>) {
@@ -1967,18 +2008,7 @@ impl LiveMailbox {
         } else {
             String::new()
         };
-        self.visible_indices = (0..self.messages.len())
-            .filter(|index| {
-                let Some(message) = self.messages.get(*index) else {
-                    return false;
-                };
-                query.is_empty()
-                    || message.from_name.to_lowercase().contains(&query)
-                    || message.from_addr.to_lowercase().contains(&query)
-                    || message.subject.to_lowercase().contains(&query)
-                    || message.preview.to_lowercase().contains(&query)
-            })
-            .collect();
+        self.visible_indices = visible_message_indices(&self.messages, &query, self.filter);
         self.page_rows = Arc::new(
             self.visible_indices
                 .iter()
@@ -2349,6 +2379,31 @@ fn make_page_request(
     }
 }
 
+fn message_matches_filter(message: &Message, filter: MessageFilter) -> bool {
+    match filter {
+        MessageFilter::All => true,
+        MessageFilter::Unread => message.unread,
+        MessageFilter::Starred => message.starred,
+        MessageFilter::Attachments => message.has_attachment,
+    }
+}
+
+fn visible_message_indices(messages: &[Message], query: &str, filter: MessageFilter) -> Vec<usize> {
+    messages
+        .iter()
+        .enumerate()
+        .filter(|(_, message)| {
+            let query_matches = query.is_empty()
+                || message.from_name.to_lowercase().contains(query)
+                || message.from_addr.to_lowercase().contains(query)
+                || message.subject.to_lowercase().contains(query)
+                || message.preview.to_lowercase().contains(query);
+            query_matches && message_matches_filter(message, filter)
+        })
+        .map(|(index, _)| index)
+        .collect()
+}
+
 fn body_event_matches(
     event_account_id: u32,
     event_path: &str,
@@ -2487,10 +2542,11 @@ fn set_folder_unread(
 mod tests {
     use super::{
         ATTACHMENT_BYTES_CAP, ATTACHMENT_COUNT_CAP, DraftSourceSnapshot, DraftSourceState,
-        MESSAGE_CAP, PAGE_SIZE, PendingAttachment, PendingBody, attachment_response_matches,
-        body_event_matches, bounded_attachments, bounded_attachments_with_limits,
-        draft_export_matches, make_page_request, merge_message_batch, merge_message_batch_ordered,
-        message_key, plain_body_and_links, set_folder_unread,
+        MESSAGE_CAP, MessageFilter, PAGE_SIZE, PendingAttachment, PendingBody,
+        attachment_response_matches, body_event_matches, bounded_attachments,
+        bounded_attachments_with_limits, draft_export_matches, make_page_request,
+        merge_message_batch, merge_message_batch_ordered, message_key, plain_body_and_links,
+        set_folder_unread, visible_message_indices,
     };
     use megamail_core::cache::MessageCursor;
     use megamail_core::models::{Attachment, DraftOrigin, Folder, FolderKind, Importance, Message};
@@ -2701,6 +2757,49 @@ mod tests {
         assert_eq!(request.generation, 22);
         assert_eq!(request.cursor, Some(cursor));
         assert_eq!(request.limit, PAGE_SIZE);
+    }
+
+    #[test]
+    fn current_folder_filters_compose_with_search_and_preserve_page_order() {
+        let mut messages = vec![
+            message(1, 7, 1, 40, "Needle one", 4),
+            message(2, 7, 1, 30, "Needle two", 3),
+            message(3, 7, 1, 20, "Needle three", 2),
+            message(4, 7, 1, 10, "Other", 1),
+        ];
+        messages[1].unread = false;
+        messages[1].starred = true;
+        messages[2].has_attachment = true;
+        messages[3].starred = true;
+        messages[3].has_attachment = true;
+
+        assert_eq!(
+            visible_message_indices(&messages, "", MessageFilter::All),
+            [0, 1, 2, 3]
+        );
+        assert_eq!(
+            visible_message_indices(&messages, "", MessageFilter::Unread),
+            [0, 2, 3]
+        );
+        assert_eq!(
+            visible_message_indices(&messages, "", MessageFilter::Starred),
+            [1, 3]
+        );
+        assert_eq!(
+            visible_message_indices(&messages, "", MessageFilter::Attachments),
+            [2, 3]
+        );
+        assert_eq!(
+            visible_message_indices(&messages, "needle", MessageFilter::Unread),
+            [0, 2]
+        );
+        assert_eq!(
+            messages
+                .iter()
+                .map(|message| message.uid)
+                .collect::<Vec<_>>(),
+            [40, 30, 20, 10]
+        );
     }
 
     #[test]

@@ -11,6 +11,7 @@ publish = false
 [dependencies]
 gpui-kit = "=0.7.1"
 megamail-core = { path = "../../crates/mail-core" }
+zeron-theme = { path = "../../crates/zeron-theme" }
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
 futures = "0.3"
 serde = { version = "1", features = ["derive"] }

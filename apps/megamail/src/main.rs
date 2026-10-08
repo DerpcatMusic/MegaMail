@@ -19,6 +19,7 @@ use gpui_kit::{
         button::{Button, ButtonCustomVariant, ButtonVariants as _},
         h_flex,
         input::{Input, InputContentType, InputEvent, InputState, Textarea, TextareaState},
+        menu::{DropdownMenu as _, PopupMenuItem},
         v_flex, window_border,
     },
 };
@@ -31,8 +32,8 @@ use megamail_core::{
 };
 
 use crate::live::{
-    AttachmentState, DraftSourceState, LiveMailbox, MailboxSnapshot, MessageKey, MessageRow,
-    ThunderbirdAccountOutcome, ThunderbirdAccountState,
+    AttachmentState, DraftSourceState, LiveMailbox, MailboxSnapshot, MessageFilter, MessageKey,
+    MessageRow, ThunderbirdAccountOutcome, ThunderbirdAccountState,
 };
 use crate::onboarding::AccountForm;
 
@@ -40,15 +41,24 @@ mod action {
     gpui_kit::actions!(megamail, [NextMessage, PreviousMessage]);
 }
 mod appearance;
+mod appearance_view;
 mod compose;
 mod instance;
 mod live;
 mod onboarding;
+mod theme;
 mod thunderbird_adapter;
 mod zeron_background;
 mod zeron_style;
 
 use action::{NextMessage, PreviousMessage};
+
+fn packed_rgb(color: gpui_kit::Hsla) -> u32 {
+    let color = color.to_rgb();
+    ((color.r * 255.0).round() as u32) << 16
+        | ((color.g * 255.0).round() as u32) << 8
+        | (color.b * 255.0).round() as u32
+}
 
 fn init(cx: &mut App) {
     cx.bind_keys([
@@ -75,6 +85,24 @@ struct Palette {
 }
 
 impl Palette {
+    fn from_resolved(value: theme::ResolvedPalette) -> Self {
+        Self {
+            background: value.background,
+            sidebar: value.sidebar,
+            list: value.list,
+            surface: value.surface,
+            border: value.border,
+            text: value.text,
+            muted: value.muted,
+            faint: value.faint,
+            accent: value.accent,
+            accent_wash: value.accent_wash,
+            selected: value.selected,
+            hover: value.hover,
+            on_accent: value.on_accent,
+        }
+    }
+
     fn new(dark: bool) -> Self {
         let color = |hex: u32| -> gpui_kit::Hsla { rgb(hex).into() };
         if dark {
@@ -118,23 +146,23 @@ impl Palette {
 fn sidebar_button_variant(
     cx: &App,
     palette: Palette,
-    dark: bool,
+    _dark: bool,
     selected: bool,
 ) -> ButtonCustomVariant {
-    let hover = zeron_style::sidebar_row_fill(dark, selected, true);
+    let hover = palette.hover;
     ButtonCustomVariant::new(cx)
         .color(if selected {
-            zeron_style::sidebar_row_fill(dark, true, false)
+            palette.selected
         } else {
             cx.theme().transparent
         })
         .foreground(palette.text)
         .hover(hover)
-        .active(zeron_style::sidebar_row_fill(dark, true, true))
+        .active(palette.selected)
 }
 
-fn floating_button_variant(cx: &App, palette: Palette, dark: bool) -> ButtonCustomVariant {
-    let hover = zeron_style::floating_interaction_fill(dark);
+fn floating_button_variant(cx: &App, palette: Palette, _dark: bool) -> ButtonCustomVariant {
+    let hover = palette.hover;
     ButtonCustomVariant::new(cx)
         .color(cx.theme().transparent)
         .foreground(palette.text)
@@ -142,9 +170,8 @@ fn floating_button_variant(cx: &App, palette: Palette, dark: bool) -> ButtonCust
         .active(hover)
 }
 
-fn apply_theme(mode: ThemeMode, window: &mut Window, cx: &mut App) {
+fn apply_palette(mode: ThemeMode, palette: Palette, window: &mut Window, cx: &mut App) {
     Theme::change(mode, Some(window), cx);
-    let palette = Palette::new(mode.is_dark());
     Theme::update(cx, |theme| {
         theme.background = palette.background;
         theme.foreground = palette.text;
@@ -186,8 +213,8 @@ fn apply_theme(mode: ThemeMode, window: &mut Window, cx: &mut App) {
         theme.ring = palette.accent;
         theme.selection = palette.accent.opacity(0.28);
         theme.caret = palette.accent;
-        theme.radius = px(8.);
-        theme.radius_lg = px(16.);
+        theme.radius = px(6.);
+        theme.radius_lg = px(10.);
         theme.font_family = "Geist".into();
     });
 }
@@ -206,6 +233,17 @@ enum AppearanceChange {
     Effect(appearance::WallpaperEffect),
     Opacity(f32),
     Blur(f32),
+    EffectStrength(f32),
+    Fade(f32),
+}
+
+#[derive(Clone)]
+enum ThemeChange {
+    Mode(theme::ThemeMode),
+    Variant(zeron_theme::Appearance, String),
+    Accent(zeron_theme::AccentSelection),
+    Surface(theme::SurfacePreference),
+    Remove(String),
 }
 
 struct SetupInputs {
@@ -506,6 +544,15 @@ struct MailApp {
     attachment_save_status: Option<String>,
     draft_open_error: Option<String>,
     dark: bool,
+    system_dark: bool,
+    theme: theme::ThemeState,
+    theme_busy: bool,
+    theme_error: Option<String>,
+    theme_status: Option<String>,
+    palette: Palette,
+    surface_treatment: zeron_theme::SurfaceTreatment,
+    _theme_subscription: Subscription,
+    wallpaper_animating: bool,
     appearance: appearance::AppearanceState,
     appearance_loading: bool,
     appearance_busy: bool,
@@ -521,7 +568,7 @@ impl MailApp {
         } else {
             "MegaMail"
         });
-        apply_theme(ThemeMode::Dark, window, cx);
+        apply_palette(ThemeMode::Dark, Palette::new(true), window, cx);
 
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search loaded mail"));
         let live = cx.new(|cx| {
@@ -545,6 +592,19 @@ impl MailApp {
             }
         });
 
+        let theme_subscription = cx.observe_window_appearance(window, |this, window, cx| {
+            this.system_dark = matches!(
+                window.appearance(),
+                gpui_kit::WindowAppearance::Dark | gpui_kit::WindowAppearance::VibrantDark
+            );
+            if this.theme.mode() == theme::ThemeMode::System {
+                this.activate_theme(window, cx);
+            }
+        });
+        let system_dark = matches!(
+            window.appearance(),
+            gpui_kit::WindowAppearance::Dark | gpui_kit::WindowAppearance::VibrantDark
+        );
         let mut app = Self {
             live,
             live_subscription: Some(live_subscription),
@@ -558,7 +618,7 @@ impl MailApp {
             setup_return_view: View::Mailbox,
             appearance_return_view: View::Mailbox,
             sidebar_collapsed: false,
-            accounts_expanded: true,
+            accounts_expanded: false,
             other_folders_expanded: false,
             demo,
             thunderbird_auto_open_pending: false,
@@ -570,6 +630,15 @@ impl MailApp {
             attachment_save_status: None,
             draft_open_error: None,
             dark: true,
+            system_dark,
+            theme: theme::ThemeState::default(),
+            theme_busy: false,
+            theme_error: None,
+            theme_status: None,
+            palette: Palette::new(true),
+            surface_treatment: zeron_theme::SurfaceTreatment::Frosted,
+            _theme_subscription: theme_subscription,
+            wallpaper_animating: false,
             appearance: appearance::AppearanceState::default(),
             appearance_loading: true,
             appearance_busy: false,
@@ -580,22 +649,34 @@ impl MailApp {
 
         cx.spawn(async move |this, cx| {
             let loaded = cx
-                .background_spawn(async move { appearance::AppearanceState::load() })
+                .background_spawn(async move {
+                    (
+                        appearance::AppearanceState::load(),
+                        theme::ThemeState::load(),
+                    )
+                })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
-                this.appearance = loaded;
-                this.dark = this.appearance.dark();
-                apply_theme(
+                this.appearance = loaded.0;
+                match loaded.1 {
+                    Ok(theme) => this.theme = theme,
+                    Err(error) => this.theme_error = Some(error),
+                }
+                this.dark =
+                    this.theme.appearance(this.system_dark) == zeron_theme::Appearance::Dark;
+                let palette = Palette::from_resolved(this.theme.resolved(this.system_dark));
+                apply_palette(
                     if this.dark {
                         ThemeMode::Dark
                     } else {
                         ThemeMode::Light
                     },
+                    palette,
                     window,
                     cx,
                 );
                 this.appearance_loading = false;
-                this.restore_wallpaper(cx);
+                this.activate_theme(window, cx);
                 cx.notify();
             });
         })
@@ -945,6 +1026,182 @@ impl MailApp {
         cx.notify();
     }
 
+    fn pane_surface(&self, color: gpui_kit::Hsla, bleed: f32) -> gpui_kit::Hsla {
+        if self.surface_treatment == zeron_theme::SurfaceTreatment::Opaque {
+            return gpui_kit::Hsla { a: 1.0, ..color };
+        }
+        let limit = if self.appearance.visual_wallpaper_opacity() > 0.001 {
+            (self.appearance.safe_opacity() / self.appearance.visual_wallpaper_opacity())
+                .clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        gpui_kit::Hsla {
+            a: 1.0 - bleed.min(limit),
+            ..color
+        }
+    }
+
+    fn activate_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dark = self.theme.appearance(self.system_dark) == zeron_theme::Appearance::Dark;
+        self.appearance.set_dark(self.dark);
+        let resolved = self.theme.resolved(self.system_dark);
+        self.surface_treatment = resolved.surface_treatment;
+        let palette = Palette::from_resolved(resolved);
+        self.palette = palette;
+        self.appearance.set_accent_rgb(packed_rgb(palette.accent));
+        self.appearance.set_contrast_colors(
+            packed_rgb(palette.text),
+            packed_rgb(palette.muted),
+            packed_rgb(palette.background),
+        );
+        apply_palette(
+            if self.dark {
+                ThemeMode::Dark
+            } else {
+                ThemeMode::Light
+            },
+            palette,
+            window,
+            cx,
+        );
+        self.restore_wallpaper(cx);
+        cx.notify();
+    }
+
+    fn change_theme(&mut self, change: ThemeChange, window: &mut Window, cx: &mut Context<Self>) {
+        if self.theme_busy || self.appearance_loading || self.appearance_busy {
+            return;
+        }
+        let mut proposed = self.theme.clone();
+        match change {
+            ThemeChange::Mode(mode) => proposed.set_mode(mode),
+            ThemeChange::Variant(appearance, id) => {
+                if !proposed.set_variant(appearance, &id) {
+                    return;
+                }
+            }
+            ThemeChange::Accent(accent) => proposed.set_accent(accent),
+            ThemeChange::Surface(surface) => proposed.set_surface(surface),
+            ThemeChange::Remove(id) => {
+                if !proposed.remove_library_entry(&id) {
+                    return;
+                }
+            }
+        }
+        self.save_theme(proposed, window, cx);
+    }
+
+    fn save_theme(
+        &mut self,
+        mut proposed: theme::ThemeState,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.theme_busy = true;
+        self.theme_error = None;
+        self.theme_status = None;
+        let task = cx.background_spawn(async move { proposed.persist().map(|_| proposed) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.theme_busy = false;
+                match result {
+                    Ok(theme) => {
+                        this.theme = theme;
+                        this.activate_theme(window, cx);
+                    }
+                    Err(error) => this.theme_error = Some(error),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn reset_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.theme_busy || self.appearance_busy || self.appearance_loading {
+            return;
+        }
+        if self.theme.is_loaded() {
+            let mut proposed = self.theme.clone();
+            proposed.reset_preferences();
+            self.save_theme(proposed, window, cx);
+        } else {
+            self.theme_busy = true;
+            let task = cx.background_spawn(async move { theme::ThemeState::recover_defaults() });
+            cx.spawn(async move |this, cx| {
+                let result = task.await;
+                let _ = this.update_in(cx, |this, window, cx| {
+                    this.theme_busy = false;
+                    match result {
+                        Ok(theme) => this.save_theme(theme, window, cx),
+                        Err(error) => this.theme_error = Some(error),
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+    }
+
+    fn import_theme(&mut self, cx: &mut Context<Self>) {
+        if self.theme_busy || self.appearance_loading || self.appearance_busy {
+            return;
+        }
+        self.theme_busy = true;
+        self.theme_error = None;
+        self.theme_status = None;
+        let picker = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Import a VS Code theme or package.json".into()),
+        });
+        let mut proposed = self.theme.clone();
+        cx.spawn(async move |this,cx| {
+            let chosen = picker.await;
+            let path = match chosen {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                Ok(Ok(None))|Err(_) => None,
+                Ok(Err(error)) => {let _=this.update(cx,|this,cx|{this.theme_busy=false;this.theme_error=Some(format!("Could not open theme picker: {error}"));cx.notify();});return;}
+            };
+            let Some(path)=path else {let _=this.update(cx,|this,cx|{this.theme_busy=false;cx.notify();});return;};
+            let result=cx.background_spawn(async move {let count=proposed.import_file(&path)?;proposed.persist()?;Ok::<_,String>((proposed,count))}).await;
+            let _=this.update_in(cx,|this,window,cx|{
+                this.theme_busy=false;
+                match result {Ok((theme,count))=>{this.theme=theme;this.activate_theme(window,cx);this.theme_status=Some(format!("Imported {count} theme variants. Choose one in the light or dark theme menu."));},Err(error)=>this.theme_error=Some(error)}
+                cx.notify();
+            });
+        }).detach();
+    }
+
+    fn animate_wallpaper(&mut self, cx: &mut Context<Self>) {
+        if self.wallpaper_animating {
+            return;
+        }
+        self.wallpaper_animating = true;
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(16))
+                    .await;
+                let active = this
+                    .update(cx, |this, cx| {
+                        let active = this.appearance.tick_transition(std::time::Instant::now());
+                        this.wallpaper_animating = active;
+                        cx.notify();
+                        active
+                    })
+                    .unwrap_or(false);
+                if !active {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
     fn open_appearance(&mut self, cx: &mut Context<Self>) {
         if self.view == View::Appearance {
             self.view = self.appearance_return_view;
@@ -976,6 +1233,7 @@ impl MailApp {
                     Err(error) => this.appearance_error = Some(error),
                 }
                 this.appearance_busy = false;
+                this.animate_wallpaper(cx);
                 cx.notify();
             });
         })
@@ -1014,11 +1272,16 @@ impl MailApp {
             AppearanceChange::Effect(effect) => proposed.set_effect(effect),
             AppearanceChange::Opacity(opacity) => proposed.set_opacity(opacity),
             AppearanceChange::Blur(sigma) => proposed.set_blur_sigma(sigma),
+            AppearanceChange::EffectStrength(strength) => proposed.set_effect_strength(strength),
+            AppearanceChange::Fade(fade) => proposed.set_fade(fade),
         }
         let needs_reprocess = matches!(
             change,
-            AppearanceChange::Effect(_) | AppearanceChange::Blur(_)
-        ) && proposed.preset() == appearance::AppearancePreset::Custom;
+            AppearanceChange::Preset(_)
+                | AppearanceChange::Effect(_)
+                | AppearanceChange::Blur(_)
+                | AppearanceChange::EffectStrength(_)
+        );
         let light = !self.dark;
         if needs_reprocess {
             if let Some(request) = proposed.restore_request(light) {
@@ -1033,6 +1296,7 @@ impl MailApp {
                             Ok(result) => {
                                 if proposed.install_processed_wallpaper(result, !this.dark) {
                                     this.appearance = proposed;
+                                    this.animate_wallpaper(cx);
                                     this.persist_appearance(cx);
                                 } else {
                                     this.appearance_busy = false;
@@ -1069,6 +1333,8 @@ impl MailApp {
         let light = !self.dark;
         let effect = self.appearance.effect();
         let blur_sigma = self.appearance.blur_sigma();
+        let strength = self.appearance.effect_strength();
+        let contrast_colors = self.appearance.contrast_colors();
         let picker = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -1099,13 +1365,21 @@ impl MailApp {
             };
             let result = cx
                 .background_spawn(async move {
-                    appearance::begin_wallpaper_import(path, effect, light, blur_sigma)
+                    appearance::begin_wallpaper_import(
+                        path,
+                        effect,
+                        light,
+                        blur_sigma,
+                        strength,
+                        contrast_colors,
+                    )
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 match result {
                     Ok(result) => {
                         this.appearance.install_wallpaper(result);
+                        this.animate_wallpaper(cx);
                         this.persist_appearance(cx);
                     }
                     Err(error) => {
@@ -1120,53 +1394,15 @@ impl MailApp {
     }
 
     fn toggle_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.appearance_busy || self.appearance_loading {
-            return;
-        }
-        self.dark = !self.dark;
-        self.appearance.set_dark(self.dark);
-        apply_theme(
-            if self.dark {
-                ThemeMode::Dark
+        self.change_theme(
+            ThemeChange::Mode(if self.dark {
+                theme::ThemeMode::Light
             } else {
-                ThemeMode::Light
-            },
+                theme::ThemeMode::Dark
+            }),
             window,
             cx,
         );
-        if let Some(request) = self.appearance.restore_request(!self.dark) {
-            self.appearance_busy = true;
-            let task =
-                cx.background_spawn(async move { appearance::begin_wallpaper_restore(request) });
-            cx.spawn(async move |this, cx| {
-                let result = task.await;
-                let _ = this.update(cx, |this, cx| {
-                    let mut status = None;
-                    match result {
-                        Ok(result) => {
-                            if !this
-                                .appearance
-                                .install_processed_wallpaper(result, !this.dark)
-                            {
-                                status = Some(
-                                    "Wallpaper processing did not match the current theme.".into(),
-                                );
-                            }
-                        }
-                        Err(error) => {
-                            status = Some(format!(
-                                "Theme changed, but the wallpaper could not be reprocessed: {error}"
-                            ))
-                        }
-                    }
-                    this.persist_appearance_with_status(status, cx);
-                });
-            })
-            .detach();
-        } else {
-            self.persist_appearance(cx);
-        }
-        cx.notify();
     }
 
     fn open_new_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1861,7 +2097,7 @@ impl MailApp {
             .disabled(self.composer.is_some())
             .w_full()
             .h(px(zeron_style::NAV_ROW_MIN_HEIGHT))
-            .rounded(px(8.))
+            .rounded(px(4.))
             .px_2()
             .when(collapsed, |button| {
                 button
@@ -1927,11 +2163,6 @@ impl MailApp {
                                 .h(px(18.))
                                 .px_1()
                                 .rounded(px(5.))
-                                .bg(if selected {
-                                    palette.accent_wash
-                                } else {
-                                    palette.surface
-                                })
                                 .items_center()
                                 .justify_center()
                                 .text_size(px(10.))
@@ -1976,7 +2207,7 @@ impl MailApp {
             .h(px(
                 zeron_style::ACCOUNT_TRIGGER_HEIGHT + zeron_style::ACCOUNT_DETAIL_LINE_HEIGHT
             ))
-            .rounded(px(8.))
+            .rounded(px(4.))
             .px_2()
             .when(collapsed, |button| {
                 button.w(px(42.)).px_0().tooltip(account.email.clone())
@@ -2067,119 +2298,150 @@ impl MailApp {
         palette: Palette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let dark = cx.theme().is_dark();
+        let dark = self.dark;
         if self.sidebar_collapsed {
             return self.collapsed_sidebar(snapshot, palette, dark, cx);
         }
-
-        let current_account = snapshot.current_account_id;
-        let mut primary_folders = snapshot
+        let current = snapshot.current_account_id;
+        let account = snapshot
+            .accounts
+            .iter()
+            .find(|account| Some(account.id) == current);
+        let mut primary = snapshot
             .folders
             .iter()
             .filter(|folder| primary_folder_rank(folder.kind).is_some())
             .collect::<Vec<_>>();
-        primary_folders
-            .sort_by_key(|folder| primary_folder_rank(folder.kind).unwrap_or(usize::MAX));
-        let mut other_folders = snapshot
+        primary.sort_by_key(|folder| primary_folder_rank(folder.kind).unwrap_or(usize::MAX));
+        let mut other = snapshot
             .folders
             .iter()
             .filter(|folder| primary_folder_rank(folder.kind).is_none())
             .collect::<Vec<_>>();
-        other_folders.sort_by_key(|folder| folder.name.to_lowercase());
-        let current_accounts = snapshot
-            .accounts
-            .iter()
-            .filter(|account| self.accounts_expanded || current_account == Some(account.id))
-            .collect::<Vec<_>>();
-
+        other.sort_by_key(|folder| folder.name.to_lowercase());
         v_flex()
-            .w(px(256.))
+            .w(px(232.))
             .h_full()
             .min_h_0()
             .flex_shrink_0()
-            .bg(zeron_background::rail_surface(&self.appearance, dark))
+            .bg(self.pane_surface(palette.sidebar, 0.24))
             .border_r_1()
             .border_color(palette.border)
+            .child(
+                v_flex()
+                    .flex_shrink_0()
+                    .px_2()
+                    .pt_3()
+                    .pb_2()
+                    .gap_1()
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_1()
+                            .child(
+                                Button::new("choose-account")
+                                    .custom(floating_button_variant(cx, palette, dark))
+                                    .small()
+                                    .min_w_0()
+                                    .flex_1()
+                                    .h(px(38.))
+                                    .icon(Icon::new(IconName::Mail).size(px(15.)))
+                                    .label(
+                                        account
+                                            .map(|account| {
+                                                if account.name.is_empty() {
+                                                    account.email.clone()
+                                                } else {
+                                                    account.name.clone()
+                                                }
+                                            })
+                                            .unwrap_or_else(|| "Mail accounts".into()),
+                                    )
+                                    .tooltip(
+                                        account
+                                            .map(|account| account.email.clone())
+                                            .unwrap_or_else(|| "Choose an account".into()),
+                                    )
+                                    .accessibility_label("Choose mail account")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.accounts_expanded = !this.accounts_expanded;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("add-account")
+                                    .custom(floating_button_variant(cx, palette, dark))
+                                    .small()
+                                    .icon(Icon::new(IconName::Plus).size(px(14.)))
+                                    .disabled(snapshot.pending_send)
+                                    .tooltip("Add mail account")
+                                    .accessibility_label("Add mail account")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.open_setup(window, cx)
+                                    })),
+                            ),
+                    )
+                    .when(self.accounts_expanded, |column| {
+                        column.children(snapshot.accounts.iter().map(|account| {
+                            self.account_button(
+                                account,
+                                Some(account.id) == current,
+                                palette,
+                                dark,
+                                false,
+                                snapshot,
+                                cx,
+                            )
+                        }))
+                    })
+                    .child(
+                        Button::new("sidebar-compose")
+                            .custom(floating_button_variant(cx, palette, dark))
+                            .small()
+                            .w_full()
+                            .h(px(32.))
+                            .icon(Icon::new(IconName::PenLine).size(px(14.)))
+                            .label("New message")
+                            .disabled(snapshot.pending_send || snapshot.accounts.is_empty())
+                            .on_click(
+                                cx.listener(|this, _, window, cx| {
+                                    this.open_new_message(window, cx)
+                                }),
+                            ),
+                    ),
+            )
             .child(
                 v_flex()
                     .id("sidebar-scroll")
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .px_3()
-                    .py_3()
-                    .gap_5()
-                    .child(
-                        v_flex()
-                            .gap_2()
-                            .child(
-                                h_flex()
-                                    .h(px(26.))
-                                    .items_center()
-                                    .justify_between()
-                                    .child(
-                                        Button::new("toggle-account-list")
-                                            .custom(floating_button_variant(cx, palette, dark))
-                                            .small()
-                                            .icon(Icon::new(if self.accounts_expanded {
-                                                IconName::ChevronDown
-                                            } else {
-                                                IconName::ChevronRight
-                                            }))
-                                            .label("Accounts")
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.accounts_expanded = !this.accounts_expanded;
-                                                cx.notify();
-                                            })),
-                                    )
-                                    .child(
-                                        Button::new("add-account")
-                                            .custom(floating_button_variant(cx, palette, dark))
-                                            .small()
-                                            .icon(Icon::new(IconName::Plus))
-                                            .disabled(snapshot.pending_send)
-                                            .accessibility_label("Add a mail account")
-                                            .tooltip("Add a mail account")
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.open_setup(window, cx)
-                                            })),
-                                    ),
-                            )
-                            .children(current_accounts.iter().map(|account| {
-                                self.account_button(
-                                    account,
-                                    current_account == Some(account.id),
-                                    palette,
-                                    dark,
-                                    false,
-                                    snapshot,
-                                    cx,
-                                )
-                            })),
-                    )
-                    .child(div().h(px(1.)).mx_2().bg(palette.border))
-                    .child(
-                        v_flex()
-                            .gap_2()
-                            .child(sidebar_section_label("Pinned", palette))
-                            .children(primary_folders.iter().map(|folder| {
-                                self.folder_button(folder, snapshot, palette, dark, false, cx)
-                            })),
-                    )
-                    .when(!other_folders.is_empty(), |column| {
+                    .px_2()
+                    .py_2()
+                    .gap_1()
+                    .children(primary.into_iter().map(|folder| {
+                        self.folder_button(folder, snapshot, palette, dark, false, cx)
+                    }))
+                    .when(!other.is_empty(), |column| {
                         column.child(
                             v_flex()
+                                .mt_3()
                                 .gap_1()
                                 .child(
                                     Button::new("toggle-other-folders")
                                         .custom(floating_button_variant(cx, palette, dark))
                                         .small()
-                                        .icon(Icon::new(if self.other_folders_expanded {
-                                            IconName::ChevronDown
-                                        } else {
-                                            IconName::ChevronRight
-                                        }))
-                                        .label(format!("More folders · {}", other_folders.len()))
+                                        .w_full()
+                                        .icon(
+                                            Icon::new(if self.other_folders_expanded {
+                                                IconName::ChevronDown
+                                            } else {
+                                                IconName::ChevronRight
+                                            })
+                                            .size(px(13.)),
+                                        )
+                                        .label(format!("Folders · {}", other.len()))
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.other_folders_expanded =
                                                 !this.other_folders_expanded;
@@ -2187,7 +2449,7 @@ impl MailApp {
                                         })),
                                 )
                                 .when(self.other_folders_expanded, |column| {
-                                    column.children(other_folders.iter().map(|folder| {
+                                    column.children(other.iter().map(|folder| {
                                         self.folder_button(
                                             folder, snapshot, palette, dark, false, cx,
                                         )
@@ -2199,63 +2461,58 @@ impl MailApp {
             .child(
                 v_flex()
                     .flex_shrink_0()
+                    .px_2()
+                    .py_2()
                     .gap_1()
-                    .border_t_1()
-                    .border_color(palette.border)
-                    .pt_2()
-                    .px_3()
-                    .pb_3()
                     .child(
                         h_flex()
                             .items_center()
                             .gap_2()
-                            .h(px(24.))
+                            .px_2()
+                            .h(px(26.))
                             .child(
                                 Icon::new(if snapshot.loading {
                                     IconName::RefreshCw
                                 } else {
                                     IconName::Mail
                                 })
-                                .size(px(13.))
-                                .text_color(if snapshot.loading {
-                                    palette.accent
-                                } else {
-                                    palette.muted
-                                }),
+                                .size(px(12.))
+                                .text_color(palette.muted),
                             )
-                            .child(div().text_size(px(11.)).text_color(palette.muted).child(
-                                if !snapshot.status.is_empty() {
-                                    snapshot.status.clone()
-                                } else if snapshot.loading {
-                                    "Loading mailbox…".to_owned()
-                                } else {
-                                    format!("{} unread in this folder", snapshot.unread_count)
-                                },
-                            )),
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(px(11.))
+                                    .text_color(palette.muted)
+                                    .child(if snapshot.loading {
+                                        "Updating mail…".into()
+                                    } else if snapshot.status.is_empty() {
+                                        format!("{} unread", snapshot.unread_count)
+                                    } else {
+                                        snapshot.status.clone()
+                                    }),
+                            ),
                     )
-                    .when(!snapshot.outbox.is_empty(), |row| {
-                        row.child(
+                    .when(!snapshot.outbox.is_empty(), |column| {
+                        column.child(
                             div()
+                                .px_2()
                                 .text_size(px(10.))
                                 .text_color(palette.faint)
-                                .child(format!("{} queued message(s)", snapshot.outbox.len())),
+                                .child(format!("{} queued", snapshot.outbox.len())),
                         )
                     })
                     .child(
                         Button::new("open-appearance")
                             .custom(floating_button_variant(cx, palette, dark))
                             .small()
-                            .selected(self.view == View::Appearance)
                             .w_full()
-                            .h(px(36.))
-                            .rounded(px(8.))
-                            .icon(Icon::new(IconName::Palette))
+                            .h(px(32.))
+                            .icon(Icon::new(IconName::Settings2).size(px(14.)))
                             .label("Appearance")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if this.composer.is_none() {
-                                    this.open_appearance(cx);
-                                }
-                            })),
+                            .selected(self.view == View::Appearance)
+                            .on_click(cx.listener(|this, _, _, cx| this.open_appearance(cx))),
                     ),
             )
             .into_any_element()
@@ -2287,7 +2544,7 @@ impl MailApp {
             .h_full()
             .min_h_0()
             .flex_shrink_0()
-            .bg(zeron_background::rail_surface(&self.appearance, dark))
+            .bg(self.pane_surface(palette.sidebar, 0.24))
             .border_r_1()
             .border_color(palette.border)
             .child(
@@ -2370,6 +2627,8 @@ impl MailApp {
         if snapshot.page.is_empty() {
             let message = if snapshot.loading {
                 "Loading messages…"
+            } else if snapshot.filter != MessageFilter::All {
+                "No messages match this filter"
             } else if snapshot.search_query.is_empty() {
                 "This folder is empty"
             } else {
@@ -2394,7 +2653,9 @@ impl MailApp {
                         .child(message),
                 )
                 .child(div().text_size(px(11.)).text_color(palette.muted).child(
-                    if snapshot.search_query.is_empty() {
+                    if snapshot.filter != MessageFilter::All {
+                        "Choose All or load more messages to broaden this view."
+                    } else if snapshot.search_query.is_empty() {
                         "New mail will appear here when this account syncs."
                     } else {
                         "Try another search or load more messages."
@@ -2422,8 +2683,8 @@ impl MailApp {
                     .selected(active)
                     .tab_stop(true)
                     .w_full()
-                    .h(px(86.))
-                    .rounded(px(10.))
+                    .h(px(78.))
+                    .rounded(px(4.))
                     .px_3()
                     .accessibility_label(format!(
                         "{}: {}",
@@ -2449,6 +2710,41 @@ impl MailApp {
         .into_any_element()
     }
 
+    fn filter_menu(
+        &self,
+        snapshot: &MailboxSnapshot,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let owner = cx.entity().downgrade();
+        let selected = snapshot.filter;
+        Button::new("message-filter")
+            .custom(floating_button_variant(cx, palette, self.dark))
+            .small()
+            .icon(Icon::new(IconName::ListFilter).size(px(15.)))
+            .tooltip(format!("Filter loaded mail: {}", selected.label()))
+            .accessibility_label("Filter loaded mail")
+            .dropdown_menu(move |mut menu, _, _| {
+                menu = menu.label("Loaded messages");
+                for filter in MessageFilter::ALL {
+                    let owner = owner.clone();
+                    menu = menu.item(
+                        PopupMenuItem::element(move |_, _| div().child(filter.label()))
+                            .checked(filter == selected)
+                            .on_click(move |_, _, cx| {
+                                let _ = owner.update(cx, |this, cx| {
+                                    this.live.update(cx, |live, cx| live.set_filter(filter, cx));
+                                    this.list_scroll = UniformListScrollHandle::new();
+                                    cx.notify();
+                                });
+                            }),
+                    );
+                }
+                menu
+            })
+            .into_any_element()
+    }
+
     fn message_pane(
         &self,
         snapshot: &MailboxSnapshot,
@@ -2462,11 +2758,11 @@ impl MailApp {
             .map(|folder| folder.name.clone())
             .unwrap_or_else(|| "Mail".into());
         v_flex()
-            .w(px(360.))
+            .w(px(332.))
             .h_full()
             .flex_shrink_0()
             .min_h_0()
-            .bg(zeron_background::list_surface(&self.appearance, self.dark))
+            .bg(self.pane_surface(palette.list, 0.10))
             .border_r_1()
             .border_color(palette.border)
             .child(
@@ -2506,14 +2802,21 @@ impl MailApp {
                     .px_3()
                     .py_3()
                     .child(
-                        Input::new(&self.search)
-                            .prefix(
-                                Icon::new(IconName::Search)
-                                    .size(px(14.))
-                                    .text_color(palette.faint),
+                        h_flex()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                Input::new(&self.search)
+                                    .prefix(
+                                        Icon::new(IconName::Search)
+                                            .size(px(14.))
+                                            .text_color(palette.faint),
+                                    )
+                                    .cleanable(true)
+                                    .aria_label("Search loaded messages")
+                                    .flex_1(),
                             )
-                            .cleanable(true)
-                            .aria_label("Search loaded messages"),
+                            .child(self.filter_menu(snapshot, palette, cx)),
                     )
                     .when_some(snapshot.error.clone(), |row, error| {
                         row.child(error_banner(
@@ -2537,8 +2840,12 @@ impl MailApp {
                     .text_size(px(10.))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(palette.faint)
-                    .child("RECENT")
-                    .child(format!("{} LOADED", snapshot.page.len())),
+                    .child(snapshot.filter.label())
+                    .child(format!(
+                        "{} shown · {} loaded",
+                        snapshot.page.len(),
+                        snapshot.loaded_count
+                    )),
             )
             .child(
                 div()
@@ -2918,10 +3225,7 @@ impl MailApp {
             return v_flex()
                 .size_full()
                 .min_w_0()
-                .bg(zeron_background::reader_surface(
-                    &self.appearance,
-                    self.dark,
-                ))
+                .bg(self.pane_surface(palette.background, 0.05))
                 .child(self.outbox_panel(snapshot, palette, cx))
                 .child(
                     v_flex()
@@ -2982,10 +3286,7 @@ impl MailApp {
         v_flex()
             .size_full()
             .min_w_0()
-            .bg(zeron_background::reader_surface(
-                &self.appearance,
-                self.dark,
-            ))
+            .bg(self.pane_surface(palette.background, 0.05))
             .child(
                 h_flex()
                     .h(px(44.))
@@ -3165,7 +3466,7 @@ impl MailApp {
         v_flex()
             .flex_1()
             .min_h_0()
-            .bg(zeron_background::reader_surface(&self.appearance, self.dark))
+            .bg(self.pane_surface(palette.background, 0.05))
             .child(
                 v_flex()
                     .id("setup-scroll")
@@ -3249,6 +3550,7 @@ impl MailApp {
                                     setup.thunderbird_loading
                                         || setup.connecting
                                         || snapshot.thunderbird_loading,
+                                    palette,
                                     cx,
                                 ))
                             })
@@ -3659,299 +3961,7 @@ impl MailApp {
     }
 
     fn appearance_view(&self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
-        let dark = self.dark;
-        let custom = self.appearance.preset() == appearance::AppearancePreset::Custom;
-        let can_edit = !self.appearance_busy && !self.appearance_loading;
-        let can_edit_wallpaper = can_edit && custom && self.appearance.cached_image().is_some();
-        let panel = v_flex()
-            .w_full()
-            .max_w(px(620.))
-            .gap_5()
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_size(px(22.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Appearance"),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .line_height(relative(1.45))
-                            .text_color(palette.muted)
-                            .child("Shape the reading space with Zeron-inspired gradients, a custom wallpaper, and quiet material controls."),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .gap_2()
-                    .child(field_label("Background", palette))
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .children(appearance::AppearancePreset::ALL.into_iter().map(|preset| {
-                                let selected = self.appearance.preset() == preset;
-                                Button::new(SharedString::from(format!("appearance-preset-{}", preset.label().to_lowercase())))
-                                    .custom(floating_button_variant(cx, palette, dark))
-                                    .small()
-                                    .selected(selected)
-                                    .disabled(!can_edit)
-                                    .label(preset.label())
-                                    .when(selected, |button| button.shadow(vec![zeron_style::floating_selection_ring(dark)]))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.change_appearance(AppearanceChange::Preset(preset), cx)
-                                    }))
-                            }))
-                            .when(self.appearance.has_wallpaper(), |row| {
-                                row.child(
-                                    Button::new("appearance-preset-custom")
-                                        .custom(floating_button_variant(cx, palette, dark))
-                                        .small()
-                                        .selected(custom)
-                                        .disabled(!can_edit)
-                                        .label(appearance::AppearancePreset::Custom.label())
-                                        .when(custom, |button| button.shadow(vec![zeron_style::floating_selection_ring(dark)]))
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.change_appearance(
-                                                AppearanceChange::Preset(appearance::AppearancePreset::Custom),
-                                                cx,
-                                            )
-                                        })),
-                                )
-                            }),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .gap_2()
-                    .child(field_label("Live material preview", palette))
-                    .child(
-                        div()
-                            .relative()
-                            .w_full()
-                            .h(px(156.))
-                            .overflow_hidden()
-                            .rounded(px(10.))
-                            .border_1()
-                            .border_color(palette.border)
-                            .child(zeron_background::background_element(
-                                &self.appearance,
-                                self.dark,
-                                palette.accent,
-                            ))
-                            .child(
-                                h_flex()
-                                    .relative()
-                                    .size_full()
-                                    .gap_1()
-                                    .p_1()
-                                    .child(
-                                        v_flex()
-                                            .w(px(104.))
-                                            .h_full()
-                                            .justify_center()
-                                            .px_2()
-                                            .bg(zeron_background::rail_surface(
-                                                &self.appearance,
-                                                self.dark,
-                                            ))
-                                            .text_size(px(11.))
-                                            .text_color(palette.muted)
-                                            .child("Navigation"),
-                                    )
-                                    .child(
-                                        v_flex()
-                                            .w(px(136.))
-                                            .h_full()
-                                            .justify_center()
-                                            .px_2()
-                                            .bg(zeron_background::list_surface(
-                                                &self.appearance,
-                                                self.dark,
-                                            ))
-                                            .text_size(px(11.))
-                                            .text_color(palette.muted)
-                                            .child("Message list"),
-                                    )
-                                    .child(
-                                        v_flex()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .h_full()
-                                            .justify_center()
-                                            .px_3()
-                                            .bg(zeron_background::reader_surface(
-                                                &self.appearance,
-                                                self.dark,
-                                            ))
-                                            .text_size(px(11.))
-                                            .text_color(palette.muted)
-                                            .child("Reading pane"),
-                                    ),
-                            ),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .gap_2()
-                    .child(field_label("Wallpaper", palette))
-                    .child(
-                        h_flex()
-                            .items_center()
-                            .gap_3()
-                            .child(
-                                Button::new("choose-wallpaper")
-                                    .secondary()
-                                    .small()
-                                    .icon(Icon::new(IconName::Image))
-                                    .label(if self.appearance_busy { "Working…" } else { "Choose image" })
-                                    .disabled(!can_edit)
-                                    .on_click(cx.listener(|this, _, _, cx| this.choose_wallpaper(cx))),
-                            )
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .flex_1()
-                                    .truncate()
-                                    .text_size(px(11.))
-                                    .text_color(palette.muted)
-                                    .child(
-                                        self.appearance
-                                            .wallpaper_name()
-                                            .unwrap_or("No custom image")
-                                            .to_owned(),
-                                    ),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(10.))
-                            .line_height(relative(1.4))
-                            .text_color(palette.faint)
-                            .child("PNG, JPEG, or WebP. Images are copied into MegaMail’s private settings folder; the selected source path is not retained."),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .gap_2()
-                    .child(field_label("Image treatment", palette))
-                    .child(
-                        h_flex()
-                            .gap_1()
-                            .children(appearance::WallpaperEffect::ALL.into_iter().map(|effect| {
-                                let selected = self.appearance.effect() == effect;
-                                Button::new(SharedString::from(format!("wallpaper-effect-{}", effect.label().to_lowercase())))
-                                    .custom(floating_button_variant(cx, palette, dark))
-                                    .small()
-                                    .selected(selected)
-                                    .disabled(!can_edit_wallpaper)
-                                    .label(effect.label())
-                                    .when(selected, |button| button.shadow(vec![zeron_style::floating_selection_ring(dark)]))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.change_appearance(AppearanceChange::Effect(effect), cx)
-                                    }))
-                            })),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(10.))
-                            .text_color(palette.faint)
-                            .child("Effects are baked once in the background and cached as a static wallpaper."),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .gap_2()
-                    .child(field_label("Wallpaper strength", palette))
-                    .child(
-                        h_flex()
-                            .gap_1()
-                            .children([0.72_f32, 0.86, 0.96].into_iter().map(|opacity| {
-                                let selected = (self.appearance.opacity() - opacity).abs() < 0.01;
-                                Button::new(SharedString::from(format!("wallpaper-opacity-{}", (opacity * 100.0) as u32)))
-                                    .custom(floating_button_variant(cx, palette, dark))
-                                    .small()
-                                    .selected(selected)
-                                    .disabled(!can_edit_wallpaper)
-                                    .label(format!("{}%", (opacity * 100.0) as u32))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.change_appearance(AppearanceChange::Opacity(opacity), cx)
-                                    }))
-                            }))
-                            .child(div().mx_2().w(px(1.)).h(px(20.)).bg(palette.border))
-                            .children([0.0_f32, 10.0, 16.0].into_iter().map(|sigma| {
-                                let selected = (self.appearance.blur_sigma() - sigma).abs() < 0.1;
-                                let label = if sigma == 0.0 { "Sharp".to_owned() } else { format!("Blur {}", sigma as u32) };
-                                Button::new(SharedString::from(format!("wallpaper-blur-{}", sigma as u32)))
-                                    .custom(floating_button_variant(cx, palette, dark))
-                                    .small()
-                                    .selected(selected)
-                                    .disabled(!can_edit_wallpaper)
-                                    .label(label)
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.change_appearance(AppearanceChange::Blur(sigma), cx)
-                                    }))
-                            })),
-                    ),
-            )
-            .when_some(self.appearance_error.clone(), |column, error| {
-                column.child(error_banner("Appearance update", &error, cx, palette))
-            })
-            .when(self.appearance_busy || self.appearance_loading, |column| {
-                column.child(
-                    div()
-                        .text_size(px(11.))
-                        .text_color(palette.muted)
-                        .child(if self.appearance_loading {
-                            "Loading saved appearance…"
-                        } else {
-                            "Processing wallpaper and saving settings…"
-                        }),
-                )
-            });
-
-        v_flex()
-            .flex_1()
-            .min_h_0()
-            .bg(zeron_background::reader_surface(
-                &self.appearance,
-                self.dark,
-            ))
-            .child(
-                v_flex()
-                    .id("appearance-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .items_center()
-                    .px_6()
-                    .py_7()
-                    .child(panel),
-            )
-            .child(
-                h_flex()
-                    .flex_shrink_0()
-                    .justify_end()
-                    .items_center()
-                    .border_t_1()
-                    .border_color(palette.border)
-                    .px_6()
-                    .py_3()
-                    .child(
-                        Button::new("appearance-done")
-                            .primary()
-                            .small()
-                            .label("Done")
-                            .disabled(self.appearance_busy || self.appearance_loading)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.view = this.appearance_return_view;
-                                cx.notify();
-                            })),
-                    ),
-            )
-            .into_any_element()
+        appearance_view::render(self, palette, cx)
     }
 
     fn composer_view(
@@ -4661,7 +4671,7 @@ fn validate_attachment_paths(
 impl Render for MailApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dark = cx.theme().is_dark();
-        let palette = Palette::new(dark);
+        let palette = self.palette;
         let snapshot = self.live.read(cx).snapshot();
         let client_decorated = matches!(window.window_decorations(), Decorations::Client { .. });
         let context = if self.demo {
@@ -4686,6 +4696,7 @@ impl Render for MailApp {
         let toolbar = h_flex()
             .w_full()
             .h(px(38.))
+            .bg(palette.background)
             .px_4()
             .items_center()
             .justify_between()
@@ -4780,7 +4791,9 @@ impl Render for MailApp {
                         Button::new("toggle-theme")
                             .ghost()
                             .small()
-                            .disabled(self.appearance_busy || self.appearance_loading)
+                            .disabled(
+                                self.appearance_busy || self.appearance_loading || self.theme_busy,
+                            )
                             .icon(Icon::new(if dark { IconName::Sun } else { IconName::Moon }))
                             .accessibility_label(if dark {
                                 "Switch to light theme"
@@ -4803,7 +4816,12 @@ impl Render for MailApp {
             toolbar.into_any_element()
         };
         let body = if self.view == View::Appearance {
-            self.appearance_view(palette, cx)
+            h_flex()
+                .flex_1()
+                .min_h_0()
+                .child(self.sidebar(&snapshot, palette, cx))
+                .child(self.appearance_view(palette, cx))
+                .into_any_element()
         } else if self.view == View::Setup || self.loading_profiles {
             if self.loading_profiles {
                 v_flex()
@@ -4821,8 +4839,6 @@ impl Render for MailApp {
             h_flex()
                 .flex_1()
                 .min_h_0()
-                .border_t_1()
-                .border_color(palette.border)
                 .child(self.sidebar(&snapshot, palette, cx))
                 .child(self.message_pane(&snapshot, palette, cx))
                 .child(if self.view == View::Compose {
@@ -4842,6 +4858,7 @@ impl Render for MailApp {
                     &self.appearance,
                     dark,
                     palette.accent,
+                    palette.background,
                 ))
                 .child(chrome)
                 .child(body),
@@ -5351,9 +5368,9 @@ fn thunderbird_picker(
     results: &[ThunderbirdAccountOutcome],
     existing_emails: &HashSet<String>,
     loading: bool,
+    palette: Palette,
     cx: &mut Context<MailApp>,
 ) -> impl IntoElement {
-    let palette = Palette::new(cx.theme().is_dark());
     let eligible_count = profiles
         .iter()
         .flat_map(|profile| profile.accounts.iter())
