@@ -6,16 +6,17 @@ copyright, and notice files when present. A declaration is not a substitute for 
 missing license text; missing or skipped files are listed explicitly below. GPUI Kit's
 crates.io archive omits its Apache file, so its exact tagged upstream copy is included.
 
-Lockfile SHA-256: `bffe88f40330d4418c9458994385e49af38ef58b76d107491b8d463a10f9de72`  
-Resolved remote package graph SHA-256: `ea4dabfec89401154c285bfcfc47a3d871cc4af25fc2ef49bef349f56e43c123`  
-Remote packages: 946
+Lockfile SHA-256: `b736b5256622939e21774247fee47b2b6a73e57cf608d5823e0a98298d947763`  
+Resolved remote package graph SHA-256: `bbf62b1e25c9dba6b2c69442dcd3d277082bd33114790d5f5f6cfa83eda25882`  
+Remote packages: 955
 
 ## Project and bundled asset notices
 
 | Bundle file | Source | SHA-256 |
 |---|---|---|
 | [`project/LICENSE`](project/LICENSE) | `LICENSE` | `3856ebcc85b6d97cc45645b7195dc9d622ddcfce8739ada6ab876b6724a44d8b` |
-| [`project/THIRD_PARTY_NOTICES.md`](project/THIRD_PARTY_NOTICES.md) | `THIRD_PARTY_NOTICES.md` | `8d520be8ffd31913a0069c001e5315c6e1b4eeafa5a5d829724c11e56b8199b2` |
+| [`project/zeron-theme/LICENSE-MIT`](project/zeron-theme/LICENSE-MIT) | `crates/zeron-theme/LICENSE-MIT` | `e776600f641baae3fd37387829b40fe2d7c12d01785dc8b846658b7cbb0342e3` |
+| [`project/THIRD_PARTY_NOTICES.md`](project/THIRD_PARTY_NOTICES.md) | `THIRD_PARTY_NOTICES.md` | `ec8d295bce118a6161b65f67bd0061c1760bc4a74af96ab6596d5311739ce94a` |
 | [`project/assets/Geist-OFL.txt`](project/assets/Geist-OFL.txt) | `apps/megamail/assets/fonts/licenses/Geist-OFL.txt` | `942560b236adfa83745b2c64e5fc09ebaf91cb331751b1157eb92187e5d6e930` |
 | [`project/assets/LICENSE-LUCIDE`](project/assets/LICENSE-LUCIDE) | `apps/megamail/assets/icons/LICENSE-LUCIDE` | `b495047bd93a9b06913511076f504daba17d5bbeb3e0650f3bb53a4220329c57` |
 
@@ -376,6 +377,7 @@ GPUI Kit's tagged Apache-2.0 text appears with its dependency entry below.
 | `jni-sys-macros` | `0.4.1` | `MIT OR Apache-2.0` | **No regular license file found** |
 | `jobserver` | `0.1.35` | `MIT OR Apache-2.0` | [`LICENSE-APACHE`](dependencies/jobserver-0.1.35/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/jobserver-0.1.35/LICENSE-MIT) |
 | `js-sys` | `0.3.106` | `MIT OR Apache-2.0` | [`LICENSE-APACHE`](dependencies/js-sys-0.3.106/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/js-sys-0.3.106/LICENSE-MIT) |
+| `json5` | `0.4.1` | `ISC` | **No regular license file found** |
 | `keyring` | `3.6.3` | `MIT OR Apache-2.0` | [`LICENSE-APACHE`](dependencies/keyring-3.6.3/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/keyring-3.6.3/LICENSE-MIT) |
 | `khronos-egl` | `6.0.0` | `MIT/Apache-2.0` | [`LICENSE-APACHE`](dependencies/khronos-egl-6.0.0/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/khronos-egl-6.0.0/LICENSE-MIT) |
 | `khronos_api` | `3.1.0` | `Apache-2.0` | **No regular license file found** |
@@ -520,6 +522,10 @@ GPUI Kit's tagged Apache-2.0 text appears with its dependency entry below.
 | `pathfinder_simd` | `0.5.6` | `MIT OR Apache-2.0` | **No regular license file found** |
 | `pbkdf2` | `0.12.2` | `MIT OR Apache-2.0` | [`LICENSE-APACHE`](dependencies/pbkdf2-0.12.2/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/pbkdf2-0.12.2/LICENSE-MIT) |
 | `percent-encoding` | `2.3.2` | `MIT OR Apache-2.0` | [`LICENSE-APACHE`](dependencies/percent-encoding-2.3.2/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/percent-encoding-2.3.2/LICENSE-MIT) |
+| `pest` | `2.9.2` | `MIT OR Apache-2.0` | [`LICENSE-APACHE`](dependencies/pest-2.9.2/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/pest-2.9.2/LICENSE-MIT) |
+| `pest_derive` | `2.9.2` | `MIT OR Apache-2.0` | [`LICENSE-APACHE`](dependencies/pest_derive-2.9.2/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/pest_derive-2.9.2/LICENSE-MIT) |
+| `pest_generator` | `2.9.2` | `MIT OR Apache-2.0` | [`LICENSE-APACHE`](dependencies/pest_generator-2.9.2/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/pest_generator-2.9.2/LICENSE-MIT) |
+| `pest_meta` | `2.9.2` | `MIT OR Apache-2.0` | [`LICENSE-APACHE`](dependencies/pest_meta-2.9.2/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/pest_meta-2.9.2/LICENSE-MIT) |
 | `phf` | `0.11.3` | `MIT` | [`LICENSE`](dependencies/phf-0.11.3/LICENSE) |
 | `phf` | `0.13.1` | `MIT` | [`LICENSE`](dependencies/phf-0.13.1/LICENSE) |
 | `phf` | `0.14.0` | `MIT` | [`LICENSE`](dependencies/phf-0.14.0/LICENSE) |
@@ -540,6 +546,7 @@ GPUI Kit's tagged Apache-2.0 text appears with its dependency entry below.
 | `pin-utils` | `0.1.1` | `MIT OR Apache-2.0` | [`LICENSE-APACHE`](dependencies/pin-utils-0.1.1/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/pin-utils-0.1.1/LICENSE-MIT) |
 | `piper` | `0.2.5` | `MIT OR Apache-2.0` | [`LICENSE-APACHE`](dependencies/piper-0.2.5/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/piper-0.2.5/LICENSE-MIT) |
 | `pkg-config` | `0.3.34` | `MIT OR Apache-2.0` | [`LICENSE-APACHE`](dependencies/pkg-config-0.3.34/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/pkg-config-0.3.34/LICENSE-MIT) |
+| `plist` | `1.10.1` | `MIT` | **No regular license file found** |
 | `png` | `0.17.16` | `MIT OR Apache-2.0` | [`LICENSE-APACHE`](dependencies/png-0.17.16/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/png-0.17.16/LICENSE-MIT) |
 | `png` | `0.18.1` | `MIT OR Apache-2.0` | [`LICENSE-APACHE`](dependencies/png-0.18.1/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/png-0.18.1/LICENSE-MIT) |
 | `polling` | `3.11.0` | `Apache-2.0 OR MIT` | [`LICENSE-APACHE`](dependencies/polling-3.11.0/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/polling-3.11.0/LICENSE-MIT) |
@@ -568,6 +575,7 @@ GPUI Kit's tagged Apache-2.0 text appears with its dependency entry below.
 | `qoi` | `0.4.1` | `MIT/Apache-2.0` | [`LICENSE-APACHE`](dependencies/qoi-0.4.1/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/qoi-0.4.1/LICENSE-MIT) |
 | `quick-error` | `2.0.1` | `MIT/Apache-2.0` | [`LICENSE-APACHE`](dependencies/quick-error-2.0.1/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/quick-error-2.0.1/LICENSE-MIT) |
 | `quick-xml` | `0.41.0` | `MIT` | [`LICENSE-MIT.md`](dependencies/quick-xml-0.41.0/LICENSE-MIT.md) |
+| `quick-xml` | `0.42.0` | `MIT` | [`LICENSE-MIT.md`](dependencies/quick-xml-0.42.0/LICENSE-MIT.md) |
 | `quinn` | `0.11.12` | `MIT OR Apache-2.0` | [`LICENSE-APACHE`](dependencies/quinn-0.11.12/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/quinn-0.11.12/LICENSE-MIT) |
 | `quinn-proto` | `0.11.19` | `MIT OR Apache-2.0` | [`LICENSE-APACHE`](dependencies/quinn-proto-0.11.19/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/quinn-proto-0.11.19/LICENSE-MIT) |
 | `quinn-udp` | `0.5.16` | `MIT OR Apache-2.0` | [`LICENSE-APACHE`](dependencies/quinn-udp-0.5.16/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/quinn-udp-0.5.16/LICENSE-MIT) |
@@ -739,6 +747,7 @@ GPUI Kit's tagged Apache-2.0 text appears with its dependency entry below.
 | `tiff` | `0.11.3` | `MIT` | [`LICENSE`](dependencies/tiff-0.11.3/LICENSE) |
 | `time` | `0.3.55` | `MIT OR Apache-2.0` | [`LICENSE-Apache`](dependencies/time-0.3.55/LICENSE-Apache), [`LICENSE-MIT`](dependencies/time-0.3.55/LICENSE-MIT) |
 | `time-core` | `0.1.9` | `MIT OR Apache-2.0` | [`LICENSE-Apache`](dependencies/time-core-0.1.9/LICENSE-Apache), [`LICENSE-MIT`](dependencies/time-core-0.1.9/LICENSE-MIT) |
+| `time-macros` | `0.2.32` | `MIT OR Apache-2.0` | [`LICENSE-Apache`](dependencies/time-macros-0.2.32/LICENSE-Apache), [`LICENSE-MIT`](dependencies/time-macros-0.2.32/LICENSE-MIT) |
 | `tiny-keccak` | `2.0.2` | `CC0-1.0` | [`LICENSE`](dependencies/tiny-keccak-2.0.2/LICENSE) |
 | `tiny-skia` | `0.11.4` | `BSD-3-Clause` | [`LICENSE`](dependencies/tiny-skia-0.11.4/LICENSE) |
 | `tiny-skia-path` | `0.11.4` | `BSD-3-Clause` | [`LICENSE`](dependencies/tiny-skia-path-0.11.4/LICENSE) |
@@ -772,6 +781,7 @@ GPUI Kit's tagged Apache-2.0 text appears with its dependency entry below.
 | `ttf-parser` | `0.25.1` | `MIT OR Apache-2.0` | [`LICENSE-APACHE`](dependencies/ttf-parser-0.25.1/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/ttf-parser-0.25.1/LICENSE-MIT) |
 | `typeid` | `1.0.3` | `MIT OR Apache-2.0` | [`LICENSE-APACHE`](dependencies/typeid-1.0.3/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/typeid-1.0.3/LICENSE-MIT) |
 | `typenum` | `1.20.1` | `MIT OR Apache-2.0` | [`LICENSE`](dependencies/typenum-1.20.1/LICENSE), [`LICENSE-APACHE`](dependencies/typenum-1.20.1/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/typenum-1.20.1/LICENSE-MIT) |
+| `ucd-trie` | `0.1.7` | `MIT OR Apache-2.0` | [`LICENSE-APACHE`](dependencies/ucd-trie-0.1.7/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/ucd-trie-0.1.7/LICENSE-MIT) |
 | `uds_windows` | `1.2.1` | `MIT` | [`LICENSE`](dependencies/uds_windows-1.2.1/LICENSE) |
 | `unicase` | `2.10.0` | `MIT OR Apache-2.0` | [`LICENSE-APACHE`](dependencies/unicase-2.10.0/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/unicase-2.10.0/LICENSE-MIT) |
 | `unicode-bidi` | `0.3.18` | `MIT OR Apache-2.0` | [`LICENSE-APACHE`](dependencies/unicode-bidi-0.3.18/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/unicode-bidi-0.3.18/LICENSE-MIT) |
@@ -998,6 +1008,7 @@ The following package roots had license candidates that were missing, unsafe, ou
 - `hexf-parse@0.2.1` (`CC0-1.0`): no package-root license text found (Cargo declares CC0-1.0)
 - `imap-proto@0.16.7` (`MIT OR Apache-2.0`): no package-root license text found (Cargo declares MIT OR Apache-2.0)
 - `jni-sys-macros@0.4.1` (`MIT OR Apache-2.0`): no package-root license text found (Cargo declares MIT OR Apache-2.0)
+- `json5@0.4.1` (`ISC`): no package-root license text found (Cargo declares ISC)
 - `khronos_api@3.1.0` (`Apache-2.0`): no package-root license text found (Cargo declares Apache-2.0)
 - `leak@0.1.2` (`Apache-2.0 OR MIT`): no package-root license text found (Cargo declares Apache-2.0 OR MIT)
 - `leaky-cow@0.1.1` (`MIT / Apache-2.0`): no package-root license text found (Cargo declares MIT / Apache-2.0)
@@ -1043,6 +1054,7 @@ The following package roots had license candidates that were missing, unsafe, ou
 - `objc_id@0.1.1` (`MIT`): no package-root license text found (Cargo declares MIT)
 - `pathfinder_geometry@0.5.1` (`MIT/Apache-2.0`): no package-root license text found (Cargo declares MIT/Apache-2.0)
 - `pathfinder_simd@0.5.6` (`MIT OR Apache-2.0`): no package-root license text found (Cargo declares MIT OR Apache-2.0)
+- `plist@1.10.1` (`MIT`): no package-root license text found (Cargo declares MIT)
 - `profiling@1.0.18` (`MIT OR Apache-2.0`): no package-root license text found (Cargo declares MIT OR Apache-2.0)
 - `profiling-procmacros@1.0.18` (`MIT OR Apache-2.0`): no package-root license text found (Cargo declares MIT OR Apache-2.0)
 - `pulp-wasm-simd-flag@0.1.1` (`MIT`): no package-root license text found (Cargo declares MIT)

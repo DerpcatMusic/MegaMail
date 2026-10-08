@@ -12,7 +12,7 @@ from the locked dependency graph for `apps/megamail`.
 - [`dependencies/`](dependencies/) contains package license and notice files found in the
   locked Cargo sources; GPUI Kit's omitted Apache text is copied from its matching official tag.
 
-Packages with missing or skipped license-file issues: **90**.
+Packages with missing or skipped license-file issues: **92**.
 Read the issue list in `inventory.md` before redistributing. Cargo SPDX declarations are
 included even when a crate source did not provide a matching text file.
 

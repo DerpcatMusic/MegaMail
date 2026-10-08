@@ -96,11 +96,14 @@ send or delivery test was run. For direct SMTP,
 review the separate username/password and no-login choices independently from
 required IMAP authentication.
 
-Review the Appearance view in both themes with Aurora, Midnight, Paper, and a
-custom image. Check all five image treatments, strength and blur selections,
-restart persistence, and the static cached result. Text contrast is guarded
-using a sampled 5th/95th-percentile estimate; review high-contrast image areas
-and do not describe this as a per-pixel guarantee or compositor blur.
+Review Appearance in System, Light, and Dark modes, with independently
+selected Light/Dark variants, accent and surface settings, and imported theme
+removal/reset. Try Aurora, Midnight, Paper, and a custom image with Original,
+Dither, ASCII, Halftone, and Scanlines. Check the 0–100% treatment, opacity,
+and bottom-fade controls, blur choices 0/10/16, 240 ms crossfade, and restart
+persistence. The 24/10/5% pane bleed caps use a sampled theme-contrast estimate;
+that is not a per-pixel guarantee. MegaMail does not implement Zeron's
+renderer-specific backdrop blur or per-primitive edge fades.
 
 The current captures in `docs/preview/` show sample mail and are retained as
 visual fixtures. They are not captures of the current account-connected

@@ -1,6 +1,6 @@
 # Native client validation
 
-Checked on 2026-10-08 on Linux with Rust 1.98.1. MegaMail now runs Hylki's
+Checked on 2026-10-09 on Linux with Rust 1.98.1. MegaMail now runs Hylki's
 mail worker through a portable core and a native GPUI Kit interface. The
 checks below distinguish executable behavior from live provider testing.
 
@@ -12,10 +12,13 @@ and the manual SMTP username regression. Ignored tests include integrations requ
 external service. The cache permission test was also run separately with
 `--ignored --test-threads=1` and passed.
 
-The native app suite passed **47 tests**, including chronological page truncation,
-Thunderbird folder/identity parsing, bounded source manifests, request-size
-preflight, and wallpaper limits. The JavaScript extension contract check passed
-for bounded binary transfers and message-size preflight.
+The native app suite passed **61 tests**, with one private test ignored. It
+covers chronological page truncation, Thunderbird folder/identity parsing,
+bounded source manifests, request-size preflight, wallpaper limits, and the
+redesign's appearance and theme behavior. The copied `zeron-theme` crate passed
+**25 tests**. The existing mail-core result remains **414 passed and 18
+ignored**. The JavaScript extension contract check passed for bounded binary
+transfers and message-size preflight.
 
 Coverage includes tagged send outcomes, durable Outbox MIME, credential
 staging, stable account IDs, duplicate-account rejection, TLS setup validation,
@@ -62,7 +65,9 @@ on its background thread.
 ## Installation and native window
 
 `tools/install-megamail.sh` built the locked release executable and installed
-the per-user binary, SVG icon, and application-menu launcher. The installer
+the per-user binary, SVG icon, and application-menu launcher. The installed
+release binary SHA-256 is
+`b38f591a81900e042ccd9659321cbdfdbe7c41ca1de986bd8fbaaf6d77c80588`. The installer
 uses Cargo's configured shared target directory and two build jobs. No
 `CARGO_TARGET_DIR` or `RUSTC_WRAPPER` override was used.
 
@@ -75,10 +80,21 @@ and fictional runtime mail fixtures. The desktop's personal accounts and
 mail are excluded. Setup was checked in dark and light themes, centered in
 the window, with server fields revealed through discovery or manual setup.
 Gmail discovery displayed its IMAP/SMTP endpoints and app-password guidance.
-The final debug app opened without a hover-style assertion. Dark/light views,
-all five wallpaper treatments, private image import, persisted appearance,
-search, and 1060×640 appearance/composer footers were checked. The final
-captures used Xvfb without a window manager; earlier captures used Openbox.
+An earlier bounded debug UI pass checked all five wallpaper treatments
+with a custom image, private image import, persisted appearance, and the
+1060×640 Appearance/composer footers. The current release captures in
+`docs/preview/` use fictional demo messages and show the built-in Aurora
+background with Original and Dither, along with the appearance controls and
+theme menus. The search capture shows Unread narrowing 19 loaded rows to 2.
+Search and All/Unread/Starred/Attachments filters apply to loaded messages in
+the current folder. The final captures used Xvfb without a window manager;
+earlier captures used Openbox.
+
+The native and vendored theme suites cover theme import parsing, preference
+persistence/reset, and wallpaper transition behavior. Imported-theme removal
+has not been manually reviewed in the UI. This redesign turn added no new
+real-provider send, physical-GPU, or performance measurements; the earlier
+Thunderbird and cache checks below retain their separate scope.
 
 Xvfb reported DRI3/Vulkan presentation warnings. Successful screenshots do
 not establish physical-display rendering speed. The host has AMD Radeon

@@ -37,43 +37,44 @@ use gpui_kit::StyledImage as _;
 
 /// Paint a full-window wallpaper layer. Use as the first child of a `relative`
 /// shell; all foreground text stays in separate contrast-checked surfaces.
-pub(crate) fn background_element(state: &AppearanceState, dark: bool, accent: Hsla) -> Div {
-    if state.preset() == AppearancePreset::Custom {
-        if let Some(image) = state.cached_image() {
-            let base: Hsla = if dark {
-                rgb(0x060606).into()
-            } else {
-                rgb(0xf7f7f9).into()
-            };
-            let clear = Hsla { a: 0.0, ..base };
-            return div()
-                .absolute()
-                .inset_0()
-                .overflow_hidden()
-                .bg(base)
-                .child(
-                    img(ImageSource::Render(image))
-                        .size_full()
-                        .object_fit(ObjectFit::Cover)
-                        .opacity(state.opacity()),
-                )
-                .child(div().absolute().inset_0().bg(vertical(
-                    hsla(
-                        0.0,
-                        0.0,
-                        if dark { 0.0 } else { 1.0 },
-                        if dark { 0.10 } else { 0.045 },
-                    ),
-                    clear,
-                )));
-        }
-    }
-
-    match state.preset() {
+pub(crate) fn background_element(
+    state: &AppearanceState,
+    dark: bool,
+    accent: Hsla,
+    canvas: Hsla,
+) -> Div {
+    let fallback = match state.preset() {
         AppearancePreset::Aurora | AppearancePreset::Custom => aurora(dark, accent),
         AppearancePreset::Midnight => midnight(dark),
         AppearancePreset::Paper => paper(dark),
-    }
+    };
+    let frame = state.wallpaper_frame();
+    let background = if frame.current.is_some() {
+        let crossfading = frame.previous.is_some();
+        let mut layer = div().absolute().inset_0().overflow_hidden().bg(canvas);
+        if let Some(previous) = frame.previous {
+            layer = layer.child(
+                img(ImageSource::Render(previous))
+                    .size_full()
+                    .object_fit(ObjectFit::Cover)
+                    .opacity(frame.previous_opacity * (1.0 - frame.mix)),
+            );
+        }
+        if let Some(current) = frame.current {
+            let opacity = if crossfading { frame.mix } else { 1.0 };
+            layer = layer.child(
+                img(ImageSource::Render(current))
+                    .size_full()
+                    .object_fit(ObjectFit::Cover)
+                    .opacity(frame.current_opacity * opacity),
+            );
+        }
+        layer
+    } else {
+        fallback
+    };
+    let (clear, faded) = bottom_fade_colors(canvas, state.fade());
+    background.child(div().absolute().inset_0().bg(vertical(clear, faded)))
 }
 
 /// A dark frosted navigation plane. The image's measured safe opacity bounds
@@ -94,8 +95,8 @@ pub(crate) fn reader_surface(state: &AppearanceState, dark: bool) -> Hsla {
 }
 
 fn surface(state: &AppearanceState, color: u32, nominal_bleed: f32) -> Hsla {
-    let wallpaper_opacity = state.opacity().clamp(0.0, 1.0);
-    let maximum_bleed = if state.preset() == AppearancePreset::Custom && wallpaper_opacity > 0.001 {
+    let wallpaper_opacity = state.visual_wallpaper_opacity().clamp(0.0, 1.0);
+    let maximum_bleed = if state.has_cached_image() && wallpaper_opacity > 0.001 {
         (state.safe_opacity() / wallpaper_opacity).clamp(0.0, 1.0)
     } else {
         1.0
@@ -236,4 +237,33 @@ fn with_alpha(color: Hsla, alpha: f32) -> Hsla {
 fn tint(color: u32, alpha: f32) -> Hsla {
     let color: Hsla = rgb(color).into();
     with_alpha(color, alpha)
+}
+
+fn bottom_fade_colors(canvas: Hsla, strength: f32) -> (Hsla, Hsla) {
+    (
+        Hsla { a: 0.0, ..canvas },
+        Hsla {
+            a: if strength.is_finite() {
+                strength.clamp(0.0, 1.0)
+            } else {
+                0.0
+            },
+            ..canvas
+        },
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bottom_fade_blends_to_the_theme_canvas_without_leaking_alpha() {
+        let canvas = hsla(0.6, 0.4, 0.08, 1.0);
+        let (clear, faded) = bottom_fade_colors(canvas, 0.7);
+        assert_eq!(clear.a, 0.0);
+        assert_eq!(faded.a, 0.7);
+        assert_eq!((clear.h, clear.s, clear.l), (canvas.h, canvas.s, canvas.l));
+        assert_eq!(bottom_fade_colors(canvas, f32::NAN).1.a, 0.0);
+    }
 }

@@ -98,6 +98,43 @@ pub(crate) fn render(source: &RgbaImage, effect: WallpaperEffect, light: bool) -
     }
 }
 
+/// Blend the cached Zeron treatment over its source without involving the UI
+/// renderer. Strength is clamped here because preference files are untrusted.
+pub(crate) fn render_with_strength(
+    source: &RgbaImage,
+    effect: WallpaperEffect,
+    light: bool,
+    strength: f32,
+) -> RgbaImage {
+    let strength = if strength.is_finite() {
+        strength.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    if strength >= 1.0 || effect == WallpaperEffect::None {
+        return render(source, effect, light);
+    }
+    if strength <= 0.0 {
+        return source.clone();
+    }
+    let treated = render(source, effect, light);
+    RgbaImage::from_fn(source.width(), source.height(), |x, y| {
+        let original = source.get_pixel(x, y).0;
+        let treated = treated.get_pixel(x, y).0;
+        let blend = |from: u8, to: u8| {
+            (f32::from(from) + (f32::from(to) - f32::from(from)) * strength)
+                .round()
+                .clamp(0.0, 255.0) as u8
+        };
+        Rgba([
+            blend(original[0], treated[0]),
+            blend(original[1], treated[1]),
+            blend(original[2], treated[2]),
+            original[3],
+        ])
+    })
+}
+
 fn scanlines(source: &RgbaImage, light: bool) -> RgbaImage {
     let (width, height) = source.dimensions();
     let mut output = RgbaImage::new(width, height);
@@ -335,6 +372,23 @@ mod tests {
                 assert_eq!(output.dimensions(), image.dimensions());
             }
         }
+    }
+
+    #[test]
+    fn effect_strength_blends_from_original_to_full_zeron_treatment() {
+        let source = RgbaImage::from_pixel(8, 8, Rgba([120, 90, 45, 200]));
+        assert_eq!(
+            render_with_strength(&source, WallpaperEffect::Scanlines, false, 0.0),
+            source
+        );
+        assert_eq!(
+            render_with_strength(&source, WallpaperEffect::Scanlines, false, 1.0),
+            render(&source, WallpaperEffect::Scanlines, false)
+        );
+        assert_eq!(
+            render_with_strength(&source, WallpaperEffect::None, false, 0.3),
+            source
+        );
     }
 
     #[test]

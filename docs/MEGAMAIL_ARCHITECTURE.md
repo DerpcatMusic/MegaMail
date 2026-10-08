@@ -177,33 +177,36 @@ content loading.
 
 ## Appearance and Zeron material adaptation
 
-The native app retains its dark/light `Palette::new` roles as the base tint
-colors. `zeron_background` paints a full-window gradient or cached custom
-wallpaper beneath the panes; the rail, message list, and reader then use
-translucent palette tints. Their nominal maximum wallpaper bleed is 20% for
-the navigation rail and 5% each for the list and reader. For a custom image,
-the allowed artwork opacity is reduced using Zeron's sampled 5th/95th
-percentile contrast estimate, targeting at least 4.5:1 for the sampled worst
-color. This is an estimate, not a per-pixel contrast guarantee.
+The app uses official GPUI Kit 0.7.1 and a standalone MIT copy of Zeron's
+theme crate from commit `0c4835d2b73aa632b7b4d626ee0826a25ec1c9b9`. The copied
+registry contains 19 theme families and 30 built-in variants. System mode
+follows the desktop appearance; Light and Dark theme variants are selected
+independently. Users can override accent and surface treatment, import VS Code
+JSON/JSONC theme files or extension `package.json` manifests, remove imported
+theme families, and reset preferences while retaining the library. Imported
+formats are normalized into Zeron's theme model; native Zeron theme JSON is not
+an import format.
 
-The Appearance view offers Aurora, Midnight, and Paper backgrounds, plus an
-optional custom image; dark/light mode is independent. Custom PNG, JPEG, or
-WebP input is limited to 24 MiB and 16 million pixels, with a 96 MiB decode
-allocation limit. MegaMail normalizes the saved private PNG to at most 2500px
-on its longest edge and 32 MiB stored size, and does not retain the source
-path. Original, Dither, ASCII, Halftone, and Scanlines effects plus blur are
-processed off the UI/render path into a cached static `RenderImage`; wallpaper
-strength controls the painted image's opacity. There is no live compositor
-blur. The choices persist in `$XDG_CONFIG_HOME/megamail/appearance.v1`, with
-the normalized image under `$XDG_CONFIG_HOME/megamail/wallpapers/`.
+Appearance also offers Aurora, Midnight, and Paper backgrounds plus a private
+custom wallpaper. All support Original, Dither, ASCII, Halftone, and Scanlines,
+with treatment strength, wallpaper opacity, and bottom fade from 0–100%, and
+blur values 0, 10, or 16. Image processing runs off the render path into a
+static cache; background changes crossfade over 240 ms. Pane wallpaper bleed
+is capped at 24% for the navigation rail, 10% for the message list, and 5% for
+the reader, then bounded by a sampled contrast estimate for the active theme.
+That sampled estimate is not a per-pixel contrast guarantee.
 
-The material pipeline and Zeron wallpaper effects are in
-[`zeron_background.rs`](../apps/megamail/src/zeron_background.rs#L40),
-[`appearance.rs`](../apps/megamail/src/appearance.rs#L25), and
-[`zeron_wallpaper.rs`](../apps/megamail/src/zeron_wallpaper.rs#L33). Compact
-sidebar interactions use Zeron's soft neutral wash and its primary/muted/faint
-text roles through [`zeron_style.rs`](../apps/megamail/src/zeron_style.rs#L35);
-the native palette values remain authoritative.
+These translucent panes are MegaMail's in-window adaptation. The app does not
+use Zeron's renderer-specific backdrop-blur API or per-primitive edge fades;
+GPUI Kit 0.7.1 does not provide those Zeron renderer extensions. Theme
+preferences persist in `$XDG_CONFIG_HOME/megamail/theme.v1`; wallpaper and
+appearance preferences use `$XDG_CONFIG_HOME/megamail/appearance.v1`, and the
+normalized wallpaper image is stored privately below MegaMail's configuration
+directory. The implementation is in [`theme.rs`](../apps/megamail/src/theme.rs),
+[`appearance_view.rs`](../apps/megamail/src/appearance_view.rs),
+[`appearance.rs`](../apps/megamail/src/appearance.rs),
+[`zeron_background.rs`](../apps/megamail/src/zeron_background.rs), and
+[`zeron_wallpaper.rs`](../apps/megamail/src/zeron_wallpaper.rs).
 
 ## Current boundaries
 

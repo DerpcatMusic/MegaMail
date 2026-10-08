@@ -1,10 +1,10 @@
 {
-  "copied_bytes": 7679971,
-  "copied_file_count": 1478,
-  "dependency_package_ids_sha256": "ea4dabfec89401154c285bfcfc47a3d871cc4af25fc2ef49bef349f56e43c123",
+  "copied_bytes": 7753303,
+  "copied_file_count": 1492,
+  "dependency_package_ids_sha256": "bbf62b1e25c9dba6b2c69442dcd3d277082bd33114790d5f5f6cfa83eda25882",
   "generated_by": "tools/license-inventory.py",
   "lockfile": "apps/megamail/Cargo.lock",
-  "lockfile_sha256": "bffe88f40330d4418c9458994385e49af38ef58b76d107491b8d463a10f9de72",
+  "lockfile_sha256": "b736b5256622939e21774247fee47b2b6a73e57cf608d5823e0a98298d947763",
   "manifest": "apps/megamail/Cargo.toml",
   "packages": [
     {
@@ -8880,6 +8880,18 @@
       "version": "0.3.106"
     },
     {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#json5@0.4.1",
+      "issues": [
+        "no package-root license text found (Cargo declares ISC)"
+      ],
+      "license": "ISC",
+      "license_file": null,
+      "license_files": [],
+      "name": "json5",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.4.1"
+    },
+    {
       "id": "registry+https://github.com/rust-lang/crates.io-index#keyring@3.6.3",
       "issues": [],
       "license": "MIT OR Apache-2.0",
@@ -12093,6 +12105,122 @@
       "version": "2.3.2"
     },
     {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#pest@2.9.2",
+      "issues": [],
+      "license": "MIT OR Apache-2.0",
+      "license_file": null,
+      "license_files": [
+        {
+          "origins": [
+            "package-root-name"
+          ],
+          "path": "dependencies/pest-2.9.2/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "size_bytes": 10847,
+          "source_name": "LICENSE-APACHE"
+        },
+        {
+          "origins": [
+            "package-root-name"
+          ],
+          "path": "dependencies/pest-2.9.2/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "size_bytes": 1023,
+          "source_name": "LICENSE-MIT"
+        }
+      ],
+      "name": "pest",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "2.9.2"
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#pest_derive@2.9.2",
+      "issues": [],
+      "license": "MIT OR Apache-2.0",
+      "license_file": null,
+      "license_files": [
+        {
+          "origins": [
+            "package-root-name"
+          ],
+          "path": "dependencies/pest_derive-2.9.2/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "size_bytes": 10847,
+          "source_name": "LICENSE-APACHE"
+        },
+        {
+          "origins": [
+            "package-root-name"
+          ],
+          "path": "dependencies/pest_derive-2.9.2/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "size_bytes": 1023,
+          "source_name": "LICENSE-MIT"
+        }
+      ],
+      "name": "pest_derive",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "2.9.2"
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#pest_generator@2.9.2",
+      "issues": [],
+      "license": "MIT OR Apache-2.0",
+      "license_file": null,
+      "license_files": [
+        {
+          "origins": [
+            "package-root-name"
+          ],
+          "path": "dependencies/pest_generator-2.9.2/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "size_bytes": 10847,
+          "source_name": "LICENSE-APACHE"
+        },
+        {
+          "origins": [
+            "package-root-name"
+          ],
+          "path": "dependencies/pest_generator-2.9.2/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "size_bytes": 1023,
+          "source_name": "LICENSE-MIT"
+        }
+      ],
+      "name": "pest_generator",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "2.9.2"
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#pest_meta@2.9.2",
+      "issues": [],
+      "license": "MIT OR Apache-2.0",
+      "license_file": null,
+      "license_files": [
+        {
+          "origins": [
+            "package-root-name"
+          ],
+          "path": "dependencies/pest_meta-2.9.2/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "size_bytes": 10847,
+          "source_name": "LICENSE-APACHE"
+        },
+        {
+          "origins": [
+            "package-root-name"
+          ],
+          "path": "dependencies/pest_meta-2.9.2/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "size_bytes": 1023,
+          "source_name": "LICENSE-MIT"
+        }
+      ],
+      "name": "pest_meta",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "2.9.2"
+    },
+    {
       "id": "registry+https://github.com/rust-lang/crates.io-index#phf@0.11.3",
       "issues": [],
       "license": "MIT",
@@ -12545,6 +12673,18 @@
       "name": "pkg-config",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "version": "0.3.34"
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#plist@1.10.1",
+      "issues": [
+        "no package-root license text found (Cargo declares MIT)"
+      ],
+      "license": "MIT",
+      "license_file": null,
+      "license_files": [],
+      "name": "plist",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "1.10.1"
     },
     {
       "id": "registry+https://github.com/rust-lang/crates.io-index#png@0.17.16",
@@ -13243,6 +13383,26 @@
       "name": "quick-xml",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "version": "0.41.0"
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#quick-xml@0.42.0",
+      "issues": [],
+      "license": "MIT",
+      "license_file": null,
+      "license_files": [
+        {
+          "origins": [
+            "package-root-name"
+          ],
+          "path": "dependencies/quick-xml-0.42.0/LICENSE-MIT.md",
+          "sha256": "f0cf9b1c62bbe3bd3a69f5f79c7158f513f612b4940a0a812d1db39d605318bc",
+          "size_bytes": 1082,
+          "source_name": "LICENSE-MIT.md"
+        }
+      ],
+      "name": "quick-xml",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.42.0"
     },
     {
       "id": "registry+https://github.com/rust-lang/crates.io-index#quinn@0.11.12",
@@ -17731,6 +17891,35 @@
       "version": "0.1.9"
     },
     {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#time-macros@0.2.32",
+      "issues": [],
+      "license": "MIT OR Apache-2.0",
+      "license_file": null,
+      "license_files": [
+        {
+          "origins": [
+            "package-root-name"
+          ],
+          "path": "dependencies/time-macros-0.2.32/LICENSE-Apache",
+          "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+          "size_bytes": 10174,
+          "source_name": "LICENSE-Apache"
+        },
+        {
+          "origins": [
+            "package-root-name"
+          ],
+          "path": "dependencies/time-macros-0.2.32/LICENSE-MIT",
+          "sha256": "2537228d9a1b44a5dc595241349cae7090b326c8de165aaf89bfddef4a00d0fc",
+          "size_bytes": 1057,
+          "source_name": "LICENSE-MIT"
+        }
+      ],
+      "name": "time-macros",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.2.32"
+    },
+    {
       "id": "registry+https://github.com/rust-lang/crates.io-index#tiny-keccak@2.0.2",
       "issues": [],
       "license": "CC0-1.0",
@@ -18542,6 +18731,35 @@
       "name": "typenum",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "version": "1.20.1"
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#ucd-trie@0.1.7",
+      "issues": [],
+      "license": "MIT OR Apache-2.0",
+      "license_file": null,
+      "license_files": [
+        {
+          "origins": [
+            "package-root-name"
+          ],
+          "path": "dependencies/ucd-trie-0.1.7/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "size_bytes": 10847,
+          "source_name": "LICENSE-APACHE"
+        },
+        {
+          "origins": [
+            "package-root-name"
+          ],
+          "path": "dependencies/ucd-trie-0.1.7/LICENSE-MIT",
+          "sha256": "0f96a83840e146e43c0ec96a22ec1f392e0680e6c1226e6f3ba87e0740af850f",
+          "size_bytes": 1081,
+          "source_name": "LICENSE-MIT"
+        }
+      ],
+      "name": "ucd-trie",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.1.7"
     },
     {
       "id": "registry+https://github.com/rust-lang/crates.io-index#uds_windows@1.2.1",
@@ -23933,6 +24151,14 @@
     },
     {
       "issues": [
+        "no package-root license text found (Cargo declares ISC)"
+      ],
+      "license": "ISC",
+      "name": "json5",
+      "version": "0.4.1"
+    },
+    {
+      "issues": [
         "no package-root license text found (Cargo declares Apache-2.0)"
       ],
       "license": "Apache-2.0",
@@ -24293,6 +24519,14 @@
     },
     {
       "issues": [
+        "no package-root license text found (Cargo declares MIT)"
+      ],
+      "license": "MIT",
+      "name": "plist",
+      "version": "1.10.1"
+    },
+    {
+      "issues": [
         "no package-root license text found (Cargo declares MIT OR Apache-2.0)"
       ],
       "license": "MIT OR Apache-2.0",
@@ -24501,9 +24735,16 @@
       "source_name": "LICENSE"
     },
     {
+      "path": "project/zeron-theme/LICENSE-MIT",
+      "sha256": "e776600f641baae3fd37387829b40fe2d7c12d01785dc8b846658b7cbb0342e3",
+      "size_bytes": 1061,
+      "source": "crates/zeron-theme/LICENSE-MIT",
+      "source_name": "LICENSE-MIT"
+    },
+    {
       "path": "project/THIRD_PARTY_NOTICES.md",
-      "sha256": "8d520be8ffd31913a0069c001e5315c6e1b4eeafa5a5d829724c11e56b8199b2",
-      "size_bytes": 3440,
+      "sha256": "ec8d295bce118a6161b65f67bd0061c1760bc4a74af96ab6596d5311739ce94a",
+      "size_bytes": 3990,
       "source": "THIRD_PARTY_NOTICES.md",
       "source_name": "THIRD_PARTY_NOTICES.md"
     },
@@ -24522,6 +24763,6 @@
       "source_name": "LICENSE-LUCIDE"
     }
   ],
-  "remote_package_count": 946,
+  "remote_package_count": 955,
   "schema_version": 1
 }
