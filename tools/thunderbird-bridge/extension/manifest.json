@@ -1,0 +1,28 @@
+{
+  "manifest_version": 2,
+  "name": "MegaMail Thunderbird Bridge",
+  "version": "0.1.0",
+  "description": "Private local bridge used by MegaMail to access its isolated Thunderbird profile.",
+  "applications": { "gecko": { "id": "__EXTENSION_ID__", "strict_min_version": "153.0" } },
+  "permissions": [
+    "nativeMessaging",
+    "accountsRead",
+    "messagesRead",
+    "messagesMove",
+    "messagesDelete",
+    "messagesUpdate",
+    "messages.send",
+    "messages.save",
+    "compose",
+    "compose.send",
+    "compose.save",
+    "tabs"
+  ],
+  "background": { "scripts": ["background.js"] },
+  "experiment_apis": {
+    "megamailSync": {
+      "schema": "api/schema.json",
+      "parent": { "scopes": ["addon_parent"], "paths": [["megamailSync"]], "script": "api/implementation.js" }
+    }
+  }
+}

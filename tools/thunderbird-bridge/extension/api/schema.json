@@ -1,0 +1,49 @@
+[
+  {
+    "namespace": "megamailSync",
+    "functions": [
+      {
+        "name": "discoverFolders",
+        "type": "function",
+        "async": true,
+        "returns": {
+          "type": "object",
+          "properties": {
+            "discovered": { "type": "boolean" },
+            "cached": { "type": "boolean" }
+          }
+        },
+        "parameters": [
+          { "name": "accountId", "type": "string" }
+        ]
+      },
+      {
+        "name": "getNewMessages",
+        "type": "function",
+        "async": true,
+        "returns": {
+          "type": "object",
+          "properties": {
+            "synced": { "type": "boolean" },
+            "local": { "type": "boolean" }
+          }
+        },
+        "parameters": [
+          { "name": "folderId", "type": "string" }
+        ]
+      },
+      {
+        "name": "shutdown",
+        "type": "function",
+        "async": true,
+        "returns": {
+          "type": "object",
+          "properties": {
+            "stopping": { "type": "boolean" }
+          }
+        },
+        "parameters": []
+      }
+    ]
+  }
+]

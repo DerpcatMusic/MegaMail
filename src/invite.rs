@@ -33,7 +33,7 @@
 //! part is read once, when the message's body is fetched, and rides with
 //! the sender check into the cache (see [`crate::verify`]).
 
-use gtk::glib;
+use glib;
 
 use crate::models::{Invite, InvitePerson};
 

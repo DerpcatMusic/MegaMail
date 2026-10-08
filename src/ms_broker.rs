@@ -16,6 +16,7 @@ const BUS_NAME: &str = "com.microsoft.identity.broker1";
 const PATH: &str = "/com/microsoft/identity/broker1";
 const INTERFACE: &str = "com.microsoft.identity.Broker1";
 /// The only host the broker's cookie is good for.
+const ENTRA_HOST: &str = "login.microsoftonline.com";
 const ENTRA: &str = "https://login.microsoftonline.com";
 /// [MS-OAPXBC] authorization type for a PRT SSO cookie.
 const PRT_SSO_COOKIE: u32 = 8;
@@ -32,8 +33,14 @@ pub struct SsoCookie {
 /// Entra ID and a broker on this computer has that account. `user` is the
 /// address being signed in; without one, a broker holding a single
 /// account uses it. Blocking: call it off the main thread.
-pub fn sso_cookie(settings: &crate::config::OAuthSettings, user: Option<&str>) -> Option<SsoCookie> {
-    if !settings.auth_url.starts_with(ENTRA) || settings.client_id.trim().is_empty() {
+pub fn sso_cookie(
+    settings: &crate::config::OAuthSettings,
+    user: Option<&str>,
+) -> Option<SsoCookie> {
+    // Validate both destinations before asking the broker for a PRT cookie.
+    // The returned header is attached to the token request, so checking only
+    // the authorization URL would let arbitrary HTTPS token hosts receive it.
+    if !cookie_scope_allowed(settings) {
         return None;
     }
     match fetch(settings, user) {
@@ -50,21 +57,57 @@ pub fn sso_cookie(settings: &crate::config::OAuthSettings, user: Option<&str>) -
     }
 }
 
-fn fetch(settings: &crate::config::OAuthSettings, user: Option<&str>) -> Result<Option<SsoCookie>, String> {
+fn cookie_scope_allowed(settings: &crate::config::OAuthSettings) -> bool {
+    !settings.client_id.trim().is_empty()
+        && trusted_entra_endpoint(&settings.auth_url)
+        && trusted_entra_endpoint(&settings.token_url)
+}
+
+/// Exact URI-based allowlist for either endpoint that can carry a broker
+/// cookie. Host-prefix/string checks accept lookalikes and userinfo tricks;
+/// only HTTPS on the exact Entra hostname and its default port are allowed.
+fn trusted_entra_endpoint(url: &str) -> bool {
+    glib::Uri::parse(url, glib::UriFlags::NONE).is_ok_and(|uri| {
+        uri.scheme().as_str().eq_ignore_ascii_case("https")
+            && uri
+                .host()
+                .is_some_and(|host| host.as_str().eq_ignore_ascii_case(ENTRA_HOST))
+            && uri.userinfo().is_none()
+            && matches!(uri.port(), -1 | 443)
+            && uri.fragment().is_none()
+    })
+}
+
+fn fetch(
+    settings: &crate::config::OAuthSettings,
+    user: Option<&str>,
+) -> Result<Option<SsoCookie>, String> {
     let conn = zbus::blocking::Connection::session().map_err(|e| e.to_string())?;
     // One id for the pair of calls, as a broker log ties them together.
     let session = correlation_id();
     let redirect = redirect_uri(settings);
     let call = |method: &str, request: &str| -> Result<String, String> {
-        conn.call_method(Some(BUS_NAME), PATH, Some(INTERFACE), method, &("0.0", session.as_str(), request))
-            .map_err(|e| format!("{method}: {e}"))?
-            .body()
-            .deserialize::<String>()
-            .map_err(|e| format!("{method}: {e}"))
+        conn.call_method(
+            Some(BUS_NAME),
+            PATH,
+            Some(INTERFACE),
+            method,
+            &("0.0", session.as_str(), request),
+        )
+        .map_err(|e| format!("{method}: {e}"))?
+        .body()
+        .deserialize::<String>()
+        .map_err(|e| format!("{method}: {e}"))
     };
-    let accounts = call("getAccounts", &accounts_request(&settings.client_id, &redirect))?;
+    let accounts = call(
+        "getAccounts",
+        &accounts_request(&settings.client_id, &redirect),
+    )?;
     let Some(account) = pick_account(&accounts, user) else {
-        return Err(format!("no broker account for {}", user.unwrap_or("this sign-in")));
+        return Err(format!(
+            "no broker account for {}",
+            user.unwrap_or("this sign-in")
+        ));
     };
     let reply = call(
         "acquirePrtSsoCookie",
@@ -147,6 +190,71 @@ fn parse_cookie(reply: &str) -> Option<SsoCookie> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn settings(auth_url: &str, token_url: &str) -> crate::config::OAuthSettings {
+        crate::config::OAuthSettings {
+            auth_url: auth_url.into(),
+            token_url: token_url.into(),
+            client_id: "megamail-client".into(),
+            client_secret: String::new(),
+            scopes: String::new(),
+            redirect_uri: String::new(),
+        }
+    }
+
+    #[test]
+    fn broker_cookie_requires_exact_entra_authorization_and_token_endpoints() {
+        let valid = settings(
+            "https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize",
+            "https://login.microsoftonline.com/organizations/oauth2/v2.0/token",
+        );
+        assert!(cookie_scope_allowed(&valid));
+        assert!(trusted_entra_endpoint(
+            "https://LOGIN.MICROSOFTONLINE.COM:443/oauth/token"
+        ));
+
+        // Either endpoint can control where the refresh-token cookie would
+        // be sent, so each side of the pair must pass the same strict check.
+        for (auth_url, token_url) in [
+            (
+                "https://login.microsoftonline.com.attacker.example/authorize",
+                "https://login.microsoftonline.com/token",
+            ),
+            (
+                "https://login.microsoftonline.com@attacker.example/authorize",
+                "https://login.microsoftonline.com/token",
+            ),
+            (
+                "https://login.microsoftonline.com/authorize",
+                "https://attacker.example/login.microsoftonline.com/token",
+            ),
+            (
+                "https://login.microsoftonline.com/authorize",
+                "https://login.microsoftonline.com.attacker.example/token",
+            ),
+            (
+                "https://login.microsoftonline.com:444/authorize",
+                "https://login.microsoftonline.com/token",
+            ),
+            (
+                "https://login.microsoftonline.com/authorize",
+                "https://login.microsoftonline.com:8443/token",
+            ),
+            (
+                "http://login.microsoftonline.com/authorize",
+                "https://login.microsoftonline.com/token",
+            ),
+            (
+                "https://login.microsoftonline.com/authorize",
+                "https://user@login.microsoftonline.com/token",
+            ),
+        ] {
+            assert!(
+                !cookie_scope_allowed(&settings(auth_url, token_url)),
+                "broker cookie scope must reject auth={auth_url:?} token={token_url:?}",
+            );
+        }
+    }
 
     #[test]
     fn the_account_is_picked_by_name() {

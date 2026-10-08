@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-08T11:18:27Z",
+  "generatedAt": "2026-10-08T13:40:22Z",
   "title": "Design System: MegaMail",
   "extensions": {
     "colorMeta": {
@@ -402,6 +402,89 @@
         "displayName": "Message metadata",
         "purpose": "Addresses, timestamps, and quiet secondary information."
       }
+    },
+    "platform": "Linux desktop; native GPUI Kit window; no web or mobile breakpoint contract.",
+    "appearanceMeta": {
+      "paletteSource": "apps/megamail/src/main.rs#L77",
+      "paletteUse": "Native Rust colors are base palette/tint roles. Visible rail, list, and reader planes composite these colors over the background layer.",
+      "defaults": {
+        "theme": "dark",
+        "background": "Aurora",
+        "customWallpaperStrength": "86%",
+        "customWallpaperBlur": "Blur 10"
+      },
+      "presets": [
+        "Aurora",
+        "Midnight",
+        "Paper",
+        "Custom image"
+      ],
+      "effects": [
+        "Original",
+        "Dither",
+        "ASCII",
+        "Halftone",
+        "Scanlines"
+      ],
+      "customWallpaper": {
+        "inputFormats": [
+          "PNG",
+          "JPEG",
+          "WebP"
+        ],
+        "maxInputSize": "24 MiB",
+        "maxDecodedPixels": 16000000,
+        "maxDecodeAllocation": "96 MiB",
+        "maxStoredPng": "32 MiB",
+        "maxNormalizedEdge": "2500px",
+        "sourcePathRetained": false,
+        "privateStorage": "$XDG_CONFIG_HOME/megamail/wallpapers/",
+        "preferences": "$XDG_CONFIG_HOME/megamail/appearance.v1"
+      },
+      "wallpaperControls": {
+        "strength": [
+          "72%",
+          "86%",
+          "96%"
+        ],
+        "blur": [
+          "Sharp",
+          "Blur 10",
+          "Blur 16"
+        ],
+        "processing": "Background processing into one cached static GPUI RenderImage; no live compositor blur."
+      },
+      "paneSurfaces": {
+        "navigationRail": {
+          "nominalTintAlpha": "80%",
+          "maxWallpaperBleed": "20%"
+        },
+        "messageList": {
+          "nominalTintAlpha": "95%",
+          "maxWallpaperBleed": "5%"
+        },
+        "reader": {
+          "nominalTintAlpha": "95%",
+          "maxWallpaperBleed": "5%"
+        },
+        "contrastGuard": "For custom wallpaper, limit artwork opacity using a sampled 5th/95th-percentile estimate targeting at least 4.5:1 for the sampled worst color. This is not a per-pixel contrast guarantee."
+      },
+      "sourceAnchors": {
+        "wallpaperLimitsAndPresets": "apps/megamail/src/appearance.rs#L27",
+        "wallpaperEffects": "apps/megamail/src/zeron_wallpaper.rs#L35",
+        "wallpaperBackground": "apps/megamail/src/zeron_background.rs#L40",
+        "paneBleedAndGuard": "apps/megamail/src/zeron_background.rs#L81",
+        "contrastEstimate": "apps/megamail/src/zeron_wallpaper.rs#L232",
+        "navigationRowsAndTextRoles": "apps/megamail/src/zeron_style.rs#L82",
+        "windowBounds": "apps/megamail/src/main.rs#L5794",
+        "fontRegistration": "apps/megamail/src/main.rs#L5786",
+        "navigationRail": "apps/megamail/src/main.rs#L2096",
+        "collapsedRail": "apps/megamail/src/main.rs#L2286",
+        "messageList": "apps/megamail/src/main.rs#L2465",
+        "messageRow": "apps/megamail/src/main.rs#L2425",
+        "readerWidth": "apps/megamail/src/main.rs#L3105",
+        "windowChrome": "apps/megamail/src/main.rs#L4801"
+      }
     }
   },
   "components": [
@@ -411,7 +494,7 @@
       "refersTo": "folder-selected-dark",
       "description": "Selected and hover examples for a folder button in both native theme palettes.",
       "html": "<div class=\"ds-themes\"><div class=\"ds-panel ds-dark\"><button class=\"ds-folder ds-folder-dark\" type=\"button\" aria-current=\"page\"><span>Inbox</span><span class=\"ds-count\">3</span></button></div><div class=\"ds-panel ds-light\"><button class=\"ds-folder ds-folder-light\" type=\"button\" aria-current=\"page\"><span>Inbox</span><span class=\"ds-count\">3</span></button></div></div>",
-      "css": ".ds-themes{display:grid;grid-template-columns:1fr 1fr;gap:8px;font:13px Geist,sans-serif}.ds-panel{padding:8px;border-radius:8px}.ds-dark{background:#0d0d0d;color:#e8e8ea}.ds-light{background:#f7f7f9;color:#303035}.ds-folder{display:flex;width:100%;height:36px;align-items:center;justify-content:space-between;padding:0 8px;border:0;border-radius:8px;font:13px Geist,sans-serif;text-align:left;cursor:pointer}.ds-folder-dark{background:#2e2e30;color:#e8e8ea}.ds-folder-light{background:#e8e8eb;color:#303035}.ds-count{font-size:11px;opacity:.82}.ds-folder-dark:hover{background:#252527}.ds-folder-light:hover{background:#efeff2}.ds-folder:focus-visible{outline:2px solid #7c86ff;outline-offset:2px}.ds-folder-light:focus-visible{outline-color:#5b43e8}"
+      "css": ".ds-themes{display:grid;grid-template-columns:1fr 1fr;gap:8px;font:13px Geist,sans-serif}.ds-panel{padding:8px;border-radius:8px}.ds-dark{background:#0d0d0d;color:#e8e8ea}.ds-light{background:#f7f7f9;color:#303035}.ds-folder{display:flex;width:100%;height:32px;align-items:center;justify-content:space-between;padding:0 8px;border:0;border-radius:8px;font:13px Geist,sans-serif;text-align:left;cursor:pointer}.ds-folder-dark{background:rgb(235 235 235 / 11%);color:#e8e8ea}.ds-folder-light{background:rgb(26 26 26 / 6%);color:#303035}.ds-count{font-size:11px;opacity:.82}.ds-folder-dark:hover{background:rgb(235 235 235 / 11%)}.ds-folder-light:hover{background:rgb(26 26 26 / 6%)}.ds-folder:focus-visible{outline:2px solid #7c86ff;outline-offset:2px}.ds-folder-light:focus-visible{outline-color:#5b43e8}"
     },
     {
       "name": "Selected message row",
@@ -443,17 +526,17 @@
       "refersTo": "message-reader-dark",
       "description": "Continuous reading surface with the implemented subject, sender, divider, and body hierarchy.",
       "html": "<div class=\"ds-themes\"><article class=\"ds-reader ds-dark\"><h2>The new identity system is ready</h2><div class=\"ds-author\"><span class=\"ds-avatar\">MC</span><span><strong>Maya Chen</strong><small>maya@northstar.example</small></span><time>10:42 AM</time></div><hr><p>Hi team,</p><p>I pulled the final typography and color studies into one clear direction. The new system feels calmer, but it still has enough character to stand on its own.</p><small class=\"ds-note\">Fictional sample content · no mailbox or network action is active.</small></article><article class=\"ds-reader ds-light\"><h2>The new identity system is ready</h2><div class=\"ds-author\"><span class=\"ds-avatar\">MC</span><span><strong>Maya Chen</strong><small>maya@northstar.example</small></span><time>10:42 AM</time></div><hr><p>Hi team,</p><p>I pulled the final typography and color studies into one clear direction. The new system feels calmer, but it still has enough character to stand on its own.</p><small class=\"ds-note\">Fictional sample content · no mailbox or network action is active.</small></article></div>",
-      "css": ".ds-themes{display:grid;grid-template-columns:1fr 1fr;gap:8px;font-family:Geist,sans-serif}.ds-reader{box-sizing:border-box;max-width:680px;padding:24px}.ds-dark{background:#060606;color:#e8e8ea}.ds-light{background:#fff;color:#303035}.ds-reader h2{margin:0 0 20px;font-size:22px;font-weight:600;line-height:1.2}.ds-author{display:flex;align-items:center;gap:12px;font-size:13px}.ds-avatar{display:grid;width:36px;height:36px;flex:none;place-items:center;border-radius:9999px;background:#2e2e30;color:#a9a9ae;font-size:11px;font-weight:600}.ds-light .ds-avatar{background:#e8e8eb;color:#62626a}.ds-author strong,.ds-author small{display:block}.ds-author small,.ds-author time,.ds-note{color:#85858a;font-size:11px}.ds-light .ds-author small,.ds-light .ds-author time,.ds-light .ds-note{color:#73737a}.ds-author time{margin-left:auto}.ds-reader hr{height:1px;margin:24px 0;border:0;background:#202020}.ds-light hr{background:#e5e5e9}.ds-reader p{font-size:14px;line-height:1.5}.ds-note{display:block;margin-top:24px}"
+      "css": ".ds-themes{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:8px;background:linear-gradient(135deg,#394254,#43384f);font-family:Geist,sans-serif}.ds-reader{box-sizing:border-box;max-width:680px;padding:24px}.ds-dark{background:rgb(6 6 6 / 95%);color:#e8e8ea}.ds-light{background:rgb(255 255 255 / 95%);color:#303035}.ds-reader h2{margin:0 0 20px;font-size:22px;font-weight:600;line-height:1.2}.ds-author{display:flex;align-items:center;gap:12px;font-size:13px}.ds-avatar{display:grid;width:36px;height:36px;flex:none;place-items:center;border-radius:9999px;background:#2e2e30;color:#a9a9ae;font-size:11px;font-weight:600}.ds-light .ds-avatar{background:#e8e8eb;color:#62626a}.ds-author strong,.ds-author small{display:block}.ds-author small,.ds-author time,.ds-note{color:#85858a;font-size:11px}.ds-light .ds-author small,.ds-light .ds-author time,.ds-light .ds-note{color:#73737a}.ds-author time{margin-left:auto}.ds-reader hr{height:1px;margin:24px 0;border:0;background:#202020}.ds-light hr{background:#e5e5e9}.ds-reader p{font-size:14px;line-height:1.5}.ds-note{display:block;margin-top:24px}"
     }
   ],
   "narrative": {
     "northStar": "Zeron’s quiet, continuous work canvas.",
-    "overview": "MegaMail carries Zeron’s calm surface hierarchy, compact controls, and careful text ladder into a native email workspace. Its desktop layout maps that hierarchy to an account and folder rail, a message list, and a continuous reading pane. The native Rust palette is the rendered source of truth; upstream Zeron values remain identified as reference roles wherever the implementation adapts them. The product is Linux-first and built with official GPUI Kit. Dark and light modes remap semantic roles, and visible Linux surfaces stay opaque so text remains independent of wallpaper and compositor effects.",
+    "overview": "MegaMail carries Zeron’s calm surface hierarchy, compact controls, and careful text ladder into a native email workspace. Its desktop layout maps Zeron’s navigation-plus-work-area logic to an account and folder rail, a message list, and a continuous reading pane. The native Rust palette is the source for each pane’s base tint; Zeron’s upstream values are cited separately wherever the implementation adapts them. The product is Linux-first and built with official GPUI Kit. Dark and light modes remap the same semantic roles. Optional backgrounds sit below translucent pane tints: the navigation rail allows up to 20% wallpaper bleed, while the message list and reading pane allow up to 5% each. For custom images, a sampled contrast estimate can reduce artwork opacity further. Wallpaper blur and treatments are baked into a cached still image, not supplied by the Linux compositor. This system describes a native desktop window. The dark, light, and focused-search images in docs/preview are prior sample-data fixtures, not current native captures.",
     "keyCharacteristics": [
-      "Continuous reading canvas with a quiet navigation shell and one message-list plane.",
+      "A continuous reading canvas with a quiet navigation shell and one message-list plane.",
       "Dense but legible email rows, with sender, subject, and snippet in clear order.",
       "Indigo reserved for focus and identity cues; neutral fills show hover and selection.",
-      "Opaque Linux surfaces and role-based dark/light palettes."
+      "Wallpaper-backed tinted panes with a contrast-aware cap on background bleed."
     ],
     "rules": [
       {
@@ -467,25 +550,32 @@
         "section": "colors"
       },
       {
-        "name": "The Opaque Linux Rule",
-        "body": "Keep text-bearing window surfaces independent of wallpaper and compositor blur. Add a raised surface only when an interaction needs separation.",
+        "name": "The Tinted Pane Rule",
+        "body": "Keep pane tint roles and their bleed limits explicit; allow the custom-image guard to reduce wallpaper visibility whenever its sampled contrast estimate requires it.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Static Material Rule",
+        "body": "Apply wallpaper blur and treatments before caching the image. Do not make Linux compositor blur a runtime dependency.",
         "section": "elevation"
       }
     ],
     "dos": [
-      "Do use the native palette in the YAML as the implementation source of truth.",
+      "Do use the native palette values in the YAML as the source for text and tint roles; label Zeron source values separately.",
       "Do keep the reading pane continuous and reserve raised surfaces for controls and overlays.",
-      "Do distinguish hover from selection and pair unread weight with its dot cue.",
-      "Do preserve keyboard navigation, Kit focus treatment, accessible labels, and Linux caption behavior.",
-      "Do keep sample mailbox state explicit.",
-      "Do tie any future motion to changing state and honor reduced-motion settings.",
-      "Do preserve source attribution and licenses for copied implementation or assets."
+      "Do distinguish hover from selection, and pair unread weight with its dot cue.",
+      "Do preserve the rail/list/reader wallpaper bleed caps.",
+      "Do let the sampled custom-image contrast estimate reduce wallpaper opacity beneath text.",
+      "Do keep keyboard navigation, Kit focus treatment, accessible action labels, and Linux caption behavior intact.",
+      "Do distinguish live account state and operation results from sample-data visual fixtures.",
+      "Do keep motion tied to changing state and honor reduced-motion settings if transitions are added.",
+      "Do preserve Zeron source attribution and the license for every copied implementation or asset."
     ],
     "donts": [
       "Don’t wrap every pane or message row in a card.",
       "Don’t use accent as a large surface or rely on color alone for unread state.",
-      "Don’t make Linux contrast depend on wallpaper, blur, or desktop transparency.",
-      "Don’t imply web/mobile responsiveness or measured performance from this native preview.",
+      "Don’t exceed the pane bleed caps or rely on a compositor effect for text contrast.",
+      "Don’t imply web/mobile responsiveness or measured performance from this native desktop app.",
       "Don’t add idle decorative animation or copy Zeron icons without their license and attribution."
     ]
   }

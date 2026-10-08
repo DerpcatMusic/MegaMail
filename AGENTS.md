@@ -2,8 +2,9 @@
 
 MegaMail is a history-preserving fork of Hylki. The root Rust package and
 `src/` remain the upstream GTK application during the GPUI migration.
-The new native preview is the independent package at `apps/megamail/`.
-Do not mistake a successful preview build for a successful mail-engine port.
+The native app is the independent package at `apps/megamail/`;
+`crates/mail-core/` reuses portable source modules from `src/` and supplies
+an isolated MegaMail profile. Shared-source edits must preserve GTK callers.
 
 ## Read first
 
@@ -27,10 +28,10 @@ Otherwise use `rg` normally.
 
 - Preserve the AGPL license and upstream attribution. Retain Zeron's MIT
   notice with any copied code, tokens or assets.
-- Keep the preview local and label sample data. No fake sync, send or OAuth.
-- MegaMail must get a separate app ID, config/cache path and credential
-  namespace before real accounts are connected. Never implicitly migrate or
-  mutate an existing Hylki profile.
+- Normal mode uses real profiles. Any explicit demo must be labeled and
+  cannot send mail. No fake sync, send or OAuth.
+- Preserve MegaMail's separate app ID, profile paths, stable account IDs and
+  credential namespace. Never implicitly migrate or mutate a Hylki profile.
 - Mail, database queries, parsing and thumbnail decoding belong off the UI
   thread. Rendering must not perform I/O or rebuild a whole mailbox.
 - Preserve remote-content blocking, TLS/OAuth validation, secret handling,

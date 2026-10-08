@@ -1037,25 +1037,51 @@ pub(super) async fn run_graph(
                 };
                 emit(WorkerEvent::Status(String::new()));
                 match saved {
-                    Some(id) => emit(WorkerEvent::DraftSaved { autosave, message_id: Some(id) }),
+                    Some(id) => emit(WorkerEvent::DraftSaved {
+                        autosave,
+                        message_id: Some(id),
+                    }),
                     None => draft_not_saved(autosave, template, why, message, &emit),
                 }
             }
 
             // `sent_path` is unused: Graph's sendMail files the Sent copy itself.
             // Send Later (#145): into the Outbox until its time.
-            MailRequest::Send { mut message, sent_path: _ }
-                if message.send_at.is_some_and(|t| t > crate::datefmt::now()) =>
-            {
+            MailRequest::Send {
+                mut message,
+                sent_path: _,
+                request_id,
+            } if message.send_at.is_some_and(|t| t > crate::datefmt::now()) => {
                 let at = message.send_at.unwrap_or_default();
                 restore_msgid_case(cache.as_ref(), &mut message);
-                schedule_send(cache.as_ref(), account_id, &account, &message, None, at, &emit);
+                let outcome = schedule_send(
+                    cache.as_ref(),
+                    account_id,
+                    &account,
+                    &message,
+                    None,
+                    at,
+                    &emit,
+                );
                 if let Some(o) = &message.draft_origin {
-                    graph_drop_draft_origin(&account, &mut state, account_id, o, cache.as_ref(), &emit).await;
+                    graph_drop_draft_origin(
+                        &account,
+                        &mut state,
+                        account_id,
+                        o,
+                        cache.as_ref(),
+                        &emit,
+                    )
+                    .await;
                 }
+                finish_send(request_id, outcome, &emit);
             }
 
-            MailRequest::Send { mut message, sent_path: _ } => {
+            MailRequest::Send {
+                mut message,
+                sent_path: _,
+                request_id,
+            } => {
                 emit(WorkerEvent::Status(i18n("Sending…")));
                 restore_msgid_case(cache.as_ref(), &mut message);
                 match graph_send_message(&account, &message, &emit).await {
@@ -1104,17 +1130,30 @@ pub(super) async fn run_graph(
                             }
                         }
                         emit(WorkerEvent::Sent);
+                        finish_send(request_id, SendOutcome::Sent, &emit);
                     }
                     Err(e) => {
                         emit(WorkerEvent::Status(String::new()));
-                        send_failed(cache.as_ref(), account_id, &account, &message, None, &e, false, &emit);
+                        let outcome = send_failed(
+                            cache.as_ref(),
+                            account_id,
+                            &account,
+                            &message,
+                            None,
+                            &e,
+                            false,
+                            &emit,
+                        );
+                        finish_send(request_id, outcome, &emit);
                     }
                 }
             }
 
             MailRequest::LoadOutbox => emit_outbox(cache.as_ref(), account_id, &emit),
 
-            MailRequest::DeleteOutbox { id } => delete_queued(cache.as_ref(), account_id, id, &emit),
+            MailRequest::DeleteOutbox { id } => {
+                delete_queued(cache.as_ref(), account_id, id, &emit)
+            }
 
             MailRequest::FlushOutbox { id } => {
                 graph_flush_outbox(cache.as_ref(), account_id, &account, id, &emit).await;

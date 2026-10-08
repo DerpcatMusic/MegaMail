@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=MegaMail
+GenericName=Email Client
+Comment=Read and send plain-text email
+Exec=megamail
+Icon=megamail
+Terminal=false
+StartupNotify=true
+StartupWMClass=com.megamail.MegaMail
+Categories=Network;Email;
+Keywords=mail;email;inbox;

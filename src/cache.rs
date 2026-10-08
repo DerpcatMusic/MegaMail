@@ -212,6 +212,21 @@ fn split_keywords(col: String) -> Vec<String> {
     out
 }
 
+/// Build a `LIKE` substring pattern from literal user text using `!` as the
+/// SQL escape character. This keeps searches such as `50%_off` literal.
+fn like_literal_pattern(query: &str) -> String {
+    let mut pattern = String::with_capacity(query.len() + 2);
+    pattern.push('%');
+    for ch in query.chars() {
+        if matches!(ch, '!' | '%' | '_') {
+            pattern.push('!');
+        }
+        pattern.push(ch);
+    }
+    pattern.push('%');
+    pattern
+}
+
 /// Most messages one tag view lists per account; the list pages within it.
 const TAG_VIEW_LIMIT: i64 = 5000;
 
@@ -257,6 +272,25 @@ const LAYOUT_VERSION: i64 = 6;
 pub struct Cache {
     conn: Connection,
 }
+
+/// A stable continuation point for message summaries ordered by descending UID.
+/// The next page contains UIDs strictly lower than `before_uid`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessageCursor {
+    pub before_uid: u32,
+}
+
+/// One bounded page of cached message summaries.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MessagePage {
+    pub rows: Vec<Message>,
+    /// Present only when at least one more matching row exists.
+    pub next_cursor: Option<MessageCursor>,
+}
+
+/// Hard ceiling for mailbox summary pages. Search can cover a large folder,
+/// but each result sent to the UI stays small and bounded.
+pub const MESSAGE_PAGE_LIMIT_MAX: usize = 500;
 
 /// Message-IDs are stored lowercased so a thread matches however a client
 /// spelt an id, but the wire is case-sensitive (RFC 5322): a reply whose
@@ -829,6 +863,111 @@ impl Cache {
             }
         }
         messages
+    }
+
+    /// Return one bounded page of summaries for a folder. Rows are ordered by
+    /// descending UID, and a continuation cursor excludes the last UID already
+    /// returned. Search checks only cached header/preview columns; it never
+    /// reads or materializes the `bodies` table.
+    ///
+    /// `query` is a literal substring (SQLite's default ASCII-insensitive
+    /// `LIKE` behavior applies). `%`, `_`, and the escape character itself are
+    /// escaped, so user input cannot turn into a wildcard expression. A zero
+    /// limit is treated as one and larger limits are capped at
+    /// [`MESSAGE_PAGE_LIMIT_MAX`].
+    pub fn message_page(
+        &self,
+        account_id: u32,
+        folder_path: &str,
+        folder_id: u32,
+        query: &str,
+        cursor: Option<MessageCursor>,
+        limit: usize,
+    ) -> rusqlite::Result<MessagePage> {
+        let limit = limit.clamp(1, MESSAGE_PAGE_LIMIT_MAX);
+        let pattern = if query.trim().is_empty() {
+            String::new()
+        } else {
+            like_literal_pattern(query.trim())
+        };
+        let before_uid = cursor.map(|cursor| cursor.before_uid);
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT uid, from_name, from_addr, subject, date, ts, unread, starred,
+                    CASE WHEN has_attachment != 0
+                              AND EXISTS (
+                                  SELECT 1 FROM attachments_checked ac
+                                  WHERE ac.account_id = messages.account_id
+                                    AND ac.folder_path = messages.folder_path
+                                    AND ac.uid = messages.uid
+                              )
+                              AND NOT EXISTS (
+                                  SELECT 1 FROM attachments a
+                                  WHERE a.account_id = messages.account_id
+                                    AND a.folder_path = messages.folder_path
+                                    AND a.uid = messages.uid
+                              )
+                         THEN 0 ELSE has_attachment END,
+                    recipients, cc, message_id, references_, preview, reply_to,
+                    {KEYWORDS_COL}, importance, due
+             FROM messages
+             WHERE account_id = ?1 AND folder_path = ?2
+               AND (?3 = '' OR from_name LIKE ?3 ESCAPE '!'
+                           OR from_addr LIKE ?3 ESCAPE '!'
+                           OR subject LIKE ?3 ESCAPE '!'
+                           OR preview LIKE ?3 ESCAPE '!')
+               AND (?4 IS NULL OR uid < ?4)
+             ORDER BY uid DESC LIMIT ?5"
+        ))?;
+        let mut rows = stmt
+            .query_map(
+                params![
+                    account_id,
+                    folder_path,
+                    pattern,
+                    before_uid,
+                    (limit + 1) as i64
+                ],
+                |row| {
+                    let uid: u32 = row.get(0)?;
+                    let mut message = Message {
+                        id: uid,
+                        account_id,
+                        folder_id,
+                        uid,
+                        from_name: row.get(1)?,
+                        from_addr: row.get(2)?,
+                        reply_to: row.get(14)?,
+                        to: row.get(9)?,
+                        cc: row.get(10)?,
+                        subject: row.get(3)?,
+                        preview: row.get(13)?,
+                        body: String::new(),
+                        date: row.get(4)?,
+                        timestamp: row.get(5)?,
+                        unread: row.get(6)?,
+                        starred: row.get(7)?,
+                        keywords: split_keywords(row.get(15)?),
+                        has_attachment: row.get(8)?,
+                        message_id: row.get(11)?,
+                        references: row.get(12)?,
+                        importance: crate::models::Importance::from_i64(row.get(16)?),
+                        due: row.get(17)?,
+                    };
+                    message.scrub_nuls();
+                    Ok(message)
+                },
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let has_more = rows.len() > limit;
+        rows.truncate(limit);
+        let next_cursor = has_more.then(|| MessageCursor {
+            before_uid: rows
+                .last()
+                .expect("a page with an extra row is nonempty")
+                .uid,
+        });
+        Ok(MessagePage { rows, next_cursor })
     }
 
     /// UIDs whose attachments have been fetched (`attachments_checked`) but which
@@ -2355,6 +2494,127 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+    #[test]
+    fn message_pages_are_bounded_stable_and_folder_scoped() {
+        let c = Cache::in_memory().unwrap();
+        add_folder(&c, "INBOX", FolderKind::Inbox);
+        for uid in 1..=6 {
+            add_msg(&c, "INBOX", uid, "Sender", "Page", uid as i64);
+        }
+        add_msg(&c, "Archive", 1, "Sender", "Page", 1);
+        c.conn
+            .execute(
+                "INSERT INTO messages (account_id, folder_path, uid, from_name, from_addr, subject, date, ts, unread, starred, has_attachment) \
+                 VALUES (2, 'INBOX', 99, 'Sender', '', 'Page', '', 99, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+
+        let first = c.message_page(1, "INBOX", 7, "", None, 2).unwrap();
+        assert_eq!(first.rows.iter().map(|m| m.uid).collect::<Vec<_>>(), [6, 5]);
+        assert_eq!(first.rows[0].folder_id, 7);
+        let second = c
+            .message_page(1, "INBOX", 7, "", first.next_cursor, 2)
+            .unwrap();
+        assert_eq!(
+            second.rows.iter().map(|m| m.uid).collect::<Vec<_>>(),
+            [4, 3]
+        );
+        let last = c
+            .message_page(1, "INBOX", 7, "", second.next_cursor, 2)
+            .unwrap();
+        assert_eq!(last.rows.iter().map(|m| m.uid).collect::<Vec<_>>(), [2, 1]);
+        assert_eq!(last.next_cursor, None);
+
+        let account_two = c.message_page(2, "INBOX", 8, "", None, 20).unwrap();
+        assert_eq!(
+            account_two.rows.iter().map(|m| m.uid).collect::<Vec<_>>(),
+            [99]
+        );
+        let other_folder = c.message_page(1, "Archive", 9, "", None, 20).unwrap();
+        assert_eq!(
+            other_folder.rows.iter().map(|m| m.uid).collect::<Vec<_>>(),
+            [1]
+        );
+
+        c.mark_attachments_checked(1, "INBOX", 6);
+        let corrected = c.message_page(1, "INBOX", 7, "", None, 1).unwrap();
+        assert!(!corrected.rows[0].has_attachment);
+    }
+
+    #[test]
+    fn message_search_escapes_like_wildcards_and_skips_bodies() {
+        let c = Cache::in_memory().unwrap();
+        c.conn
+            .execute(
+                "INSERT INTO messages (account_id, folder_path, uid, from_name, from_addr, subject, date, ts, unread, starred, has_attachment, preview) \
+                 VALUES (1, 'INBOX', 10, 'Needle Sender', '', 'sale 50%_off!', '', 10, 0, 0, 0, '')",
+                [],
+            )
+            .unwrap();
+        c.conn
+            .execute(
+                "INSERT INTO messages (account_id, folder_path, uid, from_name, from_addr, subject, date, ts, unread, starred, has_attachment, preview) \
+                 VALUES (1, 'INBOX', 9, 'Other', '', 'sale 50XQoff!', '', 9, 0, 0, 0, '')",
+                [],
+            )
+            .unwrap();
+        c.conn
+            .execute(
+                "INSERT INTO messages (account_id, folder_path, uid, from_name, from_addr, subject, date, ts, unread, starred, has_attachment, preview) \
+                 VALUES (1, 'INBOX', 8, 'Other', '', 'No match', '', 8, 0, 0, 0, 'preview-needle')",
+                [],
+            )
+            .unwrap();
+        c.conn
+            .execute(
+                "INSERT INTO messages (account_id, folder_path, uid, from_name, from_addr, subject, date, ts, unread, starred, has_attachment) \
+                 VALUES (2, 'INBOX', 7, 'Needle Sender', '', 'cross-account', '', 7, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+        c.save_body(1, "INBOX", 10, "body-only-token");
+
+        let literal = c.message_page(1, "INBOX", 3, "50%_off!", None, 20).unwrap();
+        assert_eq!(literal.rows.iter().map(|m| m.uid).collect::<Vec<_>>(), [10]);
+        let from_name = c
+            .message_page(1, "INBOX", 3, "needle sender", None, 20)
+            .unwrap();
+        assert_eq!(
+            from_name.rows.iter().map(|m| m.uid).collect::<Vec<_>>(),
+            [10]
+        );
+        let preview = c
+            .message_page(1, "INBOX", 3, "preview-needle", None, 20)
+            .unwrap();
+        assert_eq!(preview.rows.iter().map(|m| m.uid).collect::<Vec<_>>(), [8]);
+        let body_only = c
+            .message_page(1, "INBOX", 3, "body-only-token", None, 20)
+            .unwrap();
+        assert!(body_only.rows.is_empty());
+    }
+
+    #[test]
+    fn message_page_clamps_large_limits_to_five_hundred() {
+        let c = Cache::in_memory().unwrap();
+        let tx = c.conn.unchecked_transaction().unwrap();
+        for uid in 1..=501 {
+            tx.execute(
+                "INSERT INTO messages (account_id, folder_path, uid, from_name, from_addr, subject, date, ts, unread, starred, has_attachment) \
+                 VALUES (1, 'INBOX', ?1, 'Sender', '', 'Page', '', ?1, 0, 0, 0)",
+                [uid],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+
+        let page = c.message_page(1, "INBOX", 1, "", None, usize::MAX).unwrap();
+        assert_eq!(page.rows.len(), MESSAGE_PAGE_LIMIT_MAX);
+        assert_eq!(page.rows.first().unwrap().uid, 501);
+        assert_eq!(page.rows.last().unwrap().uid, 2);
+        assert_eq!(page.next_cursor, Some(MessageCursor { before_uid: 2 }));
+    }
+
     /// The cache holds message bodies, attachment bytes and the address book, so
     /// it should be no more readable than `accounts.toml` is.
     ///
@@ -2375,7 +2635,7 @@ mod tests {
         std::fs::create_dir_all(&base).unwrap();
         std::env::set_var("XDG_DATA_HOME", &base);
 
-        let dir = base.join("hylki");
+        let dir = crate::config::data_base().unwrap().join("hylki");
         // Start from the permissions the old code left behind, to prove an
         // existing cache is tightened rather than only a freshly created one.
         std::fs::create_dir_all(&dir).unwrap();

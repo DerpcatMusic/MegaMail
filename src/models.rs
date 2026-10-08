@@ -977,7 +977,7 @@ impl Attachment {
 
 /// Human-readable byte size, e.g. "12.3 KB".
 pub fn human_size(bytes: u64) -> String {
-    gtk::glib::format_size(bytes).into()
+    glib::format_size(bytes).into()
 }
 
 /// Whether a filename looks like a raster image we can thumbnail/preview inline.
