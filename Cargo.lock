@@ -1399,6 +1399,8 @@ dependencies = [
  "futures",
  "getrandom 0.2.17",
  "gettext-rs",
+ "gio",
+ "glib",
  "glib-build-tools",
  "gtk4",
  "html5ever",

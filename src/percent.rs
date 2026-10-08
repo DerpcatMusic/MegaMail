@@ -10,12 +10,12 @@
 /// Everything but the unreserved characters escaped: a query value or one
 /// path segment.
 pub fn encode(s: &str) -> String {
-    gtk::glib::Uri::escape_string(s, None, false).into()
+    glib::Uri::escape_string(s, None, false).into()
 }
 
 /// A whole path, keeping its slashes.
 pub fn encode_path(s: &str) -> String {
-    gtk::glib::Uri::escape_string(s, Some("/"), false).into()
+    glib::Uri::escape_string(s, Some("/"), false).into()
 }
 
 /// `%XX` back to bytes, read as UTF-8 (lossily). `plus_is_space` reads `+`

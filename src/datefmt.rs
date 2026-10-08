@@ -15,7 +15,7 @@
 //! environment changing, which does not happen while the app is up.
 
 use crate::config::{ClockStyle, DateStyle};
-use gtk::glib;
+use glib;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
 

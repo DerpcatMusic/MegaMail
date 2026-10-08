@@ -2268,39 +2268,77 @@ pub(super) async fn run_jmap(
                 }
                 emit(WorkerEvent::Status(String::new()));
                 match saved {
-                    Some(id) => emit(WorkerEvent::DraftSaved { autosave, message_id: Some(id) }),
+                    Some(id) => emit(WorkerEvent::DraftSaved {
+                        autosave,
+                        message_id: Some(id),
+                    }),
                     None => draft_not_saved(autosave, template, why, message, &emit),
                 }
             }
 
             // Send Later (#145): into the Outbox until its time.
-            MailRequest::Send { mut message, sent_path }
-                if message.send_at.is_some_and(|t| t > crate::datefmt::now()) =>
-            {
+            MailRequest::Send {
+                mut message,
+                sent_path,
+                request_id,
+            } if message.send_at.is_some_and(|t| t > crate::datefmt::now()) => {
                 let at = message.send_at.unwrap_or_default();
                 restore_msgid_case(cache.as_ref(), &mut message);
-                schedule_send(cache.as_ref(), account_id, &account, &message, sent_path.as_deref(), at, &emit);
+                let outcome = schedule_send(
+                    cache.as_ref(),
+                    account_id,
+                    &account,
+                    &message,
+                    sent_path.as_deref(),
+                    at,
+                    &emit,
+                );
                 if let Some(o) = message.draft_origin.clone() {
                     if let Some(s) = jmap_session(&account, &mut state, &emit).await {
-                        jmap_drop_draft_origin(&s, account_id, &o, cache.as_ref(), &mut state).await;
+                        jmap_drop_draft_origin(&s, account_id, &o, cache.as_ref(), &mut state)
+                            .await;
                         if o.account_id == account_id {
-                            if let Ok(messages) = jmap_load_folder(&s, account_id, o.folder_id, &o.path, cache.as_ref(), &mut state).await {
-                                emit(WorkerEvent::Messages { folder_id: o.folder_id, messages });
+                            if let Ok(messages) = jmap_load_folder(
+                                &s,
+                                account_id,
+                                o.folder_id,
+                                &o.path,
+                                cache.as_ref(),
+                                &mut state,
+                            )
+                            .await
+                            {
+                                emit(WorkerEvent::Messages {
+                                    folder_id: o.folder_id,
+                                    messages,
+                                });
                             }
                         }
                     }
                 }
+                finish_send(request_id, outcome, &emit);
             }
 
-            MailRequest::Send { mut message, sent_path } => {
+            MailRequest::Send {
+                mut message,
+                sent_path,
+                request_id,
+            } => {
                 emit(WorkerEvent::Status(i18n("Sending…")));
                 restore_msgid_case(cache.as_ref(), &mut message);
                 let sent = match jmap_session(&account, &mut state, &emit).await {
-                    Some(s) => {
-                        jmap_send_message(&s, account_id, &account, &message, sent_path.as_deref(), cache.as_ref(), &mut state, &emit)
-                            .await
-                            .map(|()| s)
-                    }
+                    Some(s) => jmap_send_message(
+                        &s,
+                        account_id,
+                        &account,
+                        &message,
+                        sent_path.as_deref(),
+                        cache.as_ref(),
+                        &mut state,
+                        &emit,
+                    )
+                    .await
+                    .map(|()| s),
                     None => Err("could not reach the server".to_string()),
                 };
                 emit(WorkerEvent::Status(String::new()));
@@ -2316,27 +2354,58 @@ pub(super) async fn run_jmap(
                         }
                         drop_superseded_outbox(cache.as_ref(), account_id, &message, &emit);
                         emit(WorkerEvent::Sent);
+                        finish_send(request_id, SendOutcome::Sent, &emit);
                     }
                     Err(e) => {
-                        send_failed(cache.as_ref(), account_id, &account, &message, sent_path.as_deref(), &e, e.starts_with(SUBMISSION_REFUSED), &emit);
+                        let outcome = send_failed(
+                            cache.as_ref(),
+                            account_id,
+                            &account,
+                            &message,
+                            sent_path.as_deref(),
+                            &e,
+                            e.starts_with(SUBMISSION_REFUSED),
+                            &emit,
+                        );
+                        finish_send(request_id, outcome, &emit);
                     }
                 }
             }
 
             MailRequest::LoadOutbox => emit_outbox(cache.as_ref(), account_id, &emit),
 
-            MailRequest::DeleteOutbox { id } => delete_queued(cache.as_ref(), account_id, id, &emit),
+            MailRequest::DeleteOutbox { id } => {
+                delete_queued(cache.as_ref(), account_id, id, &emit)
+            }
 
             MailRequest::FlushOutbox { id } => {
                 if let Some(s) = jmap_session(&account, &mut state, &emit).await {
-                    jmap_flush_outbox(&s, cache.as_ref(), account_id, &account, id, &mut state, &emit).await;
+                    jmap_flush_outbox(
+                        &s,
+                        cache.as_ref(),
+                        account_id,
+                        &account,
+                        id,
+                        &mut state,
+                        &emit,
+                    )
+                    .await;
                 }
             }
 
             MailRequest::RefreshUnread => {
                 if let Some(s) = jmap_session(&account, &mut state, &|_| {}).await {
                     jmap_refresh_unread(&s, account_id, cache.as_ref(), &mut state, &emit).await;
-                    auto_empty_jmap(&s, account_id, &account, cache.as_ref(), &mut state, &mut last_auto_empty, &emit).await;
+                    auto_empty_jmap(
+                        &s,
+                        account_id,
+                        &account,
+                        cache.as_ref(),
+                        &mut state,
+                        &mut last_auto_empty,
+                        &emit,
+                    )
+                    .await;
                 }
             }
 

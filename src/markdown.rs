@@ -42,7 +42,7 @@ pub fn to_html(src: &str) -> String {
 
 /// Escape text for an HTML attribute or body.
 fn esc(s: &str) -> String {
-    gtk::glib::markup_escape_text(s).into()
+    glib::markup_escape_text(s).into()
 }
 
 /// The three extended items pulldown-cmark leaves to the host, applied to

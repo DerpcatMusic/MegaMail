@@ -8633,7 +8633,7 @@ impl SimpleComponent for AppModel {
                     }
                 }
                 let sent_path = self.sent_copy_path(account_id);
-                self.send_to(account_id, MailRequest::Send { message: out, sent_path });
+                self.send_to(account_id, MailRequest::Send { message: out, sent_path, request_id: None });
             }
 
             AppMsg::SaveDraftMessage(out) => {
@@ -14942,7 +14942,16 @@ impl AppModel {
         let token = self.next_transfer;
         self.next_transfer += 1;
         self.pending_draft_token = Some(token);
-        self.send_to(m.account_id, MailRequest::ExportRaw { token, path, uid: m.uid, for_reader: true });
+        self.send_to(
+            m.account_id,
+            MailRequest::ExportRaw {
+                token,
+                path,
+                uid: m.uid,
+                for_reader: true,
+                max_bytes: None,
+            },
+        );
         self.pending_draft = Some((m, inline, extra));
     }
 
@@ -16844,7 +16853,16 @@ impl AppModel {
             }
             removed_ids.push(id);
             self.transfer_tally.total += 1;
-            self.send_to(aid, MailRequest::ExportRaw { token, path: src, uid, for_reader: false });
+            self.send_to(
+                aid,
+                MailRequest::ExportRaw {
+                    token,
+                    path: src,
+                    uid,
+                    for_reader: false,
+                    max_bytes: None,
+                },
+            );
         }
         self.transfer_tally.dest_accounts.insert(dest_account);
         self.transfer_tally.dest_folders.insert((dest_account, dest));
@@ -19976,7 +19994,7 @@ impl AppModel {
         };
         self.send_to(
             message.account_id,
-            MailRequest::Send { message: Box::new(out), sent_path: None },
+            MailRequest::Send { message: Box::new(out), sent_path: None, request_id: None },
         );
         self.record_invite_answer(invite, rsvp);
         self.notifications.emit(NotifyInput::Push {
@@ -20260,7 +20278,7 @@ impl AppModel {
             calendar: None,
             send_at: None,
         };
-        self.send_to(message.account_id, MailRequest::Send { message: Box::new(out), sent_path: None });
+        self.send_to(message.account_id, MailRequest::Send { message: Box::new(out), sent_path: None, request_id: None });
         sender.input(AppMsg::UnsubscribeDone { message: Box::new(message), result: Ok(true) });
     }
 
@@ -21984,6 +22002,11 @@ fn map_event(account_id: u32, event: WorkerEvent) -> AppMsg {
             AppMsg::HasAttachments { account_id, path, message_id }
         }
         WorkerEvent::Sent => AppMsg::Sent { account_id },
+        WorkerEvent::SendFinished { outcome, .. } => AppMsg::Notice(match outcome {
+            crate::worker::SendOutcome::Sent => i18n("Message sent"),
+            crate::worker::SendOutcome::Queued => i18n("Message queued"),
+            crate::worker::SendOutcome::Failed => i18n("Message was not sent"),
+        }),
         WorkerEvent::Unsent(message) => AppMsg::Unsent { account_id, message },
         WorkerEvent::Outbox { items } => AppMsg::OutboxItems { account_id, items },
         WorkerEvent::Notice(text) => AppMsg::Notice(text),

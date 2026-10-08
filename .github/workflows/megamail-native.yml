@@ -1,13 +1,25 @@
-name: MegaMail native preview
+name: MegaMail Linux native
 
 on:
   push:
     paths:
       - 'apps/megamail/**'
+      - 'crates/mail-core/**'
+      - 'src/**'
+      - 'tools/install-megamail.sh'
+      - 'tools/license-inventory.py'
+      - 'tools/thunderbird-bridge/**'
+      - 'data/megamail.*'
       - '.github/workflows/megamail-native.yml'
   pull_request:
     paths:
       - 'apps/megamail/**'
+      - 'crates/mail-core/**'
+      - 'src/**'
+      - 'tools/install-megamail.sh'
+      - 'tools/license-inventory.py'
+      - 'tools/thunderbird-bridge/**'
+      - 'data/megamail.*'
       - '.github/workflows/megamail-native.yml'
   workflow_dispatch:
 
@@ -27,13 +39,22 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang pkg-config libfontconfig-dev libwayland-dev \
-            libxkbcommon-x11-dev libx11-xcb-dev libssl-dev libzstd-dev
+            libxkbcommon-x11-dev libx11-xcb-dev libssl-dev libzstd-dev \
+            libglib2.0-dev libdbus-1-dev gettext
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: apps/megamail
+          workspaces: |
+            crates/mail-core
+            apps/megamail
       - name: Check formatting
         run: cargo fmt --manifest-path apps/megamail/Cargo.toml --check
-      - name: Test sample mailbox state and icon assets
+      - name: Check installer syntax
+        run: bash -n tools/install-megamail.sh
+      - name: Check Thunderbird extension contract
+        run: node tools/thunderbird-bridge/extension.test.cjs
+      - name: Test portable mail core
+        run: cargo test --manifest-path crates/mail-core/Cargo.toml --locked -j 2
+      - name: Test native mailbox and composer
         run: cargo test --manifest-path apps/megamail/Cargo.toml --locked -j 2
       - name: Check native executable
         run: cargo check --manifest-path apps/megamail/Cargo.toml --locked --bin megamail -j 2

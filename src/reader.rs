@@ -228,7 +228,7 @@ fn is_blank(t: &str) -> bool {
 
 /// Escape text for HTML: element content or a quoted attribute alike.
 fn escape_text(s: &str) -> String {
-    gtk::glib::markup_escape_text(s).into()
+    glib::markup_escape_text(s).into()
 }
 
 // ---------------------------------------------------------------------------

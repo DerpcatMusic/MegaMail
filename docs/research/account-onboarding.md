@@ -34,6 +34,44 @@ For a native desktop client, use the user’s external/system browser, authoriza
 
 For broad coverage, make OAuth provider integrations explicit (initially Gmail and whichever other providers have approved MegaMail registrations), while treating discovered IMAP settings and provider passwords/app-passwords as a separate path. Some providers disable IMAP until enabled by the user, require app passwords, or need a local bridge; no universal authorization page exists for arbitrary email domains. Thunderbird’s own help says accounts absent from its database need manual configuration ([Automatic Account Configuration](https://support.mozilla.org/en-US/kb/automatic-account-configuration), [Manual Account Configuration](https://support.mozilla.org/en-US/kb/manual-account-configuration)).
 
+## Optional read-only Thunderbird profile import
+
+The local **Import Thunderbird settings** action can prefill server and
+identity fields without using Thunderbird as a login provider. On Linux the
+documented default profile root is `~/.thunderbird`; the Flatpak package stores
+its persistent profile under
+`~/.var/app/org.mozilla.Thunderbird/.thunderbird` ([Mozilla profile guide](https://support.mozilla.org/en-US/kb/profiles-where-thunderbird-stores-user-data),
+[Flatpak packaging](https://github.com/flathub/org.mozilla.Thunderbird/blob/master/org.mozilla.Thunderbird.yaml)).
+Thunderbird's account manager records the account list in
+`mail.accountmanager.accounts`, maps each `mail.account.<id>` to a server, and
+associates identity IDs with each account ([account-manager source](https://github.com/thunderbird/thunderbird-desktop/blob/main/mailnews/base/src/nsMsgAccountManager.cpp#L2328-L2347),
+[account interface](https://github.com/thunderbird/thunderbird-desktop/blob/main/mailnews/base/public/nsIMsgAccount.idl)).
+Incoming `hostname`, `port`, `username`, `authMethod`, and `socketType` are
+settings on the incoming-server object ([interface](https://github.com/thunderbird/thunderbird-desktop/blob/main/mailnews/base/public/nsIMsgIncomingServer.idl));
+identities provide `useremail`, `fullName`, and the selected SMTP server
+([identity interface](https://github.com/thunderbird/thunderbird-desktop/blob/main/mailnews/base/public/nsIMsgIdentity.idl),
+[identity preference mapping](https://github.com/thunderbird/thunderbird-desktop/blob/main/mailnews/base/src/nsMsgIdentity.cpp)).
+SMTP host/port are maintained by Thunderbird's SMTP server settings, with
+`try_ssl` and `authMethod` values in the account preferences
+([SMTP interface](https://github.com/thunderbird/thunderbird-desktop/blob/main/mailnews/compose/public/nsISmtpServer.idl),
+[current socket/auth enum definitions](https://github.com/thunderbird/thunderbird-desktop/blob/main/mailnews/base/public/MailNewsTypes2.idl)).
+
+MegaMail's importer reads only `profiles.ini` and the selected profile's
+`prefs.js`, with file-size and item-count bounds. Its small parser accepts
+only `user_pref("key", string-or-number-or-boolean);` statements and never
+evaluates JavaScript. It ignores non-IMAP account types and returns profile,
+IMAP/SMTP host, port, TLS/auth mode, username, and identity candidates. A user
+must explicitly open the import flow, choose a profile/account, review the
+server values, and complete MegaMail's own onboarding. No Thunderbird password
+store, OAuth refresh token, browser session, or local mail cache is imported;
+OAuth2 in an imported setting is only an auth-method hint, not authorization
+for MegaMail to use Thunderbird's token.
+
+This import is a convenience for migrating settings, not for authenticating a
+new MegaMail account. The user enters a provider-approved app password or uses
+a MegaMail-registered OAuth flow; Thunderbird's client IDs and stored OAuth
+identity are not portable credentials.
+
 ## Trust boundaries for MegaMail discovery
 
 Thunderbird’s current source contains an explicit warning: direct provider autoconfig may rely on insecure DNS and HTTP. The implementation can append `http://` candidates when its `sslOnly` setting is false ([`FetchConfig.sys.mjs:49-74`](https://github.com/mozilla/releases-comm-central/blob/master/mail/components/accountcreation/modules/FetchConfig.sys.mjs#L49), [`FetchConfig.sys.mjs:89-145`](https://github.com/mozilla/releases-comm-central/blob/master/mail/components/accountcreation/modules/FetchConfig.sys.mjs#L89)). MegaMail should keep discovery HTTPS-only with normal certificate validation. If HTTPS discovery fails, show manual setup or provider help; do not retry the same configuration fetch over plaintext HTTP.

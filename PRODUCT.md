@@ -26,9 +26,39 @@ OAuth, composing, durable Outbox and privacy controls. Preserve that existing
 behavior when extracting the mail core. A GPUI shell does not establish
 feature parity or production readiness.
 
-The first native foundation uses clearly labeled sample mail. It does not
-connect accounts or send messages. Performance claims require measurements
-on representative mailboxes and hardware.
+The native client uses Hylki's mail engine through `crates/mail-core` and
+stores its profile, cache, and keyring entries separately. Gmail with an app
+password and other IMAP accounts through discovered or manual settings use
+MegaMail's Hylki-backed mail worker. A second path provides bulk selection
+of IMAP mailboxes from a local Thunderbird profile, grouped by profile and
+submitted in one pass; its implementation runs an installed Thunderbird
+153+ binary with a private cloned profile and MailExtension/native Unix-socket
+bridge. The source profile is
+not edited, the encrypted credential store is copied into MegaMail's private
+clone for Thunderbird to handle, and source mail storage is not cloned.
+Accounts that need an interactive primary-password unlock are not supported
+by the headless runtime. A private, authorized probe using six existing
+Thunderbird IMAP accounts authenticated all six, discovered folders, and returned an initial Inbox page
+for each with parsed headers, bodies, and unread metadata.
+The source preference and credential-store stamps stayed unchanged; the probe
+sent no provider-bound messages and requested no flag changes. This is evidence for
+those account configurations, not provider-wide compatibility. A separate
+Thunderbird 157 loopback test exercised new-message/reply sends and draft save.
+No real-provider send or delivery test was run.
+
+The reader renders safe plain text and presents validated links and
+attachments separately for explicit actions. SMTP supports a separate
+username/password or a no-login choice for MegaMail's direct IMAP path. Gmail
+app-password setup remains available; there is no GNOME Online Accounts flow
+or MegaMail-owned Google OAuth registration. Imported Thunderbird
+credential-store files remain with Thunderbird in its isolated profile and do
+not provide a MegaMail OAuth client registration. Performance claims require
+representative measurements.
+
+The appearance system retains dark/light semantic palette roles and Zeron's
+compact hierarchy. It includes three built-in backgrounds and optional private
+custom wallpaper with static image processing and contrast-guarded pane tints;
+it does not rely on live desktop compositor blur.
 
 ## Brand Commitments
 
@@ -41,15 +71,13 @@ visual identity. Preserve upstream attribution and applicable licenses.
 
 The full Hylki history is retained. Source-pinned research lives in
 `docs/research/`. Zeron screenshots and implementation are inspected as
-references; its screenshots are not MegaMail screenshots. The native preview
-is separate from Hylki's existing GTK package.
+references; its screenshots are not MegaMail screenshots. The native application is separate from Hylki's existing GTK package.
 
 ## Open Decisions
 
 The public GitHub fork is `DerpcatMusic/MegaMail`, in Hylki's fork network,
-following the requested public-source fork. Initial email-core extraction,
-rich-mail renderer and provider registrations are implementation work still
-to do.
+following the requested public-source fork. The initial mail-core extraction is implemented. Full-fidelity rich HTML
+and MegaMail-owned public OAuth registrations remain separate launch work.
 
 ## Product Principles
 
