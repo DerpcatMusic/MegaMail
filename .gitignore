@@ -28,3 +28,7 @@ cargo-sources.json
 co.hyprlab.Hylki.local.yml
 po/.build/
 __pycache__/
+
+# Local design tooling and screenshot review scratch
+/.impeccable/hook.cache.json
+/.impeccable/review/

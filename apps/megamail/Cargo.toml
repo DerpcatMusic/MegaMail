@@ -1,0 +1,15 @@
+[package]
+name = "megamail"
+description = "A native GPUI Kit mailbox interface prototype."
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[workspace]
+
+[dependencies]
+gpui-kit = "=0.7.1"
+
+[profile.dev]
+debug = 0
