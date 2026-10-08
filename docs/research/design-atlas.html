@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>MegaMail research — Zeron design atlas</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: system-ui, sans-serif;
+      color: #202126;
+      background: #f3f3f5;
+      font-synthesis: none;
+      text-rendering: optimizeLegibility;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    a { color: #394d9c; text-underline-offset: 2px; }
+    .page { max-width: 1180px; margin: 0 auto; padding: 42px 28px 64px; }
+    h1 { max-width: 760px; margin: 10px 0 12px; font-size: clamp(30px, 5vw, 48px); line-height: 1.05; letter-spacing: -.04em; }
+    h2 { margin: 0 0 12px; font-size: 20px; letter-spacing: -.025em; }
+    h3 { margin: 0; font-size: 14px; }
+    p { max-width: 780px; margin: 0; color: #555761; line-height: 1.58; }
+    .lede { font-size: 17px; }
+    .revision { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+    .tag { display: inline-flex; align-items: center; min-height: 27px; padding: 5px 10px; border: 1px solid #d7d8dd; border-radius: 999px; color: #4d4f59; background: #fff; font-size: 12px; font-weight: 600; }
+    .tag.observed { color: #183c2b; border-color: #bad8c9; background: #edf7f1; }
+    .tag.inference { color: #4d3510; border-color: #e8d5ae; background: #fff8e8; }
+    section { margin-top: 42px; }
+    .section-note { margin: -4px 0 16px; font-size: 13px; }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .card { min-width: 0; border: 1px solid #dedfe4; border-radius: 14px; background: #fff; box-shadow: 0 2px 8px rgba(20, 22, 28, .035); }
+    .mapping.card { padding: 8px; }
+    .card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 16px 18px 13px; border-bottom: 1px solid #e8e8eb; }
+    .card-head small { color: #555761; font-size: 12px; }
+    .swatch-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; padding: 16px 18px 18px; }
+    .swatch { display: flex; flex-direction: column; justify-content: end; min-height: 92px; padding: 10px; border: 1px solid rgba(120, 120, 130, .22); border-radius: 9px; }
+    .swatch b { font-size: 13px; }
+    .swatch code { margin-top: 4px; font: 12px/1.4 ui-monospace, monospace; opacity: .92; }
+    .dark-panel { color: #eee; background: #060606; }
+    .dark-shell { color: #eee; background: #0d0d0d; }
+    .dark-card { color: #eee; background: #0e0e0e; }
+    .dark-dialog { color: #eee; background: #101010; }
+    .dark-overlay { color: #eee; background: #161616; }
+    .dark-raised { color: #eee; background: oklch(.235 0 0); }
+    .dark-text { color: #171717; background: oklch(.922 0 0); }
+    .dark-muted { color: #171717; background: oklch(.708 0 0); }
+    .dark-faint { color: #171717; background: oklch(.556 0 0); }
+    .light-panel { color: #202126; background: #fff; }
+    .light-shell { color: #202126; background: oklch(.968 0 0); }
+    .light-raised { color: #202126; background: oklch(.940 0 0); }
+    .light-card { color: #202126; background: #fff; }
+    .light-text { color: #fff; background: oklch(.25 0 0); }
+    .light-muted { color: #fff; background: oklch(.439 0 0); }
+    .light-faint { color: #fff; background: oklch(.535 0 0); }
+    .dark-selected { color: #f3f3f4; background: #252525; }
+    .light-selected { color: #202126; background: #f0f0f0; }
+    .swatch-note { padding: 0 18px 16px; color: #555761; font-size: 12px; line-height: 1.5; }
+    .diagram-note { margin: 0 0 12px; color: #555761; font-size: 13px; }
+    .schematic { overflow: hidden; border: 1px solid #33343a; border-radius: 12px; background: #060606; color: #eaeaec; }
+    .schematic-bar { display: flex; align-items: center; gap: 7px; height: 38px; padding: 0 14px; color: #d8d8dc; font-size: 12px; }
+    .window-dot { width: 8px; height: 8px; border: 1px solid #5a5b60; border-radius: 50%; }
+    .schematic-body { display: grid; grid-template-columns: 248px minmax(0, 1fr); min-height: 360px; border-top: 1px solid #171719; }
+    .schematic-sidebar { display: flex; flex-direction: column; min-width: 0; padding: 10px 8px 9px; border-right: 1px solid #1c1c1e; background: #0d0d0d; }
+    .nav-label { display: flex; justify-content: space-between; align-items: center; padding: 9px 8px 5px; color: #a0a1a8; font-size: 12px; }
+    .mail-row { display: flex; align-items: center; min-width: 0; gap: 6px; height: 29px; min-height: 29px; padding: 6px 8px; border-radius: 7px; color: rgba(238, 238, 240, .8); font-size: 12px; line-height: 17px; }
+    .mail-row.selected { color: #f0f0f2; background: hsla(0, 0%, 92%, .11); }
+    .mail-row.hover { color: #f0f0f2; background: hsla(0, 0%, 92%, .11); }
+    .status-dot { flex: 0 0 6px; width: 6px; height: 6px; border-radius: 50%; background: #55565c; }
+    .status-dot.done { width: 10px; height: 10px; background: transparent; }
+    .harness-mark { flex: 0 0 11px; width: 11px; height: 11px; border: 2px solid #8497ed; border-radius: 3px; }
+    .harness-mark.alt { border-color: #e29a78; }
+    .subject { overflow: hidden; min-width: 0; text-overflow: ellipsis; white-space: nowrap; }
+    .trailing { flex: 0 0 auto; margin-left: auto; color: #aaaab0; font-size: 12px; }
+    .badge { padding: 1px 4px; border-radius: 4px; color: #43e5a0; background: rgba(33, 190, 124, .13); font: 12px ui-monospace, monospace; }
+    .archive { padding: 2px 5px; border-radius: 4px; color: #e0e0e3; background: rgba(255, 255, 255, .12); font-size: 12px; }
+    .detail-context { padding: 12px 8px 2px; color: #a0a1a8; font-size: 12px; }
+    .detail-meta { padding: 3px 8px 6px 29px; color: #a0a1a8; font-size: 12px; }
+    .schematic-main { position: relative; display: flex; flex-direction: column; min-width: 0; padding: 0 24px 18px; }
+    .main-title { display: flex; align-items: center; gap: 7px; height: 38px; color: #eee; font-size: 12px; }
+    .main-title span:last-child { color: #74757d; }
+    .canvas-quiet { flex: 1; min-height: 140px; }
+    .composer { display: flex; align-items: center; gap: 10px; width: min(100%, 590px); min-height: 48px; margin: 0 auto; padding: 8px 10px 8px 14px; border: 1px solid rgba(255, 255, 255, .10); border-radius: 24px; color: #a0a1a8; background: #101011; }
+    .composer-label { flex: 1; font-size: 12px; }
+    .model { color: #dddde0; font-size: 12px; }
+    .send { display: grid; place-items: center; min-width: 44px; min-height: 32px; padding: 0 8px; border-radius: 16px; color: #101010; background: #f5f5f6; font-size: 12px; font-weight: 650; }
+    .schematic-caption { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 12px 14px; border-top: 1px solid #27272a; color: #d0d0d5; font-size: 12px; }
+    .caption-key { color: #fff; font-weight: 650; }
+    .dense-card { overflow: hidden; }
+    .row-samples { padding: 10px; background: #0d0d0d; }
+    .row-samples .nav-label { padding-top: 5px; }
+    .expanded-row { margin: 2px 0; padding: 6px 8px; border-radius: 8px; background: transparent; }
+    .expanded-row.current { background: hsla(0, 0%, 92%, .11); }
+    .context-line { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 3px; color: #a0a1a8; font-size: 12px; line-height: 16px; }
+    .title-line { display: flex; align-items: center; gap: 5px; min-width: 0; color: #dedee1; font-size: 12px; line-height: 17px; }
+    .metadata-line { margin: 3px 0 0 24px; color: #a0a1a8; font: 12px/16px ui-monospace, monospace; }
+    .dimension-list { display: grid; grid-template-columns: 1fr auto; gap: 9px 14px; padding: 16px 18px; font-size: 12px; }
+    .dimension-list dt { color: #4a4c55; }
+    .dimension-list dd { margin: 0; color: #202126; font: 12px ui-monospace, monospace; text-align: right; }
+    .state-strip { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; padding: 0 18px 17px; }
+    .state-chip { min-height: 46px; padding: 8px 10px; border: 1px solid #e0e1e5; border-radius: 8px; background: #fff; }
+    .state-chip strong { display: block; font-size: 12px; }
+    .state-chip span { display: block; margin-top: 3px; color: #555761; font-size: 12px; }
+    .mapping { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; line-height: 1.5; }
+    th, td { padding: 12px 14px; border-bottom: 1px solid #e6e7eb; text-align: left; vertical-align: top; }
+    th { color: #555761; background: #f9f9fa; font-size: 12px; letter-spacing: .04em; text-transform: uppercase; }
+    td:first-child { width: 22%; color: #272930; font-weight: 650; }
+    td:nth-child(2) { width: 38%; color: #555761; }
+    td:nth-child(3) { color: #555761; }
+    .callout { padding: 16px 18px; border: 1px solid #d6d7e8; border-radius: 10px; background: #ececf7; color: #383951; font-size: 13px; line-height: 1.55; }
+    .callout strong { color: #25263c; }
+    .source-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+    .source-link { display: inline-block; padding: 7px 10px; border: 1px solid #d7d8dd; border-radius: 8px; background: #fff; font-size: 12px; }
+    footer { margin-top: 38px; padding-top: 16px; border-top: 1px solid #d9dade; color: #555761; font-size: 12px; line-height: 1.5; }
+    @media (max-width: 760px) {
+      .page { padding: 28px 16px 44px; }
+      .grid-2 { grid-template-columns: 1fr; }
+      .schematic-body { grid-template-columns: 190px minmax(0, 1fr); }
+      .schematic-main { padding-right: 12px; padding-left: 12px; }
+      .swatch-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 480px) {
+      .schematic-body { grid-template-columns: 154px minmax(0, 1fr); }
+      .schematic-sidebar { padding-right: 4px; padding-left: 4px; }
+      .mail-row { gap: 4px; padding-right: 5px; padding-left: 5px; font-size: 12px; }
+      .trailing { font-size: 12px; }
+      .composer { gap: 5px; padding-right: 6px; padding-left: 9px; }
+      .model { display: none; }
+      th, td { padding: 9px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header>
+      <h1>Zeron’s hierarchy, translated for mail</h1>
+      <p class="lede">The appeal comes from a quiet work plane, a narrow navigation index, restrained row states, and one persistent action surface. The wallpaper and blur add atmosphere on supported desktops; the hierarchy is already clear without them.</p>
+      <div class="revision">
+        <span class="tag observed">Observed in Zeron</span>
+        <span class="tag inference">Email adaptation</span>
+        <span class="tag">Pinned source · 037f4c10</span>
+        <span class="tag">Static research atlas · no external assets</span>
+      </div>
+    </header>
+
+    <section>
+      <h2>Surface ladder</h2>
+      <p class="section-note">These are source tokens, shown as solid swatches. Frost on the main window is platform-dependent; Linux keeps the app surfaces opaque.</p>
+      <div class="grid-2">
+        <article class="card">
+          <div class="card-head"><h3>Dark</h3><small>Zeron default roles</small></div>
+          <div class="swatch-grid">
+            <div class="swatch dark-panel"><b>Main plane</b><code>#060606 · bg</code></div>
+            <div class="swatch dark-shell"><b>Shell / sidebar</b><code>#0d0d0d · surface</code></div>
+            <div class="swatch dark-card"><b>Card</b><code>#0e0e0e · surface_card</code></div>
+            <div class="swatch dark-dialog"><b>Dialog</b><code>#101010 · surface_dialog</code></div>
+            <div class="swatch dark-overlay"><b>Overlay</b><code>#161616 · surface_overlay</code></div>
+            <div class="swatch dark-raised"><b>Raised</b><code>neutral(0.235)</code></div>
+            <div class="swatch dark-selected"><b>Hover / selected wash</b><code>hsl(0 0% 92% / 11%)</code></div>
+            <div class="swatch dark-text"><b>Primary text</b><code>neutral(0.922)</code></div>
+            <div class="swatch dark-muted"><b>Muted / faint</b><code>0.708 / 0.556</code></div>
+          </div>
+          <div class="swatch-note">The neutral role values are OKLCH lightness inputs compiled to sRGB by Zeron. The HTML uses CSS OKLCH for those samples; exact hex surfaces are labeled where the source specifies them.</div>
+        </article>
+        <article class="card">
+          <div class="card-head"><h3>Light</h3><small>Same roles, remapped contrast</small></div>
+          <div class="swatch-grid">
+            <div class="swatch light-panel"><b>Main plane</b><code>#ffffff · bg</code></div>
+            <div class="swatch light-shell"><b>Shell / sidebar</b><code>neutral(0.968)</code></div>
+            <div class="swatch light-raised"><b>Raised plate</b><code>neutral(0.940)</code></div>
+            <div class="swatch light-card"><b>Card / dialog</b><code>#ffffff</code></div>
+            <div class="swatch light-selected"><b>Hover / selected wash</b><code>hsl(0 0% 10% / 6%)</code></div>
+            <div class="swatch light-text"><b>Primary text</b><code>neutral(0.25)</code></div>
+            <div class="swatch light-muted"><b>Muted text</b><code>neutral(0.439)</code></div>
+            <div class="swatch light-faint"><b>Faint text</b><code>neutral(0.535)</code></div>
+          </div>
+          <div class="swatch-note">The gray shell makes the white reading plane visible. Light selection uses a quieter dark wash, while dark selection uses a pale wash; the state is not a fixed alpha pasted across themes.</div>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <h2>Observed composition</h2>
+      <p class="diagram-note"><span class="tag observed">Schematic, not a screenshot</span> This is a small layout diagram rebuilt from the sidebar fixture and shell source. Its sample labels come from the synthetic fixture. Diagram text is enlarged for readability; exact source metrics are in the table below.</p>
+      <div class="schematic" role="img" aria-label="Schematic of Zeron's sidebar, open conversation canvas, and persistent bottom composer">
+        <div class="schematic-bar"><span class="window-dot"></span><span class="window-dot"></span><span class="window-dot"></span><span>window controls / navigation</span></div>
+        <div class="schematic-body">
+          <aside class="schematic-sidebar" aria-label="Sidebar schematic">
+            <div class="nav-label"><span>All projects</span></div>
+            <div class="nav-label"><span>Pinned</span></div>
+            <div class="mail-row"><span class="status-dot"></span><span class="harness-mark"></span><span class="subject">Polish the command palette</span><span class="badge">#413</span><span class="trailing">17m</span></div>
+            <div class="mail-row hover"><span class="status-dot"></span><span class="harness-mark alt"></span><span class="subject">Fix authentication redirects</span><span class="archive">Archive</span><span class="trailing">34m</span></div>
+            <div class="nav-label"><span>Sessions</span></div>
+            <div class="mail-row"><span class="status-dot"></span><span class="harness-mark"></span><span class="subject">Review pull request comments</span><span class="badge">#416</span><span class="trailing">now</span></div>
+            <div class="mail-row selected"><span class="status-dot"></span><span class="harness-mark"></span><span class="subject">Build the Fieldnotes workspace</span><span class="trailing">1w</span></div>
+            <div class="nav-label"><span>Archived</span></div>
+          </aside>
+          <div class="schematic-main">
+            <div class="main-title"><span>Build the Fieldnotes workspace</span><span>fieldnotes @ This device</span></div>
+            <div class="canvas-quiet"></div>
+            <div class="composer"><span class="composer-label">Do anything…</span><span class="model">claude-sonnet-4-6</span><span class="send">Send</span></div>
+          </div>
+        </div>
+        <div class="schematic-caption"><span><span class="caption-key">Sidebar:</span> grouped, compact, no row borders</span><span><span class="caption-key">Canvas:</span> broad and unboxed</span><span><span class="caption-key">Composer:</span> one persistent raised surface</span></div>
+      </div>
+    </section>
+
+    <section>
+      <div class="grid-2">
+        <article class="card dense-card">
+          <div class="card-head"><h3>Row hierarchy</h3><small>Compact and detailed modes</small></div>
+          <div class="row-samples">
+            <div class="nav-label"><span>Compact · 29px row</span><span>default</span></div>
+            <div class="mail-row"><span class="status-dot"></span><span class="harness-mark"></span><span class="subject">Polish the command palette</span><span class="badge">#413</span><span class="trailing">17m</span></div>
+            <div class="mail-row selected"><span class="status-dot"></span><span class="harness-mark"></span><span class="subject">Build the Fieldnotes workspace</span><span class="trailing">1w</span></div>
+            <div class="nav-label"><span>Detailed · context revealed</span><span>optional metadata</span></div>
+            <div class="expanded-row current">
+              <div class="context-line"><span>fieldnotes @ This device</span><span>17m</span></div>
+              <div class="title-line"><span class="status-dot"></span><span class="harness-mark"></span><span class="subject">Polish the command palette</span><span class="badge">#413</span></div>
+              <div class="metadata-line">fieldnotes/polish-the-command-palette</div>
+            </div>
+          </div>
+          <dl class="dimension-list">
+            <dt>Title / line height</dt><dd>13 / 17px</dd>
+            <dt>Context / line height</dt><dd>11 / 14px</dd>
+            <dt>Status label</dt><dd>10px medium</dd>
+            <dt>Row inset / gap / radius</dt><dd>8 / 2 / 8px</dd>
+          </dl>
+        </article>
+        <article class="card">
+          <div class="card-head"><h3>State grammar</h3><small>What carries the signal</small></div>
+          <div class="state-strip" style="padding-top:16px">
+            <div class="state-chip"><strong>Rest</strong><span>Primary label at reduced text strength</span></div>
+            <div class="state-chip" style="background:#ececef"><strong>Hover</strong><span>Wash + brighter text; row action appears</span></div>
+            <div class="state-chip" style="background:#e9e9ed"><strong>Selected</strong><span>One rounded fill; no row outline</span></div>
+            <div class="state-chip"><strong>Status</strong><span>Small icon/dot; semantic status color</span></div>
+          </div>
+          <div class="callout" style="margin:0 18px 18px"><strong>Not an observed mail rule:</strong> Zeron’s selected rows do not become bold. Its sidebar shows task activity, not unread mail. MegaMail must add unread emphasis as an email-specific state and keep it distinct from Working, Done, Queued, and Failed.</div>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <h2>Email mapping</h2>
+      <p class="section-note"><span class="tag inference">Adaptation, not observed Zeron behavior</span> Reuse the hierarchy and interaction weight; replace the work-session meanings with mail meanings.</p>
+      <div class="card mapping">
+        <table>
+          <thead><tr><th>Zeron source surface</th><th>Observed hierarchy</th><th>MegaMail adaptation</th></tr></thead>
+          <tbody>
+            <tr><td>Sidebar groups</td><td>Section labels, grouped rows, and whitespace create navigation without repeated divider lines.</td><td>Accounts, folders, and labels in one stable rail.</td></tr>
+            <tr><td>Compact session row</td><td>Primary title stays left; status/icon lead; time and PR badge align at the trailing edge.</td><td>Sender + subject lead; snippet, date, and label stay secondary and quiet.</td></tr>
+            <tr><td>Selected / hover row</td><td>One soft fill marks focus; hover reveals an action inside the trailing slot.</td><td>Selected thread gets one wash; Archive or Star appears on hover without a permanently empty action column.</td></tr>
+            <tr><td>Conversation canvas</td><td>Large continuous work surface with a clear title identity and room for content.</td><td>Thread subject and participants lead into readable message bodies; quoted history and attachments remain subordinate.</td></tr>
+            <tr><td>Persistent composer</td><td>Low, centered action surface with input and primary action in one group.</td><td>Use for contextual reply in an open thread. New compose still needs recipient and subject fields.</td></tr>
+            <tr><td>Activity colors</td><td>Working, Done, Queued, and Failed describe process or delivery state.</td><td>Unread uses type weight and an unobtrusive marker; never assign it a copied process color.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2>Linux-first material rule</h2>
+      <div class="callout"><strong>Make the hierarchy work on an opaque window first.</strong> Zeron sets the main window tint fully opaque on Linux because compositor blur is not guaranteed. Its GPUI scene can still frost floating surfaces such as popovers and the composer when that renderer is available. A transparent GPUI window-background setting is used for CSD corner cutouts; the painted app plane remains opaque.</div>
+      <div class="source-list">
+        <a class="source-link" href="https://github.com/zeronsh/zeron/blob/037f4c10d67a38175b2386e776aba54355b4e941/crates/ui/src/theme.rs#L787-L812">Window tint and Linux alpha</a>
+        <a class="source-link" href="https://github.com/zeronsh/zeron/blob/037f4c10d67a38175b2386e776aba54355b4e941/crates/ui/src/theme.rs#L914-L928">In-app frost support</a>
+        <a class="source-link" href="https://github.com/zeronsh/zeron/blob/037f4c10d67a38175b2386e776aba54355b4e941/crates/ui/src/theme.rs#L1113-L1137">Window background behavior</a>
+      </div>
+    </section>
+
+    <section>
+      <h2>Source and screenshot evidence</h2>
+      <p class="section-note">All code links pin the audited upstream commit. Screenshot pages link to the original files; no wallpaper, logo, image, font, or source code is embedded in this report.</p>
+      <div class="source-list">
+        <a class="source-link" href="https://github.com/zeronsh/zeron/blob/037f4c10d67a38175b2386e776aba54355b4e941/crates/ui/src/theme.rs#L1140-L1188">Dark roles · theme.rs 1140</a>
+        <a class="source-link" href="https://github.com/zeronsh/zeron/blob/037f4c10d67a38175b2386e776aba54355b4e941/crates/ui/src/theme.rs#L1239-L1288">Light roles · theme.rs 1239</a>
+        <a class="source-link" href="https://github.com/zeronsh/zeron/blob/037f4c10d67a38175b2386e776aba54355b4e941/crates/ui/src/shell.rs#L7289-L7292">Row content order · shell.rs 7289</a>
+        <a class="source-link" href="https://github.com/zeronsh/zeron/blob/037f4c10d67a38175b2386e776aba54355b4e941/crates/ui/src/shell.rs#L7613-L7676">Selection and hover · shell.rs 7613</a>
+        <a class="source-link" href="https://github.com/zeronsh/zeron/blob/037f4c10d67a38175b2386e776aba54355b4e941/crates/ui/src/shell.rs#L10591-L10653">Bottom stack · shell.rs 10591</a>
+        <a class="source-link" href="https://github.com/zeronsh/zeron/blob/037f4c10d67a38175b2386e776aba54355b4e941/docs/screenshots/sidebar-layout/compact.png">Screenshot · compact sidebar</a>
+        <a class="source-link" href="https://github.com/zeronsh/zeron/blob/037f4c10d67a38175b2386e776aba54355b4e941/docs/screenshots/sidebar-layout/detailed.png">Screenshot · detailed sidebar</a>
+        <a class="source-link" href="https://github.com/zeronsh/zeron/blob/037f4c10d67a38175b2386e776aba54355b4e941/docs/screenshots/sidebar-layout/compact-hover.png">Screenshot · hovered row</a>
+        <a class="source-link" href="https://github.com/zeronsh/zeron/blob/037f4c10d67a38175b2386e776aba54355b4e941/docs/screenshots/context-usage/near-capacity-light.png">Screenshot · light surface</a>
+      </div>
+    </section>
+    <footer>Research artifact for MegaMail. The HTML is self-contained and static; every diagram is labeled as schematic and is not an invented product screenshot. See zeron-hierarchy.md for the full written anatomy and evidence limits.</footer>
+  </main>
+</body>
+</html>

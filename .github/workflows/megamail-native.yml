@@ -1,0 +1,39 @@
+name: MegaMail native preview
+
+on:
+  push:
+    paths:
+      - 'apps/megamail/**'
+      - '.github/workflows/megamail-native.yml'
+  pull_request:
+    paths:
+      - 'apps/megamail/**'
+      - '.github/workflows/megamail-native.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          components: rustfmt
+      - name: Install native development libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang pkg-config libfontconfig-dev libwayland-dev \
+            libxkbcommon-x11-dev libx11-xcb-dev libssl-dev libzstd-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/megamail
+      - name: Check formatting
+        run: cargo fmt --manifest-path apps/megamail/Cargo.toml --check
+      - name: Test sample mailbox state and icon assets
+        run: cargo test --manifest-path apps/megamail/Cargo.toml --locked -j 2
+      - name: Check native executable
+        run: cargo check --manifest-path apps/megamail/Cargo.toml --locked --bin megamail -j 2
