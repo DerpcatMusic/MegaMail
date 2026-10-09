@@ -8833,11 +8833,12 @@ fn uid_set(uids: &[u32]) -> String {
     out
 }
 
-/// The user-defined keywords among a message's flags, verbatim.
+/// The custom keywords on a message, plus `$Answered` for the IMAP system flag.
 fn custom_flags(flags: &[Flag]) -> Vec<String> {
     flags
         .iter()
         .filter_map(|f| match f {
+            Flag::Answered => Some("$Answered".to_string()),
             Flag::Custom(k) => Some(k.to_string()),
             _ => None,
         })
@@ -10911,6 +10912,24 @@ pub(super) fn sample_account() -> AccountConfig {
 mod tests {
 
     use super::*;
+
+    #[test]
+    fn answered_flag_becomes_a_keyword_without_dropping_custom_keywords() {
+        let flags = [
+            Flag::Answered,
+            Flag::Seen,
+            Flag::Flagged,
+            Flag::Custom("$Forwarded".into()),
+            Flag::Custom("Work".into()),
+        ];
+        assert_eq!(
+            custom_flags(&flags),
+            vec!["$Answered".to_string(), "$Forwarded".to_string(), "Work".to_string()]
+        );
+
+        let other_system_flags = [Flag::Seen, Flag::Flagged, Flag::Draft];
+        assert!(custom_flags(&other_system_flags).is_empty());
+    }
 
     #[test]
     fn only_the_top_level_inbox_is_the_inbox() {

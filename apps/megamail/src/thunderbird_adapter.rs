@@ -14,7 +14,9 @@ use std::thread;
 
 use base64::Engine as _;
 use futures::channel::mpsc as gpui_mpsc;
-use megamail_core::models::{Account, Folder, FolderKind, Importance, Message};
+use megamail_core::models::{
+    Account, Folder, FolderKind, Importance, Message, ThreadLatest, ThreadSummary,
+};
 use megamail_core::query::{PageRequest, PageResult, PageStatus, SubmitError};
 use megamail_core::thunderbird::{ThunderbirdAccount, ThunderbirdProfile};
 use megamail_core::thunderbird_bridge::Runtime;
@@ -32,6 +34,9 @@ const STORE_VERSION: u32 = 1;
 const PAGE_LIMIT: usize = 100;
 const SESSION_MESSAGE_LIMIT: usize = 25_000;
 const FOLDER_LIMIT: usize = 4_096;
+const CONVERSATION_ID_LIMIT: usize = 256;
+const CONVERSATION_FOLDER_LIMIT: usize = 8;
+const CONVERSATION_MEMBER_LIMIT: usize = 100;
 const ATTACHMENT_LIMIT: usize = 32;
 const ATTACHMENT_BYTES_LIMIT: usize = 50 * 1024 * 1024;
 const RAW_BYTES_LIMIT: usize = 100 * 1024 * 1024;
@@ -132,6 +137,7 @@ struct ActorState {
     message_by_remote: HashMap<(u32, u32, String), u32>,
     remote_by_uid: HashMap<(u32, u32), Value>,
     message_id_by_uid: HashMap<(u32, u32), String>,
+    reply_identity_by_uid: HashMap<(u32, u32), (String, i64)>,
     cursors: HashMap<(u32, u32, u32), String>,
     initial_pages: HashMap<(u32, u32), Value>,
     next_uid: u32,
@@ -744,6 +750,7 @@ fn start_profile(
                 message_by_remote: HashMap::new(),
                 remote_by_uid: HashMap::new(),
                 message_id_by_uid: HashMap::new(),
+                reply_identity_by_uid: HashMap::new(),
                 cursors: HashMap::new(),
                 initial_pages: HashMap::new(),
                 next_uid: 1,
@@ -1149,20 +1156,16 @@ impl ActorState {
             .is_none()
             .then(|| self.initial_pages.remove(&(account_id, folder_id)))
             .flatten();
-        let remote_cursor = match request.cursor {
-            Some(cursor) => {
-                match self
-                    .cursors
-                    .remove(&(account_id, folder_id, cursor.before_uid))
-                {
-                    Some(cursor) => Some(cursor),
-                    None => {
-                        return PageResult {
-                            status: PageStatus::Superseded,
-                            ..failed(String::new())
-                        };
-                    }
-                }
+        let cursor_key = request
+            .cursor
+            .map(|cursor| (account_id, folder_id, cursor.before_uid));
+        let remote_cursor = match cursor_key.and_then(|key| self.cursors.get(&key).cloned()) {
+            Some(cursor) => Some(cursor),
+            None if cursor_key.is_some() => {
+                return PageResult {
+                    status: PageStatus::Superseded,
+                    ..failed(String::new())
+                };
             }
             None => None,
         };
@@ -1180,7 +1183,12 @@ impl ActorState {
         }) {
             Some(value) => value,
             None => match self.runtime.call("list", params) {
-                Ok(value) => value,
+                Ok(value) => {
+                    if let Some(key) = cursor_key {
+                        self.cursors.remove(&key);
+                    }
+                    value
+                }
                 Err(error) => return failed(friendly_error(&error)),
             },
         };
@@ -1281,6 +1289,10 @@ impl ActorState {
                 }
             })
             .unwrap_or(0);
+        self.reply_identity_by_uid.insert(
+            (account_id, uid),
+            reply_identity(&string(header.get("author")), timestamp),
+        );
         let date = if timestamp > 0 {
             megamail_core::datefmt::date_time(timestamp)
         } else {
@@ -1321,6 +1333,355 @@ impl ActorState {
         })
     }
 
+    fn conversation_scope(
+        &self,
+        account_id: u32,
+        seed_ids: &[String],
+    ) -> Result<(Value, Vec<Value>, bool), (String, bool)> {
+        let account = self.accounts.get(&account_id).ok_or_else(|| {
+            (
+                "This Thunderbird account is no longer connected.".into(),
+                true,
+            )
+        })?;
+        let mut selected = Vec::new();
+        let mut ordered_folder_ids = Vec::new();
+        let mut partial = false;
+
+        // Put known seed folders first so the bounded account-folder window covers them.
+        let mut seed_folders = Vec::new();
+        for id in seed_ids {
+            if let Some(folder_id) = self.folder_for_header_id(account_id, id) {
+                if !seed_folders.contains(&folder_id) {
+                    seed_folders.push(folder_id);
+                }
+            }
+        }
+        if let Some(folder_id) = seed_folders.first() {
+            ordered_folder_ids.push(*folder_id);
+        }
+        for kind in [FolderKind::Inbox, FolderKind::Sent] {
+            for folder in account
+                .folders
+                .iter()
+                .filter(|folder| folder.folder.kind == kind)
+            {
+                ordered_folder_ids.push(folder.folder.id);
+            }
+        }
+        for folder_id in seed_folders.iter().skip(1) {
+            ordered_folder_ids.push(*folder_id);
+        }
+        let mut extra_folders = account
+            .folders
+            .iter()
+            .filter(|folder| {
+                !matches!(
+                    folder.folder.kind,
+                    FolderKind::Inbox
+                        | FolderKind::Sent
+                        | FolderKind::Drafts
+                        | FolderKind::Templates
+                        | FolderKind::Trash
+                        | FolderKind::Junk
+                ) && !ordered_folder_ids.contains(&folder.folder.id)
+            })
+            .collect::<Vec<_>>();
+        extra_folders.sort_by_key(|folder| folder.folder.kind != FolderKind::Archive);
+        ordered_folder_ids.extend(extra_folders.into_iter().map(|folder| folder.folder.id));
+        let mut seen = HashSet::new();
+        for folder_id in ordered_folder_ids {
+            let Some(folder) = account
+                .folders
+                .iter()
+                .find(|folder| folder.folder.id == folder_id)
+            else {
+                continue;
+            };
+            let remote = string(Some(&folder.remote_id));
+            if remote.is_empty() || !seen.insert(remote.clone()) {
+                continue;
+            }
+            if selected.len() == CONVERSATION_FOLDER_LIMIT {
+                partial = true;
+                continue;
+            }
+            selected.push(Value::String(remote));
+        }
+        Ok((account.remote_id.clone(), selected, partial))
+    }
+
+    fn folder_for_header_id(&self, account_id: u32, header_id: &str) -> Option<u32> {
+        let wanted = normalize_message_id(header_id);
+        if wanted.is_empty() {
+            return None;
+        }
+        let uid = self
+            .message_id_by_uid
+            .iter()
+            .find_map(|((id, uid), message_id)| {
+                (*id == account_id && normalize_message_id(message_id) == wanted).then_some(*uid)
+            })?;
+        self.message_by_remote
+            .iter()
+            .find_map(|((id, folder_id, _), local_uid)| {
+                (*id == account_id && *local_uid == uid).then_some(*folder_id)
+            })
+    }
+
+    fn map_conversation_headers(
+        &mut self,
+        account_id: u32,
+        value: &Value,
+    ) -> Result<Vec<Message>, String> {
+        let headers = value
+            .get("messages")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "Thunderbird returned an invalid conversation response.".to_owned())?;
+        if headers.len() > CONVERSATION_MEMBER_LIMIT {
+            return Err("Thunderbird returned more than 100 conversation messages.".into());
+        }
+        let mut messages = Vec::with_capacity(headers.len());
+        for header in headers {
+            let remote_folder = string(header.get("folderId"));
+            let folder_id = self
+                .accounts
+                .get(&account_id)
+                .and_then(|account| {
+                    account
+                        .folders
+                        .iter()
+                        .find(|folder| {
+                            folder.folder.path == remote_folder
+                                || string(Some(&folder.remote_id)) == remote_folder
+                        })
+                        .map(|folder| folder.folder.id)
+                })
+                .ok_or_else(|| {
+                    "Thunderbird returned a conversation message outside the selected account's folders.".to_owned()
+                })?;
+            let mut normalized_header = header.clone();
+            let mut references = string(header.get("references"));
+            let in_reply_to = string(header.get("inReplyTo"));
+            let in_reply_to_id = normalize_message_id(&in_reply_to);
+            if !in_reply_to_id.is_empty()
+                && !references
+                    .split_whitespace()
+                    .any(|id| normalize_message_id(id) == in_reply_to_id)
+            {
+                if !references.is_empty() {
+                    references.push(' ');
+                }
+                references.push_str(&in_reply_to);
+            }
+            normalized_header["references"] = Value::String(references);
+            let message = self.map_header(account_id, folder_id, &normalized_header)?;
+            let kind = self.accounts[&account_id]
+                .folders
+                .iter()
+                .find(|folder| folder.folder.id == folder_id)
+                .map(|folder| folder.folder.kind);
+            if matches!(
+                kind,
+                Some(
+                    FolderKind::Drafts
+                        | FolderKind::Templates
+                        | FolderKind::Trash
+                        | FolderKind::Junk
+                )
+            ) {
+                continue;
+            }
+            if kind == Some(FolderKind::Sent) && !self.message_is_from_self(account_id, &message) {
+                continue;
+            }
+            messages.push(message);
+        }
+        Ok(self.dedupe_conversation_messages(account_id, messages))
+    }
+
+    fn message_is_from_self(&self, account_id: u32, message: &Message) -> bool {
+        self.accounts.get(&account_id).is_some_and(|account| {
+            account.identities.iter().any(|identity| {
+                !identity.email.is_empty()
+                    && normalize_email(&identity.email) == normalize_email(&message.from_addr)
+            })
+        })
+    }
+
+    fn conversation_copy_priority(&self, account_id: u32, message: &Message) -> u8 {
+        let kind = self.accounts.get(&account_id).and_then(|account| {
+            account
+                .folders
+                .iter()
+                .find(|folder| folder.folder.id == message.folder_id)
+                .map(|folder| folder.folder.kind)
+        });
+        if kind == Some(FolderKind::Sent) && self.message_is_from_self(account_id, message) {
+            2
+        } else if kind == Some(FolderKind::Inbox) {
+            1
+        } else {
+            0
+        }
+    }
+
+    fn dedupe_conversation_messages(
+        &self,
+        account_id: u32,
+        messages: Vec<Message>,
+    ) -> Vec<Message> {
+        let mut out = Vec::<Message>::new();
+        let mut priorities = Vec::<u8>::new();
+        let mut by_identity = HashMap::<(String, String, i64), usize>::new();
+        for message in messages {
+            let header_id = normalize_message_id(&message.message_id);
+            if header_id.is_empty() {
+                out.push(message);
+                priorities.push(0);
+                continue;
+            }
+            let priority = self.conversation_copy_priority(account_id, &message);
+            let identity = (
+                header_id,
+                normalize_email(&message.from_addr),
+                message.timestamp,
+            );
+            if let Some(index) = by_identity.get(&identity).copied() {
+                let existing = &out[index];
+                let unread = existing.unread || message.unread;
+                let starred = existing.starred || message.starred;
+                let has_attachment = existing.has_attachment || message.has_attachment;
+                let prefer = priority > priorities[index]
+                    || (priority == priorities[index]
+                        && (message.folder_id, message.uid) < (existing.folder_id, existing.uid));
+                if prefer {
+                    out[index] = message;
+                    priorities[index] = priority;
+                }
+                out[index].unread = unread;
+                out[index].starred = starred;
+                out[index].has_attachment = has_attachment;
+            } else {
+                by_identity.insert(identity, out.len());
+                out.push(message);
+                priorities.push(priority);
+            }
+        }
+        out
+    }
+
+    fn thread_summaries(
+        &self,
+        account_id: u32,
+        groups: &[(String, Vec<String>)],
+        messages: Vec<Message>,
+    ) -> Vec<(String, ThreadSummary)> {
+        let sent_folders = self
+            .accounts
+            .get(&account_id)
+            .map(|account| {
+                account
+                    .folders
+                    .iter()
+                    .filter(|folder| folder.folder.kind == FolderKind::Sent)
+                    .map(|folder| (account_id, folder.folder.id))
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
+        let conversations =
+            megamail_core::conversation::group_conversations(messages, &sent_folders);
+        groups
+            .iter()
+            .map(|(tag, ids)| {
+                let ids = ids
+                    .iter()
+                    .take(24)
+                    .map(|id| normalize_message_id(id))
+                    .filter(|id| !id.is_empty())
+                    .collect::<HashSet<_>>();
+                if ids.is_empty() {
+                    return (tag.clone(), ThreadSummary::default());
+                }
+                let mut members = conversations
+                    .iter()
+                    .filter(|conversation| {
+                        conversation.members.iter().any(|message| {
+                            ids.contains(&normalize_message_id(&message.message_id))
+                                || message
+                                    .references
+                                    .split_whitespace()
+                                    .any(|id| ids.contains(&normalize_message_id(id)))
+                        })
+                    })
+                    .flat_map(|conversation| conversation.members.iter().cloned())
+                    .collect::<Vec<_>>();
+                members = self.dedupe_conversation_messages(account_id, members);
+                if members.is_empty() {
+                    return (tag.clone(), ThreadSummary::default());
+                }
+                members.sort_by(|a, b| {
+                    a.timestamp
+                        .cmp(&b.timestamp)
+                        .then_with(|| a.uid.cmp(&b.uid))
+                });
+                let latest = members.last().map(|message| ThreadLatest {
+                    from_name: message.from_name.clone(),
+                    from_addr: message.from_addr.clone(),
+                    preview: message.preview.clone(),
+                    timestamp: message.timestamp,
+                    date: message.date.clone(),
+                });
+                (
+                    tag.clone(),
+                    ThreadSummary {
+                        count: members.len(),
+                        latest,
+                        members,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn message_body_event(
+        &self,
+        message_id: u32,
+        path: &str,
+        remote_id: Value,
+    ) -> Result<WorkerMailboxEvent, (String, bool)> {
+        let value = self.call("body", json!({ "messageId": remote_id }))?;
+        let html = string(value.get("html"));
+        if html.len() > 2 * 1024 * 1024 {
+            return Err((
+                "This message body exceeds the 2 MiB reader limit.".into(),
+                false,
+            ));
+        }
+        let plain = string(value.get("plainText"));
+        let body = if !plain.is_empty() {
+            plain
+        } else {
+            megamail_core::markdown::plain_text(&html)
+        };
+        let links = if html.is_empty() {
+            Vec::new()
+        } else {
+            megamail_core::mail_text::extract_links(&html)
+        };
+        Ok(WorkerMailboxEvent::Body {
+            message_id,
+            path: path.to_owned(),
+            body,
+            links,
+            has_attachment: value.get("hasAttachment").and_then(Value::as_bool),
+            reply_to: value.get("replyTo").map(|_| string(value.get("replyTo"))),
+            references: value
+                .get("references")
+                .map(|_| string(value.get("references"))),
+        })
+    }
+
     fn handle_request(&mut self, account_id: u32, request: MailRequest) {
         let result = self.request(account_id, request);
         if let Err((text, connectivity)) = result {
@@ -1340,18 +1701,153 @@ impl ActorState {
             MailRequest::Reconnect => self.refresh_folders(account_id),
             MailRequest::LoadBody { message_id, path, uid } => {
                 let remote_id = self.remote_message(account_id, &path, message_id, uid)?;
-                let value = self.call("body", json!({ "messageId": remote_id }))?;
-                let html = string(value.get("html"));
-                if html.len() > 2 * 1024 * 1024 {
-                    return Err(("This message body exceeds the 2 MiB reader limit.".into(), false));
+                let event = self.message_body_event(message_id, &path, remote_id)?;
+                self.emit(account_id, event);
+                Ok(())
+            }
+            MailRequest::LoadBodies { items, path } => {
+                if items.len() > CONVERSATION_MEMBER_LIMIT {
+                    return Err(("This conversation has more than 100 messages to load.".into(), false));
                 }
-                let plain = string(value.get("plainText"));
-                let body = if !plain.is_empty() { plain } else { megamail_core::markdown::plain_text(&html) };
-                let links = if html.is_empty() { Vec::new() } else { megamail_core::mail_text::extract_links(&html) };
-                let has_attachment = value.get("hasAttachment").and_then(Value::as_bool);
-                let reply_to = value.get("replyTo").map(|_| string(value.get("replyTo")));
-                let references = value.get("references").map(|_| string(value.get("references")));
-                self.emit(account_id, WorkerMailboxEvent::Body { message_id, path, body, links, has_attachment, reply_to, references });
+                let mut seen = HashSet::new();
+                for (message_id, uid) in items {
+                    if seen.insert(uid) {
+                        let remote_id = self.remote_message(account_id, &path, message_id, uid)?;
+                        let event = self.message_body_event(message_id, &path, remote_id)?;
+                        self.emit(account_id, event);
+                    }
+                }
+                Ok(())
+            }
+            MailRequest::LoadRelated { message_id, ids } => {
+                let input_partial = ids.len() > 24;
+                let ids = ids.into_iter().take(24).collect::<Vec<_>>();
+                let seed_ids = ids.first().cloned().into_iter().collect::<Vec<_>>();
+                let (remote_account, folder_ids, scope_partial) = self.conversation_scope(account_id, &seed_ids)?;
+                if ids.is_empty() || folder_ids.is_empty() {
+                    let partial = input_partial || scope_partial;
+                    self.emit(account_id, WorkerMailboxEvent::Related {
+                        message_id,
+                        messages: Vec::new(),
+                        partial,
+                        warning: partial.then(|| "More messages may exist outside the indexed/query window".into()),
+                    });
+                    return Ok(());
+                }
+                let result = self.call("conversation", json!({
+                    "accountId": remote_account,
+                    "folderIds": folder_ids,
+                    "ids": ids,
+                    "includeReplies": true,
+                }))?;
+                let messages = self
+                    .map_conversation_headers(account_id, &result)
+                    .map_err(|error| (error, false))?;
+                let partial = input_partial
+                    || scope_partial
+                    || result.get("partial").and_then(Value::as_bool).unwrap_or(false);
+                let warning = if partial {
+                    Some("More messages may exist outside the indexed/query window".into())
+                } else {
+                    result.get("warning").and_then(Value::as_str).map(str::to_owned)
+                };
+                self.emit(account_id, WorkerMailboxEvent::Related {
+                    message_id,
+                    messages,
+                    partial,
+                    warning,
+                });
+                Ok(())
+            }
+            MailRequest::LoadThreadSummaries { groups } => {
+                let fallback = groups
+                    .iter()
+                    .map(|(tag, _)| (tag.clone(), ThreadSummary::default()))
+                    .collect::<Vec<_>>();
+                let mut ids = Vec::new();
+                let mut seen_ids = HashSet::new();
+                let mut query_groups = Vec::new();
+                let mut input_partial = groups.len() > 100;
+                for (tag, group_ids) in groups.iter().take(100) {
+                    if group_ids.len() > 24 {
+                        input_partial = true;
+                        continue;
+                    }
+                    let mut current = Vec::with_capacity(group_ids.len());
+                    let mut current_seen = HashSet::new();
+                    for id in group_ids {
+                        let normalized = normalize_message_id(&id);
+                        if normalized.is_empty() || !current_seen.insert(normalized) {
+                            continue;
+                        }
+                        current.push(id.clone());
+                    }
+                    let additions = current
+                        .iter()
+                        .filter(|id| !seen_ids.contains(&normalize_message_id(id)))
+                        .count();
+                    if ids.len() + additions > CONVERSATION_ID_LIMIT {
+                        input_partial = true;
+                        continue;
+                    }
+                    for id in &current {
+                        let normalized = normalize_message_id(id);
+                        if seen_ids.insert(normalized) {
+                            ids.push(id.clone());
+                        }
+                    }
+                    if !current.is_empty() {
+                        query_groups.push((tag.clone(), current));
+                    }
+                }
+                if ids.is_empty() || query_groups.is_empty() {
+                    self.emit(account_id, WorkerMailboxEvent::ThreadSummaries {
+                        summaries: fallback,
+                        warning: input_partial.then(|| "More messages may exist outside the indexed/query window".into()),
+                    });
+                    return Ok(());
+                }
+                let seed_ids = query_groups
+                    .iter()
+                    .filter_map(|(_, group)| group.first().cloned())
+                    .collect::<Vec<_>>();
+                let (remote_account, folder_ids, scope_partial) = self.conversation_scope(account_id, &seed_ids)?;
+                if folder_ids.is_empty() {
+                    self.emit(account_id, WorkerMailboxEvent::ThreadSummaries {
+                        summaries: fallback,
+                        warning: Some("More messages may exist outside the indexed/query window".into()),
+                    });
+                    return Ok(());
+                }
+                let result = self.call("conversation", json!({
+                    "accountId": remote_account,
+                    "folderIds": folder_ids,
+                    "ids": ids,
+                    "seedIds": seed_ids,
+                    "includeBatchRelated": true,
+                }))?;
+                let partial = input_partial
+                    || scope_partial
+                    || result.get("partial").and_then(Value::as_bool).unwrap_or(false);
+                let messages = self
+                    .map_conversation_headers(account_id, &result)
+                    .map_err(|error| (error, false))?;
+                let mut summaries = self.thread_summaries(account_id, &query_groups, messages);
+                let returned = summaries
+                    .iter()
+                    .map(|(tag, _)| tag.clone())
+                    .collect::<HashSet<_>>();
+                summaries.extend(
+                    fallback
+                        .into_iter()
+                        .filter(|(tag, _)| !returned.contains(tag)),
+                );
+                let warning = if partial {
+                    Some("More messages may exist outside the indexed/query window".into())
+                } else {
+                    result.get("warning").and_then(Value::as_str).map(str::to_owned)
+                };
+                self.emit(account_id, WorkerMailboxEvent::ThreadSummaries { summaries, warning });
                 Ok(())
             }
             MailRequest::LoadAttachments { message_id, path, uid, download } => {
@@ -1654,24 +2150,13 @@ impl ActorState {
         account_id: u32,
         in_reply_to: &str,
     ) -> Result<Option<Value>, (String, bool)> {
-        if in_reply_to.trim().is_empty() {
-            return Ok(None);
-        }
-        let wanted = normalize_message_id(in_reply_to);
-        self.message_id_by_uid
-            .iter()
-            .find(|((id, _), message_id)| {
-                *id == account_id && normalize_message_id(message_id) == wanted
-            })
-            .and_then(|((_, uid), _)| self.remote_by_uid.get(&(account_id, *uid)))
-            .cloned()
-            .map(Some)
-            .ok_or_else(|| {
-                (
-                    "The original message is no longer loaded in Thunderbird. Refresh the folder before replying so its thread headers are preserved.".into(),
-                    false,
-                )
-            })
+        resolve_reply_remote_id(
+            account_id,
+            in_reply_to,
+            &self.message_id_by_uid,
+            &self.reply_identity_by_uid,
+            &self.remote_by_uid,
+        )
     }
 
     fn upload_attachments(&mut self, paths: &[String]) -> Result<Vec<Value>, (String, bool)> {
@@ -1868,6 +2353,7 @@ impl ActorState {
         }
         self.remote_by_uid.remove(&(account_id, uid));
         self.message_id_by_uid.remove(&(account_id, uid));
+        self.reply_identity_by_uid.remove(&(account_id, uid));
     }
 
     fn refresh_folders(&mut self, account_id: u32) -> Result<(), (String, bool)> {
@@ -2310,6 +2796,62 @@ fn normalize_message_id(value: &str) -> String {
         .to_ascii_lowercase()
 }
 
+fn reply_identity(author: &str, timestamp: i64) -> (String, i64) {
+    let (_, address) = parse_author(author);
+    (normalize_email(&address), timestamp)
+}
+
+fn resolve_reply_remote_id(
+    account_id: u32,
+    in_reply_to: &str,
+    message_ids: &HashMap<(u32, u32), String>,
+    identities: &HashMap<(u32, u32), (String, i64)>,
+    remote_ids: &HashMap<(u32, u32), Value>,
+) -> Result<Option<Value>, (String, bool)> {
+    if in_reply_to.trim().is_empty() {
+        return Ok(None);
+    }
+    let wanted = normalize_message_id(in_reply_to);
+    let mut selected_identity: Option<(String, i64)> = None;
+    let mut selected_uid: Option<u32> = None;
+    for ((candidate_account, uid), message_id) in message_ids {
+        if *candidate_account != account_id
+            || normalize_message_id(message_id) != wanted
+            || !remote_ids.contains_key(&(*candidate_account, *uid))
+        {
+            continue;
+        }
+        let Some(identity) = identities.get(&(*candidate_account, *uid)) else {
+            return Err((
+                "Thunderbird cannot safely choose a reply target because its loaded message identity is incomplete.".into(),
+                false,
+            ));
+        };
+        if selected_identity
+            .as_ref()
+            .is_some_and(|selected| selected != identity)
+            || (selected_uid.is_some() && (identity.0.is_empty() || identity.1 <= 0))
+        {
+            return Err((
+                "Thunderbird cannot safely choose a reply target because multiple loaded messages share this Message-ID.".into(),
+                false,
+            ));
+        }
+        selected_identity = Some(identity.clone());
+        selected_uid = Some(selected_uid.map_or(*uid, |selected| selected.min(*uid)));
+    }
+    selected_uid
+        .and_then(|uid| remote_ids.get(&(account_id, uid)))
+        .cloned()
+        .map(Some)
+        .ok_or_else(|| {
+            (
+                "The original message is no longer loaded in Thunderbird. Refresh the folder before replying so its thread headers are preserved.".into(),
+                false,
+            )
+        })
+}
+
 fn string_array(value: Option<&Value>) -> Vec<String> {
     value
         .and_then(Value::as_array)
@@ -2530,10 +3072,11 @@ mod tests {
     use super::{
         BRIDGE_REQUEST_FRAME_LIMIT, SourceStore, StoredAccount, StoredProfile,
         address_from_identity, compose_recipients, folder_kind, parse_folders, preflight_request,
-        validate_store,
+        reply_identity, resolve_reply_remote_id, validate_store,
     };
     use megamail_core::models::FolderKind;
     use serde_json::{Value, json};
+    use std::collections::HashMap;
 
     #[test]
     fn folder_parser_rejects_duplicate_missing_and_excessively_nested_ids() {
@@ -2638,6 +3181,97 @@ mod tests {
         assert_eq!(
             address_from_identity(r#""Surname, Name" <a@example.test>"#),
             "a@example.test"
+        );
+    }
+
+    #[test]
+    fn reply_target_accepts_label_copies_but_rejects_distinct_loaded_identities() {
+        assert_eq!(
+            reply_identity("Alice Person <alice@example.test>", 123),
+            reply_identity("A. Person <ALICE@example.test>", 123),
+            "Display-name changes do not make a duplicate folder copy a different identity"
+        );
+        assert_ne!(
+            reply_identity("Alice Person <alice@example.test>", 123),
+            reply_identity("Alice Person <alice@example.test>", 124)
+        );
+
+        let message_ids = HashMap::from([
+            ((7, 10), "<same@example.test>".to_owned()),
+            ((7, 11), "same@example.test".to_owned()),
+            ((8, 12), "<same@example.test>".to_owned()),
+        ]);
+        let identities = HashMap::from([
+            (
+                (7, 10),
+                reply_identity("Alice Person <alice@example.test>", 123),
+            ),
+            (
+                (7, 11),
+                reply_identity("A. Person <ALICE@example.test>", 123),
+            ),
+            ((8, 12), reply_identity("Bob <bob@example.test>", 456)),
+        ]);
+        let remote_ids = HashMap::from([
+            ((7, 10), json!("remote-10")),
+            ((7, 11), json!("remote-11")),
+            ((8, 12), json!("other-account-remote")),
+        ]);
+        assert_eq!(
+            resolve_reply_remote_id(
+                7,
+                "<SAME@example.test>",
+                &message_ids,
+                &identities,
+                &remote_ids
+            )
+            .unwrap(),
+            Some(json!("remote-10")),
+            "Same-sender/date folder copies resolve deterministically within the account"
+        );
+
+        let mut distinct_ids = message_ids.clone();
+        distinct_ids.insert((7, 13), "<same@example.test>".to_owned());
+        let mut distinct_identities = identities;
+        distinct_identities.insert((7, 13), reply_identity("Bob <bob@example.test>", 456));
+        let mut distinct_remote_ids = remote_ids;
+        distinct_remote_ids.insert((7, 13), json!("remote-13"));
+        let error = resolve_reply_remote_id(
+            7,
+            "<same@example.test>",
+            &distinct_ids,
+            &distinct_identities,
+            &distinct_remote_ids,
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .0
+                .contains("multiple loaded messages share this Message-ID")
+        );
+        assert!(!error.1);
+
+        let incomplete_ids = HashMap::from([
+            ((7, 20), "<unknown@example.test>".to_owned()),
+            ((7, 21), "<unknown@example.test>".to_owned()),
+        ]);
+        let incomplete_identities = HashMap::from([
+            ((7, 20), reply_identity("", 0)),
+            ((7, 21), reply_identity("", 0)),
+        ]);
+        let incomplete_remote_ids = HashMap::from([
+            ((7, 20), json!("unknown-20")),
+            ((7, 21), json!("unknown-21")),
+        ]);
+        assert!(
+            resolve_reply_remote_id(
+                7,
+                "<unknown@example.test>",
+                &incomplete_ids,
+                &incomplete_identities,
+                &incomplete_remote_ids
+            )
+            .is_err()
         );
     }
 

@@ -8,8 +8,12 @@ use gpui_kit::{Context, Task};
 use megamail_core::{
     cache::MessageCursor,
     config::AccountConfig,
+    conversation::group_conversations,
     mail_text::MailLink,
-    models::{Account, Attachment, DraftOrigin, Folder, FolderKind, Message, OutboxItem},
+    models::{
+        Account, Attachment, DraftOrigin, Folder, FolderKind, Message, OutboxItem, ThreadSummary,
+        thread_ids,
+    },
     query::{PageRequest, PageResult, PageStatus, QueryService, SubmitError},
     thunderbird::ThunderbirdProfile,
     worker::{self, MailRequest, OutgoingMessage, SendOutcome, WorkerEvent},
@@ -58,10 +62,35 @@ pub struct MessageKey {
     pub uid: u32,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MailboxScope {
+    #[default]
+    Account,
+    Unified,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MessageRow {
     pub key: MessageKey,
     pub message: Message,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ConversationKey {
+    pub account_id: u32,
+    pub anchor: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConversationRow {
+    pub key: ConversationKey,
+    pub representative: Arc<MessageRow>,
+    pub members: Arc<Vec<Arc<MessageRow>>>,
+    pub count: usize,
+    pub unread: usize,
+    pub replied: bool,
+    pub forwarded: bool,
+    pub latest_sent: Option<Arc<MessageRow>>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -142,10 +171,19 @@ pub struct DraftSourceSnapshot {
 #[derive(Debug, Clone)]
 pub struct MailboxSnapshot {
     pub accounts: Vec<Account>,
+    pub scope: MailboxScope,
+    pub title: String,
+    pub account_labels: HashMap<u32, String>,
+    pub account_loading: HashMap<u32, bool>,
+    pub account_errors: HashMap<u32, String>,
     pub current_account_id: Option<u32>,
     pub folders: Vec<Folder>,
     pub current_folder_path: Option<String>,
     pub page: Arc<Vec<Arc<MessageRow>>>,
+    pub conversations: Arc<Vec<ConversationRow>>,
+    pub conversation_loading: bool,
+    pub conversation_error: Option<String>,
+    pub conversation_warning: Option<String>,
     pub selected_key: Option<MessageKey>,
     pub selected_message: Option<Arc<MessageRow>>,
     pub attachment_key: Option<MessageKey>,
@@ -212,6 +250,16 @@ pub(super) enum WorkerMailboxEvent {
         folder_id: u32,
         messages: Vec<Message>,
         links_by_uid: HashMap<u32, Vec<MailLink>>,
+    },
+    Related {
+        message_id: u32,
+        messages: Vec<Message>,
+        partial: bool,
+        warning: Option<String>,
+    },
+    ThreadSummaries {
+        summaries: Vec<(String, ThreadSummary)>,
+        warning: Option<String>,
     },
     Attachments {
         message_id: u32,
@@ -286,6 +334,22 @@ struct PendingAttachment {
     message_id: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct PageKey {
+    account_id: u32,
+    folder_path: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct FolderPageState {
+    folder_id: u32,
+    generation: u64,
+    pending_generation: Option<u64>,
+    pending_append: bool,
+    next_cursor: Option<MessageCursor>,
+    truncated: bool,
+}
+
 enum BodyApplication {
     Ignored,
     Applied,
@@ -302,16 +366,28 @@ pub struct LiveMailbox {
     _event_task: Task<()>,
     query_service: Option<QueryService>,
     query_start_error: Option<String>,
-    query_generation: u64,
-    pending_page_generation: Option<u64>,
-    pending_page_append: bool,
-    next_cursor: Option<MessageCursor>,
+    page_states: HashMap<PageKey, FolderPageState>,
+    page_keys: HashSet<MessageKey>,
     page_rows: Arc<Vec<Arc<MessageRow>>>,
+    conversation_rows: Arc<Vec<ConversationRow>>,
+    related_members: HashMap<ConversationKey, Vec<Message>>,
+    related_counts: HashMap<ConversationKey, usize>,
+    related_requests: HashSet<ConversationKey>,
+    thread_summary_requests: HashMap<u32, HashMap<String, Vec<String>>>,
+    pending_thread_summaries: HashMap<(u32, String), ConversationKey>,
+    next_thread_request_id: u64,
+    pending_related: HashMap<(u32, u32), ConversationKey>,
+    conversation_errors: HashMap<ConversationKey, String>,
+    conversation_warnings: HashMap<ConversationKey, String>,
+    sent_header_requests: HashSet<(u32, u32)>,
+    pending_sent_refresh: HashSet<PageKey>,
+    pending_message_refresh: HashSet<PageKey>,
     accounts: Vec<Account>,
     folders_by_account: HashMap<u32, Vec<Folder>>,
     selected_folder_by_account: HashMap<u32, String>,
     current_account_id: Option<u32>,
     current_folder_path: Option<String>,
+    scope: MailboxScope,
     messages: Vec<Message>,
     visible_indices: Vec<usize>,
     truncated: bool,
@@ -415,16 +491,28 @@ impl LiveMailbox {
             _event_task: event_task,
             query_service,
             query_start_error,
-            query_generation: 0,
-            pending_page_generation: None,
-            pending_page_append: false,
-            next_cursor: None,
+            page_states: HashMap::new(),
+            page_keys: HashSet::new(),
             page_rows: Arc::new(Vec::new()),
+            conversation_rows: Arc::new(Vec::new()),
+            related_members: HashMap::new(),
+            related_counts: HashMap::new(),
+            related_requests: HashSet::new(),
+            thread_summary_requests: HashMap::new(),
+            pending_thread_summaries: HashMap::new(),
+            next_thread_request_id: 1,
+            pending_related: HashMap::new(),
+            conversation_errors: HashMap::new(),
+            conversation_warnings: HashMap::new(),
+            sent_header_requests: HashSet::new(),
+            pending_sent_refresh: HashSet::new(),
+            pending_message_refresh: HashSet::new(),
             accounts,
             folders_by_account: HashMap::new(),
             selected_folder_by_account: HashMap::new(),
             current_account_id,
             current_folder_path: None,
+            scope: MailboxScope::Account,
             messages: Vec::new(),
             visible_indices: Vec::new(),
             truncated: false,
@@ -465,9 +553,11 @@ impl LiveMailbox {
         let mut mailbox = Self::new_with_demo_mode(Vec::new(), Some(1), true, cx);
         mailbox.current_account_id = Some(1);
         mailbox.loading = true;
-        let sender = spawn_demo_worker(1, mailbox.event_sender.clone());
-        let _ = sender(MailRequest::LoadOutbox);
-        mailbox.request_senders.insert(1, sender);
+        for account_id in [1, 2] {
+            let sender = spawn_demo_worker(account_id, mailbox.event_sender.clone());
+            let _ = sender(MailRequest::LoadOutbox);
+            mailbox.request_senders.insert(account_id, sender);
+        }
         mailbox
     }
 
@@ -477,35 +567,106 @@ impl LiveMailbox {
             .and_then(|id| self.folders_by_account.get(&id))
             .cloned()
             .unwrap_or_default();
-        let current_folder_path = self.current_folder_path.clone();
+        let current_folder_path = (self.scope == MailboxScope::Account)
+            .then(|| self.current_folder_path.clone())
+            .flatten();
         let selected_message = self.selected_row.clone();
         let current_account_id = self.current_account_id;
+        let account_loading = self.account_loading_snapshot();
+        let account_errors = self.account_errors_snapshot();
         let error = current_account_id
-            .and_then(|id| self.query_errors.get(&id).cloned())
-            .or_else(|| {
-                current_account_id.and_then(|id| self.connectivity_errors.get(&id).cloned())
-            })
+            .and_then(|id| account_errors.get(&id).cloned())
+            .or_else(|| account_errors.values().next().cloned())
             .or_else(|| self.query_start_error.clone());
-        let action_error = current_account_id.and_then(|id| self.action_errors.get(&id).cloned());
+        let action_account_id = self
+            .selected_key
+            .as_ref()
+            .map(|key| key.account_id)
+            .or(current_account_id);
+        let action_error = action_account_id.and_then(|id| self.action_errors.get(&id).cloned());
+        let selected_conversation = self.selected_key.as_ref().and_then(|key| {
+            self.conversation_rows
+                .iter()
+                .find(|conversation| conversation.members.iter().any(|row| row.key == *key))
+        });
+        let conversation_loading = selected_conversation.is_some_and(|conversation| {
+            self.pending_related
+                .values()
+                .any(|key| key == &conversation.key)
+                || self
+                    .pending_thread_summaries
+                    .values()
+                    .any(|key| key == &conversation.key)
+                || self
+                    .pending_sent_refresh
+                    .iter()
+                    .any(|page| page.account_id == conversation.key.account_id)
+        });
+        let conversation_error = selected_conversation
+            .and_then(|conversation| self.conversation_errors.get(&conversation.key).cloned());
+        let conversation_warning = selected_conversation
+            .and_then(|conversation| self.conversation_warnings.get(&conversation.key).cloned());
         let outbox = current_account_id
             .and_then(|id| self.outbox_by_account.get(&id))
             .into_iter()
             .flatten()
             .cloned()
             .collect();
-        let has_more = self.next_cursor.is_some();
-        let unread_count = current_folder_path
-            .as_ref()
-            .and_then(|path| folders.iter().find(|folder| &folder.path == path))
-            .map(|folder| folder.unread)
-            .unwrap_or(0);
+        let page_states = self.active_page_keys();
+        let has_more = page_states.iter().any(|key| {
+            self.page_states
+                .get(key)
+                .is_some_and(|state| state.next_cursor.is_some())
+        });
+        let display_cap_reached = page_states.iter().any(|key| {
+            self.page_states
+                .get(key)
+                .is_some_and(|state| state.truncated)
+        });
+        let unread_count = match self.scope {
+            MailboxScope::Account => current_folder_path
+                .as_ref()
+                .and_then(|path| folders.iter().find(|folder| &folder.path == path))
+                .map(|folder| folder.unread)
+                .unwrap_or(0),
+            MailboxScope::Unified => self
+                .folders_by_account
+                .values()
+                .flatten()
+                .filter(|folder| folder.kind == FolderKind::Inbox)
+                .map(|folder| folder.unread)
+                .sum(),
+        };
+        let account_labels = self
+            .accounts
+            .iter()
+            .map(|account| (account.id, account.label.clone()))
+            .collect();
+        let title = self.scope_title();
+        let loaded_count = self.active_page_message_count();
+        let loading = account_loading.values().any(|loading| *loading)
+            || (self.loading && self.accounts.is_empty());
+        let loading_more = page_states.iter().any(|key| {
+            self.page_states
+                .get(key)
+                .is_some_and(|state| state.pending_generation.is_some() && state.pending_append)
+        });
 
         MailboxSnapshot {
             accounts: self.accounts.clone(),
+            scope: self.scope,
+            title,
+            account_labels,
+            account_loading,
+            account_errors,
             current_account_id,
             folders,
             current_folder_path,
             page: self.page_rows.clone(),
+            conversations: self.conversation_rows.clone(),
+            conversation_loading,
+            conversation_error,
+            conversation_warning,
             selected_key: self.selected_key.clone(),
             selected_message,
             attachment_key: self.selected_key.clone(),
@@ -514,14 +675,14 @@ impl LiveMailbox {
             draft_source: self.draft_source.clone(),
             search_query: self.search_query.clone(),
             filter: self.filter,
-            loaded_count: self.messages.len(),
+            loaded_count,
             status: self.status.clone(),
-            loading: self.loading,
-            loading_more: self.loading_more,
+            loading,
+            loading_more,
             body_loading: self.body_loading,
             unread_count,
             has_more,
-            display_cap_reached: self.truncated,
+            display_cap_reached,
             pending_send: current_account_id
                 .and_then(|id| self.pending_sends.get(&id))
                 .is_some_and(|pending| !pending.is_empty()),
@@ -677,12 +838,46 @@ impl LiveMailbox {
         Ok(())
     }
 
+    pub fn select_unified(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.scope == MailboxScope::Unified {
+            return false;
+        }
+        self.scope = MailboxScope::Unified;
+        self.current_folder_path = None;
+        self.clear_selection();
+        self.loading = (self.accounts.is_empty() && !self.request_senders.is_empty())
+            || self.accounts.iter().any(|account| {
+                self.folders_by_account
+                    .get(&account.id)
+                    .is_none_or(|folders| {
+                        !folders
+                            .iter()
+                            .any(|folder| folder.kind == FolderKind::Inbox)
+                    })
+            });
+        for key in self.active_page_keys() {
+            if let Some(state) = self.page_states.get(&key) {
+                if state.pending_generation.is_none() {
+                    self.request_page_for(&key, None, false, cx);
+                }
+            } else {
+                self.request_page_for(&key, None, false, cx);
+            }
+            self.request_current_folder_for(key.account_id, &key.folder_path, cx);
+        }
+        self.rebuild_visible();
+        self.ensure_visible_selection(cx);
+        cx.notify();
+        true
+    }
+
     pub fn switch_account(&mut self, account_id: u32, cx: &mut Context<Self>) -> bool {
         if !self.request_senders.contains_key(&account_id)
-            || self.current_account_id == Some(account_id)
+            || (self.current_account_id == Some(account_id) && self.scope == MailboxScope::Account)
         {
             return false;
         }
+        self.scope = MailboxScope::Account;
         self.current_account_id = Some(account_id);
         self.current_folder_path = self
             .folders_by_account
@@ -699,13 +894,19 @@ impl LiveMailbox {
                     .or_else(|| folders.first())
                     .map(|folder| folder.path.clone())
             });
-        self.clear_current_page();
+        self.clear_selection();
         self.loading = self.current_folder_path.is_some()
             || !self.folders_by_account.contains_key(&account_id);
         if let Some(path) = self.current_folder_path.clone() {
-            self.request_page(None, false, cx);
+            let key = PageKey {
+                account_id,
+                folder_path: path.clone(),
+            };
+            self.request_page_for(&key, None, false, cx);
             self.request_current_folder(&path, cx);
         }
+        self.rebuild_visible();
+        self.ensure_visible_selection(cx);
         cx.notify();
         true
     }
@@ -725,13 +926,18 @@ impl LiveMailbox {
         if self.current_folder_path.as_deref() == Some(path.as_str()) {
             return false;
         }
+        self.scope = MailboxScope::Account;
         let folder_id = folder.id;
         self.current_folder_path = Some(path.clone());
         self.selected_folder_by_account
             .insert(account_id, path.clone());
-        self.clear_current_page();
+        self.clear_selection();
         self.loading = true;
-        self.request_page(None, false, cx);
+        let key = PageKey {
+            account_id,
+            folder_path: path.clone(),
+        };
+        self.request_page_for(&key, None, false, cx);
         self.send_request(
             account_id,
             MailRequest::LoadMessages {
@@ -745,11 +951,7 @@ impl LiveMailbox {
     }
 
     pub fn select_message(&mut self, key: MessageKey, cx: &mut Context<Self>) -> bool {
-        if !self
-            .messages
-            .iter()
-            .any(|message| self.key_for(message).as_ref() == Some(&key))
-        {
+        if !self.selectable_key(&key) {
             return false;
         }
         if self.selected_key.as_ref() == Some(&key) {
@@ -762,6 +964,7 @@ impl LiveMailbox {
                 self.request_selected_body(cx);
                 cx.notify();
             }
+            self.request_selected_conversation_members(false, cx);
             return needs_body;
         }
         self.selected_key = Some(key.clone());
@@ -776,7 +979,22 @@ impl LiveMailbox {
         self.draft_source = None;
         self.refresh_selected_row();
         self.request_selected_body(cx);
+        self.request_selected_conversation_members(false, cx);
         cx.notify();
+        true
+    }
+
+    pub fn select_conversation(&mut self, key: ConversationKey, cx: &mut Context<Self>) -> bool {
+        let Some(row) = self
+            .conversation_rows
+            .iter()
+            .find(|row| row.key == key)
+            .cloned()
+        else {
+            return false;
+        };
+        self.select_message(row.representative.key.clone(), cx);
+        self.request_conversation_members(&row, true, cx);
         true
     }
 
@@ -788,8 +1006,9 @@ impl LiveMailbox {
             query
         };
         if !self.demo_mode {
-            self.clear_current_page();
-            self.loading = self.current_folder_path.is_some();
+            self.clear_all_page_data();
+            self.loading =
+                self.scope == MailboxScope::Unified || self.current_folder_path.is_some();
         }
         self.request_page(None, false, cx);
         cx.notify();
@@ -808,40 +1027,56 @@ impl LiveMailbox {
     }
 
     pub fn load_more(&mut self, cx: &mut Context<Self>) {
-        if self.loading_more || self.loading || self.pending_page_generation.is_some() {
+        if self.loading_more || self.loading {
             return;
         }
-        if self.messages.len() >= MESSAGE_CAP && self.next_cursor.is_some() {
-            self.set_action_error(
-                "Showing the newest 5,000 messages. Older messages are not loaded yet.",
-            );
+        let keys = self.active_page_keys();
+        let mut changed = false;
+        for key in keys {
+            let Some(state) = self.page_states.get(&key) else {
+                continue;
+            };
+            if state.pending_generation.is_some() {
+                continue;
+            }
+            if self.page_message_count(&key) >= MESSAGE_CAP && state.next_cursor.is_some() {
+                self.action_errors.insert(
+                    key.account_id,
+                    "Showing the newest 5,000 messages for this inbox. Older messages are not loaded yet.".into(),
+                );
+                if let Some(state) = self.page_states.get_mut(&key) {
+                    state.truncated = true;
+                }
+            } else if let Some(cursor) = state.next_cursor {
+                changed |= self.request_page_for(&key, Some(cursor), true, cx);
+            }
+        }
+        if changed {
             cx.notify();
-        } else if let Some(cursor) = self.next_cursor {
-            self.request_page(Some(cursor), true, cx);
         }
     }
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) -> bool {
-        let Some(path) = self.current_folder_path.clone() else {
+        let keys = self.active_page_keys();
+        if keys.is_empty() {
             return false;
-        };
-        let Some(account_id) = self.current_account_id else {
-            return false;
-        };
-        let Some(folder_id) = self.folder_id(account_id, &path) else {
-            return false;
-        };
+        }
+        let mut sent = false;
+        for key in keys {
+            sent |= self.request_page_for(&key, None, false, cx);
+            if let Some(folder_id) = self.folder_id(key.account_id, &key.folder_path) {
+                sent |= self.send_request(
+                    key.account_id,
+                    MailRequest::LoadMessages {
+                        folder_id,
+                        path: key.folder_path.clone(),
+                    },
+                    cx,
+                );
+                self.send_request(key.account_id, MailRequest::RefreshUnread, cx);
+            }
+        }
         self.loading = true;
-        self.request_page(None, false, cx);
-        let sent = self.send_request(
-            account_id,
-            MailRequest::LoadMessages {
-                folder_id,
-                path: path.clone(),
-            },
-            cx,
-        );
-        self.send_request(account_id, MailRequest::RefreshUnread, cx);
         cx.notify();
         sent
     }
@@ -854,6 +1089,78 @@ impl LiveMailbox {
     /// Queue a restore to Inbox. The row remains visible until a worker refresh confirms it.
     pub fn restore_selected(&mut self, cx: &mut Context<Self>) -> bool {
         self.move_selected_to(FolderKind::Inbox, cx)
+    }
+
+    pub fn trash_selected(&mut self, cx: &mut Context<Self>) -> bool {
+        self.move_selected_to(FolderKind::Trash, cx)
+    }
+
+    pub fn set_selected_unread(&mut self, unread: bool, cx: &mut Context<Self>) -> bool {
+        if self.demo_mode {
+            self.set_action_error("Message actions are disabled in the local demo.");
+            cx.notify();
+            return false;
+        }
+        let Some(key) = self.selected_key.clone() else {
+            return false;
+        };
+        let Some(message) = self.message_for_key(&key) else {
+            return false;
+        };
+        if !self.selectable_key(&key) || message.unread == unread {
+            return false;
+        }
+        let sent = self.send_request(
+            key.account_id,
+            MailRequest::SetSeen {
+                path: key.folder_path.clone(),
+                uid: key.uid,
+                seen: !unread,
+            },
+            cx,
+        );
+        if sent {
+            self.pending_message_refresh.insert(PageKey {
+                account_id: key.account_id,
+                folder_path: key.folder_path,
+            });
+        }
+        cx.notify();
+        sent
+    }
+
+    pub fn set_selected_starred(&mut self, starred: bool, cx: &mut Context<Self>) -> bool {
+        if self.demo_mode {
+            self.set_action_error("Message actions are disabled in the local demo.");
+            cx.notify();
+            return false;
+        }
+        let Some(key) = self.selected_key.clone() else {
+            return false;
+        };
+        let Some(message) = self.message_for_key(&key) else {
+            return false;
+        };
+        if !self.selectable_key(&key) || message.starred == starred {
+            return false;
+        }
+        let sent = self.send_request(
+            key.account_id,
+            MailRequest::SetFlagged {
+                path: key.folder_path.clone(),
+                uid: key.uid,
+                flagged: starred,
+            },
+            cx,
+        );
+        if sent {
+            self.pending_message_refresh.insert(PageKey {
+                account_id: key.account_id,
+                folder_path: key.folder_path,
+            });
+        }
+        cx.notify();
+        sent
     }
 
     pub fn send_message(
@@ -992,16 +1299,13 @@ impl LiveMailbox {
         download: bool,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.selected_key.as_ref() != Some(&key)
-            || self.current_account_id != Some(key.account_id)
-            || self.current_folder_path.as_deref() != Some(key.folder_path.as_str())
-        {
+        if self.selected_key.as_ref() != Some(&key) || !self.selectable_key(&key) {
             return false;
         }
         let Some(message) = self
             .messages
             .iter()
-            .find(|message| message.account_id == key.account_id && message.uid == key.uid)
+            .find(|message| self.key_for(message).as_ref() == Some(&key))
         else {
             return false;
         };
@@ -1163,7 +1467,12 @@ impl LiveMailbox {
     }
 
     pub fn dismiss_error(&mut self, cx: &mut Context<Self>) {
-        if let Some(account_id) = self.current_account_id {
+        if let Some(account_id) = self
+            .selected_key
+            .as_ref()
+            .map(|key| key.account_id)
+            .or(self.current_account_id)
+        {
             self.connectivity_errors.remove(&account_id);
             self.query_errors.remove(&account_id);
             self.action_errors.remove(&account_id);
@@ -1180,24 +1489,20 @@ impl LiveMailbox {
         let Some(key) = self.selected_key.clone() else {
             return false;
         };
-        let Some(account_id) = self.current_account_id else {
-            return false;
-        };
-        if key.account_id != account_id
-            || self.current_folder_path.as_deref() != Some(&key.folder_path)
-        {
+        if !self.selectable_key(&key) {
             return false;
         }
+        let account_id = key.account_id;
         let Some(destination) = self
             .folders_by_account
             .get(&account_id)
             .and_then(|folders| folders.iter().find(|folder| folder.kind == kind))
             .map(|folder| folder.path.clone())
         else {
-            let label = if kind == FolderKind::Archive {
-                "Archive"
-            } else {
-                "Inbox"
+            let label = match kind {
+                FolderKind::Archive => "Archive",
+                FolderKind::Trash => "Trash",
+                _ => "Inbox",
             };
             self.set_action_error(format!("This account has no {label} folder."));
             cx.notify();
@@ -1216,8 +1521,11 @@ impl LiveMailbox {
             cx,
         );
         if moved {
-            self.loading = true;
             self.status = "Moving message…".into();
+            self.pending_message_refresh.insert(PageKey {
+                account_id,
+                folder_path: key.folder_path.clone(),
+            });
             // Requests from this account are FIFO: this list reflects the completed move or its failure.
             self.send_request(
                 account_id,
@@ -1324,28 +1632,38 @@ impl LiveMailbox {
                     }
                     if self.current_account_id.is_none() {
                         self.current_account_id = Some(account_id);
-                        self.current_folder_path = self
-                            .selected_folder_by_account
-                            .get(&account_id)
-                            .cloned()
+                        self.current_folder_path = (self.scope == MailboxScope::Account)
+                            .then(|| self.selected_folder_by_account.get(&account_id).cloned())
+                            .flatten()
                             .filter(|path| !path.is_empty());
                         self.loading = self.current_folder_path.is_some();
                         self.clear_current_page();
                     }
-                    if let Some(path) = self
-                        .selected_folder_by_account
-                        .get(&account_id)
-                        .filter(|path| !path.is_empty())
-                        .cloned()
-                    {
+                    let path = if self.scope == MailboxScope::Unified {
+                        started
+                            .folders
+                            .iter()
+                            .find(|folder| folder.kind == FolderKind::Inbox)
+                            .map(|folder| folder.path.clone())
+                    } else {
+                        self.selected_folder_by_account
+                            .get(&account_id)
+                            .filter(|path| !path.is_empty())
+                            .cloned()
+                    };
+                    if let Some(path) = path {
+                        if self.scope == MailboxScope::Unified {
+                            let key = PageKey {
+                                account_id,
+                                folder_path: path.clone(),
+                            };
+                            self.request_page_for(&key, None, false, cx);
+                        }
                         self.request_current_folder_for(account_id, &path, cx);
                     }
                 }
-                if let Some(account_id) = self.current_account_id {
-                    if self.current_folder_path.is_some() && self.messages.is_empty() {
-                        self.request_page(None, false, cx);
-                        self.loading = true;
-                    }
+                if self.scope == MailboxScope::Account && self.current_folder_path.is_some() {
+                    let _ = self.request_page(None, false, cx);
                 }
                 cx.notify();
             }
@@ -1373,14 +1691,53 @@ impl LiveMailbox {
                     .into_iter()
                     .filter(|folder| folder.account_id == account_id)
                     .collect();
-                let old_folder_id = self.current_folder_path.as_ref().and_then(|path| {
+                let old_selected = self
+                    .selected_folder_by_account
+                    .get(&account_id)
+                    .cloned()
+                    .or_else(|| {
+                        (self.current_account_id == Some(account_id))
+                            .then(|| self.current_folder_path.clone())
+                            .flatten()
+                    });
+                let old_folder_id = old_selected.as_ref().and_then(|path| {
                     self.folders_by_account
                         .get(&account_id)
                         .and_then(|old| old.iter().find(|folder| &folder.path == path))
                         .map(|folder| folder.id)
                 });
+                let old_inbox_id = self
+                    .folders_by_account
+                    .get(&account_id)
+                    .and_then(|old| old.iter().find(|folder| folder.kind == FolderKind::Inbox))
+                    .map(|folder| folder.id);
                 self.folders_by_account.insert(account_id, folders.clone());
-                if self.current_account_id == Some(account_id) {
+                if self.scope == MailboxScope::Unified {
+                    if let Some(inbox) = folders
+                        .iter()
+                        .find(|folder| folder.kind == FolderKind::Inbox)
+                    {
+                        if old_selected
+                            .as_ref()
+                            .is_none_or(|path| !folders.iter().any(|folder| &folder.path == path))
+                        {
+                            self.selected_folder_by_account
+                                .insert(account_id, inbox.path.clone());
+                        }
+                        let key = PageKey {
+                            account_id,
+                            folder_path: inbox.path.clone(),
+                        };
+                        let changed_id = old_inbox_id != Some(inbox.id);
+                        if changed_id || !self.page_states.contains_key(&key) {
+                            self.request_page_for(&key, None, false, cx);
+                        }
+                        self.request_current_folder_for(account_id, &inbox.path, cx);
+                    }
+                    if self.current_account_id.is_none() {
+                        self.current_account_id = Some(account_id);
+                    }
+                } else if self.current_account_id == Some(account_id) {
                     let preferred = self
                         .current_folder_path
                         .as_ref()
@@ -1403,11 +1760,19 @@ impl LiveMailbox {
                             .find(|folder| folder.path == path)
                             .map(|folder| folder.id);
                         let folder_id_changed = old_folder_id != new_folder_id;
-                        if path_changed || folder_id_changed || self.messages.is_empty() {
+                        let key = PageKey {
+                            account_id,
+                            folder_path: path.clone(),
+                        };
+                        if path_changed
+                            || folder_id_changed
+                            || !self.page_states.contains_key(&key)
+                            || self.page_message_count(&key) == 0
+                        {
                             self.clear_current_page();
                             self.loading = true;
-                            self.request_page(None, false, cx);
-                            self.request_current_folder(&path, cx);
+                            self.request_page_for(&key, None, false, cx);
+                            self.request_current_folder_for(account_id, &path, cx);
                         }
                     } else {
                         self.clear_current_page();
@@ -1419,10 +1784,24 @@ impl LiveMailbox {
             }
             WorkerMailboxEvent::FolderChanged { folder_id } => {
                 if let Some(path) = self.path_for_folder(account_id, folder_id) {
-                    if self.is_current_folder(account_id, &path) {
-                        self.request_page(None, false, cx);
+                    let key = PageKey {
+                        account_id,
+                        folder_path: path.clone(),
+                    };
+                    let active = self.is_current_folder(account_id, &path);
+                    if active {
+                        if !self.demo_mode {
+                            self.request_page_for(&key, None, false, cx);
+                        }
                         self.status.clear();
                         self.connectivity_errors.remove(&account_id);
+                        changed = true;
+                    }
+                    let sent_refresh = self.pending_sent_refresh.remove(&key);
+                    let message_refresh = self.pending_message_refresh.remove(&key);
+                    if sent_refresh || message_refresh {
+                        self.invalidate_conversation_cache(account_id);
+                        self.request_thread_summaries(cx);
                         changed = true;
                     }
                 }
@@ -1463,38 +1842,241 @@ impl LiveMailbox {
                 messages,
                 links_by_uid,
             } => {
-                if self.demo_mode
-                    && self.current_account_id == Some(account_id)
-                    && self
-                        .current_folder_path
-                        .as_deref()
-                        .and_then(|path| self.folder_id(account_id, path))
-                        == Some(folder_id)
-                {
-                    self.demo_links_by_key.retain(|key, _| {
-                        key.account_id != account_id
-                            || Some(key.folder_path.as_str()) != self.current_folder_path.as_deref()
-                    });
-                    let path = self.current_folder_path.as_deref().unwrap_or_default();
+                if self.demo_mode {
+                    let Some(path) = self.path_for_folder(account_id, folder_id) else {
+                        return;
+                    };
+                    let page_key = PageKey {
+                        account_id,
+                        folder_path: path.clone(),
+                    };
+                    let active_page = self.active_page_keys().contains(&page_key);
+                    let sent_headers = self.pending_sent_refresh.remove(&page_key);
+                    let message_refresh = self.pending_message_refresh.remove(&page_key);
+                    if !active_page && !sent_headers && !message_refresh {
+                        return;
+                    }
+                    self.demo_links_by_key
+                        .retain(|key, _| key.account_id != account_id || key.folder_path != path);
                     self.demo_links_by_key.extend(
                         links_by_uid
                             .into_iter()
-                            .map(|(uid, links)| (message_key(account_id, path, uid), links)),
+                            .map(|(uid, links)| (message_key(account_id, &path, uid), links)),
                     );
+
+                    let mut messages = messages;
+                    if account_id == 1 && folder_id == 1 {
+                        messages.push(demo_long_thread_reply());
+                    }
+                    if account_id == 2 && folder_id == 13 {
+                        messages.push(demo_team_sent_reply());
+                    }
+                    let existing = self
+                        .messages
+                        .iter()
+                        .filter(|message| {
+                            message.account_id == account_id
+                                && message.folder_id == folder_id
+                                && self.page_keys.contains(&message_key(
+                                    account_id,
+                                    &path,
+                                    message.uid,
+                                ))
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>();
                     let (messages, _) =
-                        merge_message_batch(&[], messages, account_id, folder_id, false);
-                    self.messages = messages;
-                    self.loading = false;
+                        merge_message_batch(&existing, messages, account_id, folder_id, false);
+                    self.messages.retain(|message| {
+                        message.account_id != account_id || message.folder_id != folder_id
+                    });
+                    if active_page {
+                        self.page_keys
+                            .retain(|key| key.account_id != account_id || key.folder_path != path);
+                        self.page_keys.extend(
+                            messages
+                                .iter()
+                                .map(|message| message_key(account_id, &path, message.uid)),
+                        );
+                        if let Some(state) = self.page_states.get_mut(&page_key) {
+                            state.pending_generation = None;
+                            state.next_cursor = None;
+                        }
+                    }
+                    self.messages.extend(messages);
+                    if sent_headers || message_refresh {
+                        let sent_rows = self
+                            .messages
+                            .iter()
+                            .filter(|message| {
+                                message.account_id == account_id
+                                    && message.folder_id == folder_id
+                                    && !self.page_keys.contains(&message_key(
+                                        account_id,
+                                        &path,
+                                        message.uid,
+                                    ))
+                            })
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        for related in self
+                            .related_members
+                            .iter_mut()
+                            .filter(|(key, _)| key.account_id == account_id)
+                            .map(|(_, related)| related)
+                        {
+                            let thread_ids = thread_ids(related.iter());
+                            for message in &sent_rows {
+                                if message_matches_thread_ids(message, &thread_ids)
+                                    && !related.iter().any(|existing| {
+                                        existing.account_id == message.account_id
+                                            && existing.folder_id == message.folder_id
+                                            && existing.uid == message.uid
+                                    })
+                                {
+                                    related.push(message.clone());
+                                }
+                            }
+                        }
+                    }
                     self.rebuild_visible();
-                    self.ensure_visible_selection(cx);
-                    self.links = self
+                    self.update_loading_state();
+                    if active_page {
+                        self.ensure_visible_selection(cx);
+                    }
+                    if self
                         .selected_key
                         .as_ref()
-                        .and_then(|key| self.demo_links_by_key.get(key))
-                        .cloned()
-                        .unwrap_or_default();
+                        .is_some_and(|key| key.account_id == account_id)
+                    {
+                        self.links = self
+                            .selected_key
+                            .as_ref()
+                            .and_then(|key| self.demo_links_by_key.get(key))
+                            .cloned()
+                            .unwrap_or_default();
+                    }
                     changed = true;
                 }
+            }
+            WorkerMailboxEvent::Related {
+                message_id,
+                messages,
+                partial,
+                warning,
+            } => {
+                if let Some(key) = self.pending_related.remove(&(account_id, message_id)) {
+                    let accepted = messages
+                        .into_iter()
+                        .filter(|message| message.account_id == account_id)
+                        .filter(|message| {
+                            !matches!(
+                                self.folder_kind(message.account_id, message.folder_id),
+                                Some(
+                                    FolderKind::Drafts
+                                        | FolderKind::Templates
+                                        | FolderKind::Trash
+                                        | FolderKind::Junk
+                                )
+                            )
+                        })
+                        .filter_map(|mut message| {
+                            self.path_for_folder(account_id, message.folder_id)?;
+                            message.body.clear();
+                            Some(message)
+                        })
+                        .collect::<Vec<_>>();
+                    for message in accepted {
+                        {
+                            let related = self.related_members.entry(key.clone()).or_default();
+                            if let Some(existing) = related.iter_mut().find(|existing| {
+                                existing.account_id == message.account_id
+                                    && existing.folder_id == message.folder_id
+                                    && existing.uid == message.uid
+                            }) {
+                                replace_message_header(existing, message.clone());
+                            } else {
+                                related.push(message.clone());
+                            }
+                        }
+                        if let Some(existing) = self.messages.iter_mut().find(|existing| {
+                            existing.account_id == message.account_id
+                                && existing.folder_id == message.folder_id
+                                && existing.uid == message.uid
+                        }) {
+                            replace_message_header(existing, message);
+                        } else {
+                            self.messages.push(message);
+                        }
+                    }
+                    if let Some(warning) = conversation_response_warning(partial, warning) {
+                        self.conversation_warnings.insert(key.clone(), warning);
+                    } else {
+                        self.conversation_warnings.remove(&key);
+                    }
+                    self.conversation_errors.remove(&key);
+                    self.rebuild_visible();
+                    changed = true;
+                }
+            }
+            WorkerMailboxEvent::ThreadSummaries { summaries, warning } => {
+                for (tag, summary) in summaries {
+                    let Some(key) = self.pending_thread_summaries.remove(&(account_id, tag)) else {
+                        continue;
+                    };
+                    if let Some(warning) = warning.as_ref() {
+                        self.conversation_warnings
+                            .insert(key.clone(), warning.clone());
+                    }
+                    let accepted = summary
+                        .members
+                        .into_iter()
+                        .filter_map(|mut message| {
+                            if message.account_id != account_id
+                                || matches!(
+                                    self.folder_kind(message.account_id, message.folder_id),
+                                    Some(
+                                        FolderKind::Drafts
+                                            | FolderKind::Templates
+                                            | FolderKind::Trash
+                                            | FolderKind::Junk
+                                    )
+                                )
+                            {
+                                return None;
+                            }
+                            self.path_for_folder(account_id, message.folder_id)?;
+                            message.body.clear();
+                            Some(message)
+                        })
+                        .collect::<Vec<_>>();
+                    for message in accepted {
+                        {
+                            let related = self.related_members.entry(key.clone()).or_default();
+                            if let Some(existing) = related.iter_mut().find(|existing| {
+                                existing.account_id == message.account_id
+                                    && existing.folder_id == message.folder_id
+                                    && existing.uid == message.uid
+                            }) {
+                                replace_message_header(existing, message.clone());
+                            } else {
+                                related.push(message.clone());
+                            }
+                        }
+                        if let Some(existing) = self.messages.iter_mut().find(|existing| {
+                            existing.account_id == message.account_id
+                                && existing.folder_id == message.folder_id
+                                && existing.uid == message.uid
+                        }) {
+                            replace_message_header(existing, message);
+                        } else {
+                            self.messages.push(message);
+                        }
+                    }
+                    self.related_counts.insert(key, summary.count);
+                }
+                self.rebuild_visible();
+                changed = true;
             }
             WorkerMailboxEvent::Attachments {
                 message_id,
@@ -1572,15 +2154,27 @@ impl LiveMailbox {
                     set_folder_unread(&mut self.folders_by_account, account_id, &path, unread);
             }
             WorkerMailboxEvent::FolderSynced { folder_id } => {
-                if self
-                    .path_for_folder(account_id, folder_id)
-                    .is_some_and(|path| self.is_current_folder(account_id, &path))
-                {
-                    self.loading = false;
-                    self.status.clear();
-                    self.connectivity_errors.remove(&account_id);
-                    self.request_page(None, false, cx);
-                    changed = true;
+                if let Some(path) = self.path_for_folder(account_id, folder_id) {
+                    let key = PageKey {
+                        account_id,
+                        folder_path: path.clone(),
+                    };
+                    if self.is_current_folder(account_id, &path) {
+                        self.status.clear();
+                        self.connectivity_errors.remove(&account_id);
+                        if !self.demo_mode {
+                            self.invalidate_conversation_cache(account_id);
+                            self.request_page_for(&key, None, false, cx);
+                        }
+                        changed = true;
+                    }
+                    let sent_refresh = self.pending_sent_refresh.remove(&key);
+                    let message_refresh = self.pending_message_refresh.remove(&key);
+                    if sent_refresh || message_refresh {
+                        self.invalidate_conversation_cache(account_id);
+                        self.request_thread_summaries(cx);
+                        changed = true;
+                    }
                 }
             }
             WorkerMailboxEvent::Outbox { items } => {
@@ -1605,6 +2199,14 @@ impl LiveMailbox {
                             uncertain: false,
                         },
                     );
+                    if outcome == SendOutcome::Sent {
+                        self.invalidate_conversation_cache(account_id);
+                        if self.thunderbird_accounts.contains(&account_id) {
+                            self.request_thread_summaries(cx);
+                        } else {
+                            self.request_sent_headers(account_id, true, cx);
+                        }
+                    }
                     if self.current_account_id == Some(account_id) {
                         self.status = match outcome {
                             SendOutcome::Sent => "Sent".into(),
@@ -1679,22 +2281,74 @@ impl LiveMailbox {
                 } else {
                     self.action_errors.insert(account_id, text.clone());
                 }
-                if self
-                    .pending_attachment
-                    .as_ref()
-                    .is_some_and(|pending| pending.key.account_id == account_id)
-                {
+                let mut account_changed = self.active_account_ids().contains(&account_id);
+                if self.pending_attachment.as_ref().is_some_and(|pending| {
+                    pending.key.account_id == account_id
+                        && self.selected_key.as_ref() == Some(&pending.key)
+                }) {
                     self.pending_attachment = None;
-                    self.attachment_state = AttachmentState::Failed(text);
+                    self.attachment_state = AttachmentState::Failed(text.clone());
+                    account_changed = true;
+                }
+                let related_keys: Vec<_> = self
+                    .pending_related
+                    .iter()
+                    .filter(|((pending_account, _), _)| *pending_account == account_id)
+                    .map(|(slot, key)| (*slot, key.clone()))
+                    .collect();
+                for (slot, key) in related_keys {
+                    self.pending_related.remove(&slot);
+                    self.conversation_errors.insert(key, text.clone());
+                    account_changed = true;
+                }
+                for key in self
+                    .pending_thread_summaries
+                    .iter()
+                    .filter(|((pending_account, _), _)| *pending_account == account_id)
+                    .map(|(_, key)| key.clone())
+                    .collect::<Vec<_>>()
+                {
+                    self.conversation_errors.insert(key, text.clone());
+                    account_changed = true;
+                }
+                self.pending_thread_summaries
+                    .retain(|(pending_account, _), _| *pending_account != account_id);
+                self.thread_summary_requests.remove(&account_id);
+                let failed_sent_pages = self
+                    .pending_sent_refresh
+                    .iter()
+                    .filter(|page| page.account_id == account_id)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                for page in failed_sent_pages {
+                    self.pending_sent_refresh.remove(&page);
+                    if let Some(folder_id) = self.folder_id(account_id, &page.folder_path) {
+                        self.sent_header_requests.remove(&(account_id, folder_id));
+                    }
+                    account_changed = true;
+                }
+                self.pending_message_refresh
+                    .retain(|page| page.account_id != account_id);
+                if self
+                    .selected_key
+                    .as_ref()
+                    .is_some_and(|key| key.account_id == account_id)
+                {
+                    self.body_loading = false;
+                    retain_selected_body_after_error(
+                        &mut self.pending_bodies,
+                        account_id,
+                        self.selected_key.as_ref(),
+                    );
+                    account_changed = true;
+                }
+                if account_changed {
+                    self.update_loading_state();
                 }
                 if self.current_account_id == Some(account_id) {
-                    self.loading = false;
-                    self.body_loading = false;
-                    self.pending_bodies
-                        .retain(|slot, _| slot.account_id != account_id);
                     self.status.clear();
-                    changed = true;
                 }
+                changed |= account_changed;
             }
             _ => {}
         }
@@ -1712,59 +2366,105 @@ impl LiveMailbox {
         if self.demo_mode {
             self.loading = false;
             self.loading_more = false;
-            self.pending_page_generation = None;
             self.rebuild_visible();
             self.ensure_visible_selection(cx);
             cx.notify();
             return true;
         }
-        let Some(account_id) = self.current_account_id else {
-            return false;
-        };
-        let Some(path) = self.current_folder_path.clone() else {
-            return false;
-        };
-        let Some(folder_id) = self.folder_id(account_id, &path) else {
-            return false;
-        };
+        let keys = self.active_page_keys();
+        let mut submitted = false;
+        for key in keys {
+            let page_cursor = if append {
+                self.page_states
+                    .get(&key)
+                    .and_then(|state| state.next_cursor)
+            } else {
+                cursor
+            };
+            submitted |= self.request_page_for(&key, page_cursor, append, cx);
+        }
+        submitted
+    }
 
-        self.query_generation = self.query_generation.wrapping_add(1).max(1);
-        let generation = self.query_generation;
-        self.pending_page_generation = Some(generation);
-        self.pending_page_append = append;
-        self.loading = !append;
-        self.loading_more = append;
+    fn request_page_for(
+        &mut self,
+        key: &PageKey,
+        cursor: Option<MessageCursor>,
+        append: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(folder_id) = self.folder_id(key.account_id, &key.folder_path) else {
+            return false;
+        };
+        if self.demo_mode {
+            let folder_changed = self
+                .page_states
+                .get(key)
+                .is_some_and(|state| state.folder_id != folder_id);
+            if folder_changed {
+                self.remove_page_partition(key);
+            }
+            let state = self.page_states.entry(key.clone()).or_default();
+            state.folder_id = folder_id;
+            state.generation = state.generation.wrapping_add(1).max(1);
+            state.pending_generation = Some(state.generation);
+            state.pending_append = append;
+            state.next_cursor = None;
+            state.truncated = false;
+            return true;
+        }
+        let folder_changed = self
+            .page_states
+            .get(key)
+            .map_or(true, |state| state.folder_id != folder_id);
+        if folder_changed {
+            self.remove_page_partition(key);
+        }
+        let state = self.page_states.entry(key.clone()).or_default();
+        if folder_changed {
+            state.folder_id = folder_id;
+            state.next_cursor = None;
+            state.truncated = false;
+            state.pending_generation = None;
+        }
+        state.generation = state.generation.wrapping_add(1).max(1);
+        let generation = state.generation;
+        state.pending_generation = Some(generation);
+        state.pending_append = append;
         let request = make_page_request(
-            account_id,
-            path,
+            key.account_id,
+            key.folder_path.clone(),
             folder_id,
             self.search_query.clone(),
             generation,
             cursor,
         );
-        if let Some(sender) = self.page_senders.get(&account_id) {
+        if let Some(sender) = self.page_senders.get(&key.account_id) {
             if let Err(error) = sender(request) {
-                self.pending_page_generation = None;
-                self.loading = false;
-                self.loading_more = false;
+                if let Some(state) = self.page_states.get_mut(key) {
+                    state.pending_generation = None;
+                }
                 self.query_errors
-                    .insert(account_id, submit_error_text(error).into());
+                    .insert(key.account_id, submit_error_text(error).into());
+                self.update_loading_state();
                 cx.notify();
                 return false;
             }
+            self.update_loading_state();
             return true;
         }
 
         let Some(query_service) = self.query_service.as_ref() else {
-            self.loading = false;
-            self.loading_more = false;
-            self.pending_page_generation = None;
+            if let Some(state) = self.page_states.get_mut(key) {
+                state.pending_generation = None;
+            }
             self.query_errors.insert(
-                account_id,
+                key.account_id,
                 self.query_start_error
                     .clone()
                     .unwrap_or_else(|| "The message index is unavailable.".into()),
             );
+            self.update_loading_state();
             cx.notify();
             return false;
         };
@@ -1773,53 +2473,113 @@ impl LiveMailbox {
             let _ = sender.unbounded_send(MailboxEvent::Page(result));
         });
         if let Err(error) = submitted {
-            self.pending_page_generation = None;
-            self.loading = false;
-            self.loading_more = false;
+            if let Some(state) = self.page_states.get_mut(key) {
+                state.pending_generation = None;
+            }
             self.query_errors
-                .insert(account_id, submit_error_text(error).into());
+                .insert(key.account_id, submit_error_text(error).into());
+            self.update_loading_state();
             cx.notify();
             return false;
         }
+        self.update_loading_state();
         true
     }
 
     fn handle_page_result(&mut self, result: PageResult, cx: &mut Context<Self>) {
-        if self.pending_page_generation != Some(result.generation)
-            || self.current_account_id != Some(result.account_id)
-            || self.current_folder_path.as_deref() != Some(result.folder_path.as_str())
-            || self.folder_id(result.account_id, &result.folder_path) != Some(result.folder_id)
-        {
+        let page_ready = matches!(&result.status, PageStatus::Ready);
+        let key = PageKey {
+            account_id: result.account_id,
+            folder_path: result.folder_path.clone(),
+        };
+        let Some(state) = self.page_states.get(&key) else {
+            return;
+        };
+        if !page_result_is_current(
+            &key,
+            state,
+            &result,
+            self.folder_id(result.account_id, &result.folder_path),
+        ) {
             return;
         }
-        self.pending_page_generation = None;
-        self.loading = false;
-        self.loading_more = false;
+        let append = state.pending_append;
+        if let Some(state) = self.page_states.get_mut(&key) {
+            state.pending_generation = None;
+        }
         match result.status {
             PageStatus::Ready => {
-                let append = self.pending_page_append;
                 let chronological = self.thunderbird_accounts.contains(&result.account_id);
+                let existing: Vec<_> = self
+                    .messages
+                    .iter()
+                    .filter(|message| {
+                        message.account_id == result.account_id
+                            && message.folder_id == result.folder_id
+                            && self.page_keys.contains(&message_key(
+                                result.account_id,
+                                &result.folder_path,
+                                message.uid,
+                            ))
+                    })
+                    .cloned()
+                    .collect();
                 let (messages, _) = merge_message_batch_ordered(
-                    if append { &self.messages } else { &[] },
+                    &existing,
                     result.rows,
                     result.account_id,
                     result.folder_id,
                     append,
                     chronological,
                 );
-                self.messages = messages;
-                self.next_cursor = result.next_cursor;
-                self.truncated = self.messages.len() >= MESSAGE_CAP && self.next_cursor.is_some();
+                self.messages.retain(|message| {
+                    message.account_id != result.account_id
+                        || message.folder_id != result.folder_id
+                        || !self.page_keys.contains(&message_key(
+                            result.account_id,
+                            &result.folder_path,
+                            message.uid,
+                        ))
+                });
+                self.messages.extend(messages.iter().cloned());
+                if !append {
+                    self.page_keys.retain(|message_key| {
+                        message_key.account_id != result.account_id
+                            || message_key.folder_path != result.folder_path
+                    });
+                }
+                self.page_keys.extend(messages.iter().map(|message| {
+                    message_key(result.account_id, &result.folder_path, message.uid)
+                }));
+                if let Some(state) = self.page_states.get_mut(&key) {
+                    state.next_cursor = result.next_cursor;
+                    state.truncated = messages.len() >= MESSAGE_CAP && state.next_cursor.is_some();
+                }
                 self.query_errors.remove(&result.account_id);
                 self.connectivity_errors.remove(&result.account_id);
                 self.rebuild_visible();
-                self.ensure_visible_selection(cx);
+                if self.active_page_keys().contains(&key) {
+                    self.ensure_visible_selection(cx);
+                }
             }
             PageStatus::Failed(error) => {
                 self.query_errors.insert(result.account_id, error);
             }
-            PageStatus::Superseded => return,
+            PageStatus::Superseded => {
+                if append {
+                    if let Some(state) = self.page_states.get_mut(&key) {
+                        state.next_cursor = None;
+                        state.truncated = false;
+                    }
+                    self.request_page_for(&key, None, false, cx);
+                }
+                return;
+            }
         }
+        if page_ready {
+            self.request_thread_summaries(cx);
+        }
+        self.update_loading_state();
         cx.notify();
     }
 
@@ -1846,8 +2606,6 @@ impl LiveMailbox {
             account_id,
             path,
             message_id,
-            self.current_account_id,
-            self.current_folder_path.as_deref(),
             self.selected_key.as_ref(),
             &pending,
         );
@@ -1858,6 +2616,7 @@ impl LiveMailbox {
             message.id == message_id
                 && message.uid == pending.key.uid
                 && message.account_id == account_id
+                && self.key_for(message).as_ref() == Some(&pending.key)
         }) else {
             return BodyApplication::Stale;
         };
@@ -1872,8 +2631,16 @@ impl LiveMailbox {
         if let Some(references) = references {
             self.messages[message_index].references = references;
         }
-        if metadata_changed {
-            self.rebuild_visible();
+        let mut summary_message = self.messages[message_index].clone();
+        summary_message.body.clear();
+        for related in self.related_members.values_mut() {
+            for existing in related.iter_mut().filter(|existing| {
+                existing.account_id == summary_message.account_id
+                    && existing.folder_id == summary_message.folder_id
+                    && existing.uid == summary_message.uid
+            }) {
+                *existing = summary_message.clone();
+            }
         }
         let mut selected_message = self.messages[message_index].clone();
         selected_message.body = body;
@@ -1881,7 +2648,13 @@ impl LiveMailbox {
             key: pending.key,
             message: selected_message,
         }));
+        if !self.demo_mode {
+            self.messages[message_index].body.clear();
+        }
         self.links = links;
+        if metadata_changed {
+            self.rebuild_visible();
+        }
         BodyApplication::Applied
     }
 
@@ -1892,14 +2665,12 @@ impl LiveMailbox {
         let message_present = self.messages.iter().any(|message| {
             message.account_id == account_id
                 && message.id == message_id
-                && message.uid == pending.key.uid
+                && self.key_for(message).as_ref() == Some(&pending.key)
         });
         attachment_response_matches(
             account_id,
             path,
             message_id,
-            self.current_account_id,
-            self.current_folder_path.as_deref(),
             self.selected_key.as_ref(),
             pending,
             message_present,
@@ -1933,12 +2704,17 @@ impl LiveMailbox {
             folder_path: key.folder_path.clone(),
             message_id,
         };
-        if self.pending_bodies.contains_key(&slot) {
-            self.body_loading = self
-                .pending_bodies
-                .get(&slot)
-                .is_some_and(|pending| pending.key == key);
-            return;
+        if let Some(pending) = self.pending_bodies.get(&slot) {
+            if pending.key == key && self.body_loading {
+                return;
+            }
+            if pending.key != key {
+                return;
+            }
+            // A generic account-level error cannot identify which body request failed.
+            // Keep the selected slot so a late valid response still matches, but allow
+            // a subsequent selection attempt to issue a retry.
+            self.pending_bodies.remove(&slot);
         }
         self.pending_bodies.insert(
             slot,
@@ -1969,22 +2745,14 @@ impl LiveMailbox {
 
     fn ensure_visible_selection(&mut self, cx: &mut Context<Self>) {
         let selected_visible = self.selected_key.as_ref().is_some_and(|key| {
-            self.visible_indices.iter().any(|index| {
-                self.messages
-                    .get(*index)
-                    .is_some_and(|message| self.key_for(message).as_ref() == Some(key))
-            })
+            self.page_rows.iter().any(|row| row.key == *key)
+                || self
+                    .conversation_rows
+                    .iter()
+                    .any(|conversation| conversation.members.iter().any(|row| row.key == *key))
         });
         if !selected_visible {
-            self.selected_key = self
-                .visible_indices
-                .first()
-                .and_then(|index| self.messages.get(*index))
-                .and_then(|message| {
-                    self.current_folder_path
-                        .as_ref()
-                        .map(|path| message_key(message.account_id, path, message.uid))
-                });
+            self.selected_key = self.page_rows.first().map(|row| row.key.clone());
             self.body_loading = false;
             self.links = self
                 .selected_key
@@ -2000,6 +2768,7 @@ impl LiveMailbox {
             self.refresh_selected_row();
         }
         self.request_selected_body(cx);
+        self.request_selected_conversation_members(false, cx);
     }
 
     fn rebuild_visible(&mut self) {
@@ -2008,23 +2777,466 @@ impl LiveMailbox {
         } else {
             String::new()
         };
-        self.visible_indices = visible_message_indices(&self.messages, &query, self.filter);
+        let active_keys = self.active_page_keys();
+        let active_set: HashSet<_> = active_keys.iter().cloned().collect();
+        let query = query.to_lowercase();
+        let mut visible: Vec<_> = self
+            .messages
+            .iter()
+            .enumerate()
+            .filter(|(_, message)| {
+                self.key_for(message).is_some_and(|key| {
+                    self.page_keys.contains(&key)
+                        && active_set.contains(&PageKey {
+                            account_id: key.account_id,
+                            folder_path: key.folder_path.clone(),
+                        })
+                }) && (query.is_empty() || message_matches_query(message, &query))
+                    && message_matches_filter(message, self.filter)
+            })
+            .filter_map(|(index, message)| {
+                self.key_for(message).map(|key| {
+                    (
+                        index,
+                        message.timestamp,
+                        key.account_id,
+                        key.folder_path,
+                        message.uid,
+                    )
+                })
+            })
+            .collect();
+        visible.sort_by(|left, right| {
+            right
+                .1
+                .cmp(&left.1)
+                .then_with(|| left.2.cmp(&right.2))
+                .then_with(|| left.3.cmp(&right.3))
+                .then_with(|| left.4.cmp(&right.4))
+        });
+        self.visible_indices = visible.into_iter().map(|(index, ..)| index).collect();
         self.page_rows = Arc::new(
             self.visible_indices
                 .iter()
                 .filter_map(|index| self.messages.get(*index))
                 .filter_map(|message| {
-                    let path = self.current_folder_path.as_ref()?;
+                    let key = self.key_for(message)?;
                     let mut message = message.clone();
                     message.body.clear();
-                    Some(Arc::new(MessageRow {
-                        key: message_key(message.account_id, path, message.uid),
-                        message,
-                    }))
+                    Some(Arc::new(MessageRow { key, message }))
                 })
                 .collect(),
         );
+        self.rebuild_conversations();
         self.refresh_selected_row();
+    }
+
+    fn rebuild_conversations(&mut self) {
+        let sent_folders: HashSet<_> = self
+            .folders_by_account
+            .iter()
+            .flat_map(|(account_id, folders)| {
+                folders
+                    .iter()
+                    .filter(|folder| folder.kind == FolderKind::Sent)
+                    .map(|folder| (*account_id, folder.id))
+            })
+            .collect();
+        let active_page_keys: HashSet<_> = self.active_page_keys().into_iter().collect();
+        let active_page_messages = self
+            .messages
+            .iter()
+            .filter(|message| {
+                let Some(key) = self.key_for(message) else {
+                    return false;
+                };
+                self.page_keys.contains(&key)
+                    && active_page_keys.contains(&PageKey {
+                        account_id: key.account_id,
+                        folder_path: key.folder_path,
+                    })
+            })
+            .map(|message| {
+                let mut message = message.clone();
+                message.body.clear();
+                message
+            })
+            .collect::<Vec<_>>();
+        let visible_page_messages = self
+            .visible_indices
+            .iter()
+            .filter_map(|index| self.messages.get(*index))
+            .collect::<Vec<_>>();
+        if visible_page_messages.is_empty() {
+            self.conversation_rows = Arc::new(Vec::new());
+            return;
+        }
+        let visible_members: HashSet<_> = visible_page_messages
+            .iter()
+            .map(|message| physical_message_key(message))
+            .collect();
+        let active_accounts: HashSet<_> =
+            active_page_keys.iter().map(|key| key.account_id).collect();
+        let mut all = active_page_messages.clone();
+        all.extend(
+            self.related_members
+                .iter()
+                .filter(|(key, _)| active_accounts.contains(&key.account_id))
+                .flat_map(|(_, messages)| messages.iter().cloned())
+                .filter(|message| {
+                    !matches!(
+                        self.folder_kind(message.account_id, message.folder_id),
+                        Some(
+                            FolderKind::Drafts
+                                | FolderKind::Templates
+                                | FolderKind::Trash
+                                | FolderKind::Junk
+                        )
+                    )
+                }),
+        );
+        let previous_rows = self.conversation_rows.as_ref();
+        let mut reused_keys = HashSet::new();
+        let mut rows: Vec<ConversationRow> = group_conversations(all, &sent_folders)
+            .into_iter()
+            .filter(|summary| {
+                summary.members.iter().any(|message| {
+                    visible_members.contains(&physical_message_key(message))
+                        || visible_page_messages
+                            .iter()
+                            .any(|visible| same_mail_copy(visible, message))
+                })
+            })
+            .filter_map(|summary| {
+                let group_members = summary
+                    .members
+                    .iter()
+                    .map(|message| {
+                        active_page_messages
+                            .iter()
+                            .find(|active| same_mail_copy(active, message))
+                            .unwrap_or(message)
+                            .clone()
+                    })
+                    .collect::<Vec<_>>();
+                let derived_key = ConversationKey {
+                    account_id: summary.key.0,
+                    anchor: summary.key.1.clone(),
+                };
+                let key = stable_conversation_key(
+                    &group_members,
+                    derived_key,
+                    previous_rows,
+                    self.selected_key.as_ref(),
+                    &mut reused_keys,
+                );
+                let members = group_members
+                    .iter()
+                    .filter_map(|message| self.message_row(message))
+                    .collect::<Vec<_>>();
+                let representative = active_representative(
+                    &summary.members,
+                    &active_page_messages,
+                    summary.members.get(summary.latest_index)?,
+                );
+                let representative = self.message_row(representative)?;
+                let latest_sent = summary
+                    .latest_sent_index
+                    .and_then(|index| summary.members.get(index))
+                    .and_then(|message| self.message_row(message));
+                Some(ConversationRow {
+                    count: self
+                        .related_counts
+                        .get(&key)
+                        .copied()
+                        .unwrap_or(summary.count)
+                        .max(summary.count),
+                    unread: summary.unread,
+                    replied: summary.replied,
+                    forwarded: summary.forwarded,
+                    key,
+                    representative,
+                    members: Arc::new(members),
+                    latest_sent,
+                })
+            })
+            .collect();
+        rows.sort_by(|left, right| {
+            right
+                .representative
+                .message
+                .timestamp
+                .cmp(&left.representative.message.timestamp)
+                .then_with(|| left.key.account_id.cmp(&right.key.account_id))
+                .then_with(|| {
+                    left.representative
+                        .key
+                        .folder_path
+                        .cmp(&right.representative.key.folder_path)
+                })
+                .then_with(|| {
+                    left.representative
+                        .key
+                        .uid
+                        .cmp(&right.representative.key.uid)
+                })
+        });
+        self.conversation_rows = Arc::new(rows);
+    }
+
+    fn request_thread_summaries(&mut self, cx: &mut Context<Self>) {
+        if self.demo_mode {
+            return;
+        }
+        let active = self.active_page_keys();
+        let active_set: HashSet<_> = active.iter().cloned().collect();
+        let primary = self
+            .messages
+            .iter()
+            .filter(|message| {
+                let Some(key) = self.key_for(message) else {
+                    return false;
+                };
+                self.page_keys.contains(&key)
+                    && active_set.contains(&PageKey {
+                        account_id: key.account_id,
+                        folder_path: key.folder_path,
+                    })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if primary.is_empty() {
+            return;
+        }
+        let sent_folders: HashSet<_> = self
+            .folders_by_account
+            .iter()
+            .flat_map(|(account_id, folders)| {
+                folders
+                    .iter()
+                    .filter(|folder| folder.kind == FolderKind::Sent)
+                    .map(|folder| (*account_id, folder.id))
+            })
+            .collect();
+        let mut by_account: HashMap<u32, Vec<(ConversationKey, Vec<String>)>> = HashMap::new();
+        for summary in group_conversations(primary, &sent_folders) {
+            let ids = thread_ids(summary.members.iter());
+            if ids.is_empty() {
+                continue;
+            }
+            by_account.entry(summary.key.0).or_default().push((
+                ConversationKey {
+                    account_id: summary.key.0,
+                    anchor: summary.key.1,
+                },
+                ids,
+            ));
+        }
+        for (account_id, groups) in by_account {
+            let previous = self.thread_summary_requests.get(&account_id);
+            let changed = groups
+                .into_iter()
+                .filter(|(key, ids)| previous.and_then(|items| items.get(&key.anchor)) != Some(ids))
+                .collect::<Vec<_>>();
+            if changed.is_empty() {
+                continue;
+            }
+            let mut requests = Vec::with_capacity(changed.len());
+            let mut pending = Vec::with_capacity(changed.len());
+            for (key, ids) in changed {
+                let request_id = self.next_thread_request_id;
+                self.next_thread_request_id = self.next_thread_request_id.wrapping_add(1).max(1);
+                let tag = format!("live-thread-{request_id}");
+                pending.push((tag.clone(), key.clone(), ids.clone()));
+                requests.push((tag, ids));
+            }
+            if self.send_request(
+                account_id,
+                MailRequest::LoadThreadSummaries { groups: requests },
+                cx,
+            ) {
+                let signatures = self.thread_summary_requests.entry(account_id).or_default();
+                for (tag, key, ids) in pending {
+                    signatures.insert(key.anchor.clone(), ids);
+                    self.pending_thread_summaries.insert((account_id, tag), key);
+                }
+            }
+        }
+    }
+
+    fn request_conversation_members(
+        &mut self,
+        row: &ConversationRow,
+        explicit_retry: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let ids = thread_ids(row.members.iter().map(|member| &member.message));
+        if !ids.is_empty() {
+            let mut seed = row
+                .members
+                .iter()
+                .map(|member| member.message.clone())
+                .collect::<Vec<_>>();
+            seed.extend(
+                self.messages
+                    .iter()
+                    .filter(|message| {
+                        message.account_id == row.key.account_id
+                            && self.folder_kind(message.account_id, message.folder_id)
+                                == Some(FolderKind::Sent)
+                            && message_matches_thread_ids(message, &ids)
+                    })
+                    .cloned(),
+            );
+            let related = self.related_members.entry(row.key.clone()).or_default();
+            for mut message in seed {
+                message.body.clear();
+                if let Some(existing) = related.iter_mut().find(|existing| {
+                    existing.account_id == message.account_id
+                        && existing.folder_id == message.folder_id
+                        && existing.uid == message.uid
+                }) {
+                    replace_message_header(existing, message);
+                } else {
+                    related.push(message);
+                }
+            }
+        }
+        let pending = self
+            .pending_related
+            .values()
+            .any(|pending_key| pending_key == &row.key);
+        if explicit_retry && !pending {
+            self.related_requests.remove(&row.key);
+        }
+        if !ids.is_empty() && !pending && self.related_requests.insert(row.key.clone()) {
+            let message_id = row.representative.message.id;
+            self.pending_related
+                .insert((row.key.account_id, message_id), row.key.clone());
+            self.conversation_errors.remove(&row.key);
+            if !self.send_request(
+                row.key.account_id,
+                MailRequest::LoadRelated { message_id, ids },
+                cx,
+            ) {
+                self.pending_related
+                    .remove(&(row.key.account_id, message_id));
+                self.conversation_errors.insert(
+                    row.key.clone(),
+                    "Could not load the other messages in this conversation.".into(),
+                );
+            }
+        }
+        if self.thunderbird_accounts.contains(&row.key.account_id) {
+            return;
+        }
+        self.request_sent_headers(row.key.account_id, false, cx);
+    }
+
+    fn request_selected_conversation_members(
+        &mut self,
+        explicit_retry: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(selected_key) = self.selected_key.as_ref() else {
+            return;
+        };
+        let Some(row) = self
+            .conversation_rows
+            .iter()
+            .find(|conversation| {
+                conversation
+                    .members
+                    .iter()
+                    .any(|member| &member.key == selected_key)
+            })
+            .cloned()
+        else {
+            return;
+        };
+        self.request_conversation_members(&row, explicit_retry, cx);
+    }
+
+    fn request_sent_headers(
+        &mut self,
+        account_id: u32,
+        force: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let sent_folder = self
+            .folders_by_account
+            .get(&account_id)
+            .and_then(|folders| {
+                folders
+                    .iter()
+                    .find(|folder| folder.kind == FolderKind::Sent)
+            })
+            .cloned();
+        let Some(folder) = sent_folder else {
+            return false;
+        };
+        if force {
+            self.sent_header_requests.remove(&(account_id, folder.id));
+        }
+        if !self.sent_header_requests.insert((account_id, folder.id)) {
+            return false;
+        }
+        let sent_key = PageKey {
+            account_id,
+            folder_path: folder.path.clone(),
+        };
+        if self.send_request(
+            account_id,
+            MailRequest::LoadMessages {
+                folder_id: folder.id,
+                path: folder.path,
+            },
+            cx,
+        ) {
+            self.pending_sent_refresh.insert(sent_key);
+            true
+        } else {
+            self.sent_header_requests.remove(&(account_id, folder.id));
+            false
+        }
+    }
+
+    fn message_row(&self, message: &Message) -> Option<Arc<MessageRow>> {
+        let key = self.key_for(message)?;
+        let mut message = message.clone();
+        message.body.clear();
+        Some(Arc::new(MessageRow { key, message }))
+    }
+
+    fn message_for_key(&self, key: &MessageKey) -> Option<&Message> {
+        self.messages
+            .iter()
+            .find(|message| self.key_for(message).as_ref() == Some(key))
+    }
+
+    fn invalidate_conversation_cache(&mut self, account_id: u32) {
+        self.related_members
+            .retain(|key, _| key.account_id != account_id);
+        self.related_counts
+            .retain(|key, _| key.account_id != account_id);
+        self.related_requests
+            .retain(|key| key.account_id != account_id);
+        self.conversation_errors
+            .retain(|key, _| key.account_id != account_id);
+        self.conversation_warnings
+            .retain(|key, _| key.account_id != account_id);
+        self.thread_summary_requests.remove(&account_id);
+        self.pending_thread_summaries
+            .retain(|(pending_account, _), _| *pending_account != account_id);
+        let folders_by_account = &self.folders_by_account;
+        let page_keys = &self.page_keys;
+        let selected_key = self.selected_key.as_ref();
+        self.messages.retain(|message| {
+            message.account_id != account_id
+                || message_key_for_folders(folders_by_account, message)
+                    .is_some_and(|key| page_keys.contains(&key) || selected_key == Some(&key))
+        });
+        self.rebuild_visible();
     }
 
     fn refresh_selected_row(&mut self) {
@@ -2037,10 +3249,15 @@ impl LiveMailbox {
             .as_ref()
             .filter(|row| row.key == key)
             .map(|row| row.message.body.clone());
+        let previous = self
+            .selected_row
+            .as_ref()
+            .filter(|row| row.key == key)
+            .cloned();
         let selected_row = self
             .messages
             .iter()
-            .find(|message| message.account_id == key.account_id && message.uid == key.uid)
+            .find(|message| self.key_for(message).as_ref() == Some(&key))
             .map(|message| {
                 let mut message = message.clone();
                 if message.body.is_empty() {
@@ -2050,32 +3267,246 @@ impl LiveMailbox {
                 }
                 Arc::new(MessageRow { key, message })
             });
-        self.selected_row = selected_row;
+        self.selected_row = selected_row.or(previous);
     }
 
     fn clear_current_page(&mut self) {
-        self.query_generation = self.query_generation.wrapping_add(1).max(1);
-        self.pending_page_generation = None;
-        self.pending_page_append = false;
-        self.next_cursor = None;
-        self.messages.clear();
-        self.visible_indices.clear();
-        self.page_rows = Arc::new(Vec::new());
-        self.truncated = false;
+        self.clear_selection();
+    }
+
+    fn clear_selection(&mut self) {
         self.selected_key = None;
         self.selected_row = None;
-        self.loading_more = false;
         self.body_loading = false;
         self.links.clear();
-        self.demo_links_by_key.clear();
         self.attachment_state = AttachmentState::NotLoaded;
         self.pending_attachment = None;
         self.draft_source = None;
     }
 
+    fn clear_all_page_data(&mut self) {
+        for state in self.page_states.values_mut() {
+            state.generation = state.generation.wrapping_add(1).max(1);
+            state.pending_generation = None;
+            state.pending_append = false;
+            state.next_cursor = None;
+            state.truncated = false;
+        }
+        self.messages.clear();
+        self.page_keys.clear();
+        self.visible_indices.clear();
+        self.page_rows = Arc::new(Vec::new());
+        self.conversation_rows = Arc::new(Vec::new());
+        self.related_members.clear();
+        self.related_counts.clear();
+        self.related_requests.clear();
+        self.thread_summary_requests.clear();
+        self.pending_thread_summaries.clear();
+        self.pending_related.clear();
+        self.conversation_errors.clear();
+        self.conversation_warnings.clear();
+        self.sent_header_requests.clear();
+        self.pending_sent_refresh.clear();
+        self.pending_message_refresh.clear();
+        self.query_errors.clear();
+        self.truncated = false;
+        self.loading_more = false;
+        self.demo_links_by_key.clear();
+        self.clear_selection();
+    }
+
     fn key_for(&self, message: &Message) -> Option<MessageKey> {
-        let path = self.current_folder_path.as_ref()?;
-        Some(message_key(message.account_id, path, message.uid))
+        message_key_for_folders(&self.folders_by_account, message)
+    }
+
+    fn selectable_key(&self, key: &MessageKey) -> bool {
+        self.page_rows.iter().any(|row| row.key == *key)
+            || self
+                .conversation_rows
+                .iter()
+                .any(|conversation| conversation.members.iter().any(|row| row.key == *key))
+    }
+
+    fn active_page_keys(&self) -> Vec<PageKey> {
+        let mut keys = match self.scope {
+            MailboxScope::Account => self
+                .current_account_id
+                .zip(self.current_folder_path.as_ref())
+                .map(|(account_id, path)| {
+                    vec![PageKey {
+                        account_id,
+                        folder_path: path.clone(),
+                    }]
+                })
+                .unwrap_or_default(),
+            MailboxScope::Unified => self
+                .accounts
+                .iter()
+                .flat_map(|account| {
+                    self.folders_by_account
+                        .get(&account.id)
+                        .into_iter()
+                        .flatten()
+                        .filter(|folder| folder.kind == FolderKind::Inbox)
+                        .map(|folder| PageKey {
+                            account_id: account.id,
+                            folder_path: folder.path.clone(),
+                        })
+                })
+                .collect(),
+        };
+        keys.sort_by(|a, b| {
+            a.account_id
+                .cmp(&b.account_id)
+                .then_with(|| a.folder_path.cmp(&b.folder_path))
+        });
+        keys.dedup();
+        keys
+    }
+
+    fn active_account_ids(&self) -> Vec<u32> {
+        match self.scope {
+            MailboxScope::Account => self.current_account_id.into_iter().collect(),
+            MailboxScope::Unified => self.accounts.iter().map(|account| account.id).collect(),
+        }
+    }
+
+    fn account_loading_snapshot(&self) -> HashMap<u32, bool> {
+        self.active_account_ids()
+            .into_iter()
+            .map(|account_id| {
+                let keys: Vec<_> = self
+                    .active_page_keys()
+                    .into_iter()
+                    .filter(|key| key.account_id == account_id)
+                    .collect();
+                let loading = if keys.is_empty() {
+                    (self.scope == MailboxScope::Unified
+                        && !self.folders_by_account.contains_key(&account_id))
+                        || (self.scope == MailboxScope::Account && self.loading)
+                } else {
+                    keys.iter().any(|key| {
+                        self.page_states.get(key).map_or(self.loading, |state| {
+                            state.pending_generation.is_some() && !state.pending_append
+                        })
+                    })
+                };
+                (account_id, loading)
+            })
+            .collect()
+    }
+
+    fn account_errors_snapshot(&self) -> HashMap<u32, String> {
+        self.active_account_ids()
+            .into_iter()
+            .filter_map(|account_id| {
+                self.query_errors
+                    .get(&account_id)
+                    .or_else(|| self.connectivity_errors.get(&account_id))
+                    .cloned()
+                    .map(|error| (account_id, error))
+            })
+            .collect()
+    }
+
+    fn scope_title(&self) -> String {
+        if self.scope == MailboxScope::Unified {
+            return "Unified Inbox".into();
+        }
+        self.current_folder_path
+            .as_ref()
+            .and_then(|path| {
+                self.current_account_id.and_then(|account_id| {
+                    self.folders_by_account
+                        .get(&account_id)?
+                        .iter()
+                        .find(|folder| &folder.path == path)
+                        .map(|folder| folder.name.clone())
+                })
+            })
+            .or_else(|| {
+                self.current_account_id.and_then(|account_id| {
+                    self.accounts
+                        .iter()
+                        .find(|account| account.id == account_id)
+                        .map(|account| account.label.clone())
+                })
+            })
+            .unwrap_or_else(|| "Inbox".into())
+    }
+
+    fn active_page_message_count(&self) -> usize {
+        let active: HashSet<_> = self.active_page_keys().into_iter().collect();
+        self.page_keys
+            .iter()
+            .filter(|key| {
+                active.contains(&PageKey {
+                    account_id: key.account_id,
+                    folder_path: key.folder_path.clone(),
+                })
+            })
+            .count()
+    }
+
+    fn page_message_count(&self, page: &PageKey) -> usize {
+        self.page_keys
+            .iter()
+            .filter(|key| key.account_id == page.account_id && key.folder_path == page.folder_path)
+            .count()
+    }
+
+    fn update_loading_state(&mut self) {
+        let keys = self.active_page_keys();
+        if !keys.is_empty() {
+            let pages_loading = keys.iter().any(|key| {
+                self.page_states.get(key).is_some_and(|state| {
+                    state.pending_generation.is_some() && !state.pending_append
+                })
+            });
+            let folders_loading = self.scope == MailboxScope::Unified
+                && self
+                    .accounts
+                    .iter()
+                    .any(|account| !self.folders_by_account.contains_key(&account.id));
+            self.loading = pages_loading || folders_loading;
+            self.loading_more = keys.iter().any(|key| {
+                self.page_states
+                    .get(key)
+                    .is_some_and(|state| state.pending_generation.is_some() && state.pending_append)
+            });
+            self.truncated = keys.iter().any(|key| {
+                self.page_states
+                    .get(key)
+                    .is_some_and(|state| state.truncated)
+            });
+        }
+    }
+
+    fn folder_kind(&self, account_id: u32, folder_id: u32) -> Option<FolderKind> {
+        self.folders_by_account
+            .get(&account_id)?
+            .iter()
+            .find(|folder| folder.id == folder_id)
+            .map(|folder| folder.kind)
+    }
+
+    fn remove_page_partition(&mut self, page: &PageKey) {
+        let keys: HashSet<_> = self
+            .page_keys
+            .iter()
+            .filter(|key| key.account_id == page.account_id && key.folder_path == page.folder_path)
+            .cloned()
+            .collect();
+        self.page_keys.retain(|key| !keys.contains(key));
+        let folders_by_account = &self.folders_by_account;
+        self.messages.retain(|message| {
+            message_key_for_folders(folders_by_account, message)
+                .is_none_or(|key| !keys.contains(&key))
+        });
+        self.related_members
+            .retain(|key, _| key.account_id != page.account_id);
+        self.related_counts
+            .retain(|key, _| key.account_id != page.account_id);
     }
 
     fn folder_id(&self, account_id: u32, path: &str) -> Option<u32> {
@@ -2095,12 +3526,18 @@ impl LiveMailbox {
     }
 
     fn is_current_folder(&self, account_id: u32, path: &str) -> bool {
-        self.current_account_id == Some(account_id)
-            && self.current_folder_path.as_deref() == Some(path)
+        self.active_page_keys()
+            .iter()
+            .any(|key| key.account_id == account_id && key.folder_path == path)
     }
 
     fn set_action_error(&mut self, text: impl Into<String>) {
-        if let Some(account_id) = self.current_account_id {
+        if let Some(account_id) = self
+            .selected_key
+            .as_ref()
+            .map(|key| key.account_id)
+            .or(self.current_account_id)
+        {
             self.action_errors.insert(account_id, text.into());
         }
     }
@@ -2111,6 +3548,153 @@ fn message_key(account_id: u32, folder_path: &str, uid: u32) -> MessageKey {
         account_id,
         folder_path: folder_path.to_owned(),
         uid,
+    }
+}
+
+fn message_key_for_folders(
+    folders_by_account: &HashMap<u32, Vec<Folder>>,
+    message: &Message,
+) -> Option<MessageKey> {
+    let path = folders_by_account
+        .get(&message.account_id)?
+        .iter()
+        .find(|folder| folder.id == message.folder_id)?
+        .path
+        .as_str();
+    Some(message_key(message.account_id, path, message.uid))
+}
+
+fn replace_message_header(existing: &mut Message, mut replacement: Message) {
+    if replacement.body.is_empty() {
+        replacement.body = std::mem::take(&mut existing.body);
+    }
+    *existing = replacement;
+}
+
+fn physical_message_key(message: &Message) -> (u32, u32, u32) {
+    (message.account_id, message.folder_id, message.uid)
+}
+
+fn stable_conversation_key(
+    members: &[Message],
+    derived_key: ConversationKey,
+    previous_rows: &[ConversationRow],
+    selected_key: Option<&MessageKey>,
+    reused_keys: &mut HashSet<ConversationKey>,
+) -> ConversationKey {
+    let mut candidates = previous_rows
+        .iter()
+        .filter(|previous| previous.key.account_id == derived_key.account_id)
+        .filter(|previous| {
+            let representative_key = physical_message_key(&previous.representative.message);
+            members
+                .iter()
+                .any(|member| physical_message_key(member) == representative_key)
+        })
+        .map(|previous| previous.key.clone())
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| left.anchor.cmp(&right.anchor));
+    candidates.dedup();
+
+    let selected_candidate = selected_key.and_then(|selected| {
+        previous_rows
+            .iter()
+            .filter(|previous| previous.key.account_id == derived_key.account_id)
+            .filter(|previous| {
+                previous
+                    .members
+                    .iter()
+                    .any(|member| &member.key == selected)
+            })
+            .map(|previous| previous.key.clone())
+            .filter(|candidate| candidates.contains(candidate))
+            .filter(|candidate| !reused_keys.contains(candidate))
+            .min_by(|left, right| left.anchor.cmp(&right.anchor))
+    });
+    if let Some(previous_key) = selected_candidate.or_else(|| {
+        candidates
+            .into_iter()
+            .find(|candidate| !reused_keys.contains(candidate))
+    }) {
+        reused_keys.insert(previous_key.clone());
+        previous_key
+    } else {
+        derived_key
+    }
+}
+
+fn remap_demo_event(account_id: u32, mut event: WorkerMailboxEvent) -> WorkerMailboxEvent {
+    if account_id == 2 {
+        if let WorkerMailboxEvent::DemoMessages {
+            messages,
+            links_by_uid,
+            ..
+        } = &mut event
+        {
+            for message in messages.iter_mut() {
+                message.uid = message.uid.saturating_sub(29);
+            }
+            let links = std::mem::take(links_by_uid);
+            *links_by_uid = links
+                .into_iter()
+                .map(|(uid, links)| (uid.saturating_sub(29), links))
+                .collect();
+        }
+    }
+    event
+}
+
+fn demo_team_sent_reply() -> Message {
+    Message {
+        id: 1_031,
+        account_id: 2,
+        folder_id: 13,
+        uid: 2,
+        from_name: "Hyprlab".into(),
+        from_addr: "hello@hyprlab.dev".into(),
+        reply_to: String::new(),
+        to: "no-reply@buymeacoffee.com".into(),
+        cc: String::new(),
+        subject: "Re: You have a new supporter ☕".into(),
+        preview: "Thank you for supporting the project — it means a lot to the team.".into(),
+        body: "Thanks for the thoughtful note, Alex. Your support helps us keep building the mail client we've wanted for years.\n\n— Hyprlab\n\nOn Yesterday, Alex wrote:\n> Thanks for building this.".into(),
+        date: "Yesterday, 10:42 AM".into(),
+        timestamp: 1_759_892_000,
+        unread: false,
+        starred: false,
+        keywords: Vec::new(),
+        has_attachment: false,
+        message_id: "<demo-team-supporter-reply@hylki.local>".into(),
+        references: "<demo-31@hylki.local>".into(),
+        importance: megamail_core::models::Importance::Normal,
+        due: 0,
+    }
+}
+
+fn demo_long_thread_reply() -> Message {
+    Message {
+        id: 1_090,
+        account_id: 1,
+        folder_id: 1,
+        uid: 1_090,
+        from_name: "Priya Sharma".into(),
+        from_addr: "priya@studio.dev".into(),
+        reply_to: String::new(),
+        to: "jason@hylki.hyprlab.co".into(),
+        cc: String::new(),
+        subject: "Re: Reader redesign: final review".into(),
+        preview: "One last pass: the keyboard focus now stays with the conversation as you move between messages.".into(),
+        body: "One last pass: keyboard focus now stays with the conversation as you move between messages. I checked the reader at laptop height, too, and the longer thread scrolls cleanly.\n\nPriya".into(),
+        date: "Today, 11:06 AM".into(),
+        timestamp: 1_760_003_960,
+        unread: false,
+        starred: false,
+        keywords: Vec::new(),
+        has_attachment: false,
+        message_id: "<demo-1090@hylki.local>".into(),
+        references: "<demo-1@hylki.local>".into(),
+        importance: megamail_core::models::Importance::Normal,
+        due: 0,
     }
 }
 
@@ -2133,7 +3717,9 @@ fn spawn_demo_worker(
     sender: futures::channel::mpsc::UnboundedSender<MailboxEvent>,
 ) -> RequestSender {
     let worker_sender = worker::spawn(account_id, None, move |event| {
-        if let Some(event) = compact_worker_event(event, true) {
+        if let Some(event) =
+            compact_worker_event(event, true).map(|event| remap_demo_event(account_id, event))
+        {
             let _ =
                 sender.unbounded_send(MailboxEvent::Worker(WorkerEnvelope { account_id, event }));
         }
@@ -2191,6 +3777,19 @@ fn compact_worker_event(event: WorkerEvent, demo_mode: bool) -> Option<WorkerMai
         // Page reads come from the cache actor. Avoid retaining the worker's
         // full batches in the UI event queue alongside those cursor pages.
         WorkerEvent::MessagesAppend { .. } => return None,
+        WorkerEvent::Related {
+            message_id,
+            messages,
+        } => WorkerMailboxEvent::Related {
+            message_id,
+            messages,
+            partial: false,
+            warning: None,
+        },
+        WorkerEvent::ThreadSummaries { summaries } => WorkerMailboxEvent::ThreadSummaries {
+            summaries,
+            warning: None,
+        },
         WorkerEvent::FolderSynced { folder_id } => WorkerMailboxEvent::FolderSynced { folder_id },
         WorkerEvent::FolderUnread { folder_id, unread } => {
             WorkerMailboxEvent::FolderUnread { folder_id, unread }
@@ -2379,6 +3978,70 @@ fn make_page_request(
     }
 }
 
+fn page_result_is_current(
+    key: &PageKey,
+    state: &FolderPageState,
+    result: &PageResult,
+    current_folder_id: Option<u32>,
+) -> bool {
+    key.account_id == result.account_id
+        && key.folder_path == result.folder_path
+        && state.pending_generation == Some(result.generation)
+        && state.folder_id == result.folder_id
+        && current_folder_id == Some(result.folder_id)
+}
+
+fn active_representative<'a>(
+    members: &[Message],
+    active_page: &'a [Message],
+    fallback: &'a Message,
+) -> &'a Message {
+    active_page
+        .iter()
+        .filter(|candidate| {
+            members
+                .iter()
+                .any(|member| same_mail_copy(candidate, member))
+        })
+        .max_by(|left, right| {
+            left.timestamp
+                .cmp(&right.timestamp)
+                .then_with(|| left.folder_id.cmp(&right.folder_id))
+                .then_with(|| left.uid.cmp(&right.uid))
+        })
+        .unwrap_or(fallback)
+}
+
+fn same_mail_copy(left: &Message, right: &Message) -> bool {
+    physical_message_key(left) == physical_message_key(right)
+        || (left.account_id == right.account_id
+            && normalized_message_id(&left.message_id)
+                .zip(normalized_message_id(&right.message_id))
+                .is_some_and(|(left_id, right_id)| left_id == right_id)
+            && left.from_addr == right.from_addr
+            && left.timestamp == right.timestamp)
+}
+
+fn normalized_message_id(message_id: &str) -> Option<String> {
+    let message_id = message_id
+        .trim()
+        .trim_start_matches('<')
+        .trim_end_matches('>');
+    (!message_id.is_empty()).then(|| message_id.to_ascii_lowercase())
+}
+
+fn conversation_response_warning(partial: bool, warning: Option<String>) -> Option<String> {
+    if partial {
+        Some(
+            warning.unwrap_or_else(|| {
+                "More messages may exist outside the indexed/query window".into()
+            }),
+        )
+    } else {
+        warning
+    }
+}
+
 fn message_matches_filter(message: &Message, filter: MessageFilter) -> bool {
     match filter {
         MessageFilter::All => true,
@@ -2388,17 +4051,30 @@ fn message_matches_filter(message: &Message, filter: MessageFilter) -> bool {
     }
 }
 
+fn message_matches_query(message: &Message, query: &str) -> bool {
+    query.is_empty()
+        || message.from_name.to_lowercase().contains(query)
+        || message.from_addr.to_lowercase().contains(query)
+        || message.subject.to_lowercase().contains(query)
+        || message.preview.to_lowercase().contains(query)
+}
+
+fn message_matches_thread_ids(message: &Message, ids: &[String]) -> bool {
+    ids.iter().any(|id| {
+        id == &message.message_id
+            || message
+                .references
+                .split_whitespace()
+                .any(|reference| reference == id)
+    })
+}
+
 fn visible_message_indices(messages: &[Message], query: &str, filter: MessageFilter) -> Vec<usize> {
     messages
         .iter()
         .enumerate()
         .filter(|(_, message)| {
-            let query_matches = query.is_empty()
-                || message.from_name.to_lowercase().contains(query)
-                || message.from_addr.to_lowercase().contains(query)
-                || message.subject.to_lowercase().contains(query)
-                || message.preview.to_lowercase().contains(query);
-            query_matches && message_matches_filter(message, filter)
+            message_matches_query(message, query) && message_matches_filter(message, filter)
         })
         .map(|(index, _)| index)
         .collect()
@@ -2408,34 +4084,36 @@ fn body_event_matches(
     event_account_id: u32,
     event_path: &str,
     event_message_id: u32,
-    current_account_id: Option<u32>,
-    current_path: Option<&str>,
     selected_key: Option<&MessageKey>,
     pending: &PendingBody,
 ) -> bool {
     event_account_id == pending.key.account_id
-        && Some(event_account_id) == current_account_id
         && event_path == pending.key.folder_path
-        && current_path == Some(pending.key.folder_path.as_str())
         && event_message_id == pending.message_id
         && selected_key == Some(&pending.key)
+}
+
+fn retain_selected_body_after_error(
+    pending_bodies: &mut HashMap<BodyRequestSlot, PendingBody>,
+    failed_account_id: u32,
+    selected_key: Option<&MessageKey>,
+) {
+    pending_bodies.retain(|slot, pending| {
+        slot.account_id != failed_account_id || selected_key == Some(&pending.key)
+    });
 }
 
 fn attachment_response_matches(
     event_account_id: u32,
     event_path: &str,
     event_message_id: u32,
-    current_account_id: Option<u32>,
-    current_path: Option<&str>,
     selected_key: Option<&MessageKey>,
     pending: &PendingAttachment,
     message_present: bool,
 ) -> bool {
     message_present
         && event_account_id == pending.key.account_id
-        && Some(event_account_id) == current_account_id
         && event_path == pending.key.folder_path
-        && current_path == Some(pending.key.folder_path.as_str())
         && event_message_id == pending.message_id
         && selected_key == Some(&pending.key)
 }
@@ -2541,16 +4219,21 @@ fn set_folder_unread(
 #[cfg(test)]
 mod tests {
     use super::{
-        ATTACHMENT_BYTES_CAP, ATTACHMENT_COUNT_CAP, DraftSourceSnapshot, DraftSourceState,
-        MESSAGE_CAP, MessageFilter, PAGE_SIZE, PendingAttachment, PendingBody,
-        attachment_response_matches, body_event_matches, bounded_attachments,
-        bounded_attachments_with_limits, draft_export_matches, make_page_request,
-        merge_message_batch, merge_message_batch_ordered, message_key, plain_body_and_links,
-        set_folder_unread, visible_message_indices,
+        ATTACHMENT_BYTES_CAP, ATTACHMENT_COUNT_CAP, BodyRequestSlot, ConversationKey,
+        ConversationRow, DraftSourceSnapshot, DraftSourceState, FolderPageState, MESSAGE_CAP,
+        MessageFilter, MessageRow, PAGE_SIZE, PageKey, PendingAttachment, PendingBody,
+        active_representative, attachment_response_matches, body_event_matches,
+        bounded_attachments, bounded_attachments_with_limits, conversation_response_warning,
+        draft_export_matches, make_page_request, merge_message_batch, merge_message_batch_ordered,
+        message_key, page_result_is_current, plain_body_and_links,
+        retain_selected_body_after_error, set_folder_unread, stable_conversation_key,
+        visible_message_indices,
     };
     use megamail_core::cache::MessageCursor;
     use megamail_core::models::{Attachment, DraftOrigin, Folder, FolderKind, Importance, Message};
-    use std::collections::HashMap;
+    use megamail_core::query::{PageResult, PageStatus};
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Arc;
 
     fn message(
         id: u32,
@@ -2595,30 +4278,62 @@ mod tests {
         };
         let matches = |account, path, uid| {
             let selected = message_key(7, "INBOX", uid);
-            body_event_matches(
-                account,
-                path,
-                12,
-                Some(7),
-                Some("INBOX"),
-                Some(&selected),
-                &pending,
-            )
+            body_event_matches(account, path, 12, Some(&selected), &pending)
         };
 
         assert!(matches(7, "INBOX", 42));
         assert!(!matches(8, "INBOX", 42));
         assert!(!matches(7, "Archive", 42));
         assert!(!matches(7, "INBOX", 43));
-        assert!(!body_event_matches(
-            7,
-            "INBOX",
-            13,
-            Some(7),
-            Some("INBOX"),
-            Some(&key),
-            &pending
-        ));
+        assert!(!body_event_matches(7, "INBOX", 13, Some(&key), &pending));
+    }
+
+    #[test]
+    fn unrelated_same_account_body_error_preserves_selected_pending_response() {
+        let failed = message_key(7, "INBOX", 42);
+        let selected = message_key(7, "Archive", 43);
+        let other_account = message_key(8, "INBOX", 44);
+        let mut pending = HashMap::from([
+            (
+                BodyRequestSlot {
+                    account_id: 7,
+                    folder_path: "INBOX".into(),
+                    message_id: 12,
+                },
+                PendingBody {
+                    key: failed.clone(),
+                    message_id: 12,
+                },
+            ),
+            (
+                BodyRequestSlot {
+                    account_id: 7,
+                    folder_path: "Archive".into(),
+                    message_id: 13,
+                },
+                PendingBody {
+                    key: selected.clone(),
+                    message_id: 13,
+                },
+            ),
+            (
+                BodyRequestSlot {
+                    account_id: 8,
+                    folder_path: "INBOX".into(),
+                    message_id: 14,
+                },
+                PendingBody {
+                    key: other_account.clone(),
+                    message_id: 14,
+                },
+            ),
+        ]);
+
+        retain_selected_body_after_error(&mut pending, 7, Some(&selected));
+
+        assert!(!pending.values().any(|slot| slot.key == failed));
+        assert!(pending.values().any(|slot| slot.key == selected));
+        assert!(pending.values().any(|slot| slot.key == other_account));
     }
 
     #[test]
@@ -2633,8 +4348,6 @@ mod tests {
                 account,
                 path,
                 message_id,
-                Some(7),
-                Some("INBOX"),
                 Some(selected),
                 &pending,
                 present,
@@ -2757,6 +4470,271 @@ mod tests {
         assert_eq!(request.generation, 22);
         assert_eq!(request.cursor, Some(cursor));
         assert_eq!(request.limit, PAGE_SIZE);
+    }
+
+    #[test]
+    fn account_and_folder_are_part_of_message_and_page_keys() {
+        let first = message_key(7, "INBOX", 42);
+        let second = message_key(8, "INBOX", 42);
+        let third = message_key(7, "Archive", 42);
+        assert_ne!(first, second);
+        assert_ne!(first, third);
+
+        let first_page = PageKey {
+            account_id: 7,
+            folder_path: "INBOX".into(),
+        };
+        let second_page = PageKey {
+            account_id: 8,
+            folder_path: "INBOX".into(),
+        };
+        let third_page = PageKey {
+            account_id: 7,
+            folder_path: "Archive".into(),
+        };
+        let pages = HashMap::from([
+            (
+                first_page.clone(),
+                FolderPageState {
+                    next_cursor: Some(MessageCursor { before_uid: 101 }),
+                    ..FolderPageState::default()
+                },
+            ),
+            (
+                second_page.clone(),
+                FolderPageState {
+                    next_cursor: Some(MessageCursor { before_uid: 202 }),
+                    ..FolderPageState::default()
+                },
+            ),
+            (
+                third_page.clone(),
+                FolderPageState {
+                    next_cursor: Some(MessageCursor { before_uid: 303 }),
+                    ..FolderPageState::default()
+                },
+            ),
+        ]);
+
+        assert_ne!(first_page, second_page);
+        assert_ne!(first_page, third_page);
+        assert_eq!(pages[&first_page].next_cursor.unwrap().before_uid, 101);
+        assert_eq!(pages[&second_page].next_cursor.unwrap().before_uid, 202);
+        assert_eq!(pages[&third_page].next_cursor.unwrap().before_uid, 303);
+    }
+
+    #[test]
+    fn page_result_requires_the_current_folder_generation() {
+        let key = PageKey {
+            account_id: 7,
+            folder_path: "INBOX".into(),
+        };
+        let state = FolderPageState {
+            folder_id: 3,
+            pending_generation: Some(9),
+            ..FolderPageState::default()
+        };
+        let result = |account_id, generation| PageResult {
+            account_id,
+            folder_path: "INBOX".into(),
+            folder_id: 3,
+            generation,
+            rows: Vec::new(),
+            next_cursor: None,
+            status: PageStatus::Ready,
+        };
+
+        assert!(page_result_is_current(&key, &state, &result(7, 9), Some(3)));
+        assert!(!page_result_is_current(
+            &key,
+            &state,
+            &result(7, 8),
+            Some(3)
+        ));
+        assert!(!page_result_is_current(
+            &key,
+            &state,
+            &result(8, 9),
+            Some(3)
+        ));
+        assert!(!page_result_is_current(
+            &key,
+            &state,
+            &result(7, 9),
+            Some(4)
+        ));
+    }
+
+    #[test]
+    fn sent_reply_does_not_replace_the_active_inbox_representative() {
+        let inbox = message(1, 7, 1, 1, "Conversation", 100);
+        let mut sent = message(2, 7, 3, 2, "Re: Conversation", 200);
+        sent.references = "<parent@example.test>".into();
+        let members = [inbox.clone(), sent.clone()];
+        let active_page = [inbox.clone()];
+
+        assert_eq!(
+            active_representative(&members, &active_page, &sent).uid,
+            inbox.uid
+        );
+    }
+
+    #[test]
+    fn enriched_references_preserve_the_selected_conversation_ui_key() {
+        let mut reply = message(1, 7, 1, 42, "Re: Conversation", 200);
+        reply.message_id = "<reply@example.test>".into();
+        let old_key = ConversationKey {
+            account_id: 7,
+            anchor: "reply@example.test".into(),
+        };
+        let previous = ConversationRow {
+            key: old_key.clone(),
+            representative: Arc::new(MessageRow {
+                key: message_key(7, "INBOX", 42),
+                message: reply.clone(),
+            }),
+            members: Arc::new(Vec::new()),
+            count: 1,
+            unread: 0,
+            replied: false,
+            forwarded: false,
+            latest_sent: None,
+        };
+        let mut parent = message(2, 7, 1, 41, "Conversation", 100);
+        parent.message_id = "<parent@example.test>".into();
+        reply.references = "<parent@example.test>".into();
+        let members = [parent, reply];
+        let derived_key = ConversationKey {
+            account_id: 7,
+            anchor: "parent@example.test".into(),
+        };
+        let mut reused_keys = HashSet::new();
+
+        let stable = stable_conversation_key(
+            &members,
+            derived_key.clone(),
+            std::slice::from_ref(&previous),
+            None,
+            &mut reused_keys,
+        );
+        let warnings = HashMap::from([(old_key.clone(), "More messages may exist".to_string())]);
+        let counts = HashMap::from([(old_key.clone(), 4usize)]);
+
+        assert_eq!(stable, old_key);
+        assert_eq!(
+            warnings.get(&stable).map(String::as_str),
+            Some("More messages may exist")
+        );
+        assert_eq!(counts.get(&stable), Some(&4));
+
+        // A previous key is assigned to one resulting group at most.
+        assert_eq!(
+            stable_conversation_key(
+                &members,
+                derived_key.clone(),
+                std::slice::from_ref(&previous),
+                None,
+                &mut reused_keys,
+            ),
+            derived_key
+        );
+    }
+
+    #[test]
+    fn merged_references_keep_the_selected_prior_thread_key() {
+        let first_message = message(1, 7, 1, 42, "Re: Conversation", 200);
+        let selected_message = message(2, 7, 1, 43, "Re: Conversation", 180);
+        let selected_key = message_key(7, "INBOX", 43);
+        let first_key = ConversationKey {
+            account_id: 7,
+            anchor: "a-prior-thread".into(),
+        };
+        let selected_conversation_key = ConversationKey {
+            account_id: 7,
+            anchor: "z-selected-thread".into(),
+        };
+        let previous_rows = vec![
+            ConversationRow {
+                key: first_key,
+                representative: Arc::new(MessageRow {
+                    key: message_key(7, "INBOX", 42),
+                    message: first_message.clone(),
+                }),
+                members: Arc::new(vec![Arc::new(MessageRow {
+                    key: message_key(7, "INBOX", 42),
+                    message: first_message.clone(),
+                })]),
+                count: 1,
+                unread: 0,
+                replied: false,
+                forwarded: false,
+                latest_sent: None,
+            },
+            ConversationRow {
+                key: selected_conversation_key.clone(),
+                representative: Arc::new(MessageRow {
+                    key: selected_key.clone(),
+                    message: selected_message.clone(),
+                }),
+                members: Arc::new(vec![Arc::new(MessageRow {
+                    key: selected_key.clone(),
+                    message: selected_message.clone(),
+                })]),
+                count: 1,
+                unread: 0,
+                replied: false,
+                forwarded: false,
+                latest_sent: None,
+            },
+        ];
+        let mut parent = message(3, 7, 1, 41, "Conversation", 100);
+        parent.message_id = "<new-root@example.test>".into();
+        let mut first_message = first_message;
+        first_message.references = "<new-root@example.test>".into();
+        let mut selected_message = selected_message;
+        selected_message.references = "<new-root@example.test>".into();
+        let enriched_members = [parent, first_message, selected_message];
+        let derived_key = ConversationKey {
+            account_id: 7,
+            anchor: "new-root@example.test".into(),
+        };
+
+        let stable = stable_conversation_key(
+            &enriched_members,
+            derived_key,
+            &previous_rows,
+            Some(&selected_key),
+            &mut HashSet::new(),
+        );
+
+        assert_eq!(stable, selected_conversation_key);
+    }
+
+    #[test]
+    fn inbox_label_copy_remains_the_conversation_representative() {
+        let mut inbox = message(1, 7, 1, 1, "Conversation", 100);
+        let mut sent_copy = message(2, 7, 3, 2, "Conversation", 100);
+        inbox.message_id = "<same@example.test>".into();
+        sent_copy.message_id = "same@example.test".into();
+        sent_copy.from_addr = inbox.from_addr.clone();
+
+        assert_eq!(
+            active_representative(&[sent_copy.clone()], &[inbox.clone()], &sent_copy).uid,
+            inbox.uid
+        );
+    }
+
+    #[test]
+    fn partial_conversation_response_keeps_a_visible_warning() {
+        assert_eq!(
+            conversation_response_warning(true, None).as_deref(),
+            Some("More messages may exist outside the indexed/query window")
+        );
+        assert_eq!(
+            conversation_response_warning(true, Some("Limited result window".into())).as_deref(),
+            Some("Limited result window")
+        );
+        assert_eq!(conversation_response_warning(false, None), None);
     }
 
     #[test]

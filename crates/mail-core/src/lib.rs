@@ -2,6 +2,7 @@
 //! The original GTK app uses the same source modules during the migration.
 
 pub mod config;
+pub mod conversation;
 pub mod desktop;
 pub mod discovery;
 pub mod mail_text;
