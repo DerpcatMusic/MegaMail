@@ -14,7 +14,8 @@
           }
         },
         "parameters": [
-          { "name": "accountId", "type": "string" }
+          { "name": "accountId", "type": "string" },
+          { "name": "refresh", "type": "boolean", "optional": true }
         ]
       },
       {

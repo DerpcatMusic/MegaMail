@@ -1,6 +1,6 @@
 //! Explicit, read-only provider smoke check. Never sends or changes message flags.
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use megamail_core::thunderbird::discover_profiles;
 use megamail_core::thunderbird_bridge::Runtime;
@@ -63,6 +63,12 @@ fn thunderbird_read_only_account_probe() {
         !profiles.is_empty(),
         "No supported Thunderbird IMAP accounts found"
     );
+    let probe_started = Instant::now();
+    let mut runtime_start_ms = 0;
+    let mut accounts_ms = 0;
+    let mut cached_headers_ms = 0;
+    let mut refresh_ms = 0;
+    let mut body_ms = 0;
     let expected: usize = profiles.iter().map(|profile| profile.accounts.len()).sum();
     let mut unread_counts = 0;
     let mut bodies = 0;
@@ -71,21 +77,25 @@ fn thunderbird_read_only_account_probe() {
     let mut failures = 0;
     for profile in profiles {
         let before = source_stamp(&profile.path);
+        let stage_started = Instant::now();
         let runtime = Runtime::start_with_executables(
             &profile,
             Path::new(&app),
             Path::new("/usr/bin/thunderbird"),
         );
+        runtime_start_ms += stage_started.elapsed().as_millis();
         if let Err(error) = &runtime {
             report_error("startup", error);
         }
         if let Ok(runtime) = runtime {
+            let stage_started = Instant::now();
             let accounts = runtime.call("accounts", json!({}));
+            accounts_ms += stage_started.elapsed().as_millis();
             if let Err(error) = &accounts {
                 report_error("accounts", error);
             }
             if let Ok(Value::Array(accounts)) = accounts {
-                for account in &profile.accounts {
+                for (account_index, account) in profile.accounts.iter().enumerate() {
                     if !accounts.iter().any(|remote| {
                         remote.get("id").and_then(Value::as_str)
                             == Some(account.account_id.as_str())
@@ -99,11 +109,44 @@ fn thunderbird_read_only_account_probe() {
                     }
                     if let Ok(folders) = folders {
                         if let Some(folder_id) = inbox(&folders) {
+                            let stage_started = Instant::now();
+                            let cached =
+                                runtime.call("list", json!({"folderId": folder_id, "limit": 100}));
+                            cached_headers_ms += stage_started.elapsed().as_millis();
+                            let cached_count = cached
+                                .as_ref()
+                                .ok()
+                                .and_then(|page| page.get("messages"))
+                                .and_then(Value::as_array)
+                                .map(Vec::len)
+                                .unwrap_or(0);
+                            if let Err(error) = cached {
+                                report_error("cached headers", &error);
+                            }
+                            let stage_started = Instant::now();
+                            if let Err(error) =
+                                runtime.call("refresh", json!({"folderId": folder_id}))
+                            {
+                                report_error("refresh", &error);
+                                failures += 1;
+                                continue;
+                            }
+                            refresh_ms += stage_started.elapsed().as_millis();
                             let page =
                                 runtime.call("list", json!({"folderId": folder_id, "limit": 100}));
                             if let Err(error) = &page {
                                 report_error("headers", error);
                             }
+                            let refreshed_count = page
+                                .as_ref()
+                                .ok()
+                                .and_then(|page| page.get("messages"))
+                                .and_then(Value::as_array)
+                                .map(Vec::len)
+                                .unwrap_or(0);
+                            println!(
+                                "Thunderbird account index {account_index}: cached rows={cached_count}, refreshed rows={refreshed_count}"
+                            );
                             if page
                                 .as_ref()
                                 .ok()
@@ -144,11 +187,21 @@ fn thunderbird_read_only_account_probe() {
                                     .and_then(|row| row.get("id"))
                                     .and_then(Value::as_str)
                                 {
+                                    let stage_started = Instant::now();
                                     match runtime.call("body", json!({"messageId": message_id})) {
-                                        Ok(body) if body.get("plainText").is_some() => bodies += 1,
+                                        Ok(body)
+                                            if ["plainText", "html"].iter().any(|field| {
+                                                body.get(field)
+                                                    .and_then(Value::as_str)
+                                                    .is_some_and(|text| !text.is_empty())
+                                            }) =>
+                                        {
+                                            bodies += 1
+                                        }
                                         Ok(_) => report_error("body", "Malformed body response"),
                                         Err(error) => report_error("body", &error),
                                     }
+                                    body_ms += stage_started.elapsed().as_millis();
                                 }
                                 if page
                                     .as_ref()
@@ -183,6 +236,15 @@ fn thunderbird_read_only_account_probe() {
     println!(
         "Thunderbird accounts verified: {verified}/{expected}; inboxes with parsed authors: {populated}; bounded bodies read: {bodies}; folders with unread metadata: {unread_counts}; failures: {failures}"
     );
+    println!(
+        "Thunderbird timings (aggregate ms): startup={runtime_start_ms}, accounts={accounts_ms}, cached_headers={cached_headers_ms}, refresh={refresh_ms}, bodies={body_ms}, total={}",
+        probe_started.elapsed().as_millis()
+    );
+    assert_eq!(
+        bodies, expected,
+        "Not every account returned a bounded message body"
+    );
+    assert_eq!(populated, expected, "Missing parsed message headers");
     assert_eq!(
         unread_counts, expected,
         "Missing synchronized folder unread metadata"

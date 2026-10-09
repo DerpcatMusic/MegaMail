@@ -93,6 +93,36 @@ preference and credential-store stamps stayed unchanged; the probe sent no
 provider-bound messages and requested no flag changes. This is scoped evidence for those
 account configurations, not provider-wide qualification.
 
+Thunderbird bridge requests are routed by ID, so a body request can complete
+while a conversation request is still pending. Request timeouts remove only
+that request; actual socket closure fails all pending requests and retires
+the shared profile actor. Reconnection retains saved source references and
+replaces stale session message identities. Tests cover late replies, shared
+transport failure, startup failure ordering, and loading-state cleanup.
+
+The first network refresh awaits folder discovery before selecting a folder.
+Thunderbird can notify an update listener when discovery finishes before
+the SELECT operation; see [Mozilla’s update and listener implementation](https://raw.githubusercontent.com/mozilla/releases-comm-central/master/mailnews/imap/src/nsImapMailFolder.cpp).
+This ordering does not delay cached header pages. Metadata/body timeouts are
+15/30 seconds; folders allow 90 seconds, while first refresh allows 165 seconds
+for the two separately bounded Thunderbird URL operations. Network refresh
+and conversation/body work run outside the profile actor.
+
+The 2026-10-09 runtime fix passed 430 portable-core, 25 theme, and 87 native
+tests, plus the Node bridge fixtures. A read-only release probe using a fresh
+private clone verified authenticated headers, nonempty bounded bodies, and
+unread metadata for all six existing accounts without modifying the source
+preference or credential files. All six cached pages initially had zero rows;
+all six returned rows after explicit network refresh. Aggregate timings were
+1.125 s runtime startup, 0.363 s account metadata, 0.017 s cached headers,
+50.060 s sequential network refresh, and 20.315 s for six sequential body
+downloads (76.499 s total). These measure provider work, not UI frame rate;
+the native app runs account refreshes in the background. An earlier warm-cache
+probe returned six accounts in 38.305 s total with 0.494 s cached-header work.
+One fresh-run attempt failed before clone preparation at the five-second
+startup boundary; a retry against the still-empty clone passed. The probe
+does not report a private startup error, so its exact cause is unconfirmed.
+
 A separate Thunderbird 157 headless loopback test exercised production
 new-message and reply send branches, capturing the plain-text body, Reply-To,
 Bcc only in the SMTP envelope, and exact binary attachment bytes. Draft save

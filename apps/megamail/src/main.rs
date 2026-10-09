@@ -782,9 +782,13 @@ impl MailApp {
                 let loaded = cx
                     .background_spawn(async move {
                         compose::prune_stale_draft_attachment_dirs();
-                        config::load_profiles()
+                        (
+                            config::load_profiles(),
+                            thunderbird_adapter::has_saved_accounts(),
+                        )
                     })
                     .await;
+                let (loaded, saved_thunderbird) = loaded;
                 let _ = this.update(cx, |this, cx| {
                     this.loading_profiles = false;
                     match loaded {
@@ -808,7 +812,11 @@ impl MailApp {
                             if this.thunderbird_auto_open_pending {
                                 this.setup_return_view = View::Mailbox;
                             }
-                            this.view = View::Setup;
+                            this.view = if saved_thunderbird.unwrap_or(false) {
+                                View::Mailbox
+                            } else {
+                                View::Setup
+                            };
                         }
                         Err(error) => {
                             this.startup_error =
@@ -951,24 +959,12 @@ impl MailApp {
         if self.thunderbird_auto_open_pending {
             self.thunderbird_auto_open_seen_loading |= snapshot.thunderbird_loading;
             if self.thunderbird_auto_open_seen_loading && !snapshot.thunderbird_loading {
-                if snapshot.thunderbird_results.is_empty()
-                    || snapshot
-                        .thunderbird_results
-                        .iter()
-                        .any(|result| result.state != ThunderbirdAccountState::Connected)
-                {
-                    self.thunderbird_auto_open_pending = false;
-                    self.thunderbird_auto_open_seen_loading = false;
-                } else if !snapshot.accounts.is_empty()
-                    && (!snapshot.folders.is_empty() || !snapshot.page.is_empty())
-                {
-                    self.thunderbird_auto_open_pending = false;
-                    self.thunderbird_auto_open_seen_loading = false;
-                    if self.view == View::Setup {
-                        self.setup = None;
-                        self.setup_email_subscription = None;
-                        self.view = View::Mailbox;
-                    }
+                self.thunderbird_auto_open_pending = false;
+                self.thunderbird_auto_open_seen_loading = false;
+                if !snapshot.accounts.is_empty() && self.view == View::Setup {
+                    self.setup = None;
+                    self.setup_email_subscription = None;
+                    self.view = View::Mailbox;
                 }
             }
         }
@@ -2974,7 +2970,9 @@ impl MailApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if snapshot.page.is_empty() {
-            let message = if snapshot.loading {
+            let message = if snapshot.thunderbird_loading {
+                "Reconnecting saved accounts…"
+            } else if snapshot.loading {
                 "Loading messages…"
             } else if snapshot.filter != MessageFilter::All {
                 "No messages match this filter"
@@ -3002,7 +3000,9 @@ impl MailApp {
                         .child(message),
                 )
                 .child(div().text_size(px(11.)).text_color(palette.muted).child(
-                    if snapshot.filter != MessageFilter::All {
+                    if snapshot.thunderbird_loading {
+                        "Your imported accounts are saved. No import is needed."
+                    } else if snapshot.filter != MessageFilter::All {
                         "Choose All or load more messages to broaden this view."
                     } else if snapshot.search_query.is_empty() {
                         "New mail will appear here when this account syncs."
@@ -3313,6 +3313,21 @@ impl MailApp {
                             )
                             .child(self.filter_menu(snapshot, palette, cx)),
                     )
+                    .when_some(snapshot.thunderbird_error.clone(), |row, error| {
+                        row.child(error_banner("Thunderbird connection", &error, cx, palette))
+                            .child(
+                                Button::new("reconnect-saved-thunderbird")
+                                    .ghost()
+                                    .small()
+                                    .label("Reconnect saved accounts")
+                                    .disabled(snapshot.thunderbird_loading)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.live.update(cx, |live, cx| {
+                                            live.restore_thunderbird(cx);
+                                        });
+                                    })),
+                            )
+                    })
                     .when_some(snapshot.error.clone(), |row, error| {
                         row.child(error_banner(
                             "Mail connection needs attention",
@@ -6462,12 +6477,14 @@ fn error_banner(
     palette: Palette,
 ) -> impl IntoElement {
     h_flex()
+        .w_full()
+        .min_w_0()
+        .overflow_hidden()
         .items_start()
         .gap_2()
-        .px_2()
-        .py_2()
-        .rounded(px(6.))
-        .bg(palette.hover)
+        .py_3()
+        .border_b_1()
+        .border_color(palette.border)
         .child(
             Icon::new(IconName::TriangleAlert)
                 .size(px(13.))
@@ -6476,15 +6493,20 @@ fn error_banner(
         .child(
             v_flex()
                 .flex_1()
+                .min_w_0()
                 .gap_1()
                 .child(
                     div()
+                        .w_full()
+                        .min_w_0()
                         .text_size(px(11.))
                         .font_weight(FontWeight::MEDIUM)
                         .child(heading),
                 )
                 .child(
                     div()
+                        .w_full()
+                        .min_w_0()
                         .text_size(px(10.))
                         .line_height(relative(1.35))
                         .text_color(palette.muted)

@@ -246,6 +246,11 @@ pub(super) enum WorkerMailboxEvent {
         reply_to: Option<String>,
         references: Option<String>,
     },
+    BodyFailed {
+        message_id: u32,
+        path: String,
+        text: String,
+    },
     DemoMessages {
         folder_id: u32,
         messages: Vec<Message>,
@@ -361,6 +366,7 @@ pub struct LiveMailbox {
     request_senders: HashMap<u32, RequestSender>,
     page_senders: HashMap<u32, PageSender>,
     thunderbird_accounts: HashSet<u32>,
+    reconnectable_thunderbird_ids: HashSet<u32>,
     sender_identities: HashMap<u32, Vec<SenderIdentity>>,
     event_sender: futures::channel::mpsc::UnboundedSender<MailboxEvent>,
     _event_task: Task<()>,
@@ -486,6 +492,7 @@ impl LiveMailbox {
             request_senders,
             page_senders: HashMap::new(),
             thunderbird_accounts: HashSet::new(),
+            reconnectable_thunderbird_ids: HashSet::new(),
             sender_identities: HashMap::new(),
             event_sender: event_tx,
             _event_task: event_task,
@@ -715,10 +722,20 @@ impl LiveMailbox {
         self.thunderbird_error = None;
         self.thunderbird_notice = None;
         let event_sender = self.event_sender.clone();
-        let reserved_account_ids = self.accounts.iter().map(|account| account.id).collect();
+        let reconnectable_ids = reconnectable_thunderbird_ids(
+            &self.thunderbird_accounts,
+            &self.reconnectable_thunderbird_ids,
+        );
+        let reserved_account_ids = self
+            .accounts
+            .iter()
+            .filter(|account| !reconnectable_ids.contains(&account.id))
+            .map(|account| account.id)
+            .collect();
         let existing_emails = self
             .accounts
             .iter()
+            .filter(|account| !reconnectable_ids.contains(&account.id))
             .map(|account| account.email.clone())
             .collect();
         std::thread::Builder::new()
@@ -727,11 +744,13 @@ impl LiveMailbox {
                 crate::thunderbird_adapter::restore(
                     event_sender,
                     reserved_account_ids,
+                    reconnectable_ids,
                     existing_emails,
                 )
             })
             .map_err(|error| {
                 self.thunderbird_loading = false;
+                self.thunderbird_restore_started = false;
                 self.thunderbird_error = Some(format!("Could not restore Thunderbird: {error}"));
             })
             .ok();
@@ -756,11 +775,25 @@ impl LiveMailbox {
             return Err("Select at least one Thunderbird account.".into());
         }
 
-        let reserved_account_ids = self.accounts.iter().map(|account| account.id).collect();
-        let running_thunderbird_ids = self.thunderbird_accounts.clone();
+        let reconnectable_ids = reconnectable_thunderbird_ids(
+            &self.thunderbird_accounts,
+            &self.reconnectable_thunderbird_ids,
+        );
+        let reserved_account_ids = self
+            .accounts
+            .iter()
+            .filter(|account| !reconnectable_ids.contains(&account.id))
+            .map(|account| account.id)
+            .collect();
+        let running_thunderbird_ids = self
+            .thunderbird_accounts
+            .difference(&reconnectable_ids)
+            .copied()
+            .collect();
         let existing_emails = self
             .accounts
             .iter()
+            .filter(|account| !reconnectable_ids.contains(&account.id))
             .map(|account| account.email.clone())
             .collect();
         self.thunderbird_loading = true;
@@ -775,6 +808,7 @@ impl LiveMailbox {
                     selections,
                     reserved_account_ids,
                     running_thunderbird_ids,
+                    reconnectable_ids,
                     existing_emails,
                     event_sender,
                 )
@@ -1057,12 +1091,19 @@ impl LiveMailbox {
     }
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) -> bool {
+        let reconnectable_ids = reconnectable_thunderbird_ids(
+            &self.thunderbird_accounts,
+            &self.reconnectable_thunderbird_ids,
+        );
+        let mut sent = !reconnectable_ids.is_empty() && self.restore_thunderbird(cx);
         let keys = self.active_page_keys();
-        if keys.is_empty() {
-            return false;
-        }
-        let mut sent = false;
         for key in keys {
+            // A failed Thunderbird session keeps its old sender around until
+            // reconnect succeeds. Retrying it here only produces another
+            // closed-channel error and can leave the refresh state misleading.
+            if reconnectable_ids.contains(&key.account_id) {
+                continue;
+            }
             sent |= self.request_page_for(&key, None, false, cx);
             if let Some(folder_id) = self.folder_id(key.account_id, &key.folder_path) {
                 sent |= self.send_request(
@@ -1076,7 +1117,7 @@ impl LiveMailbox {
                 self.send_request(key.account_id, MailRequest::RefreshUnread, cx);
             }
         }
-        self.loading = true;
+        self.update_loading_state();
         cx.notify();
         sent
     }
@@ -1592,64 +1633,118 @@ impl LiveMailbox {
                 notice,
             } => {
                 self.thunderbird_loading = false;
+                self.thunderbird_restore_started = false;
                 self.thunderbird_results = results;
                 self.thunderbird_error = error;
                 self.thunderbird_notice = notice;
                 for started in accounts {
-                    if self.request_senders.contains_key(&started.account.id)
-                        || self.accounts.iter().any(|account| {
-                            account.email.eq_ignore_ascii_case(&started.account.email)
-                        })
-                    {
+                    let account_id = started.account.id;
+                    let reconnecting = is_reconnectable_thunderbird_id(
+                        account_id,
+                        &self.thunderbird_accounts,
+                        &self.reconnectable_thunderbird_ids,
+                    );
+                    let duplicate_id = (self.request_senders.contains_key(&account_id)
+                        || self.accounts.iter().any(|account| account.id == account_id))
+                        && !reconnecting;
+                    let duplicate_email = self.accounts.iter().any(|account| {
+                        account.id != account_id
+                            && account.email.eq_ignore_ascii_case(&started.account.email)
+                    });
+                    if duplicate_id || duplicate_email {
                         self.thunderbird_error.get_or_insert_with(|| {
                             format!("{} is already connected.", started.account.email)
                         });
                         continue;
                     }
-                    let account_id = started.account.id;
-                    self.accounts.push(started.account.clone());
+                    if reconnecting {
+                        self.reset_thunderbird_runtime_requests(account_id);
+                    }
+                    if let Some(account) = self
+                        .accounts
+                        .iter_mut()
+                        .find(|account| account.id == account_id)
+                    {
+                        *account = started.account.clone();
+                    } else {
+                        self.accounts.push(started.account.clone());
+                    }
                     self.request_senders
                         .insert(account_id, started.request_sender);
                     self.page_senders.insert(account_id, started.page_sender);
                     self.thunderbird_accounts.insert(account_id);
                     self.sender_identities
                         .insert(account_id, started.identities);
-                    self.folders_by_account
-                        .insert(account_id, started.folders.clone());
-                    self.selected_folder_by_account
-                        .entry(account_id)
-                        .or_insert_with(|| {
-                            started
-                                .folders
+                    if !reconnecting || !started.folders.is_empty() {
+                        self.folders_by_account
+                            .insert(account_id, started.folders.clone());
+                    }
+                    let folders = self
+                        .folders_by_account
+                        .get(&account_id)
+                        .cloned()
+                        .unwrap_or_default();
+                    let selected_path = self
+                        .selected_folder_by_account
+                        .get(&account_id)
+                        .filter(|path| folders.iter().any(|folder| &folder.path == *path))
+                        .cloned()
+                        .or_else(|| {
+                            (self.current_account_id == Some(account_id))
+                                .then(|| self.current_folder_path.as_ref())
+                                .flatten()
+                                .filter(|path| folders.iter().any(|folder| &folder.path == *path))
+                                .cloned()
+                        })
+                        .or_else(|| {
+                            folders
                                 .iter()
                                 .find(|folder| folder.kind == FolderKind::Inbox)
-                                .or_else(|| started.folders.first())
+                                .or_else(|| folders.first())
                                 .map(|folder| folder.path.clone())
-                                .unwrap_or_default()
                         });
-                    if let Some(error) = started.error {
-                        self.connectivity_errors.insert(account_id, error);
+                    if let Some(path) = &selected_path {
+                        self.selected_folder_by_account
+                            .insert(account_id, path.clone());
+                    }
+                    if let Some(error) = started.error.as_ref() {
+                        if is_reconnectable_thunderbird_failure(error) {
+                            self.reconnectable_thunderbird_ids.insert(account_id);
+                        }
+                        self.connectivity_errors.insert(account_id, error.clone());
+                    } else {
+                        self.reconnectable_thunderbird_ids.remove(&account_id);
+                        self.connectivity_errors.remove(&account_id);
+                        self.query_errors.remove(&account_id);
+                        if self
+                            .action_errors
+                            .get(&account_id)
+                            .is_some_and(|error| is_reconnectable_thunderbird_failure(error))
+                        {
+                            self.action_errors.remove(&account_id);
+                        }
                     }
                     if self.current_account_id.is_none() {
                         self.current_account_id = Some(account_id);
                         self.current_folder_path = (self.scope == MailboxScope::Account)
-                            .then(|| self.selected_folder_by_account.get(&account_id).cloned())
-                            .flatten()
-                            .filter(|path| !path.is_empty());
+                            .then(|| selected_path.clone())
+                            .flatten();
                         self.loading = self.current_folder_path.is_some();
+                        self.clear_current_page();
+                    } else if self.current_account_id == Some(account_id)
+                        && self.scope == MailboxScope::Account
+                        && self.current_folder_path != selected_path
+                    {
+                        self.current_folder_path = selected_path.clone();
                         self.clear_current_page();
                     }
                     let path = if self.scope == MailboxScope::Unified {
-                        started
-                            .folders
+                        folders
                             .iter()
                             .find(|folder| folder.kind == FolderKind::Inbox)
                             .map(|folder| folder.path.clone())
                     } else {
-                        self.selected_folder_by_account
-                            .get(&account_id)
-                            .filter(|path| !path.is_empty())
-                            .cloned()
+                        selected_path
                     };
                     if let Some(path) = path {
                         if self.scope == MailboxScope::Unified {
@@ -1665,7 +1760,72 @@ impl LiveMailbox {
                 if self.scope == MailboxScope::Account && self.current_folder_path.is_some() {
                     let _ = self.request_page(None, false, cx);
                 }
+                self.update_loading_state();
                 cx.notify();
+            }
+        }
+    }
+
+    fn reset_thunderbird_runtime_requests(&mut self, account_id: u32) {
+        for (key, state) in &mut self.page_states {
+            if key.account_id == account_id {
+                state.generation = state.generation.wrapping_add(1).max(1);
+                state.pending_generation = None;
+                state.pending_append = false;
+                state.next_cursor = None;
+                state.truncated = false;
+            }
+        }
+        self.pending_bodies
+            .retain(|slot, _| slot.account_id != account_id);
+        self.pending_related
+            .retain(|(pending_account, _), _| *pending_account != account_id);
+        self.related_requests
+            .retain(|key| key.account_id != account_id);
+        self.thread_summary_requests.remove(&account_id);
+        self.pending_thread_summaries
+            .retain(|(pending_account, _), _| *pending_account != account_id);
+        self.sent_header_requests
+            .retain(|(pending_account, _)| *pending_account != account_id);
+        self.pending_sent_refresh
+            .retain(|page| page.account_id != account_id);
+        self.pending_message_refresh
+            .retain(|page| page.account_id != account_id);
+        self.conversation_errors
+            .retain(|key, _| key.account_id != account_id);
+        if self
+            .pending_attachment
+            .as_ref()
+            .is_some_and(|pending| pending.key.account_id == account_id)
+        {
+            self.pending_attachment = None;
+            self.attachment_state = AttachmentState::NotLoaded;
+        }
+        if self
+            .draft_source
+            .as_ref()
+            .is_some_and(|source| source.key.account_id == account_id)
+        {
+            self.draft_source = None;
+        }
+        if self
+            .selected_key
+            .as_ref()
+            .is_some_and(|key| key.account_id == account_id)
+        {
+            self.body_loading = false;
+            self.links.clear();
+            if let Some(row) = self
+                .selected_row
+                .clone()
+                .filter(|row| row.key.account_id == account_id)
+            {
+                let mut message = row.message.clone();
+                message.body.clear();
+                self.selected_row = Some(Arc::new(MessageRow {
+                    key: row.key.clone(),
+                    message,
+                }));
             }
         }
     }
@@ -1687,6 +1847,8 @@ impl LiveMailbox {
                 changed = true;
             }
             WorkerMailboxEvent::Folders(folders) => {
+                self.reconnectable_thunderbird_ids.remove(&account_id);
+                self.connectivity_errors.remove(&account_id);
                 let folders: Vec<_> = folders
                     .into_iter()
                     .filter(|folder| folder.account_id == account_id)
@@ -1795,6 +1957,7 @@ impl LiveMailbox {
                         }
                         self.status.clear();
                         self.connectivity_errors.remove(&account_id);
+                        self.reconnectable_thunderbird_ids.remove(&account_id);
                         changed = true;
                     }
                     let sent_refresh = self.pending_sent_refresh.remove(&key);
@@ -1835,6 +1998,23 @@ impl LiveMailbox {
                         self.request_selected_body(cx);
                         changed = true;
                     }
+                }
+            }
+            WorkerMailboxEvent::BodyFailed {
+                message_id,
+                path,
+                text,
+            } => {
+                if remove_failed_body_request(
+                    &mut self.pending_bodies,
+                    account_id,
+                    &path,
+                    message_id,
+                    self.selected_key.as_ref(),
+                ) {
+                    self.body_loading = false;
+                    self.action_errors.insert(account_id, text);
+                    changed = true;
                 }
             }
             WorkerMailboxEvent::DemoMessages {
@@ -2276,12 +2456,24 @@ impl LiveMailbox {
                 }
             }
             WorkerMailboxEvent::Error { text, connectivity } => {
+                let transport_closed = self.thunderbird_accounts.contains(&account_id)
+                    && is_reconnectable_thunderbird_failure(&text);
+                let abandoned_pages = clear_pending_pages_if_transport_closed(
+                    &mut self.page_states,
+                    account_id,
+                    self.thunderbird_accounts.contains(&account_id),
+                    &text,
+                );
+                if transport_closed {
+                    self.reconnectable_thunderbird_ids.insert(account_id);
+                }
                 if connectivity {
                     self.connectivity_errors.insert(account_id, text.clone());
                 } else {
                     self.action_errors.insert(account_id, text.clone());
                 }
-                let mut account_changed = self.active_account_ids().contains(&account_id);
+                let mut account_changed =
+                    self.active_account_ids().contains(&account_id) || abandoned_pages;
                 if self.pending_attachment.as_ref().is_some_and(|pending| {
                     pending.key.account_id == account_id
                         && self.selected_key.as_ref() == Some(&pending.key)
@@ -2353,6 +2545,7 @@ impl LiveMailbox {
             _ => {}
         }
         if changed {
+            self.update_loading_state();
             cx.notify();
         }
     }
@@ -2444,8 +2637,13 @@ impl LiveMailbox {
                 if let Some(state) = self.page_states.get_mut(key) {
                     state.pending_generation = None;
                 }
-                self.query_errors
-                    .insert(key.account_id, submit_error_text(error).into());
+                let error_text = submit_error_text(error);
+                if self.thunderbird_accounts.contains(&key.account_id)
+                    && is_reconnectable_thunderbird_failure(error_text)
+                {
+                    self.reconnectable_thunderbird_ids.insert(key.account_id);
+                }
+                self.query_errors.insert(key.account_id, error_text.into());
                 self.update_loading_state();
                 cx.notify();
                 return false;
@@ -2557,22 +2755,31 @@ impl LiveMailbox {
                 }
                 self.query_errors.remove(&result.account_id);
                 self.connectivity_errors.remove(&result.account_id);
+                self.reconnectable_thunderbird_ids
+                    .remove(&result.account_id);
                 self.rebuild_visible();
                 if self.active_page_keys().contains(&key) {
                     self.ensure_visible_selection(cx);
                 }
             }
             PageStatus::Failed(error) => {
+                if self.thunderbird_accounts.contains(&result.account_id)
+                    && is_reconnectable_thunderbird_failure(&error)
+                {
+                    self.reconnectable_thunderbird_ids.insert(result.account_id);
+                }
                 self.query_errors.insert(result.account_id, error);
             }
             PageStatus::Superseded => {
-                if append {
-                    if let Some(state) = self.page_states.get_mut(&key) {
-                        state.next_cursor = None;
-                        state.truncated = false;
-                    }
-                    self.request_page_for(&key, None, false, cx);
+                if let Some(state) = self.page_states.get_mut(&key) {
+                    finish_superseded_page(state, append);
                 }
+                self.query_errors.insert(
+                    result.account_id,
+                    "The mailbox request was superseded. Refresh to try again.".into(),
+                );
+                self.update_loading_state();
+                cx.notify();
                 return;
             }
         }
@@ -3381,9 +3588,10 @@ impl LiveMailbox {
                     .filter(|key| key.account_id == account_id)
                     .collect();
                 let loading = if keys.is_empty() {
-                    (self.scope == MailboxScope::Unified
-                        && !self.folders_by_account.contains_key(&account_id))
-                        || (self.scope == MailboxScope::Account && self.loading)
+                    account_waiting_for_folders(
+                        self.folders_by_account.contains_key(&account_id),
+                        self.account_has_loading_error(account_id),
+                    )
                 } else {
                     keys.iter().any(|key| {
                         self.page_states.get(key).map_or(self.loading, |state| {
@@ -3394,6 +3602,12 @@ impl LiveMailbox {
                 (account_id, loading)
             })
             .collect()
+    }
+
+    fn account_has_loading_error(&self, account_id: u32) -> bool {
+        self.query_errors.contains_key(&account_id)
+            || self.connectivity_errors.contains_key(&account_id)
+            || self.action_errors.contains_key(&account_id)
     }
 
     fn account_errors_snapshot(&self) -> HashMap<u32, String> {
@@ -3457,29 +3671,34 @@ impl LiveMailbox {
 
     fn update_loading_state(&mut self) {
         let keys = self.active_page_keys();
-        if !keys.is_empty() {
-            let pages_loading = keys.iter().any(|key| {
-                self.page_states.get(key).is_some_and(|state| {
-                    state.pending_generation.is_some() && !state.pending_append
-                })
-            });
-            let folders_loading = self.scope == MailboxScope::Unified
-                && self
-                    .accounts
-                    .iter()
-                    .any(|account| !self.folders_by_account.contains_key(&account.id));
-            self.loading = pages_loading || folders_loading;
-            self.loading_more = keys.iter().any(|key| {
-                self.page_states
-                    .get(key)
-                    .is_some_and(|state| state.pending_generation.is_some() && state.pending_append)
-            });
-            self.truncated = keys.iter().any(|key| {
-                self.page_states
-                    .get(key)
-                    .is_some_and(|state| state.truncated)
-            });
-        }
+        let pages_loading = page_requests_loading(&keys, &self.page_states);
+        let active_accounts = self.active_account_ids();
+        let folders_loading = if active_accounts.is_empty() && self.scope == MailboxScope::Unified {
+            self.request_senders.keys().any(|account_id| {
+                account_waiting_for_folders(
+                    self.folders_by_account.contains_key(account_id),
+                    self.account_has_loading_error(*account_id),
+                )
+            })
+        } else {
+            active_accounts.iter().any(|account_id| {
+                account_waiting_for_folders(
+                    self.folders_by_account.contains_key(account_id),
+                    self.account_has_loading_error(*account_id),
+                )
+            })
+        };
+        self.loading = pages_loading || folders_loading;
+        self.loading_more = keys.iter().any(|key| {
+            self.page_states
+                .get(key)
+                .is_some_and(|state| state.pending_generation.is_some() && state.pending_append)
+        });
+        self.truncated = keys.iter().any(|key| {
+            self.page_states
+                .get(key)
+                .is_some_and(|state| state.truncated)
+        });
     }
 
     fn folder_kind(&self, account_id: u32, folder_id: u32) -> Option<FolderKind> {
@@ -3959,6 +4178,93 @@ fn submit_error_text(error: SubmitError) -> &'static str {
     }
 }
 
+fn reconnectable_thunderbird_ids(
+    thunderbird_accounts: &HashSet<u32>,
+    reconnectable_ids: &HashSet<u32>,
+) -> HashSet<u32> {
+    thunderbird_accounts
+        .intersection(reconnectable_ids)
+        .copied()
+        .collect()
+}
+
+fn page_requests_loading(
+    keys: &[PageKey],
+    page_states: &HashMap<PageKey, FolderPageState>,
+) -> bool {
+    keys.iter().any(|key| {
+        page_states
+            .get(key)
+            .is_some_and(|state| state.pending_generation.is_some() && !state.pending_append)
+    })
+}
+
+fn is_reconnectable_thunderbird_id(
+    account_id: u32,
+    thunderbird_accounts: &HashSet<u32>,
+    reconnectable_ids: &HashSet<u32>,
+) -> bool {
+    thunderbird_accounts.contains(&account_id) && reconnectable_ids.contains(&account_id)
+}
+
+fn is_reconnectable_thunderbird_failure(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    [
+        "broken pipe",
+        "pipe closed",
+        "socket closed",
+        "socket is not connected",
+        "bridge disconnected",
+        "worker disconnected",
+        "session disconnected",
+        "thunderbird bridge closed the connection",
+        "worker is unavailable",
+        "worker stopped",
+        "session stopped",
+        "session is shutting down",
+        "connection closed",
+        "connection reset",
+        "bridge stopped",
+        "runtime stopped",
+        "stopped unexpectedly",
+    ]
+    .iter()
+    .any(|pattern| error.contains(pattern))
+}
+
+fn account_waiting_for_folders(folders_loaded: bool, has_error: bool) -> bool {
+    !folders_loaded && !has_error
+}
+
+fn finish_superseded_page(state: &mut FolderPageState, append: bool) {
+    state.pending_generation = None;
+    state.pending_append = false;
+    if append {
+        state.next_cursor = None;
+        state.truncated = false;
+    }
+}
+
+fn clear_pending_pages_if_transport_closed(
+    page_states: &mut HashMap<PageKey, FolderPageState>,
+    account_id: u32,
+    is_thunderbird: bool,
+    error: &str,
+) -> bool {
+    if !is_thunderbird || !is_reconnectable_thunderbird_failure(error) {
+        return false;
+    }
+    let mut changed = false;
+    for (key, state) in page_states {
+        if key.account_id == account_id {
+            changed |= state.pending_generation.take().is_some();
+            changed |= state.pending_append;
+            state.pending_append = false;
+        }
+    }
+    changed
+}
+
 fn make_page_request(
     account_id: u32,
     folder_path: String,
@@ -4093,6 +4399,23 @@ fn body_event_matches(
         && selected_key == Some(&pending.key)
 }
 
+fn remove_failed_body_request(
+    pending_bodies: &mut HashMap<BodyRequestSlot, PendingBody>,
+    account_id: u32,
+    path: &str,
+    message_id: u32,
+    selected_key: Option<&MessageKey>,
+) -> bool {
+    let slot = BodyRequestSlot {
+        account_id,
+        folder_path: path.to_owned(),
+        message_id,
+    };
+    pending_bodies.remove(&slot).is_some_and(|pending| {
+        body_event_matches(account_id, path, message_id, selected_key, &pending)
+    })
+}
+
 fn retain_selected_body_after_error(
     pending_bodies: &mut HashMap<BodyRequestSlot, PendingBody>,
     failed_account_id: u32,
@@ -4222,10 +4545,13 @@ mod tests {
         ATTACHMENT_BYTES_CAP, ATTACHMENT_COUNT_CAP, BodyRequestSlot, ConversationKey,
         ConversationRow, DraftSourceSnapshot, DraftSourceState, FolderPageState, MESSAGE_CAP,
         MessageFilter, MessageRow, PAGE_SIZE, PageKey, PendingAttachment, PendingBody,
-        active_representative, attachment_response_matches, body_event_matches,
-        bounded_attachments, bounded_attachments_with_limits, conversation_response_warning,
-        draft_export_matches, make_page_request, merge_message_batch, merge_message_batch_ordered,
-        message_key, page_result_is_current, plain_body_and_links,
+        account_waiting_for_folders, active_representative, attachment_response_matches,
+        body_event_matches, bounded_attachments, bounded_attachments_with_limits,
+        clear_pending_pages_if_transport_closed, conversation_response_warning,
+        draft_export_matches, finish_superseded_page, is_reconnectable_thunderbird_failure,
+        is_reconnectable_thunderbird_id, make_page_request, merge_message_batch,
+        merge_message_batch_ordered, message_key, page_requests_loading, page_result_is_current,
+        plain_body_and_links, reconnectable_thunderbird_ids, remove_failed_body_request,
         retain_selected_body_after_error, set_folder_unread, stable_conversation_key,
         visible_message_indices,
     };
@@ -4334,6 +4660,56 @@ mod tests {
         assert!(!pending.values().any(|slot| slot.key == failed));
         assert!(pending.values().any(|slot| slot.key == selected));
         assert!(pending.values().any(|slot| slot.key == other_account));
+    }
+
+    #[test]
+    fn stale_body_failure_removes_only_its_request_and_preserves_new_selection() {
+        let failed_key = message_key(7, "INBOX", 42);
+        let selected_key = message_key(7, "Archive", 43);
+        let failed_slot = BodyRequestSlot {
+            account_id: 7,
+            folder_path: "INBOX".into(),
+            message_id: 12,
+        };
+        let selected_slot = BodyRequestSlot {
+            account_id: 7,
+            folder_path: "Archive".into(),
+            message_id: 13,
+        };
+        let mut pending = HashMap::from([
+            (
+                failed_slot.clone(),
+                PendingBody {
+                    key: failed_key,
+                    message_id: 12,
+                },
+            ),
+            (
+                selected_slot.clone(),
+                PendingBody {
+                    key: selected_key.clone(),
+                    message_id: 13,
+                },
+            ),
+        ]);
+
+        assert!(!remove_failed_body_request(
+            &mut pending,
+            7,
+            "INBOX",
+            12,
+            Some(&selected_key),
+        ));
+        assert!(!pending.contains_key(&failed_slot));
+        assert!(pending.contains_key(&selected_slot));
+        assert!(remove_failed_body_request(
+            &mut pending,
+            7,
+            "Archive",
+            13,
+            Some(&selected_key),
+        ));
+        assert!(pending.is_empty());
     }
 
     #[test]
@@ -4563,6 +4939,142 @@ mod tests {
             &result(7, 9),
             Some(4)
         ));
+    }
+
+    #[test]
+    fn only_failed_thunderbird_accounts_are_reconnectable_by_stable_id() {
+        let thunderbird_accounts = HashSet::from([7]);
+        let reconnectable = HashSet::from([7, 8]);
+
+        assert_eq!(
+            reconnectable_thunderbird_ids(&thunderbird_accounts, &reconnectable),
+            HashSet::from([7])
+        );
+        assert!(is_reconnectable_thunderbird_id(
+            7,
+            &thunderbird_accounts,
+            &reconnectable
+        ));
+        assert!(!is_reconnectable_thunderbird_id(
+            8,
+            &thunderbird_accounts,
+            &reconnectable
+        ));
+        assert!(is_reconnectable_thunderbird_failure("Broken pipe"));
+        assert!(is_reconnectable_thunderbird_failure("socket closed"));
+        assert!(is_reconnectable_thunderbird_failure(
+            "Thunderbird bridge closed the connection."
+        ));
+        assert!(!is_reconnectable_thunderbird_failure("offline"));
+        assert!(!is_reconnectable_thunderbird_failure("bad search query"));
+    }
+
+    #[test]
+    fn failed_refresh_submission_does_not_leave_page_loading_without_pending_work() {
+        let key = PageKey {
+            account_id: 7,
+            folder_path: "INBOX".into(),
+        };
+        let state = FolderPageState {
+            generation: 4,
+            pending_generation: None,
+            pending_append: false,
+            ..FolderPageState::default()
+        };
+
+        assert!(!page_requests_loading(
+            &[key.clone()],
+            &HashMap::from([(key, state)])
+        ));
+    }
+
+    #[test]
+    fn initial_folder_loading_stops_after_error_or_folder_response() {
+        assert!(account_waiting_for_folders(false, false));
+        assert!(!account_waiting_for_folders(false, true));
+        assert!(!account_waiting_for_folders(true, false));
+    }
+
+    #[test]
+    fn superseded_append_clears_stale_cursor_without_restarting_the_page() {
+        let mut state = FolderPageState {
+            generation: 9,
+            pending_generation: Some(9),
+            pending_append: true,
+            next_cursor: Some(MessageCursor { before_uid: 101 }),
+            truncated: true,
+            ..FolderPageState::default()
+        };
+
+        finish_superseded_page(&mut state, true);
+
+        assert_eq!(state.pending_generation, None);
+        assert!(!state.pending_append);
+        assert_eq!(state.next_cursor, None);
+        assert!(!state.truncated);
+    }
+
+    #[test]
+    fn transport_closure_releases_only_that_accounts_pending_pages() {
+        let inbox = PageKey {
+            account_id: 7,
+            folder_path: "INBOX".into(),
+        };
+        let archive = PageKey {
+            account_id: 7,
+            folder_path: "Archive".into(),
+        };
+        let other_account = PageKey {
+            account_id: 8,
+            folder_path: "INBOX".into(),
+        };
+        let mut states = HashMap::from([
+            (
+                inbox.clone(),
+                FolderPageState {
+                    pending_generation: Some(3),
+                    pending_append: true,
+                    ..FolderPageState::default()
+                },
+            ),
+            (
+                archive.clone(),
+                FolderPageState {
+                    pending_generation: Some(4),
+                    ..FolderPageState::default()
+                },
+            ),
+            (
+                other_account.clone(),
+                FolderPageState {
+                    pending_generation: Some(5),
+                    pending_append: true,
+                    ..FolderPageState::default()
+                },
+            ),
+        ]);
+
+        assert!(!clear_pending_pages_if_transport_closed(
+            &mut states,
+            7,
+            true,
+            "The body request timed out.",
+        ));
+        assert_eq!(states[&inbox].pending_generation, Some(3));
+        assert!(states[&inbox].pending_append);
+
+        assert!(clear_pending_pages_if_transport_closed(
+            &mut states,
+            7,
+            true,
+            "Thunderbird bridge closed the connection.",
+        ));
+        assert_eq!(states[&inbox].pending_generation, None);
+        assert_eq!(states[&archive].pending_generation, None);
+        assert!(!states[&inbox].pending_append);
+        assert!(!states[&archive].pending_append);
+        assert_eq!(states[&other_account].pending_generation, Some(5));
+        assert!(states[&other_account].pending_append);
     }
 
     #[test]

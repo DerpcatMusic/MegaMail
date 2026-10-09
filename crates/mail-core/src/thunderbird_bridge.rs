@@ -16,12 +16,14 @@ mod unix {
     use super::*;
     use serde_json::{json, Value};
     use sha2::{Digest, Sha256};
+    use std::collections::HashMap;
     use std::fs::{self, File, OpenOptions};
     use std::io::{Read, Write};
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::process::{Child, Command, Stdio};
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::mpsc::{self, SyncSender};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
@@ -35,12 +37,18 @@ mod unix {
         include_str!("../../../tools/thunderbird-bridge/extension/api/schema.json");
     const SYNC_IMPL: &str =
         include_str!("../../../tools/thunderbird-bridge/extension/api/implementation.js");
+    const METADATA_TIMEOUT: Duration = Duration::from_secs(15);
+    const BODY_TIMEOUT: Duration = Duration::from_secs(30);
+    const FOLDER_TIMEOUT: Duration = Duration::from_secs(90);
+    const REFRESH_TIMEOUT: Duration = Duration::from_secs(165);
+    const MUTATION_TIMEOUT: Duration = Duration::from_secs(120);
 
     struct RuntimeInner {
         stream: Mutex<UnixStream>,
         sequence: AtomicU64,
-        broken: AtomicBool,
-        child: Mutex<Child>,
+        pending: Arc<Mutex<HashMap<u64, SyncSender<Result<Value, String>>>>>,
+        broken: Arc<AtomicBool>,
+        child: Arc<Mutex<Child>>,
         _profile_lock: File,
         manifest: PathBuf,
         temporary_dir: PathBuf,
@@ -83,8 +91,8 @@ mod unix {
     }
 
     /// Cloneable synchronous access to the persistent, isolated Thunderbird
-    /// profile. Calls are serialized because a WebExtension native port is a
-    /// single ordered request/response channel.
+    /// profile. Requests share one ordered socket, while a response reader
+    /// routes each reply independently by request ID.
     #[derive(Clone)]
     pub struct Runtime(Arc<RuntimeInner>);
 
@@ -131,8 +139,7 @@ mod unix {
                 temporary_dir: temporary_dir.clone(),
                 armed: true,
             };
-            let runtime_id = random_hex(16)?;
-            let host_name = format!("com.megamail.bridge.{runtime_id}");
+            let host_name = bridge_host_name(&profile_dir);
             let socket_path = temporary_dir.join("bridge.sock");
             let wrapper_path = temporary_dir.join("host-launcher");
             let manifest_dir = dirs::home_dir()
@@ -160,12 +167,15 @@ mod unix {
                 "type": "stdio",
                 "allowed_extensions": [EXTENSION_ID]
             });
-            write_new_private_bytes(&manifest_path, manifest.to_string().as_bytes())?;
+            write_private_bytes(&manifest_path, manifest.to_string().as_bytes())?;
 
             let extension_dir = profile_dir.join("extensions");
             ensure_private_dir(&extension_dir)?;
             let xpi = build_extension(&host_name)?;
-            write_private_bytes(&extension_dir.join(format!("{EXTENSION_ID}.xpi")), &xpi)?;
+            write_private_bytes_if_changed(
+                &extension_dir.join(format!("{EXTENSION_ID}.xpi")),
+                &xpi,
+            )?;
 
             let listener = UnixListener::bind(&socket_path).map_err(io_message(
                 "Could not create the private Thunderbird bridge socket",
@@ -220,25 +230,8 @@ mod unix {
             stream
                 .set_write_timeout(Some(Duration::from_secs(90)))
                 .map_err(io_message("Could not configure bridge request timeout"))?;
-            let runtime = Self(Arc::new(RuntimeInner {
-                stream: Mutex::new(stream),
-                sequence: AtomicU64::new(1),
-                broken: AtomicBool::new(false),
-                child: Mutex::new(child.take()),
-                _profile_lock: profile_lock,
-                manifest: manifest_path,
-                temporary_dir,
-                profile_dir,
-            }));
-
-            let hello = {
-                let mut stream = runtime
-                    .0
-                    .stream
-                    .lock()
-                    .map_err(|_| "Thunderbird bridge lock failed".to_owned())?;
-                read_json_frame(&mut *stream)?
-            };
+            let mut stream = stream;
+            let hello = read_json_frame(&mut stream)?;
             if hello.get("id").and_then(Value::as_u64) != Some(0)
                 || hello.pointer("/result/ready").and_then(Value::as_bool) != Some(true)
             {
@@ -246,15 +239,33 @@ mod unix {
                     "Thunderbird started without a valid MegaMail bridge handshake.".to_owned(),
                 );
             }
-            runtime
-                .0
-                .stream
-                .lock()
-                .map_err(|_| "Thunderbird bridge lock failed".to_owned())?
-                .set_read_timeout(Some(Duration::from_secs(300)))
-                .map_err(io_message(
-                    "Could not configure Thunderbird operation timeout",
-                ))?;
+            stream
+                .set_read_timeout(None)
+                .map_err(io_message("Could not configure bridge response reader"))?;
+            stream
+                .set_write_timeout(Some(Duration::from_secs(15)))
+                .map_err(io_message("Could not configure bridge request writer"))?;
+            let reader = stream
+                .try_clone()
+                .map_err(io_message("Could not clone Thunderbird response socket"))?;
+            let pending = Arc::new(Mutex::new(HashMap::new()));
+            let broken = Arc::new(AtomicBool::new(false));
+            let child = Arc::new(Mutex::new(child.take()));
+            let runtime = Self(Arc::new(RuntimeInner {
+                stream: Mutex::new(stream),
+                sequence: AtomicU64::new(1),
+                pending: pending.clone(),
+                broken: broken.clone(),
+                child: child.clone(),
+                _profile_lock: profile_lock,
+                manifest: manifest_path,
+                temporary_dir,
+                profile_dir,
+            }));
+            std::thread::Builder::new()
+                .name("megamail-thunderbird-bridge".to_owned())
+                .spawn(move || response_reader(reader, pending, broken, child))
+                .map_err(io_message("Could not start Thunderbird response reader"))?;
             artifacts.armed = false;
             Ok(runtime)
         }
@@ -268,11 +279,6 @@ mod unix {
             if method.len() > 128 || method.chars().any(char::is_control) {
                 return Err("Invalid Thunderbird bridge operation.".to_owned());
             }
-            let mut stream = self
-                .0
-                .stream
-                .lock()
-                .map_err(|_| "Thunderbird bridge lock failed".to_owned())?;
             let id = self.0.sequence.fetch_add(1, Ordering::Relaxed);
             let request = json!({ "id": id, "method": method, "params": params });
             let bytes = serde_json::to_vec(&request)
@@ -283,39 +289,50 @@ mod unix {
                         .to_owned(),
                 );
             }
-            if let Err(error) = write_frame_with_limit(&mut *stream, &bytes, MAX_FRAME) {
-                self.mark_broken(&mut stream);
+            let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+            self.0
+                .pending
+                .lock()
+                .map_err(|_| "Thunderbird bridge lock failed".to_owned())?
+                .insert(id, reply_tx);
+            let write_result = match self.0.stream.lock() {
+                Ok(mut stream) => write_frame_with_limit(&mut *stream, &bytes, MAX_FRAME),
+                Err(_) => Err("Thunderbird bridge lock failed".to_owned()),
+            };
+            if let Err(error) = write_result {
+                expire_pending(&self.0.pending, id);
+                self.mark_broken(error.clone());
                 return Err(error);
             }
-            let response = match read_json_frame(&mut *stream) {
-                Ok(response) => response,
-                Err(error) => {
-                    self.mark_broken(&mut stream);
-                    return Err(error);
+            match reply_rx.recv_timeout(operation_timeout(method)) {
+                Ok(reply) => reply,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    expire_pending(&self.0.pending, id);
+                    Err(operation_timeout_message(method))
                 }
-            };
-            if response.get("id").and_then(Value::as_u64) != Some(id) {
-                self.mark_broken(&mut stream);
-                return Err("Thunderbird returned a mismatched bridge response.".to_owned());
-            }
-            if let Some(error) = response.get("error").and_then(Value::as_str) {
-                return Err(error.chars().take(1024).collect());
-            }
-            match response.get("result").cloned() {
-                Some(result) => Ok(result),
-                None => {
-                    self.mark_broken(&mut stream);
-                    Err("Thunderbird returned an empty bridge response.".to_owned())
-                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => Err(
+                    "Thunderbird bridge disconnected while the operation was running.".to_owned(),
+                ),
             }
         }
 
-        fn mark_broken(&self, stream: &mut UnixStream) {
-            self.0.broken.store(true, Ordering::Release);
-            let _ = stream.shutdown(std::net::Shutdown::Both);
-            if let Ok(mut child) = self.0.child.lock() {
-                let _ = child.kill();
-                let _ = child.wait();
+        fn mark_broken(&self, message: String) {
+            if let Ok(mut stream) = self.0.stream.lock() {
+                break_transport(
+                    Some(&mut stream),
+                    &self.0.pending,
+                    &self.0.broken,
+                    &self.0.child,
+                    message,
+                );
+            } else {
+                break_transport(
+                    None,
+                    &self.0.pending,
+                    &self.0.broken,
+                    &self.0.child,
+                    message,
+                );
             }
         }
 
@@ -329,16 +346,21 @@ mod unix {
 
     impl Drop for RuntimeInner {
         fn drop(&mut self) {
-            if let Ok(stream) = self.stream.get_mut() {
-                let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
-                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+            if !self.broken.load(Ordering::Acquire) {
+                let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+                if let Ok(mut pending) = self.pending.lock() {
+                    pending.insert(u64::MAX, reply_tx);
+                }
                 let request = json!({ "id": u64::MAX, "method": "shutdown", "params": {} });
                 if let Ok(bytes) = serde_json::to_vec(&request) {
-                    let _ = write_frame_with_limit(stream, &bytes, MAX_FRAME);
-                    let _ = read_json_frame(stream);
+                    if let Ok(stream) = self.stream.get_mut() {
+                        let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
+                        let _ = write_frame_with_limit(stream, &bytes, MAX_FRAME);
+                    }
+                    let _ = reply_rx.recv_timeout(Duration::from_secs(2));
                 }
             }
-            if let Ok(child) = self.child.get_mut() {
+            if let Ok(mut child) = self.child.lock() {
                 let deadline = Instant::now() + Duration::from_secs(5);
                 loop {
                     match child.try_wait() {
@@ -356,6 +378,107 @@ mod unix {
             }
             let _ = fs::remove_file(&self.manifest);
             let _ = fs::remove_dir_all(&self.temporary_dir);
+        }
+    }
+
+    fn operation_timeout(method: &str) -> Duration {
+        match method {
+            "accounts" | "list" | "conversation" | "attachments" => METADATA_TIMEOUT,
+            "body" | "raw_start" | "attachment_start" | "download_chunk" => BODY_TIMEOUT,
+            "folders" => FOLDER_TIMEOUT,
+            "refresh" => REFRESH_TIMEOUT,
+            "send" | "save" | "update" | "move" | "delete" => MUTATION_TIMEOUT,
+            _ => BODY_TIMEOUT,
+        }
+    }
+
+    fn operation_timeout_message(method: &str) -> String {
+        match method {
+            "send" => "Thunderbird did not confirm sending before the timeout. The message may still have been sent; check Sent and Outbox before retrying.".to_owned(),
+            "save" => "Thunderbird did not confirm saving the draft before the timeout. Check Drafts before retrying.".to_owned(),
+            _ => "Thunderbird did not finish this operation before its time limit. Its late reply will be ignored.".to_owned(),
+        }
+    }
+
+    fn response_reader(
+        mut stream: UnixStream,
+        pending: Arc<Mutex<HashMap<u64, SyncSender<Result<Value, String>>>>>,
+        broken: Arc<AtomicBool>,
+        child: Arc<Mutex<Child>>,
+    ) {
+        loop {
+            let response = match read_json_frame(&mut stream) {
+                Ok(response) => response,
+                Err(error) => {
+                    break_transport(Some(&mut stream), &pending, &broken, &child, error);
+                    return;
+                }
+            };
+            if let Err(error) = route_response(response, &pending) {
+                break_transport(Some(&mut stream), &pending, &broken, &child, error);
+                return;
+            }
+        }
+    }
+
+    fn route_response(
+        response: Value,
+        pending: &Mutex<HashMap<u64, SyncSender<Result<Value, String>>>>,
+    ) -> Result<(), String> {
+        let id = response
+            .get("id")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "Thunderbird returned a response without a request ID.".to_owned())?;
+        let sender = pending
+            .lock()
+            .map_err(|_| "Thunderbird bridge lock failed".to_owned())?
+            .remove(&id);
+        let Some(sender) = sender else {
+            return Ok(());
+        };
+        let result = if let Some(error) = response.get("error").and_then(Value::as_str) {
+            Err(error.chars().take(1024).collect())
+        } else if let Some(result) = response.get("result").cloned() {
+            Ok(result)
+        } else {
+            Err("Thunderbird returned an empty bridge response.".to_owned())
+        };
+        let _ = sender.send(result);
+        Ok(())
+    }
+
+    fn expire_pending(
+        pending: &Mutex<HashMap<u64, SyncSender<Result<Value, String>>>>,
+        id: u64,
+    ) -> bool {
+        pending
+            .lock()
+            .ok()
+            .and_then(|mut pending| pending.remove(&id))
+            .is_some()
+    }
+
+    fn break_transport(
+        stream: Option<&mut UnixStream>,
+        pending: &Mutex<HashMap<u64, SyncSender<Result<Value, String>>>>,
+        broken: &AtomicBool,
+        child: &Mutex<Child>,
+        message: String,
+    ) {
+        if broken.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        if let Some(stream) = stream {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+        if let Ok(mut pending) = pending.lock() {
+            for (_, sender) in pending.drain() {
+                let _ = sender.send(Err(message.clone()));
+            }
+        }
+        if let Ok(mut child) = child.lock() {
+            let _ = child.kill();
+            let _ = child.wait();
         }
     }
 
@@ -620,8 +743,17 @@ mod unix {
             "user_pref(\"services.sync.engine.bookmarks\", false);".to_owned(),
             "user_pref(\"services.sync.engine.history\", false);".to_owned(),
         ]);
-        write_private_bytes(&target.join("user.js"), lines.join("\n").as_bytes())?;
+        write_private_bytes_if_changed(&target.join("user.js"), lines.join("\n").as_bytes())?;
         Ok(())
+    }
+
+    fn bridge_host_name(profile_dir: &Path) -> String {
+        let digest = Sha256::digest(profile_dir.to_string_lossy().as_bytes());
+        let key = digest[..16]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        format!("com.megamail.bridge.{key}")
     }
 
     fn pref_line(key: &str, value: &str) -> String {
@@ -1038,6 +1170,13 @@ mod unix {
         Err("Could not allocate a private Thunderbird bridge file name.".to_owned())
     }
 
+    fn write_private_bytes_if_changed(path: &Path, bytes: &[u8]) -> Result<(), String> {
+        if matches!(fs::read(path), Ok(current) if current == bytes) {
+            return Ok(());
+        }
+        write_private_bytes(path, bytes)
+    }
+
     fn write_new_private_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(io_message(
@@ -1169,8 +1308,19 @@ mod unix {
     }
 
     fn build_extension(host_name: &str) -> Result<Vec<u8>, String> {
-        let manifest = MANIFEST.replace("__EXTENSION_ID__", EXTENSION_ID);
         let background = BACKGROUND.replace("__HOST_NAME__", host_name);
+        let mut manifest: Value = serde_json::from_str(MANIFEST)
+            .map_err(|_| "Could not parse the Thunderbird bridge manifest.".to_owned())?;
+        let base_version = manifest
+            .get("version")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Thunderbird bridge manifest has no version.".to_owned())?;
+        let version =
+            extension_version(MANIFEST, base_version, &background, SYNC_SCHEMA, SYNC_IMPL);
+        manifest["version"] = Value::String(version);
+        manifest["applications"]["gecko"]["id"] = Value::String(EXTENSION_ID.to_owned());
+        let manifest = serde_json::to_string(&manifest)
+            .map_err(|_| "Could not encode the Thunderbird bridge manifest.".to_owned())?;
         let files = [
             ("manifest.json", manifest),
             ("background.js", background),
@@ -1178,6 +1328,28 @@ mod unix {
             ("api/implementation.js", SYNC_IMPL.to_owned()),
         ];
         stored_zip(&files)
+    }
+
+    fn extension_version(
+        manifest_template: &str,
+        base: &str,
+        background: &str,
+        schema: &str,
+        implementation: &str,
+    ) -> String {
+        let mut digest = Sha256::new();
+        for contents in [manifest_template, background, schema, implementation] {
+            digest.update(contents.as_bytes());
+            digest.update([0]);
+        }
+        let digest = digest.finalize();
+        let revision = digest[..8]
+            .iter()
+            .fold(0_u64, |value, byte| (value << 8) | u64::from(*byte));
+        let prefix = base.split('.').take(2).collect::<Vec<_>>().join(".");
+        let first = (revision >> 30) % 1_000_000_000;
+        let second = (revision & ((1_u64 << 30) - 1)) % 1_000_000_000;
+        format!("{prefix}.{first}.{second}")
     }
 
     fn stored_zip(files: &[(&str, String)]) -> Result<Vec<u8>, String> {
@@ -1342,13 +1514,219 @@ mod unix {
         }
 
         #[test]
+        fn bridge_routes_out_of_order_replies_and_ignores_late_replies() {
+            let pending = Mutex::new(HashMap::new());
+            let (first_tx, first_rx) = mpsc::sync_channel(1);
+            let (second_tx, second_rx) = mpsc::sync_channel(1);
+            pending.lock().unwrap().insert(1, first_tx);
+            pending.lock().unwrap().insert(2, second_tx);
+
+            route_response(json!({ "id": 2, "result": "second" }), &pending).unwrap();
+            route_response(json!({ "id": 1, "result": "first" }), &pending).unwrap();
+            assert_eq!(first_rx.recv().unwrap().unwrap().as_str(), Some("first"));
+            assert_eq!(second_rx.recv().unwrap().unwrap().as_str(), Some("second"));
+
+            route_response(json!({ "id": 3, "result": "late" }), &pending).unwrap();
+            assert!(pending.lock().unwrap().is_empty());
+        }
+
+        #[test]
+        fn body_call_finishes_while_metadata_call_is_still_pending() {
+            let root = std::env::temp_dir().join(format!(
+                "megamail-bridge-multiplex-test-{}",
+                random_hex(8).unwrap()
+            ));
+            fs::create_dir(&root).unwrap();
+            let listener = UnixListener::bind(root.join("bridge.sock")).unwrap();
+            let (metadata_seen_tx, metadata_seen_rx) = mpsc::sync_channel(1);
+            let (release_metadata_tx, release_metadata_rx) = mpsc::sync_channel(1);
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let first = read_json_frame(&mut stream).unwrap();
+                assert_eq!(first["method"], "conversation");
+                metadata_seen_tx.send(()).unwrap();
+                let second = read_json_frame(&mut stream).unwrap();
+                assert_eq!(second["method"], "body");
+                let body_reply = json!({ "id": second["id"], "result": "body-ready" });
+                write_frame_with_limit(
+                    &mut stream,
+                    &serde_json::to_vec(&body_reply).unwrap(),
+                    MAX_EXTENSION_FRAME,
+                )
+                .unwrap();
+                release_metadata_rx.recv().unwrap();
+                let metadata_reply = json!({ "id": first["id"], "result": "metadata-ready" });
+                write_frame_with_limit(
+                    &mut stream,
+                    &serde_json::to_vec(&metadata_reply).unwrap(),
+                    MAX_EXTENSION_FRAME,
+                )
+                .unwrap();
+                let shutdown = read_json_frame(&mut stream).unwrap();
+                assert_eq!(shutdown["method"], "shutdown");
+                let response = json!({ "id": shutdown["id"], "result": { "stopping": true } });
+                write_frame_with_limit(
+                    &mut stream,
+                    &serde_json::to_vec(&response).unwrap(),
+                    MAX_EXTENSION_FRAME,
+                )
+                .unwrap();
+            });
+            let stream = UnixStream::connect(root.join("bridge.sock")).unwrap();
+            let reader = stream.try_clone().unwrap();
+            let pending = Arc::new(Mutex::new(HashMap::new()));
+            let broken = Arc::new(AtomicBool::new(false));
+            let child = Arc::new(Mutex::new(Command::new("true").spawn().unwrap()));
+            let runtime = Runtime(Arc::new(RuntimeInner {
+                stream: Mutex::new(stream),
+                sequence: AtomicU64::new(1),
+                pending: pending.clone(),
+                broken: broken.clone(),
+                child: child.clone(),
+                _profile_lock: File::create(root.join("profile.lock")).unwrap(),
+                manifest: root.join("host.json"),
+                temporary_dir: root.clone(),
+                profile_dir: root.clone(),
+            }));
+            let reader_thread =
+                std::thread::spawn(move || response_reader(reader, pending, broken, child));
+
+            let (metadata_result_tx, metadata_result_rx) = mpsc::sync_channel(1);
+            let metadata_runtime = runtime.clone();
+            std::thread::spawn(move || {
+                metadata_result_tx
+                    .send(metadata_runtime.call("conversation", json!({})))
+                    .unwrap();
+            });
+            metadata_seen_rx
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap();
+            let (body_result_tx, body_result_rx) = mpsc::sync_channel(1);
+            let body_runtime = runtime.clone();
+            std::thread::spawn(move || {
+                body_result_tx
+                    .send(body_runtime.call("body", json!({})))
+                    .unwrap();
+            });
+
+            assert_eq!(
+                body_result_rx
+                    .recv_timeout(Duration::from_secs(1))
+                    .unwrap()
+                    .unwrap()
+                    .as_str(),
+                Some("body-ready")
+            );
+            release_metadata_tx.send(()).unwrap();
+            assert_eq!(
+                metadata_result_rx
+                    .recv_timeout(Duration::from_secs(1))
+                    .unwrap()
+                    .unwrap()
+                    .as_str(),
+                Some("metadata-ready")
+            );
+            drop(runtime);
+            server.join().unwrap();
+            reader_thread.join().unwrap();
+        }
+
+        #[test]
+        fn timed_out_request_can_be_removed_without_breaking_transport() {
+            let pending = Mutex::new(HashMap::new());
+            let (reply_tx, _reply_rx) = mpsc::sync_channel(1);
+            pending.lock().unwrap().insert(7, reply_tx);
+            let broken = AtomicBool::new(false);
+
+            assert!(expire_pending(&pending, 7));
+            route_response(json!({ "id": 7, "result": "late" }), &pending).unwrap();
+            assert!(!broken.load(Ordering::Acquire));
+            assert!(pending.lock().unwrap().is_empty());
+        }
+
+        #[test]
+        fn request_deadlines_are_bounded_by_operation_kind() {
+            assert_eq!(operation_timeout("conversation"), Duration::from_secs(15));
+            assert_eq!(operation_timeout("list"), Duration::from_secs(15));
+            assert_eq!(operation_timeout("body"), Duration::from_secs(30));
+            assert_eq!(operation_timeout("folders"), Duration::from_secs(90));
+            assert_eq!(operation_timeout("refresh"), Duration::from_secs(165));
+            assert!(operation_timeout_message("send").contains("check Sent and Outbox"));
+        }
+
+        #[test]
+        fn native_host_name_is_stable_and_scoped_to_the_private_clone() {
+            let clone = Path::new(
+                "/home/user/.local/share/megamail/thunderbird/profiles/profile-hash/credential-hash",
+            );
+            let same_clone = Path::new(
+                "/home/user/.local/share/megamail/thunderbird/profiles/profile-hash/credential-hash",
+            );
+            let isolated_clone = Path::new(
+                "/tmp/megamail-qa/share/megamail/thunderbird/profiles/profile-hash/credential-hash",
+            );
+            assert_eq!(bridge_host_name(clone), bridge_host_name(same_clone));
+            assert_ne!(bridge_host_name(clone), bridge_host_name(isolated_clone));
+            assert!(
+                build_extension(&bridge_host_name(clone)).unwrap()
+                    == build_extension(&bridge_host_name(same_clone)).unwrap()
+            );
+        }
+
+        #[test]
+        fn private_profile_files_are_not_replaced_when_content_is_unchanged() {
+            let root = std::env::temp_dir().join(format!(
+                "megamail-bridge-write-test-{}",
+                random_hex(8).unwrap()
+            ));
+            fs::create_dir(&root).unwrap();
+            let path = root.join("profile.js");
+            write_private_bytes_if_changed(&path, b"stable").unwrap();
+            let before = fs::metadata(&path).unwrap().ino();
+            write_private_bytes_if_changed(&path, b"stable").unwrap();
+            assert_eq!(fs::metadata(&path).unwrap().ino(), before);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
         fn generated_xpi_is_valid_stored_zip_with_private_host_name() {
             let xpi = build_extension("com.megamail.bridge.test123").unwrap();
             assert_eq!(&xpi[..4], b"PK\x03\x04");
             assert!(xpi
                 .windows(b"com.megamail.bridge.test123".len())
                 .any(|window| window == b"com.megamail.bridge.test123"));
+            let version = extension_version(
+                MANIFEST,
+                "0.1.1",
+                &BACKGROUND.replace("__HOST_NAME__", "com.megamail.bridge.test123"),
+                SYNC_SCHEMA,
+                SYNC_IMPL,
+            );
+            let encoded_version = format!("\"version\":\"{version}\"");
+            assert!(xpi
+                .windows(encoded_version.len())
+                .any(|window| window == encoded_version.as_bytes()));
             assert!(!xpi.windows(12).any(|window| window == b"__HOST_NAME__"));
+        }
+
+        #[test]
+        fn extension_version_changes_when_packaged_code_changes() {
+            let stable =
+                extension_version(MANIFEST, "0.1.1", "background", "schema", "implementation");
+            assert_eq!(
+                stable,
+                extension_version(MANIFEST, "0.1.1", "background", "schema", "implementation")
+            );
+            assert_ne!(
+                stable,
+                extension_version(
+                    MANIFEST,
+                    "0.1.1",
+                    "changed background",
+                    "schema",
+                    "implementation"
+                )
+            );
         }
 
         #[test]

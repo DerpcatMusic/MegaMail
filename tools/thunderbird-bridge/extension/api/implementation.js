@@ -7,7 +7,8 @@ var { setTimeout, clearTimeout } = ChromeUtils.importESModule("resource://gre/mo
 
 this.megamailSync = class extends ExtensionCommon.ExtensionAPI {
   getAPI(context) {
-    const discoveries = new Set();
+    const discoveries = new Map();
+    const discoveredAccounts = new Set();
     const waitForUrl = (start, timeoutMessage, onStop = null) => new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error(timeoutMessage)), 75000);
       const listener = {
@@ -45,22 +46,36 @@ this.megamailSync = class extends ExtensionCommon.ExtensionAPI {
           }, 50);
           return { stopping: true };
         },
-        async discoverFolders(accountId) {
+        async discoverFolders(accountId, refresh = false) {
           const key = String(accountId);
-          if (discoveries.has(key)) return { discovered: true, cached: true };
-          const account = MailServices.accounts.getAccount(key);
-          if (!account || account.incomingServer.type !== "imap") {
-            throw new Error("Thunderbird could not resolve this IMAP account.");
+          if (!refresh && discoveredAccounts.has(key)) {
+            return { discovered: true, cached: true };
           }
-          Services.io.offline = false;
-          const serverListener = account.incomingServer.QueryInterface(Components.interfaces.nsIUrlListener);
-          await waitForUrl(
-            listener => MailServices.imap.discoverAllFolders(account.incomingServer.rootFolder, listener, null),
-            "Thunderbird folder discovery timed out. Check the account connection and try again.",
-            (url, status) => serverListener.OnStopRunningUrl(url, status)
-          );
-          discoveries.add(key);
-          return { discovered: true, cached: false };
+          if (discoveries.has(key)) {
+            await discoveries.get(key);
+            return { discovered: true, cached: true };
+          }
+          const discovery = (async () => {
+            const account = MailServices.accounts.getAccount(key);
+            if (!account || account.incomingServer.type !== "imap") {
+              throw new Error("Thunderbird could not resolve this IMAP account.");
+            }
+            Services.io.offline = false;
+            const serverListener = account.incomingServer.QueryInterface(Components.interfaces.nsIUrlListener);
+            await waitForUrl(
+              listener => MailServices.imap.discoverAllFolders(account.incomingServer.rootFolder, listener, null),
+              "Thunderbird folder discovery timed out. Check the account connection and try again.",
+              (url, status) => serverListener.OnStopRunningUrl(url, status)
+            );
+          })();
+          discoveries.set(key, discovery);
+          try {
+            await discovery;
+            discoveredAccounts.add(key);
+            return { discovered: true, cached: false };
+          } finally {
+            if (discoveries.get(key) === discovery) discoveries.delete(key);
+          }
         },
         async getNewMessages(folderId) {
           let folder;

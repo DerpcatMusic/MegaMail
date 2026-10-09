@@ -59,6 +59,13 @@ function folderJson(folder) {
 
 function accountJson(account) {
   return {
+    ...accountSummary(account),
+    rootFolder: account.rootFolder ? folderJson(account.rootFolder) : null
+  };
+}
+
+function accountSummary(account) {
+  return {
     id: String(account.id),
     name: safeText(account.name),
     type: safeText(account.type),
@@ -66,14 +73,21 @@ function accountJson(account) {
       id: String(identity.id),
       name: safeText(identity.name),
       email: safeText(identity.email)
-    })),
-    rootFolder: account.rootFolder ? folderJson(account.rootFolder) : null
+    }))
   };
 }
 
 async function allAccounts() {
   const accounts = (await messenger.accounts.list(false)).filter(account => account.type === "imap");
-  return Promise.all(accounts.map(loadAccount));
+  return accounts.map(accountSummary);
+}
+
+function hasCachedInbox(folders) {
+  if (!Array.isArray(folders)) return false;
+  return folders.some(folder =>
+    safeText(folder.type).toLowerCase() === "inbox" ||
+    safeText(folder.name).toLowerCase() === "inbox" ||
+    hasCachedInbox(Array.isArray(folder.subFolders) ? folder.subFolders : []));
 }
 
 async function findFolder(id) {
@@ -91,18 +105,28 @@ async function findFolder(id) {
   return folder;
 }
 
-async function loadAccount(account) {
+async function loadAccount(account, refresh = false) {
   const result = accountJson(account);
   try {
-    await messenger.megamailSync.discoverFolders(String(account.id));
-    const fresh = await messenger.accounts.get(String(account.id), false);
-    const discovered = await messenger.folders.query({ accountId: String(account.id) });
-    const subFolders = await messenger.folders.getSubFolders(fresh, true);
-    result.rootFolder = fresh.rootFolder ? folderJson({
-      ...fresh.rootFolder,
-      subFolders
-    }) : null;
-    if (!discovered.length) {
+    const readLocalFolders = async () => {
+      const fresh = await messenger.accounts.get(String(account.id), false);
+      const discovered = await messenger.folders.query({ accountId: String(account.id) });
+      const subFolders = await messenger.folders.getSubFolders(fresh, true);
+      return {
+        fresh,
+        discovered,
+        subFolders,
+        rootFolder: fresh.rootFolder ? folderJson({ ...fresh.rootFolder, subFolders }) : null
+      };
+    };
+    if (refresh) await messenger.megamailSync.discoverFolders(String(account.id), true);
+    let snapshot = await readLocalFolders();
+    if (!refresh && !hasCachedInbox(snapshot.subFolders)) {
+      await messenger.megamailSync.discoverFolders(String(account.id), true);
+      snapshot = await readLocalFolders();
+    }
+    result.rootFolder = snapshot.rootFolder;
+    if (!snapshot.discovered.length) {
       result.folderError = "Thunderbird connected but did not report any remote folders for this account.";
     }
   } catch (error) {
@@ -520,13 +544,6 @@ async function conversationMessages(params) {
 async function messageList(params) {
   if (!params.cursor) {
     const folder = await findFolder(params.folderId);
-    if (!messenger.megamailSync || !messenger.megamailSync.getNewMessages) {
-      throw new Error("This Thunderbird version cannot synchronize mail through MegaMail.");
-    }
-    const status = await messenger.megamailSync.getNewMessages(String(folder.id));
-    if (!status || status.synced !== true) {
-      throw new Error("Thunderbird did not synchronize the selected folder.");
-    }
     const limit = Math.max(1, Math.min(Number(params.limit) || 100, 100));
     let list;
     if (safeText(params.search).trim()) {
@@ -550,6 +567,19 @@ async function messageList(params) {
   const list = await messenger.messages.continueList(entry.id);
   lists.delete(key);
   return listJson(list, entry.folderId);
+}
+
+async function refreshFolder(params) {
+  const folder = await findFolder(params.folderId);
+  if (!messenger.megamailSync || !messenger.megamailSync.discoverFolders || !messenger.megamailSync.getNewMessages) {
+    throw new Error("This Thunderbird version cannot synchronize mail through MegaMail.");
+  }
+  await messenger.megamailSync.discoverFolders(String(folder.accountId));
+  const status = await messenger.megamailSync.getNewMessages(String(folder.id));
+  if (!status || status.synced !== true) {
+    throw new Error("Thunderbird did not synchronize the selected folder.");
+  }
+  return status;
 }
 
 async function readUnreadMessageCount(folder) {
@@ -799,11 +829,12 @@ async function dispatch(method, params) {
     case "folders": {
       const account = await messenger.accounts.get(String(params.accountId), false).catch(() => null);
       if (!account || account.type !== "imap") throw new Error("Thunderbird could not find the selected IMAP account.");
-      const loaded = await loadAccount(account);
+      const loaded = await loadAccount(account, params.refresh === true);
       if (loaded.folderError) throw new Error(loaded.folderError);
       return loaded.rootFolder;
     }
     case "list": return messageList(params);
+    case "refresh": return refreshFolder(params);
     case "conversation": return conversationMessages(params);
     case "body": return messageBody(params);
     case "attachments": return attachmentList(params);
