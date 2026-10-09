@@ -62,12 +62,18 @@ The app is a real account-backed client, not the earlier synthetic-only
 preview. Add an account using a Gmail app password or reviewed provider
 settings; or use `--demo` for fictional rows backed by `HylkiMockBackend`.
 Demo mode disables sending, drafts, archive, and Outbox operations. With a
-configured account, inspect folder sync, search, message loading,
-archive/restore, drafts, plain-text compose, attachment actions, links, and
-Outbox retry and discard. The Outbox's queued state is a durable local save
-for later sending, not a delivery receipt. Message bodies remain on the safe
-plain-text path; there is no full-fidelity HTML renderer or automatic
-remote-content loading.
+configured account, inspect per-account Unified Inbox paging and partial
+failure warnings, account/folder browsing, loaded-header search and filters,
+conversation expansion and chronology, and single-message read/unread, star,
+and trash actions. Check that equal UIDs from different folders remain
+distinct and that matching subjects alone do not create conversations. Also
+review drafts, plain-text compose, attachment actions, links, and Outbox retry
+and discard. The Outbox's queued state is a durable local save for later
+sending, not a delivery receipt. Message bodies remain on the escaped plain-
+text path; there is no full-fidelity HTML renderer or automatic remote-content
+loading. Settings should expose account management, Regular/Compact density,
+conversation grouping, the default Unified Inbox, quote hiding, reduced motion,
+and the active keyboard shortcuts.
 
 The Thunderbird import path requires an installed Thunderbird 153+ binary.
 Use **Find mail accounts** in account setup to discover local profiles, then
@@ -105,9 +111,10 @@ persistence. The 24/10/5% pane bleed caps use a sampled theme-contrast estimate;
 that is not a per-pixel guarantee. MegaMail does not implement Zeron's
 renderer-specific backdrop blur or per-primitive edge fades.
 
-The current captures in `docs/preview/` show sample mail and are retained as
-visual fixtures. They are not captures of the current account-connected
-client. Inspect the current native window on Linux at representative desktop
+The current release captures in `docs/preview/` use fictional demo mail and
+show the current interface, not live provider results. They cover dark, light,
+search, conversation, compact rows, the reader at a smaller size, and
+appearance. Inspect the native window on Linux at representative desktop
 sizes, and check keyboard navigation, focus visibility, search, account setup,
 and slow/offline states before treating a UI change as reviewed. The native
 desktop has no web/mobile breakpoint contract. Windows and macOS need their

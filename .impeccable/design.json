@@ -502,6 +502,60 @@
         "layoutAndRows": "apps/megamail/src/main.rs",
         "searchAndFilters": "apps/megamail/src/live.rs"
       }
+    },
+    "mailExperience": {
+      "defaultScope": "Unified Inbox, with independent bounded Inbox header pages per account.",
+      "partialFailures": "Keep results from accounts that loaded and show a warning for accounts whose page failed.",
+      "messageIdentity": "Scope IMAP UIDs by account and folder.",
+      "conversationGrouping": "Group by message reference headers across folders and Sent; never group by subject alone. Related lookup is bounded and can report partial results.",
+      "relatedMessages": {
+        "candidateHeaders": 128,
+        "folderLimit": 8,
+        "referenceAncestorLimit": 24,
+        "partialResults": "Warn when related-message lookup is incomplete; do not promise every historical or future reply."
+      },
+      "threadPresentation": "Expandable child replies in the list; chronological message order in the reader.",
+      "search": "Searches headers in the loaded account/folder or Unified Inbox view. It does not cover full server history or message bodies.",
+      "bodyHandling": {
+        "thunderbirdUnifiedQueries": "Bounded headers only; fetch message bodies when selected.",
+        "liveSelection": "Retain only the selected message body in the live mailbox state.",
+        "readerBodyLimit": "2 MiB",
+        "readerBodyCache": "Up to 8 entries and 32 MiB total."
+      },
+      "messageActions": [
+        "read/unread",
+        "star",
+        "trash"
+      ],
+      "replyAll": "Use the owning account; exclude the user’s own account addresses and aliases.",
+      "reader": "Selectable escaped plain text; raw mail HTML is not rendered and remote content is not loaded.",
+      "quoteHiding": "Collapse only a trailing quoted block; preserve the source text so it can be restored.",
+      "preferences": {
+        "density": [
+          "Regular",
+          "Compact"
+        ],
+        "conversationGrouping": true,
+        "defaultUnifiedInbox": true,
+        "hideQuotedText": true,
+        "reducedMotion": false
+      },
+      "keyboardShortcuts": {
+        "Up/Down": "Select previous/next message",
+        "Ctrl+N": "Compose",
+        "Ctrl+R": "Reply",
+        "Ctrl+Shift+R": "Reply all",
+        "Ctrl+F": "Focus search",
+        "Ctrl+Shift+L": "Open Unified Inbox",
+        "F5": "Refresh"
+      },
+      "notPorted": [
+        "all-folder search",
+        "message-body search",
+        "bulk triage",
+        "inline reply",
+        "rich HTML composition"
+      ]
     }
   },
   "components": [
@@ -517,7 +571,7 @@
       "name": "Selected message row",
       "kind": "custom",
       "refersTo": "message-row-selected-dark",
-      "description": "78px three-line sender, subject, and snippet hierarchy with 4px corners and distinct selected/hover states.",
+      "description": "Compact message and conversation rows with 4px corners; reply children expand, and grouping uses reference headers rather than subject text.",
       "html": "<div class=\"ds-themes\"><div class=\"ds-list ds-dark\"><button class=\"ds-row ds-row-dark\" type=\"button\" aria-pressed=\"true\"><span class=\"ds-first\"><span class=\"ds-dot\"></span><span class=\"ds-sender\">Maya Chen</span><span class=\"ds-time\">10:42 AM</span></span><span class=\"ds-subject\">The new identity system is ready</span><span class=\"ds-preview\">I pulled the final typography and color studies into one clear direction.</span></button></div><div class=\"ds-list ds-light\"><button class=\"ds-row ds-row-light\" type=\"button\" aria-pressed=\"true\"><span class=\"ds-first\"><span class=\"ds-dot\"></span><span class=\"ds-sender\">Maya Chen</span><span class=\"ds-time\">10:42 AM</span></span><span class=\"ds-subject\">The new identity system is ready</span><span class=\"ds-preview\">I pulled the final typography and color studies into one clear direction.</span></button></div></div>",
       "css": ".ds-themes{display:grid;grid-template-columns:1fr 1fr;gap:8px;font:13px Geist,sans-serif}.ds-list{padding:8px}.ds-dark{background:#090909;color:#e8e8ea}.ds-light{background:#fcfcfd;color:#303035}.ds-row{display:flex;box-sizing:border-box;width:100%;height:78px;flex-direction:column;justify-content:center;gap:4px;padding:8px 12px;border:0;border-radius:4px;text-align:left;font-family:Geist,sans-serif;cursor:pointer}.ds-row-dark{background:#2e2e30;color:#e8e8ea}.ds-row-light{background:#e8e8eb;color:#303035}.ds-first{display:flex;align-items:center;gap:8px}.ds-sender{flex:1;overflow:hidden;font-size:13px;font-weight:600;white-space:nowrap}.ds-time,.ds-preview{color:#a9a9ae;font-size:10px}.ds-light .ds-time,.ds-light .ds-preview{color:#62626a}.ds-dot{width:6px;height:6px;border-radius:9999px;background:#7c86ff}.ds-light .ds-dot{background:#5b43e8}.ds-subject{overflow:hidden;font-size:12px;font-weight:500;text-overflow:ellipsis;white-space:nowrap}.ds-preview{overflow:hidden;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.ds-row-dark:hover{background:#252527}.ds-row-light:hover{background:#efeff2}.ds-row:focus-visible{outline:2px solid #7c86ff;outline-offset:1px}.ds-row-light:focus-visible{outline-color:#5b43e8}"
     },
@@ -525,7 +579,7 @@
       "name": "Message search input",
       "kind": "input",
       "refersTo": "input-search-dark",
-      "description": "Search and filters operate on loaded messages in the current folder; they do not query the server-wide mailbox.",
+      "description": "Search and filters operate on loaded headers in the active account/folder or Unified Inbox; there is no full-history or body search.",
       "html": "<div class=\"ds-themes\"><label class=\"ds-search ds-dark\"><svg class=\"ds-search-icon\" viewBox=\"0 0 16 16\" aria-hidden=\"true\"><circle cx=\"7\" cy=\"7\" r=\"4.5\"></circle><path d=\"m10.5 10.5 3 3\"></path></svg><input type=\"search\" aria-label=\"Search sample messages\" placeholder=\"Search sample mail\"><button class=\"ds-clear\" type=\"button\" aria-label=\"Clear search\">×</button></label><label class=\"ds-search ds-light\"><svg class=\"ds-search-icon\" viewBox=\"0 0 16 16\" aria-hidden=\"true\"><circle cx=\"7\" cy=\"7\" r=\"4.5\"></circle><path d=\"m10.5 10.5 3 3\"></path></svg><input type=\"search\" aria-label=\"Search sample messages\" placeholder=\"Search sample mail\"><button class=\"ds-clear\" type=\"button\" aria-label=\"Clear search\">×</button></label></div>",
       "css": ".ds-themes{display:grid;gap:8px;font:14px Geist,sans-serif}.ds-search{display:flex;height:32px;align-items:center;gap:8px;padding:0 10px;border:1px solid #202020;border-radius:8px;background:#0e0e0e;color:#e8e8ea}.ds-search.ds-light{border-color:#e5e5e9;background:#fff;color:#303035}.ds-search-icon{width:14px;height:14px;flex:none;fill:none;stroke:#85858a;stroke-width:1.5}.ds-light .ds-search-icon{stroke:#73737a}.ds-search input{min-width:0;flex:1;border:0;outline:0;background:transparent;color:inherit;font:14px Geist,sans-serif}.ds-search input::placeholder{color:#a9a9ae}.ds-light input::placeholder{color:#62626a}.ds-clear{border:0;background:transparent;color:inherit;font-size:16px;cursor:pointer}.ds-search:focus-within{outline:2px solid #7c86ff;outline-offset:1px}.ds-search.ds-light:focus-within{outline-color:#5b43e8}"
     },
@@ -541,19 +595,19 @@
       "name": "Email reading pane",
       "kind": "custom",
       "refersTo": "message-reader-dark",
-      "description": "Continuous reading surface with the implemented subject, sender, divider, and body hierarchy.",
+      "description": "Chronological conversation reader with selectable escaped plain text, conservative restorable quote hiding, explicit links and attachment actions.",
       "html": "<div class=\"ds-themes\"><article class=\"ds-reader ds-dark\"><h2>The new identity system is ready</h2><div class=\"ds-author\"><span class=\"ds-avatar\">MC</span><span><strong>Maya Chen</strong><small>maya@northstar.example</small></span><time>10:42 AM</time></div><hr><p>Hi team,</p><p>I pulled the final typography and color studies into one clear direction. The new system feels calmer, but it still has enough character to stand on its own.</p><small class=\"ds-note\">Fictional sample content · no mailbox or network action is active.</small></article><article class=\"ds-reader ds-light\"><h2>The new identity system is ready</h2><div class=\"ds-author\"><span class=\"ds-avatar\">MC</span><span><strong>Maya Chen</strong><small>maya@northstar.example</small></span><time>10:42 AM</time></div><hr><p>Hi team,</p><p>I pulled the final typography and color studies into one clear direction. The new system feels calmer, but it still has enough character to stand on its own.</p><small class=\"ds-note\">Fictional sample content · no mailbox or network action is active.</small></article></div>",
-      "css": ".ds-themes{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:8px;background:linear-gradient(135deg,#394254,#43384f);font-family:Geist,sans-serif}.ds-reader{box-sizing:border-box;max-width:680px;padding:24px}.ds-dark{background:rgb(6 6 6 / 95%);color:#e8e8ea}.ds-light{background:rgb(255 255 255 / 95%);color:#303035}.ds-reader h2{margin:0 0 20px;font-size:22px;font-weight:600;line-height:1.2}.ds-author{display:flex;align-items:center;gap:12px;font-size:13px}.ds-avatar{display:grid;width:36px;height:36px;flex:none;place-items:center;border-radius:9999px;background:#2e2e30;color:#a9a9ae;font-size:11px;font-weight:600}.ds-light .ds-avatar{background:#e8e8eb;color:#62626a}.ds-author strong,.ds-author small{display:block}.ds-author small,.ds-author time,.ds-note{color:#85858a;font-size:11px}.ds-light .ds-author small,.ds-light .ds-author time,.ds-light .ds-note{color:#73737a}.ds-author time{margin-left:auto}.ds-reader hr{height:1px;margin:24px 0;border:0;background:#202020}.ds-light hr{background:#e5e5e9}.ds-reader p{font-size:14px;line-height:1.5}.ds-note{display:block;margin-top:24px}"
+      "css": ".ds-themes{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:8px;background:linear-gradient(135deg,#394254,#43384f);font-family:Geist,sans-serif}.ds-reader{box-sizing:border-box;max-width:680px;padding:24px}.ds-dark{background:rgb(6 6 6 / 95%);color:#e8e8ea}.ds-light{background:rgb(255 255 255 / 95%);color:#303035}.ds-reader h2{margin:0 0 20px;font-size:24px;font-weight:600;line-height:1.2}.ds-author{display:flex;align-items:center;gap:12px;font-size:13px}.ds-avatar{display:grid;width:36px;height:36px;flex:none;place-items:center;border-radius:9999px;background:#2e2e30;color:#a9a9ae;font-size:11px;font-weight:600}.ds-light .ds-avatar{background:#e8e8eb;color:#62626a}.ds-author strong,.ds-author small{display:block}.ds-author small,.ds-author time,.ds-note{color:#85858a;font-size:11px}.ds-light .ds-author small,.ds-light .ds-author time,.ds-light .ds-note{color:#73737a}.ds-author time{margin-left:auto}.ds-reader hr{height:1px;margin:24px 0;border:0;background:#202020}.ds-light hr{background:#e5e5e9}.ds-reader p{font-size:14px;line-height:1.6}.ds-note{display:block;margin-top:24px}"
     }
   ],
   "narrative": {
     "northStar": "Zeron’s quiet canvas, adapted to the three-pane mail workflow.",
-    "overview": "MegaMail is a Linux desktop email client using official GPUI Kit 0.7.1. The desktop layout uses a 232px navigation rail, a 332px message list, and a continuous reading pane; rows are 78px high with 4px corners. The standalone MIT Zeron theme model at commit 0c4835d2b73aa632b7b4d626ee0826a25ec1c9b9 supplies 19 families and 30 variants. System mode follows the desktop appearance, Light and Dark selections are independent, and accent/surface settings can override the selected theme. Wallpaper processing is static and cached, with pane bleed capped at 24/10/5% by a theme-based contrast estimate. These materials do not implement Zeron’s renderer-specific backdrop blur or per-primitive edge fades. Current preview captures use fictional demo messages.",
+    "overview": "MegaMail is a Linux desktop email client using official GPUI Kit 0.7.1. The desktop layout uses a 232px navigation rail, a 332px message list, and a continuous reading pane; rows are 78px high with 4px corners. The standalone MIT Zeron theme model at commit 0c4835d2b73aa632b7b4d626ee0826a25ec1c9b9 supplies 19 families and 30 variants. System mode follows the desktop appearance, Light and Dark selections are independent, and accent/surface settings can override the selected theme. Wallpaper processing is static and cached, with pane bleed capped at 24/10/5% by a theme-based contrast estimate. These materials do not implement Zeron’s renderer-specific backdrop blur or per-primitive edge fades. The default Unified Inbox merges bounded per-account header pages and keeps partial failures visible. Message-reference grouping spans bounded related-header lookups across folders and Sent without subject-only guesses; replies expand in the list and open chronologically, with warnings for incomplete results. Search stays within loaded headers and does not search message bodies or full server history. Reader text is selectable and escaped; raw HTML is not rendered. Current preview captures use fictional demo messages.",
     "keyCharacteristics": [
       "Continuous three-pane work surface with a quiet navigation rail and compact message list.",
-      "78px email rows with 4px corners; hairlines and spacing define the panes instead of repeated cards.",
-      "Nineteen built-in Zeron theme families with thirty variants, independent Light/Dark choices, and accent/surface overrides.",
-      "Cached wallpaper treatments and theme-contrast-bounded pane tints."
+      "Regular/Compact rows; conversation replies expand in the list and read chronologically.",
+      "Account-scoped message identity keeps equal IMAP UIDs from colliding across folders or accounts.",
+      "Unified Inbox combines bounded per-account pages and keeps partial failures visible."
     ],
     "rules": [
       {
