@@ -3747,7 +3747,7 @@ fn is_connectivity_error(error: &str) -> bool {
     .any(|part| error.contains(part))
 }
 
-fn is_broken_bridge_error(error: &str) -> bool {
+pub(super) fn is_broken_bridge_error(error: &str) -> bool {
     let error = error.to_ascii_lowercase();
     [
         "broken pipe",
@@ -3757,6 +3757,7 @@ fn is_broken_bridge_error(error: &str) -> bool {
         "bridge is disconnected",
         "bridge disconnected",
         "bridge closed the connection",
+        "shared thunderbird bridge stopped",
         "bridge disconnected while",
         "connection reset",
         "connection closed",

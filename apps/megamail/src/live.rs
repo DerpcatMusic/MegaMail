@@ -1710,6 +1710,12 @@ impl LiveMailbox {
                     if let Some(error) = started.error.as_ref() {
                         if is_reconnectable_thunderbird_failure(error) {
                             self.reconnectable_thunderbird_ids.insert(account_id);
+                            clear_pending_pages_if_transport_closed(
+                                &mut self.page_states,
+                                account_id,
+                                true,
+                                error,
+                            );
                         }
                         self.connectivity_errors.insert(account_id, error.clone());
                     } else {
@@ -2466,6 +2472,7 @@ impl LiveMailbox {
                 );
                 if transport_closed {
                     self.reconnectable_thunderbird_ids.insert(account_id);
+                    retain_selected_body_after_error(&mut self.pending_bodies, account_id, None);
                 }
                 if connectivity {
                     self.connectivity_errors.insert(account_id, text.clone());
@@ -4208,23 +4215,17 @@ fn is_reconnectable_thunderbird_id(
 }
 
 fn is_reconnectable_thunderbird_failure(error: &str) -> bool {
+    if crate::thunderbird_adapter::is_broken_bridge_error(error) {
+        return true;
+    }
     let error = error.to_ascii_lowercase();
     [
-        "broken pipe",
-        "pipe closed",
-        "socket closed",
-        "socket is not connected",
-        "bridge disconnected",
         "worker disconnected",
         "session disconnected",
-        "thunderbird bridge closed the connection",
         "worker is unavailable",
         "worker stopped",
         "session stopped",
         "session is shutting down",
-        "connection closed",
-        "connection reset",
-        "bridge stopped",
         "runtime stopped",
         "stopped unexpectedly",
     ]
@@ -4660,6 +4661,9 @@ mod tests {
         assert!(!pending.values().any(|slot| slot.key == failed));
         assert!(pending.values().any(|slot| slot.key == selected));
         assert!(pending.values().any(|slot| slot.key == other_account));
+        retain_selected_body_after_error(&mut pending, 7, None);
+        assert!(!pending.values().any(|slot| slot.key == selected));
+        assert!(pending.values().any(|slot| slot.key == other_account));
     }
 
     #[test]
@@ -4963,7 +4967,22 @@ mod tests {
         assert!(is_reconnectable_thunderbird_failure("Broken pipe"));
         assert!(is_reconnectable_thunderbird_failure("socket closed"));
         assert!(is_reconnectable_thunderbird_failure(
+            "Thunderbird bridge is disconnected. Restart the account runtime before trying again."
+        ));
+        assert!(is_reconnectable_thunderbird_failure(
+            "Thunderbird bridge disconnected during startup."
+        ));
+        assert!(is_reconnectable_thunderbird_failure(
             "Thunderbird bridge closed the connection."
+        ));
+        assert!(is_reconnectable_thunderbird_failure(
+            "The shared Thunderbird bridge stopped. Reconnect this profile to resume mail."
+        ));
+        assert!(is_reconnectable_thunderbird_failure(
+            "The Thunderbird worker session stopped."
+        ));
+        assert!(is_reconnectable_thunderbird_failure(
+            "The native messaging host has exited."
         ));
         assert!(!is_reconnectable_thunderbird_failure("offline"));
         assert!(!is_reconnectable_thunderbird_failure("bad search query"));
@@ -5067,7 +5086,7 @@ mod tests {
             &mut states,
             7,
             true,
-            "Thunderbird bridge closed the connection.",
+            "Thunderbird bridge is disconnected. Restart Thunderbird, then click Retry.",
         ));
         assert_eq!(states[&inbox].pending_generation, None);
         assert_eq!(states[&archive].pending_generation, None);
