@@ -12,24 +12,46 @@ cache, and keyring paths separate. MegaMail does not automatically read or
 import an existing Hylki profile.
 
 The client connects Gmail with an app password and other IMAP mailboxes through
-provider discovery or manually entered IMAP and SMTP settings. It syncs mail
-and searches the loaded messages in the current folder, reads messages,
-archives and restores them, saves drafts, and sends plain-text messages through
-SMTP. Search and the All, Unread, Starred, and Attachments filters narrow that
-loaded folder result; they are not server-wide search. SMTP can use password
-authentication, a separate SMTP username and password, or no SMTP login.
-For direct accounts, failed or offline sends can be retained in the durable
-Outbox for retry or discard. Imported Thunderbird accounts keep queued messages
-under Thunderbird's management; MegaMail has no native retry/discard controls
-for that path.
+provider discovery or manually entered IMAP and SMTP settings. The mailbox can
+open in a Unified Inbox that combines bounded Inbox pages from configured
+accounts, or browse one account and folder at a time. Each account is paged and
+reported independently; a partial failure leaves successful account results
+visible with a warning. Message identity stays scoped to its account and
+folder so identical IMAP UIDs cannot collide.
 
-The reader displays a safe plain-text body, with extracted links and
-attachments shown in separate panels. Only validated HTTP(S) links are offered
-and they open after an explicit action. Attachments require explicit download
-and save actions; the inherited worker may also prefetch recent attachments
-into the private cache. There is no full HTML-mail renderer or automatic
-remote-content loading. Automated core tests cover local behavior; direct
-account behavior still needs verification against live provider policies.
+Conversation grouping follows message reference headers across folders and
+includes Sent copies. It does not guess from matching subjects. Reply rows can
+be expanded in the list, and the conversation reader orders messages
+chronologically. Related-message lookup is bounded to 128 candidate headers
+across at most 8 folders, with an ancestor walk capped at 24 references and
+partial warnings; a conversation is not guaranteed to include every older or
+newer reply. Settings control conversation grouping, Regular or Compact
+density, whether Unified Inbox opens by default, quote hiding, and reduced
+motion.
+
+Search and the All, Unread, Starred, and Attachments filters operate on headers
+already loaded in the active account/folder or Unified Inbox view; they do not
+search the full server history or message bodies. Read/unread, star, and trash
+actions target an individual account-scoped message through its real mail
+worker. Direct-account SMTP can use password authentication, a separate SMTP
+username and password, or no SMTP login. Failed or offline direct-account
+sends can be retained in the durable Outbox for retry or discard. Imported
+Thunderbird accounts keep queued messages under Thunderbird's management;
+MegaMail has no native retry/discard controls for that path.
+The conversation reader shows selectable, escaped plain text rather than raw
+mail HTML. When quote hiding is enabled, it collapses only a trailing quoted
+block and keeps that text available to restore. Reply and Reply All use the
+active account and remove the user's own addresses and aliases from recipients.
+Extracted validated HTTP(S) links and attachments stay in separate panels and
+require explicit open, download, or save actions. Remote content is not loaded
+automatically. Rich HTML composition, inline reply, all-folder/body search,
+and bulk triage are not ported.
+
+The native **Settings** view also manages saved accounts and mail display
+preferences. It lists MegaMail's current key bindings: Up/Down select a message,
+Ctrl+N composes, Ctrl+R replies, Ctrl+Shift+R replies to all, Ctrl+F focuses
+search, Ctrl+Shift+L opens Unified Inbox, and F5 refreshes mail. The legacy
+[Hylki shortcut reference](docs/KEYBOARD_SHORTCUTS.md) applies to the GTK app.
 
 For existing Thunderbird setups, **Find mail accounts** discovers real IMAP
 mailboxes in standard Linux Thunderbird profiles. The import picker groups
@@ -90,13 +112,13 @@ To inspect the desktop shell without configuring an account, run
 Demo messages are fictional and demo mode disables sending, drafts, archive,
 restore, and Outbox operations.
 
-The images in `docs/preview/` are captures of the current release in demo
-mode. They use fictional messages and contain no personal mailbox data; they
-show the current interface rather than a live provider session:
+The captures in `docs/preview/` use fictional demo mail, contain no personal
+mailbox data, and show the current release rather than a live provider session:
 [dark](docs/preview/dark.png), [light](docs/preview/light.png),
-[search](docs/preview/search.png), and
-[appearance](docs/preview/appearance.png). Current implementation and design decisions
-are documented in the [visual contract](DESIGN.md). See
+[search](docs/preview/search.png), [conversation](docs/preview/conversation.png),
+[compact](docs/preview/compact.png), [reader at a smaller size](docs/preview/reader-small.png),
+and [appearance](docs/preview/appearance.png). Current implementation and
+design decisions are documented in the [visual contract](DESIGN.md). See
 the [validation report](docs/MEGAMAIL_VALIDATION.md) for the tested scope and
 limits; it does not establish provider-wide compatibility.
 

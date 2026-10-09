@@ -31,7 +31,7 @@ colors:
 typography:
   headline:
     fontFamily: "Geist, sans-serif"
-    fontSize: "22px"
+    fontSize: "24px"
     fontWeight: 600
     lineHeight: 1.2
   title:
@@ -42,7 +42,7 @@ typography:
     fontFamily: "Geist, sans-serif"
     fontSize: "14px"
     fontWeight: 400
-    lineHeight: 1.5
+    lineHeight: 1.6
   folder:
     fontFamily: "Geist, sans-serif"
     fontSize: "13px"
@@ -76,42 +76,42 @@ components:
   folder-selected-dark:
     backgroundColor: "rgb(235 235 235 / 11%)"
     textColor: "{colors.text-dark}"
-    rounded: "{rounded.md}"
+    rounded: "4px"
     padding: "8px"
     height: "32px"
     typography: "{typography.folder}"
   folder-hover-dark:
     backgroundColor: "rgb(235 235 235 / 11%)"
     textColor: "{colors.text-dark}"
-    rounded: "{rounded.md}"
+    rounded: "4px"
     padding: "8px"
     height: "32px"
     typography: "{typography.folder}"
   folder-selected-light:
     backgroundColor: "rgb(26 26 26 / 6%)"
     textColor: "{colors.text-light}"
-    rounded: "{rounded.md}"
+    rounded: "4px"
     padding: "8px"
     height: "32px"
     typography: "{typography.folder}"
   folder-hover-light:
     backgroundColor: "rgb(26 26 26 / 6%)"
     textColor: "{colors.text-light}"
-    rounded: "{rounded.md}"
+    rounded: "4px"
     padding: "8px"
     height: "32px"
     typography: "{typography.folder}"
   message-row-selected-dark:
     backgroundColor: "{colors.selected-dark}"
     textColor: "{colors.text-dark}"
-    rounded: "{rounded.sm}"
+    rounded: "4px"
     padding: "12px"
     height: "78px"
     typography: "{typography.row-sender}"
   message-row-selected-light:
     backgroundColor: "{colors.selected-light}"
     textColor: "{colors.text-light}"
-    rounded: "{rounded.sm}"
+    rounded: "4px"
     padding: "12px"
     height: "78px"
     typography: "{typography.row-sender}"
@@ -205,9 +205,9 @@ The native app registers the bundled Geist regular, medium, and semibold faces b
 
 ### Hierarchy
 
-- **Headline** (600, 22px, 1.2): message subject in the reader.
+- **Headline** (600, 24px, 1.2): message subject in the reader.
 - **Title** (600, 14px): pane heading.
-- **Body** (400, 14px, 1.5): message paragraphs.
+- **Body** (400, 14px, 1.6): message paragraphs.
 - **Folder and sender** (13px): navigation labels and row sender; unread senders use semibold weight.
 - **Row subject** (12px): medium when unread and regular when read.
 - **Label** (600, 10px): compact uppercase “RECENT” and message-count labels.
@@ -217,7 +217,7 @@ Zeron’s source hierarchy and its contrast targets are captured in the [design-
 
 ## Layout
 
-At the 1280×800 reference size, the open sidebar is 232px and the message list is 332px; the reader takes the remaining width. The sidebar groups account and folder navigation, while search and the filter menu stay in the list header. Message rows are 78px high and inset from the edge; the reader content remains centered and capped at 680px. These are native desktop dimensions, not responsive web breakpoints.
+At the 1280×800 reference size, the open sidebar is 232px and the message list is 332px; the reader takes the remaining width. Unified Inbox is the default landing and combines independently paged Inbox headers from configured accounts. Each account keeps its own page state and can show a partial-failure warning without hiding successful results. Account and folder browsing remains available in the same rail. These are native desktop dimensions, not responsive web breakpoints.
 
 Use the observed 4/8/12/16/20/24px spacing steps for the app’s grouping. Tighten icon-and-label pairs, then give separate controls and content groups more room. Keep the window controls, search field, folder actions, focus, and keyboard message navigation native to GPUI Kit.
 
@@ -241,19 +241,19 @@ A quiet, compact row with a clear active state. Use a 4px radius and a soft them
 
 ### Message row
 
-A compact text hierarchy rather than a card stack. Rows are 78px high with 4px corners. Put sender and time first, subject and optional star second, and a one-line snippet last. Use a small accent dot plus semibold sender for unread mail; selected and hover fills remain distinct. Keep timestamp and status at the trailing edge.
+A compact text hierarchy rather than a card stack. Regular rows are 78px high and Compact rows are 64px, both with 4px corners. Put sender and time first, subject and optional star second, and a one-line snippet last. Use a small accent dot plus semibold sender for unread mail; selected and hover fills remain distinct. With conversation grouping enabled, show reply counts and expandable child messages. Group only by message-reference headers across folders and Sent, never by subject alone. Related-message lookups inspect at most 128 candidate headers in 8 folders and walk up to 24 reference ancestors, so not every historical or future reply is guaranteed to appear. Partial results show a warning. Keep timestamp and status at the trailing edge.
 
 ### Search field
 
-Search is scoped to messages loaded in the current folder. The All, Unread, Starred, and Attachments filters intersect with the search text over that same loaded set. Keep the focus indicator visible in every theme; do not imply a server-wide search result.
+Search is scoped to loaded headers in the active account/folder or Unified Inbox. The All, Unread, Starred, and Attachments filters intersect with the search text over that loaded set. Search does not cover all server history or message bodies. Keep the focus indicator visible in every theme.
 
 ### Archive and restore action
 
-Use a compact secondary button with the Kit icon, short label, tooltip, and accessible action name. Its fill comes from the raised surface role, with a separate hover state. In the native client, archive and restore act on the connected mailbox. The current release captures use fictional demo data.
+Use compact secondary actions with the Kit icon, short label, tooltip, and accessible action name. Archive/restore, read/unread, star, and trash target one message through its account and folder worker. Keep the selected message identity scoped so equal numeric UIDs in different folders or accounts cannot collide.
 
 ### Reading pane
 
-Keep the body on the continuous reading plane. Use a 22px semibold subject, a 13px sender, 11px address/time metadata, a single hairline, and 14px body text at 1.5 line height. Center the content column and cap it at 680px. The reader tint follows the selected theme and stays within the 5% wallpaper-bleed cap. The reader displays a safe plain-text body, with extracted links and attachments in separate panels. Opening a validated link, downloading an attachment, and saving a file each require an explicit user action. This does not imply full-fidelity incoming HTML rendering or automatic remote-content loading.
+Keep the body on the continuous reading plane. A selected conversation opens in chronological order, and the list lets users expand or collapse reply rows. Display selectable escaped plain text; do not render raw mail HTML or load remote content. When quote hiding is on, collapse only a conservative trailing quote block and keep the original text available to restore. Reply All excludes the user’s own addresses and aliases. Extracted validated links and attachments stay in separate panels with explicit open, download, or save actions.
 
 ### Appearance
 
@@ -261,7 +261,7 @@ The Appearance view offers System, Light, and Dark modes; Light and Dark variant
 
 Aurora, Midnight, Paper, and custom wallpapers all support Original, Dither, ASCII, Halftone, and Scanlines. Treatment strength, wallpaper opacity, and bottom fade each range from 0–100%; blur choices are 0, 10, or 16. Image decode, blur, and treatment run away from the UI/render path and produce a cached static image. Background changes crossfade over 240ms. Custom images accept PNG, JPEG, and WebP up to 24 MiB and 16 million decoded pixels; decoding is capped at 96 MiB, the stored normalized PNG at 32 MiB, and the longest edge at 2500px. The original file path is not retained. Theme preferences use `theme.v1`; appearance and wallpaper preferences use `appearance.v1`, with private image data under MegaMail’s configuration directory. These are in-window materials, not Zeron’s renderer-level backdrop blur or per-primitive edge fade.
 
-The native app uses GPUI Kit’s existing icon assets. Zeron’s icon catalog has separate attribution and license terms; copy individual assets only with their applicable notices. The [current release captures](docs/preview/) show fictional demo messages in dark and light modes, search/filter, and Appearance; they contain no private mailbox data and are not live provider sessions.
+Settings manages accounts and mail preferences, and displays MegaMail’s active keyboard shortcuts. Regular/Compact density, conversation grouping, default Unified Inbox, quote hiding, and reduced motion are user preferences. The screenshot fixtures are fictional demo data; they are not live provider sessions.
 
 ## Do's and Don'ts
 

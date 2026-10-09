@@ -413,6 +413,46 @@ pub fn forward(account_id: u32, message: &Message) -> OutgoingMessage {
     outgoing
 }
 
+/// Continue a conversation without copying the user's own aliases into recipients.
+pub fn reply_for_account(
+    account_id: u32,
+    message: &Message,
+    own_addresses: &[String],
+    all: bool,
+) -> OutgoingMessage {
+    let mut outgoing = reply(account_id, message);
+    let own = |email: &str| {
+        own_addresses
+            .iter()
+            .any(|own| own.eq_ignore_ascii_case(email))
+    };
+    let from_self = own(&message.from_addr);
+    let primary = if from_self {
+        message.to.as_str()
+    } else {
+        outgoing.to.as_str()
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut collect = |field: &str| {
+        worker::parse_recipients(field)
+            .into_iter()
+            .filter(|(_, email)| !own(email) && seen.insert(email.to_ascii_lowercase()))
+            .map(|(name, email)| worker::format_recipient(&name, &email))
+            .collect::<Vec<_>>()
+    };
+    let to = collect(primary);
+    let mut cc = Vec::new();
+    if all || from_self {
+        if all && !from_self {
+            cc.extend(collect(&message.to));
+        }
+        cc.extend(collect(&message.cc));
+    }
+    outgoing.to = to.join(", ");
+    outgoing.cc = cc.join(", ");
+    outgoing
+}
+
 fn prefixed_subject(subject: &str, prefix: &str) -> String {
     let normalized = subject.trim_start();
     let already_prefixed = normalized
@@ -466,12 +506,13 @@ fn forwarded_body(message: &Message) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        forward, new_message, prepare_draft_from_raw_in, reply, safe_attachment_filename,
-        validate_draft_attachment_sizes,
+        forward, new_message, prepare_draft_from_raw_in, reply, reply_for_account,
+        safe_attachment_filename, validate_draft_attachment_sizes,
     };
     use megamail_core::{
         config::{AccountConfig, AliasConfig},
         models::{DraftOrigin, Importance, Message},
+        worker,
     };
     use std::{fs, path::PathBuf};
 
@@ -500,6 +541,46 @@ mod tests {
             importance: Importance::Normal,
             due: 0,
         }
+    }
+
+    #[test]
+    fn reply_all_deduplicates_addresses_and_own_aliases_without_bcc() {
+        let mut message = sample();
+        message.reply_to = "Ada <ada@example.test>".into();
+        message.to = "Me <me@example.test>, \"Doe, Bob\" <bob@example.test>".into();
+        message.cc = "BOB@example.test, work@example.test, Other <other@example.test>".into();
+        let own = vec!["me@example.test".into(), "work@example.test".into()];
+        let reply = reply_for_account(7, &message, &own, true);
+        assert_eq!(
+            worker::parse_recipients(&reply.to),
+            vec![("Ada".into(), "ada@example.test".into())]
+        );
+        assert_eq!(
+            worker::parse_recipients(&reply.cc),
+            vec![
+                ("Doe, Bob".into(), "bob@example.test".into()),
+                ("Other".into(), "other@example.test".into())
+            ]
+        );
+        assert!(reply.bcc.is_empty());
+        assert_eq!(reply.in_reply_to, message.message_id);
+    }
+
+    #[test]
+    fn continuing_own_sent_message_targets_original_recipients() {
+        let mut message = sample();
+        message.from_addr = "ME@example.test".into();
+        message.to = "Ada <ada@example.test>, me@example.test".into();
+        message.cc = "Bob <bob@example.test>".into();
+        let reply = reply_for_account(7, &message, &["me@example.test".into()], false);
+        assert_eq!(
+            worker::parse_recipients(&reply.to),
+            vec![("Ada".into(), "ada@example.test".into())]
+        );
+        assert_eq!(
+            worker::parse_recipients(&reply.cc),
+            vec![("Bob".into(), "bob@example.test".into())]
+        );
     }
 
     #[test]

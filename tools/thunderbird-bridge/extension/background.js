@@ -7,9 +7,19 @@ const MAX_UPLOADS = 20;
 const MAX_CHUNK_BYTES = 512 * 1024;
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_BODY_SOURCE_BYTES = 20 * 1024 * 1024;
+const MAX_CONVERSATION_IDS = 256;
+const MAX_CONVERSATION_SEEDS = 100;
+const MAX_CONVERSATION_PARENT_IDS = 24;
+const MAX_CONVERSATION_FOLDERS = 8;
+const MAX_CONVERSATION_MESSAGES = 100;
+// ponytail: reply hints inspect one bounded Sent header window per batch; widen only if older replies need coverage.
+const MAX_CONVERSATION_CANDIDATES = 128;
+const MAX_CONVERSATION_HEADERS_PER_ID = 8;
+const CONVERSATION_HEADER_CACHE_LIMIT = 8192;
 const lists = new Map();
 const downloads = new Map();
 const uploads = new Map();
+const conversationHeaders = new Map();
 let nextToken = 1;
 let port;
 
@@ -119,10 +129,392 @@ function messageJson(message) {
 }
 
 function headerValue(headers, name) {
+  return headerValueInfo(headers, name).value;
+}
+
+function headerValueInfo(headers, name) {
   const key = Object.keys(headers || {}).find(item => item.toLowerCase() === name.toLowerCase());
-  if (!key) return "";
+  if (!key) return { value: "", truncated: false };
   const values = Array.isArray(headers[key]) ? headers[key] : [headers[key]];
-  return values.map(safeText).filter(Boolean).join(" ").slice(0, 8192);
+  const text = values.map(safeText).filter(Boolean).join(" ");
+  return { value: text.slice(0, 8192), truncated: text.length > 8192 };
+}
+
+function normalizedMessageId(value) {
+  const id = safeText(value).trim();
+  if (!id || id.length > 998) return "";
+  return id.replace(/^</, "").replace(/>$/, "").toLowerCase();
+}
+
+function normalizedSubject(value) {
+  return safeText(value).trim()
+    .replace(/^(?:(?:re|fw|fwd)\s*(?:\[\d+\])?\s*:\s*)+/i, "")
+    .replace(/\s+/g, " ").trim().slice(0, 512).toLowerCase();
+}
+
+function conversationIdList(values) {
+  const ids = [];
+  const seen = new Set();
+  let partial = !Array.isArray(values) || values.length > MAX_CONVERSATION_IDS;
+  for (const value of (Array.isArray(values) ? values : []).slice(0, MAX_CONVERSATION_IDS)) {
+    const id = safeText(value).trim();
+    const normalized = normalizedMessageId(id);
+    if (!normalized) {
+      if (id) partial = true;
+      continue;
+    }
+    if (!seen.has(normalized)) {
+      seen.add(normalized);
+      ids.push(id);
+    }
+  }
+  return { ids, partial };
+}
+
+function rememberConversationHeaders(accountId, messageId, headers) {
+  const key = String(messageId);
+  let cache = conversationHeaders.get(accountId);
+  if (!cache) {
+    cache = new Map();
+    conversationHeaders.set(accountId, cache);
+  }
+  cache.delete(key);
+  cache.set(key, headers);
+  if (cache.size > CONVERSATION_HEADER_CACHE_LIMIT) cache.delete(cache.keys().next().value);
+}
+
+async function conversationHeaderFields(accountId, messageId) {
+  const key = String(messageId);
+  let cache = conversationHeaders.get(accountId);
+  if (cache && cache.has(key)) {
+    const value = cache.get(key);
+    cache.delete(key);
+    cache.set(key, value);
+    return value;
+  }
+  const headers = await messenger.messages.getHeaders(Number(messageId), { decodeHeaders: true });
+  const references = headerValueInfo(headers, "references");
+  const inReplyTo = headerValueInfo(headers, "in-reply-to");
+  const fields = {
+    references: references.value,
+    inReplyTo: inReplyTo.value,
+    replyTo: headerValue(headers, "reply-to"),
+    truncated: references.truncated || inReplyTo.truncated
+  };
+  rememberConversationHeaders(accountId, key, fields);
+  return fields;
+}
+
+async function mapLimited(items, limit, fn) {
+  const output = [];
+  for (let offset = 0; offset < items.length; offset += limit) {
+    output.push(...await Promise.all(items.slice(offset, offset + limit).map(fn)));
+  }
+  return output;
+}
+
+async function limitedConversationQuery(query, limit) {
+  let list = await messenger.messages.query({
+    ...query,
+    messagesPerPage: limit + 1,
+    autoPaginationTimeout: 0
+  });
+  if (typeof list === "string") {
+    await messenger.messages.abortList(list).catch(() => {});
+    return { messages: [], partial: true };
+  }
+  if (!list || !Array.isArray(list.messages)) {
+    throw new Error("Thunderbird returned an invalid conversation query.");
+  }
+  const partial = Boolean(list.id) || list.messages.length > limit;
+  if (list.id) await messenger.messages.abortList(list.id).catch(() => {});
+  return { messages: list.messages.slice(0, limit), partial };
+}
+
+async function conversationMessageJson(message, accountId, allowedFolderIds, fallbackFolderId = "") {
+  const folder = message && message.folder;
+  const folderId = String((folder && folder.id) || fallbackFolderId);
+  if (!message || !Number.isSafeInteger(Number(message.id)) || !folderId ||
+      (folder && String(folder.accountId) !== accountId) || !allowedFolderIds.has(folderId)) {
+    throw new Error("Thunderbird returned a conversation message outside the selected account or folders.");
+  }
+  const headers = await conversationHeaderFields(accountId, message.id);
+  return {
+    ...messageJson(message),
+    folderId,
+    references: headers.references,
+    inReplyTo: headers.inReplyTo,
+    replyTo: headers.replyTo,
+    headersTruncated: headers.truncated
+  };
+}
+
+function referencesAny(message, ids) {
+  const refs = `${safeText(message.references)} ${safeText(message.inReplyTo)}`;
+  return refs.split(/\s+/).some(id => ids.has(normalizedMessageId(id)));
+}
+
+function referenceIds(message) {
+  return `${safeText(message.references)} ${safeText(message.inReplyTo)}`
+    .split(/\s+/)
+    .map(id => ({ id, normalized: normalizedMessageId(id) }))
+    .filter(item => item.normalized);
+}
+
+function headerIdentity(message) {
+  const author = safeText(message.author).trim();
+  const address = author.match(/<([^<>]+)>/)?.[1] || author;
+  return `${address.trim().toLowerCase()}\u0000${Number(message.date || 0)}`;
+}
+
+function unambiguousHeaderIds(messages) {
+  const identities = new Map();
+  const ambiguous = new Set();
+  for (const message of messages) {
+    const id = normalizedMessageId(message.headerMessageId);
+    if (!id) continue;
+    const identity = headerIdentity(message);
+    if (identities.has(id) && identities.get(id) !== identity) ambiguous.add(id);
+    else identities.set(id, identity);
+  }
+  return new Set([...identities.keys()].filter(id => !ambiguous.has(id)));
+}
+
+function uniquePhysicalMessages(messages) {
+  const unique = new Map();
+  for (const message of messages) unique.set(String(message.id), message);
+  return [...unique.values()];
+}
+
+async function exactConversationMessages(accountId, lookups) {
+  let partial = false;
+  const results = await mapLimited(lookups, 4, async ({ headerMessageId, folderIds }) => {
+    const result = await limitedConversationQuery({ accountId, folderId: folderIds, headerMessageId }, MAX_CONVERSATION_HEADERS_PER_ID);
+    partial ||= result.partial;
+    return result.messages;
+  });
+  return { messages: uniquePhysicalMessages(results.flat()), partial };
+}
+
+async function expandParentHeaders(accountId, folders, seedMessages, allowedFolderIds, priorPartial = false) {
+  let messages = uniquePhysicalMessages(seedMessages);
+  let partial = priorPartial;
+  let remaining = MAX_CONVERSATION_PARENT_IDS;
+  const folderIds = folders.map(folder => String(folder.id));
+  const queried = new Set(messages.map(message => normalizedMessageId(message.headerMessageId)).filter(Boolean));
+  while (remaining > 0) {
+    const mapped = await mapLimited(messages, 8, message => conversationMessageJson(message, accountId, allowedFolderIds));
+    if (mapped.some(message => message.headersTruncated)) partial = true;
+    const uniqueIds = unambiguousHeaderIds(mapped);
+    const parents = [];
+    for (const message of mapped) {
+      if (!uniqueIds.has(normalizedMessageId(message.headerMessageId))) continue;
+      for (const item of referenceIds(message)) {
+        if (queried.has(item.normalized)) continue;
+        queried.add(item.normalized);
+        parents.push(item.id);
+      }
+    }
+    if (!parents.length) break;
+    if (parents.length > remaining) partial = true;
+    const lookups = parents.slice(0, remaining).map(headerMessageId => ({ headerMessageId, folderIds }));
+    remaining -= lookups.length;
+    const result = await exactConversationMessages(accountId, lookups);
+    partial ||= result.partial;
+    const previousCount = messages.length;
+    messages = uniquePhysicalMessages([...messages, ...result.messages]);
+    if (messages.length === previousCount && parents.length <= lookups.length) break;
+  }
+  const headers = await mapLimited(messages, 8, message => conversationMessageJson(message, accountId, allowedFolderIds));
+  if (headers.some(message => message.headersTruncated)) partial = true;
+  return { messages, headers, uniqueIds: unambiguousHeaderIds(headers), partial };
+}
+
+async function relatedCandidateMessages(accountId, exactHeaders, candidateRaw, allowedFolderIds) {
+  const candidates = await mapLimited(candidateRaw, 8, ({ message, folderId }) => conversationMessageJson(message, accountId, allowedFolderIds, folderId));
+  const allUniqueIds = unambiguousHeaderIds([...exactHeaders, ...candidates]);
+  const known = new Set(unambiguousHeaderIds(exactHeaders));
+  const included = new Set();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let index = 0; index < candidates.length; index++) {
+      const ownId = normalizedMessageId(candidates[index].headerMessageId);
+      if (included.has(index) || !allUniqueIds.has(ownId) || (!known.has(ownId) && !referencesAny(candidates[index], known))) continue;
+      included.add(index);
+      known.add(ownId);
+      changed = true;
+    }
+  }
+  return {
+    messages: candidateRaw.filter((_, index) => included.has(index)).map(item => item.message),
+    partial: candidates.some(message => message.headersTruncated)
+  };
+}
+
+async function batchConversationHeaders(accountId, folders, seedIds, allowedFolderIds) {
+  const excluded = new Set(["sent", "drafts", "templates", "trash", "junk"]);
+  let partial = !Array.isArray(seedIds) || seedIds.length === 0 || seedIds.length > MAX_CONVERSATION_SEEDS;
+  const seeds = (Array.isArray(seedIds) ? seedIds : []).slice(0, MAX_CONVERSATION_SEEDS);
+  if (!seeds.length) return { messages: [], partial: true };
+  const exact = await exactConversationMessages(accountId, seeds.map(headerMessageId => ({
+    headerMessageId,
+    folderIds: folders.map(folder => String(folder.id))
+  })));
+  partial ||= exact.partial;
+  const foundSeeds = new Set(exact.messages.map(message => normalizedMessageId(message.headerMessageId)));
+  if (seeds.some(id => !foundSeeds.has(normalizedMessageId(id)))) partial = true;
+  const expanded = await expandParentHeaders(accountId, folders, exact.messages, allowedFolderIds, partial);
+  partial = expanded.partial;
+  const otherFolders = folders.filter(folder => {
+    const type = safeText(folder.type).toLowerCase();
+    return type !== "sent" && !excluded.has(type);
+  });
+  const sentFolders = folders.filter(folder => safeText(folder.type).toLowerCase() === "sent");
+  const jobs = [];
+  if (otherFolders.length) jobs.push({ folders: otherFolders });
+  if (sentFolders.length) jobs.push({ folders: sentFolders, fromMe: true });
+  if (!jobs.length) return { messages: expanded.messages, partial: true };
+
+  let extra = MAX_CONVERSATION_CANDIDATES % jobs.length;
+  const results = await mapLimited(jobs, 2, async job => {
+    const limit = Math.floor(MAX_CONVERSATION_CANDIDATES / jobs.length) + (extra-- > 0 ? 1 : 0);
+    return limitedConversationQuery({
+      accountId,
+      folderId: job.folders.map(folder => String(folder.id)),
+      ...(job.fromMe ? { fromMe: true } : {})
+    }, limit);
+  });
+  const unique = new Map();
+  for (const result of results) {
+    partial ||= result.partial;
+    for (const message of result.messages) unique.set(String(message.id), message);
+  }
+  const candidates = await mapLimited([...unique.values()], 8, message => conversationMessageJson(message, accountId, allowedFolderIds));
+  if (candidates.some(message => message.headersTruncated)) partial = true;
+
+  const allUniqueIds = unambiguousHeaderIds([...expanded.headers, ...candidates]);
+  const known = new Set(expanded.uniqueIds);
+  const included = new Set();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let index = 0; index < candidates.length; index++) {
+      const ownId = normalizedMessageId(candidates[index].headerMessageId);
+      if (included.has(index) || !allUniqueIds.has(ownId) || (!known.has(ownId) && !referencesAny(candidates[index], known))) continue;
+      included.add(index);
+      if (ownId) known.add(ownId);
+      changed = true;
+    }
+  }
+  return { messages: uniquePhysicalMessages([
+    ...expanded.messages,
+    ...[...unique.values()].filter((_, index) => included.has(index))
+  ]), partial };
+}
+
+async function conversationMessages(params) {
+  const accountId = safeText(params.accountId);
+  if (!accountId) throw new Error("Thunderbird could not identify the selected account for this conversation.");
+  const account = await messenger.accounts.get(accountId, false).catch(() => null);
+  if (!account || account.type !== "imap") throw new Error("Thunderbird could not find the selected IMAP account.");
+
+  const requestedFolders = Array.isArray(params.folderIds) ? params.folderIds.map(String) : [];
+  if (!requestedFolders.length || requestedFolders.length > MAX_CONVERSATION_FOLDERS) {
+    throw new Error("Thunderbird conversation lookup needs between 1 and 8 selected folders.");
+  }
+  const folders = [];
+  const seenFolders = new Set();
+  for (const id of requestedFolders) {
+    if (!id || seenFolders.has(id)) continue;
+    const folder = await messenger.folders.get(id, false).catch(() => null);
+    if (!folder || String(folder.accountId) !== accountId) {
+      throw new Error("Thunderbird conversation lookup received a folder outside the selected account.");
+    }
+    seenFolders.add(id);
+    folders.push(folder);
+  }
+  if (!folders.length) throw new Error("Thunderbird could not identify any conversation folders.");
+
+  const { ids, partial: idsPartial } = conversationIdList(params.ids);
+  if (!ids.length) return { messages: [], partial: idsPartial };
+  const allowedFolderIds = new Set(folders.map(folder => String(folder.id)));
+  let partial = idsPartial;
+  let rawMessages;
+  if (params.includeBatchRelated === true) {
+    const { ids: seedIds, partial: seedPartial } = conversationIdList(params.seedIds);
+    const batch = await batchConversationHeaders(accountId, folders, seedIds, allowedFolderIds);
+    rawMessages = batch.messages;
+    partial ||= seedPartial || batch.partial;
+  } else {
+    const folderIds = folders.map(folder => String(folder.id));
+    const exact = await exactConversationMessages(accountId, ids.map(headerMessageId => ({ headerMessageId, folderIds })));
+    partial ||= exact.partial;
+    rawMessages = exact.messages;
+    if (rawMessages.length > MAX_CONVERSATION_MESSAGES) {
+      rawMessages = rawMessages.slice(0, MAX_CONVERSATION_MESSAGES);
+      partial = true;
+    }
+    if (params.includeReplies === true && rawMessages.length) {
+      const expanded = await expandParentHeaders(accountId, folders, rawMessages, allowedFolderIds, partial);
+      rawMessages = expanded.messages;
+      partial = expanded.partial;
+      const allSubjects = [...new Set(expanded.headers
+        .filter(message => expanded.uniqueIds.has(normalizedMessageId(message.headerMessageId)))
+        .map(message => normalizedSubject(message.subject))
+        .filter(subject => subject.length >= 3))];
+      const subjects = allSubjects.slice(0, 2);
+      if (subjects.length === 0) partial = true;
+      if (allSubjects.length > subjects.length) partial = true;
+      const excluded = new Set(["drafts", "templates", "trash", "junk"]);
+      const candidateFolders = folders.filter(folder => {
+        const type = safeText(folder.type).toLowerCase();
+        return !excluded.has(type);
+      });
+      if (!candidateFolders.length) partial = true;
+      const slots = Math.max(1, subjects.length * candidateFolders.length);
+      const baseLimit = Math.floor(MAX_CONVERSATION_CANDIDATES / slots);
+      let extra = MAX_CONVERSATION_CANDIDATES % slots;
+      const candidateResults = await mapLimited(subjects.flatMap(subject => candidateFolders.map(folder => ({ subject, folder }))), 4, async ({ subject, folder }) => {
+        const limit = baseLimit + (extra-- > 0 ? 1 : 0);
+        const type = safeText(folder.type).toLowerCase();
+        const result = await limitedConversationQuery({
+          accountId,
+          folderId: [String(folder.id)],
+          subject,
+          ...(type === "sent" ? { fromMe: true } : {})
+        }, limit);
+        return { ...result, folderId: String(folder.id) };
+      });
+      const candidateRaw = candidateResults.flatMap(result => {
+        partial ||= result.partial;
+        return result.messages.map(message => ({ message, folderId: result.folderId }));
+      });
+      const related = await relatedCandidateMessages(accountId, expanded.headers, candidateRaw, allowedFolderIds);
+      rawMessages.push(...related.messages);
+      partial ||= related.partial;
+    }
+  }
+
+  const uniqueRaw = [];
+  const seenMessageIds = new Set();
+  for (const message of rawMessages) {
+    const key = String(message.id);
+    if (seenMessageIds.has(key)) continue;
+    seenMessageIds.add(key);
+    uniqueRaw.push(message);
+  }
+  if (uniqueRaw.length > MAX_CONVERSATION_MESSAGES) {
+    uniqueRaw.length = MAX_CONVERSATION_MESSAGES;
+    partial = true;
+  }
+  const mapped = await mapLimited(uniqueRaw, 8, async message => conversationMessageJson(message, accountId, allowedFolderIds));
+  if (mapped.some(message => message.headersTruncated)) partial = true;
+  return {
+    messages: mapped,
+    partial,
+    warning: partial ? "More messages may exist outside the indexed/query window" : null
+  };
 }
 
 async function messageList(params) {
@@ -155,8 +547,8 @@ async function messageList(params) {
   const key = String(params.cursor);
   const entry = lists.get(key);
   if (!entry) throw new Error("This message list expired. Refresh the folder.");
-  lists.delete(key);
   const list = await messenger.messages.continueList(entry.id);
+  lists.delete(key);
   return listJson(list, entry.folderId);
 }
 
@@ -412,6 +804,7 @@ async function dispatch(method, params) {
       return loaded.rootFolder;
     }
     case "list": return messageList(params);
+    case "conversation": return conversationMessages(params);
     case "body": return messageBody(params);
     case "attachments": return attachmentList(params);
     case "raw_start": return startDownload({ ...params, kind: "raw" });

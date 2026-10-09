@@ -47,14 +47,31 @@ those account configurations, not provider-wide compatibility. A separate
 Thunderbird 157 loopback test exercised new-message/reply sends and draft save.
 No real-provider send or delivery test was run.
 
-The reader renders safe plain text and presents validated links and
-attachments separately for explicit actions. SMTP supports a separate
-username/password or a no-login choice for MegaMail's direct IMAP path. Gmail
-app-password setup remains available; there is no GNOME Online Accounts flow
-or MegaMail-owned Google OAuth registration. Imported Thunderbird
-credential-store files remain with Thunderbird in its isolated profile and do
-not provide a MegaMail OAuth client registration. Performance claims require
-representative measurements.
+The native mailbox includes a Unified Inbox backed by independently paged
+per-account Inbox results and visible partial-failure warnings. Message keys
+retain account and folder scope. Optional conversation grouping follows
+message-reference headers across folders and Sent; it never groups solely by
+subject. Related lookups inspect up to 128 candidate headers across at most 8
+folders and walk up to 24 reference ancestors; warnings report partial results,
+and the client does not promise every historical or future reply will appear.
+Expanded list replies open in chronological order. Single-message read/unread,
+star, and trash actions use the owning account worker.
+
+Search and filters cover loaded message headers in the active folder or
+Unified Inbox; full server-history and message-body search are not ported. The
+reader presents selectable escaped plain text, not raw HTML. Quote hiding
+collapses a conservative trailing quoted block that can be restored. Reply All
+excludes the user's own account addresses and aliases. Rich HTML composition,
+inline reply, and bulk triage are not ported. Settings expose account
+management, Regular/Compact density, conversation grouping, default Unified
+Inbox, quote hiding, reduced motion, and the current keyboard shortcuts.
+
+SMTP supports a separate username/password or a no-login choice for MegaMail's
+direct IMAP path. Gmail app-password setup remains available; there is no
+GNOME Online Accounts flow or MegaMail-owned Google OAuth registration.
+Imported Thunderbird credential-store files remain with Thunderbird in its
+isolated profile and do not provide a MegaMail OAuth client registration.
+Performance claims require representative measurements.
 
 Appearance includes 19 built-in theme families with 30 variants, independent
 Light and Dark selections, System mode, accent and surface controls, and local
@@ -82,9 +99,10 @@ application is separate from Hylki's existing GTK package.
 
 ## Open Decisions
 
-The public GitHub fork is `DerpcatMusic/MegaMail`, in Hylki's fork network,
-following the requested public-source fork. The initial mail-core extraction is implemented. Full-fidelity rich HTML
-and MegaMail-owned public OAuth registrations remain separate launch work.
+The public GitHub fork is `DerpcatMusic/MegaMail`, in Hylki's fork network.
+Full-fidelity rich HTML composition, inline reply, bulk triage, all-folder/body
+search, broader provider coverage, and MegaMail-owned public OAuth registrations
+remain separate launch work.
 
 ## Product Principles
 
