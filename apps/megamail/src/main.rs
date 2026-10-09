@@ -233,6 +233,9 @@ fn apply_palette(mode: ThemeMode, palette: Palette, window: &mut Window, cx: &mu
         theme.list_active_border = palette.border;
         theme.list_hover = palette.hover;
         theme.list_head = palette.surface;
+        theme.table_head = palette.hover;
+        theme.table_head_foreground = palette.text;
+        theme.link = palette.accent;
         theme.popover = palette.surface;
         theme.popover_foreground = palette.text;
         theme.ring = palette.accent;
@@ -544,6 +547,57 @@ fn composer_can_edit(
         && !queued
 }
 
+fn reader_follows_selection<'a>(
+    previous: Option<&MessageKey>,
+    selected: Option<&MessageKey>,
+    mut members: impl Iterator<Item = &'a MessageKey>,
+) -> bool {
+    previous.is_some_and(|previous| {
+        selected.is_some_and(|selected| previous != selected)
+            && members.any(|member| member == previous)
+    })
+}
+
+fn reader_recipient(
+    key: &MessageKey,
+    label: &'static str,
+    value: &str,
+    palette: Palette,
+) -> AnyElement {
+    h_flex()
+        .w_full()
+        .min_w_0()
+        .items_start()
+        .gap_2()
+        .child(
+            div()
+                .flex_shrink_0()
+                .w(px(48.))
+                .text_size(px(12.))
+                .text_color(palette.muted)
+                .child(label),
+        )
+        .child(
+            gpui_kit::component::text::TextView::html(
+                SharedString::from(format!(
+                    "reader-recipient-{}-{}-{}-{label}",
+                    key.account_id, key.folder_path, key.uid
+                )),
+                preferences::plain_text_html(value),
+            )
+            .selectable(true)
+            .flex_1()
+            .min_w_0()
+            .text_size(px(12.))
+            .text_color(palette.muted)
+            .style(gpui_kit::component::text::TextViewStyle {
+                paragraph_gap: gpui_kit::rems(0.),
+                ..Default::default()
+            }),
+        )
+        .into_any_element()
+}
+
 fn composer_can_close(
     selecting_attachments: bool,
     sending: bool,
@@ -558,8 +612,75 @@ struct ReaderBody {
     text: SharedString,
     without_quote: SharedString,
     has_quote: bool,
+    source_html: SharedString,
     html: SharedString,
     html_without_quote: SharedString,
+    plain_html: SharedString,
+    plain_html_without_quote: SharedString,
+    retained_bytes: usize,
+}
+
+impl ReaderBody {
+    fn new(
+        key: MessageKey,
+        body: &str,
+        source_html: SharedString,
+        formatted_without_quote: Option<SharedString>,
+    ) -> Self {
+        let (without_quote, quote) = preferences::split_quoted_text(body);
+        let text: SharedString = body.to_owned().into();
+        let without_quote: SharedString = if quote.is_some() {
+            without_quote.to_owned().into()
+        } else {
+            text.clone()
+        };
+        let plain_html: SharedString = preferences::plain_text_html(body).into();
+        let plain_html_without_quote = if quote.is_some() {
+            preferences::plain_text_html(&without_quote).into()
+        } else {
+            plain_html.clone()
+        };
+        let formatted = !source_html.is_empty();
+        let html = if formatted {
+            source_html.clone()
+        } else {
+            plain_html.clone()
+        };
+        let html_without_quote = if formatted {
+            formatted_without_quote
+                .clone()
+                .unwrap_or_else(|| html.clone())
+        } else {
+            plain_html_without_quote.clone()
+        };
+        let retained_bytes = text.len()
+            + source_html.len()
+            + plain_html.len()
+            + if quote.is_some() {
+                without_quote.len() + plain_html_without_quote.len()
+            } else {
+                0
+            }
+            + formatted_without_quote
+                .as_ref()
+                .map_or(0, |html| html.len());
+        Self {
+            key,
+            text,
+            without_quote,
+            has_quote: if formatted {
+                formatted_without_quote.is_some()
+            } else {
+                quote.is_some()
+            },
+            source_html,
+            html,
+            html_without_quote,
+            plain_html,
+            plain_html_without_quote,
+            retained_bytes,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -581,6 +702,7 @@ struct MailApp {
     reader_selected_key: Option<MessageKey>,
     reader_selected_position: Option<usize>,
     reader_should_focus: bool,
+    reader_follow_selection: bool,
     setup: Option<SetupState>,
     composer: Option<Composer>,
     view: View,
@@ -617,6 +739,7 @@ struct MailApp {
     expanded_messages: std::collections::HashSet<MessageKey>,
     collapsed_messages: std::collections::HashSet<MessageKey>,
     visible_quotes: std::collections::HashSet<MessageKey>,
+    plain_messages: std::collections::HashSet<MessageKey>,
     reader_bodies: std::collections::VecDeque<ReaderBody>,
     list_rows: Arc<Vec<ListRow>>,
     appearance: appearance::AppearanceState,
@@ -685,6 +808,7 @@ impl MailApp {
             reader_selected_key: None,
             reader_selected_position: None,
             reader_should_focus: false,
+            reader_follow_selection: false,
             setup: (!demo).then(|| SetupState::new(window, cx)),
             composer: None,
             view: if demo { View::Mailbox } else { View::Setup },
@@ -721,6 +845,7 @@ impl MailApp {
             expanded_messages: std::collections::HashSet::new(),
             collapsed_messages: std::collections::HashSet::new(),
             visible_quotes: std::collections::HashSet::new(),
+            plain_messages: std::collections::HashSet::new(),
             reader_bodies: std::collections::VecDeque::new(),
             list_rows: Arc::new(Vec::new()),
             appearance: appearance::AppearanceState::default(),
@@ -903,46 +1028,54 @@ impl MailApp {
         if self.reader_selected_key != snapshot.selected_key
             || self.reader_selected_position != selected_position
         {
+            if self.reader_selected_key != snapshot.selected_key {
+                let members = snapshot.conversations.iter().find(|thread| {
+                    thread
+                        .members
+                        .iter()
+                        .any(|member| Some(&member.key) == snapshot.selected_key.as_ref())
+                });
+                self.reader_follow_selection = reader_follows_selection(
+                    self.reader_selected_key.as_ref(),
+                    snapshot.selected_key.as_ref(),
+                    members
+                        .into_iter()
+                        .flat_map(|thread| thread.members.iter().map(|member| &member.key)),
+                );
+            }
             self.reader_selected_key = snapshot.selected_key.clone();
             self.reader_selected_position = selected_position;
             self.reader_should_focus = true;
         }
-        if let Some(row) = snapshot
-            .selected_message
-            .as_ref()
-            .filter(|row| !row.message.body.is_empty())
-        {
-            if !self
-                .reader_bodies
-                .iter()
-                .any(|cached| cached.key == row.key && cached.text.as_ref() == row.message.body)
-            {
-                let (without_quote, quote) = preferences::split_quoted_text(&row.message.body);
-                let cached = ReaderBody {
-                    key: row.key.clone(),
-                    text: row.message.body.clone().into(),
-                    without_quote: without_quote.to_owned().into(),
-                    has_quote: quote.is_some(),
-                    html: preferences::plain_text_html(&row.message.body).into(),
-                    html_without_quote: preferences::plain_text_html(without_quote).into(),
-                };
-                self.reader_should_focus = true;
+        if let Some(row) = snapshot.selected_message.as_ref().filter(|row| {
+            snapshot.body_loaded
+                || !row.message.body.is_empty()
+                || !snapshot.selected_html.is_empty()
+        }) {
+            if !self.reader_bodies.iter().any(|cached| {
+                cached.key == row.key
+                    && cached.text.as_ref() == row.message.body
+                    && cached.source_html.as_ref() == snapshot.selected_html.as_ref()
+            }) {
+                let cached = ReaderBody::new(
+                    row.key.clone(),
+                    &row.message.body,
+                    snapshot.selected_html.clone(),
+                    snapshot.selected_html_without_quote.clone(),
+                );
                 self.reader_bodies.retain(|cached| cached.key != row.key);
                 self.reader_bodies.push_front(cached);
                 while self.reader_bodies.len() > 8
                     || self
                         .reader_bodies
                         .iter()
-                        .map(|cached| {
-                            cached.text.len()
-                                + cached.without_quote.len()
-                                + cached.html.len()
-                                + cached.html_without_quote.len()
-                        })
+                        .map(|cached| cached.retained_bytes)
                         .sum::<usize>()
                         > 32 * 1024 * 1024
                 {
-                    self.reader_bodies.pop_back();
+                    if let Some(evicted) = self.reader_bodies.pop_back() {
+                        self.plain_messages.remove(&evicted.key);
+                    }
                 }
             }
         }
@@ -2604,6 +2737,7 @@ impl MailApp {
         snapshot: &MailboxSnapshot,
         palette: Palette,
         cx: &mut Context<Self>,
+        width: gpui_kit::Pixels,
     ) -> AnyElement {
         let dark = self.dark;
         if self.sidebar_collapsed {
@@ -2627,7 +2761,7 @@ impl MailApp {
             .collect::<Vec<_>>();
         other.sort_by_key(|folder| folder.name.to_lowercase());
         v_flex()
-            .w(px(232.))
+            .w(width)
             .h_full()
             .min_h_0()
             .flex_shrink_0()
@@ -3214,12 +3348,14 @@ impl MailApp {
         snapshot: &MailboxSnapshot,
         palette: Palette,
         cx: &mut Context<Self>,
+        width: gpui_kit::Pixels,
     ) -> impl IntoElement {
         let title = snapshot.title.clone();
         let unavailable = snapshot.account_errors.len();
         v_flex()
-            .w(px(332.))
+            .w(width)
             .h_full()
+            .min_w_0()
             .flex_shrink_0()
             .min_h_0()
             .bg(self.pane_surface(palette.list, 0.10))
@@ -3236,6 +3372,9 @@ impl MailApp {
                     .border_color(palette.border)
                     .child(
                         div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
                             .text_size(px(14.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(title),
@@ -3298,6 +3437,8 @@ impl MailApp {
                     .py_3()
                     .child(
                         h_flex()
+                            .w_full()
+                            .min_w_0()
                             .items_center()
                             .gap_1()
                             .child(
@@ -3309,7 +3450,8 @@ impl MailApp {
                                     )
                                     .cleanable(true)
                                     .aria_label("Search loaded messages")
-                                    .flex_1(),
+                                    .flex_1()
+                                    .min_w_0(),
                             )
                             .child(self.filter_menu(snapshot, palette, cx)),
                     )
@@ -3539,6 +3681,7 @@ impl MailApp {
         }
         v_flex()
             .w_full()
+            .min_w_0()
             .gap_2()
             .pt_6()
             .child(
@@ -3555,18 +3698,26 @@ impl MailApp {
                     link.label.clone()
                 };
                 v_flex()
+                    .w_full()
+                    .min_w_0()
                     .gap_1()
                     .child(
                         Button::new(SharedString::from(format!("message-link-{index}")))
                             .ghost()
                             .small()
-                            .label(label.clone())
+                            .w_full()
+                            .min_w_0()
+                            .justify_start()
+                            .child(div().w_full().min_w_0().truncate().child(label.clone()))
                             .accessibility_label(format!("Open {label} in your browser"))
                             .tooltip(format!("Open {} in your browser", link.url))
                             .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url))),
                     )
                     .child(
                         div()
+                            .w_full()
+                            .min_w_0()
+                            .whitespace_normal()
                             .pl_2()
                             .text_size(px(10.))
                             .text_color(palette.faint)
@@ -3613,6 +3764,7 @@ impl MailApp {
 
         v_flex()
             .w_full()
+            .min_w_0()
             .gap_2()
             .pt_6()
             .border_t_1()
@@ -3620,6 +3772,7 @@ impl MailApp {
             .child(
                 h_flex()
                     .w_full()
+                    .min_w_0()
                     .items_center()
                     .justify_between()
                     .child(
@@ -3669,6 +3822,7 @@ impl MailApp {
                     let saving = self.attachment_save_pending.as_deref() == Some(name.as_str());
                     h_flex()
                         .w_full()
+                        .min_w_0()
                         .items_center()
                         .justify_between()
                         .gap_3()
@@ -3809,7 +3963,8 @@ impl MailApp {
     ) -> AnyElement {
         let Some(row) = snapshot.selected_message.clone() else {
             return v_flex()
-                .size_full()
+                .h_full()
+                .flex_1()
                 .min_w_0()
                 .bg(self.pane_surface(palette.background, 0.05))
                 .child(self.outbox_panel(snapshot, palette, cx))
@@ -3866,17 +4021,35 @@ impl MailApp {
         } else {
             IconName::Archive
         };
-        let row_for_draft = row.as_ref().clone();
-        let reply_message = row.message.clone();
-        let forward_message = row.message.clone();
-        let reply_all_message = row.message.clone();
+        let reader_subject = snapshot
+            .conversations
+            .iter()
+            .find(|thread| thread.members.iter().any(|member| member.key == row.key))
+            .and_then(|thread| {
+                thread
+                    .members
+                    .iter()
+                    .find(|member| !member.message.subject.is_empty())
+            })
+            .map_or(row.message.subject.as_str(), |member| {
+                member.message.subject.as_str()
+            });
+        let row_for_draft = row.clone();
+        let reply_message = row.clone();
+        let forward_message = row.clone();
+        let reply_all_message = row.clone();
         v_flex()
-            .size_full()
+            .h_full()
+            .flex_1()
             .min_w_0()
             .bg(self.pane_surface(palette.background, 0.05))
             .child(
                 h_flex()
-                    .h(px(44.))
+                    .min_h(px(44.))
+                    .py_2()
+                    .flex_wrap()
+                    .gap_2()
+                    .min_w_0()
                     .flex_shrink_0()
                     .items_center()
                     .justify_between()
@@ -3887,7 +4060,7 @@ impl MailApp {
                         h_flex()
                             .items_center()
                             .gap_2()
-                            .max_w(px(140.))
+                            .flex_1()
                             .min_w_0()
                             .overflow_hidden()
                             .text_size(px(11.))
@@ -3906,8 +4079,10 @@ impl MailApp {
                     )
                     .child(
                         h_flex()
+                            .flex_wrap()
+                            .min_w_0()
                             .items_center()
-                            .gap_2()
+                            .gap_1()
                             .when(!is_draft, |row| {
                                 row.child(
                                     Button::new("reply-message")
@@ -3917,7 +4092,11 @@ impl MailApp {
                                         .label("Reply")
                                         .disabled(snapshot.pending_send || snapshot.body_loading)
                                         .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.open_reply(reply_message.clone(), window, cx)
+                                            this.open_reply(
+                                                reply_message.message.clone(),
+                                                window,
+                                                cx,
+                                            )
                                         })),
                                 )
                                 .child(
@@ -3930,7 +4109,7 @@ impl MailApp {
                                         .accessibility_label("Reply to all recipients")
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             this.open_reply_all(
-                                                reply_all_message.clone(),
+                                                reply_all_message.message.clone(),
                                                 window,
                                                 cx,
                                             )
@@ -3945,7 +4124,11 @@ impl MailApp {
                                         .accessibility_label("Forward message")
                                         .tooltip("Forward message")
                                         .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.open_forward(forward_message.clone(), window, cx)
+                                            this.open_forward(
+                                                forward_message.message.clone(),
+                                                window,
+                                                cx,
+                                            )
                                         })),
                                 )
                             })
@@ -3962,7 +4145,11 @@ impl MailApp {
                                         })
                                         .disabled(snapshot.pending_send || draft_opening)
                                         .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.open_draft(row_for_draft.clone(), cx, window)
+                                            this.open_draft(
+                                                row_for_draft.as_ref().clone(),
+                                                cx,
+                                                window,
+                                            )
                                         })),
                                 )
                             })
@@ -3972,7 +4159,7 @@ impl MailApp {
                                     .secondary()
                                     .small()
                                     .icon(Icon::new(archive_icon))
-                                    .label(archive_label)
+                                    .tooltip(archive_label)
                                     .disabled(
                                         snapshot.is_demo
                                             || if is_archived {
@@ -3999,37 +4186,40 @@ impl MailApp {
                 row.child(error_banner("Could not open draft", &error, cx, palette))
             })
             .child(
-                div()
-                    .flex_none()
-                    .px_6()
-                    .pt_5()
-                    .pb_3()
-                    .text_size(px(24.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(if row.message.subject.is_empty() {
-                        "(No subject)".to_owned()
-                    } else {
-                        row.message
-                            .subject
-                            .trim_start_matches("Re: ")
-                            .trim_start_matches("RE: ")
-                            .to_owned()
-                    }),
-            )
-            .child(
                 v_flex()
                     .flex_1()
                     .min_h_0()
                     .id("reader-scroll")
                     .track_scroll(&self.reader_scroll)
                     .overflow_y_scroll()
-                    .items_center()
+                    .min_w_0()
+                    .overflow_x_hidden()
                     .px_6()
+                    .pt_5()
                     .pb_6()
                     .child(
                         v_flex()
                             .w_full()
+                            .min_w_0()
                             .max_w(px(680.))
+                            .gap_4()
+                            .child(
+                                gpui_kit::component::text::TextView::html(
+                                    "reader-subject",
+                                    preferences::plain_text_html(if reader_subject.is_empty() {
+                                        "(No subject)"
+                                    } else {
+                                        reader_subject
+                                    }),
+                                )
+                                .selectable(true)
+                                .w_full()
+                                .min_w_0()
+                                .text_size(px(24.))
+                                .line_height(relative(1.25))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(palette.text),
+                            )
                             .child(self.conversation_content(snapshot, &row, palette, cx)),
                     ),
             )
@@ -4052,269 +4242,469 @@ impl MailApp {
         let members = conversation
             .map(|thread| thread.members.clone())
             .unwrap_or_else(|| Arc::new(vec![selected.clone()]));
-        let content =
-            v_flex()
-                .w_full()
-                .gap_4()
-                .when(members.len() > 1, |el| {
-                    el.child(
-                        h_flex()
-                            .items_center()
-                            .gap_2()
-                            .text_size(px(12.))
-                            .text_color(palette.muted)
-                            .child(Icon::new(IconName::Mail).size(px(14.)))
-                            .child(format!("{} messages · oldest first", members.len()))
-                            .when(conversation.is_some_and(|thread| thread.replied), |el| {
-                                el.child(Icon::new(IconName::CornerUpLeft).size(px(14.)))
-                                    .child("You replied")
+        let content = v_flex()
+            .w_full()
+            .min_w_0()
+            .gap_4()
+            .when(members.len() > 1, |el| {
+                el.child(
+                    h_flex()
+                        .flex_wrap()
+                        .min_w_0()
+                        .items_center()
+                        .gap_2()
+                        .text_size(px(12.))
+                        .text_color(palette.muted)
+                        .child(Icon::new(IconName::Mail).size(px(14.)))
+                        .child(format!("{} messages · oldest first", members.len()))
+                        .when(conversation.is_some_and(|thread| thread.replied), |el| {
+                            el.child(Icon::new(IconName::CornerUpLeft).size(px(14.)))
+                                .child("You replied")
+                        })
+                        .when(conversation.is_some_and(|thread| thread.forwarded), |el| {
+                            el.child(Icon::new(IconName::CornerUpRight).size(px(14.)))
+                                .child("Forwarded")
+                        }),
+                )
+            })
+            .when(snapshot.conversation_loading, |el| {
+                el.child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(palette.muted)
+                        .child("Finding messages across this account…"),
+                )
+            })
+            .when_some(snapshot.conversation_error.clone(), |el, error| {
+                el.child(error_banner("Conversation", &error, cx, palette))
+            })
+            .when_some(snapshot.conversation_warning.clone(), |el, warning| {
+                el.child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(palette.muted)
+                        .child(warning),
+                )
+            })
+            .children(members.iter().map(|row| {
+                let key = row.key.clone();
+                let open = (key == selected.key || self.expanded_messages.contains(&key))
+                    && !self.collapsed_messages.contains(&key);
+                let selected_here = key == selected.key;
+                let cached = self.reader_bodies.iter().find(|cached| cached.key == key);
+                let quote_visible =
+                    !self.preferences.hide_quoted_text || self.visible_quotes.contains(&key);
+                let plain = self.plain_messages.contains(&key);
+                let has_quote = cached.is_some_and(|cached| {
+                    if plain {
+                        preferences::split_quoted_text(&cached.text).1.is_some()
+                    } else {
+                        cached.has_quote
+                    }
+                });
+                let body: SharedString = cached
+                    .map(|cached| {
+                        if quote_visible {
+                            cached.text.clone()
+                        } else {
+                            cached.without_quote.clone()
+                        }
+                    })
+                    .unwrap_or_else(|| {
+                        if selected_here {
+                            selected.message.body.clone().into()
+                        } else {
+                            row.message.body.clone().into()
+                        }
+                    });
+                let body_element: AnyElement = if let Some(cached) =
+                    cached.filter(|body| !body.text.is_empty() || !body.html.is_empty())
+                {
+                    gpui_kit::component::text::TextView::html(
+                        SharedString::from(format!(
+                            "mail-text-{}-{}-{}-{}",
+                            key.account_id,
+                            key.folder_path,
+                            key.uid,
+                            format!("{quote_visible}-{plain}")
+                        )),
+                        if plain {
+                            if quote_visible {
+                                cached.plain_html.clone()
+                            } else {
+                                cached.plain_html_without_quote.clone()
+                            }
+                        } else if quote_visible {
+                            cached.html.clone()
+                        } else {
+                            cached.html_without_quote.clone()
+                        },
+                    )
+                    .selectable(true)
+                    .w_full()
+                    .min_w_0()
+                    .on_link_click(|url, _, _, cx| {
+                        if megamail_core::mail_text::safe_browser_url(url) {
+                            cx.open_url(url);
+                        }
+                    })
+                    .style(gpui_kit::component::text::TextViewStyle {
+                        paragraph_gap: gpui_kit::rems(if plain || cached.source_html.is_empty() {
+                            0.
+                        } else {
+                            0.75
+                        }),
+                        heading_font_size: Some(Arc::new(|level, _| {
+                            px(match level {
+                                1 => 22.,
+                                2 => 19.,
+                                3 => 16.,
+                                _ => 14.,
                             })
-                            .when(conversation.is_some_and(|thread| thread.forwarded), |el| {
-                                el.child(Icon::new(IconName::CornerUpRight).size(px(14.)))
-                                    .child("Forwarded")
-                            }),
-                    )
-                })
-                .when(snapshot.conversation_loading, |el| {
-                    el.child(
-                        div()
-                            .text_size(px(12.))
-                            .text_color(palette.muted)
-                            .child("Finding messages across this account…"),
-                    )
-                })
-                .when_some(snapshot.conversation_error.clone(), |el, error| {
-                    el.child(error_banner("Conversation", &error, cx, palette))
-                })
-                .when_some(snapshot.conversation_warning.clone(), |el, warning| {
-                    el.child(
-                        div()
-                            .text_size(px(12.))
-                            .text_color(palette.muted)
-                            .child(warning),
-                    )
-                })
-                .children(members.iter().map(|row| {
-                    let key = row.key.clone();
-                    let open = (key == selected.key || self.expanded_messages.contains(&key))
-                        && !self.collapsed_messages.contains(&key);
-                    let selected_here = key == selected.key;
-                    let cached = self.reader_bodies.iter().find(|cached| cached.key == key);
-                    let quote_visible =
-                        !self.preferences.hide_quoted_text || self.visible_quotes.contains(&key);
-                    let has_quote = cached.is_some_and(|cached| cached.has_quote);
-                    let body: SharedString = cached
-                        .map(|cached| {
-                            if quote_visible {
-                                cached.text.clone()
-                            } else {
-                                cached.without_quote.clone()
-                            }
-                        })
-                        .unwrap_or_else(|| {
-                            if selected_here {
-                                selected.message.body.clone().into()
-                            } else {
-                                row.message.body.clone().into()
-                            }
-                        });
-                    let body_element: AnyElement = if let Some(cached) = cached {
-                        gpui_kit::component::text::TextView::html(
-                            SharedString::from(format!(
-                                "mail-text-{}-{}-{}-{}",
-                                key.account_id, key.folder_path, key.uid, quote_visible
-                            )),
-                            if quote_visible {
-                                cached.html.clone()
-                            } else {
-                                cached.html_without_quote.clone()
-                            },
-                        )
-                        .selectable(true)
-                        .style(gpui_kit::component::text::TextViewStyle {
-                            paragraph_gap: gpui_kit::rems(0.),
-                            ..Default::default()
-                        })
+                        })),
+                        table: {
+                            let mut style =
+                                gpui_kit::StyleRefinement::default().bg(palette.surface);
+                            style.overflow.x = Some(gpui_kit::Overflow::Scroll);
+                            style
+                        },
+                        is_dark: cx.theme().is_dark(),
+                        ..Default::default()
+                    })
+                    .text_size(px(14.))
+                    .line_height(relative(1.6))
+                    .text_color(palette.text)
+                    .into_any_element()
+                } else {
+                    div()
                         .text_size(px(14.))
                         .line_height(relative(1.6))
                         .text_color(palette.text)
-                        .into_any_element()
-                    } else {
-                        div()
-                            .text_size(px(14.))
-                            .line_height(relative(1.6))
-                            .text_color(palette.text)
-                            .child(if body.is_empty() {
-                                if snapshot.body_loading && selected_here {
-                                    "Loading message body…".into()
-                                } else {
-                                    "Open this message to load its body.".into()
-                                }
+                        .child(if body.is_empty() {
+                            if cached.is_some() {
+                                "This message has no body.".into()
+                            } else if snapshot.body_loading && selected_here {
+                                "Loading message body…".into()
                             } else {
-                                body
-                            })
-                            .into_any_element()
-                    };
-                    let sender = snapshot
-                        .accounts
-                        .iter()
-                        .find(|account| account.id == key.account_id)
-                        .filter(|account| {
-                            account.email.eq_ignore_ascii_case(&row.message.from_addr)
-                        })
-                        .map_or_else(|| message_sender(&row.message), |_| "You".to_owned());
-                    let header = Button::new(SharedString::from(format!(
-                        "reader-message-{}-{}-{}",
-                        key.account_id, key.folder_path, key.uid
-                    )))
-                    .ghost()
-                    .small()
-                    .w_full()
-                    .h(px(52.))
-                    .px_0()
-                    .rounded(px(4.))
-                    .accessibility_label(format!(
-                        "{} message from {sender}",
-                        if open { "Collapse" } else { "Expand" }
-                    ))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if open {
-                            this.expanded_messages.remove(&key);
-                            this.collapsed_messages.insert(key.clone());
+                                "Open this message to load its body.".into()
+                            }
                         } else {
-                            this.collapsed_messages.remove(&key);
-                            this.expanded_messages.insert(key.clone());
-                            this.live
-                                .update(cx, |live, cx| live.select_message(key.clone(), cx));
-                        }
-                        cx.notify();
-                    }))
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .items_center()
-                            .gap_3()
-                            .child(
-                                div()
-                                    .flex()
-                                    .size(px(28.))
-                                    .rounded_full()
-                                    .bg(palette.accent_wash)
-                                    .text_color(palette.accent)
-                                    .text_size(px(11.))
-                                    .items_center()
-                                    .justify_center()
-                                    .child(initials(&sender)),
-                            )
-                            .child(
-                                v_flex()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .gap_1()
-                                    .child(
-                                        div()
-                                            .text_size(px(13.))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .truncate()
-                                            .child(sender),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(12.))
-                                            .text_color(palette.muted)
-                                            .truncate()
-                                            .child(if open {
-                                                row.message.from_addr.clone()
-                                            } else {
-                                                row.message.preview.clone()
-                                            }),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(12.))
-                                    .text_color(palette.muted)
-                                    .child(row.message.date.clone()),
-                            )
-                            .child(
-                                Icon::new(if open {
-                                    IconName::ChevronDown
-                                } else {
-                                    IconName::ChevronRight
-                                })
-                                .size(px(14.))
-                                .text_color(palette.muted),
-                            ),
-                    );
-                    v_flex()
-                        .id(SharedString::from(format!(
-                            "reader-anchor-{}-{}-{}",
-                            row.key.account_id, row.key.folder_path, row.key.uid
-                        )))
-                        .w_full()
-                        .border_t_1()
-                        .border_color(palette.border)
-                        .pt_2()
-                        .gap_3()
-                        .when(selected_here, |el| {
-                            el.anchor_scroll(Some(self.reader_anchor.clone()))
+                            body
                         })
-                        .child(header)
-                        .when(open, |el| {
-                            el.child(div().text_size(px(12.)).text_color(palette.muted).child(
-                                format!(
-                                    "To: {}{}",
-                                    row.message.to,
-                                    if row.message.cc.is_empty() {
-                                        String::new()
-                                    } else {
-                                        format!(" · Cc: {}", row.message.cc)
-                                    }
-                                ),
-                            ))
-                            .child(body_element)
-                            .when(cached.is_none() && !selected_here, |el| {
-                                let key = row.key.clone();
-                                el.child(
-                                    Button::new(SharedString::from(format!(
-                                        "load-thread-body-{}-{}-{}",
-                                        key.account_id, key.folder_path, key.uid
-                                    )))
-                                    .ghost()
-                                    .small()
-                                    .label("Load message")
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.live.update(cx, |live, cx| {
-                                            live.select_message(key.clone(), cx)
-                                        });
-                                    })),
+                        .into_any_element()
+                };
+                let sender = snapshot
+                    .accounts
+                    .iter()
+                    .find(|account| account.id == key.account_id)
+                    .filter(|account| account.email.eq_ignore_ascii_case(&row.message.from_addr))
+                    .map_or_else(|| message_sender(&row.message), |_| "You".to_owned());
+                let header = Button::new(SharedString::from(format!(
+                    "reader-message-{}-{}-{}",
+                    key.account_id, key.folder_path, key.uid
+                )))
+                .ghost()
+                .small()
+                .w_full()
+                .min_h(px(52.))
+                .h_auto()
+                .px_0()
+                .rounded(px(4.))
+                .accessibility_label(format!(
+                    "{} message from {sender}",
+                    if open { "Collapse" } else { "Expand" }
+                ))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if open {
+                        this.expanded_messages.remove(&key);
+                        this.collapsed_messages.insert(key.clone());
+                    } else {
+                        this.collapsed_messages.remove(&key);
+                        this.expanded_messages.insert(key.clone());
+                        this.live
+                            .update(cx, |live, cx| live.select_message(key.clone(), cx));
+                    }
+                    cx.notify();
+                }))
+                .child(
+                    h_flex()
+                        .w_full()
+                        .min_w_0()
+                        .items_center()
+                        .gap_3()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_shrink_0()
+                                .size(px(28.))
+                                .rounded_full()
+                                .bg(palette.accent_wash)
+                                .text_color(palette.accent)
+                                .text_size(px(11.))
+                                .items_center()
+                                .justify_center()
+                                .child(initials(&sender)),
+                        )
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_size(px(13.))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .truncate()
+                                        .child(sender),
                                 )
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .text_color(palette.muted)
+                                        .truncate()
+                                        .child(if open {
+                                            row.message.from_addr.clone()
+                                        } else {
+                                            row.message.preview.clone()
+                                        }),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .max_w(px(90.))
+                                .truncate()
+                                .text_size(px(11.))
+                                .text_color(palette.muted)
+                                .child(row.message.date.clone()),
+                        )
+                        .child(
+                            Icon::new(if open {
+                                IconName::ChevronDown
+                            } else {
+                                IconName::ChevronRight
                             })
-                            .when(has_quote && !quote_visible, |el| {
+                            .size(px(14.))
+                            .text_color(palette.muted),
+                        ),
+                );
+                v_flex()
+                    .id(SharedString::from(format!(
+                        "reader-anchor-{}-{}-{}",
+                        row.key.account_id, row.key.folder_path, row.key.uid
+                    )))
+                    .w_full()
+                    .min_w_0()
+                    .border_t_1()
+                    .border_color(palette.border)
+                    .pt_2()
+                    .gap_3()
+                    .when(selected_here, |el| {
+                        el.anchor_scroll(Some(self.reader_anchor.clone()))
+                    })
+                    .child(header)
+                    .when(open, |el| {
+                        el.child(
+                            v_flex()
+                                .w_full()
+                                .min_w_0()
+                                .gap_2()
+                                .child(reader_recipient(
+                                    &row.key,
+                                    "From",
+                                    &if row.message.from_name.is_empty() {
+                                        row.message.from_addr.clone()
+                                    } else {
+                                        format!(
+                                            "{} <{}>",
+                                            row.message.from_name, row.message.from_addr
+                                        )
+                                    },
+                                    palette,
+                                ))
+                                .child(reader_recipient(&row.key, "To", &row.message.to, palette))
+                                .when(
+                                    !row.message.reply_to.is_empty()
+                                        && row.message.reply_to != row.message.from_addr,
+                                    |el| {
+                                        el.child(reader_recipient(
+                                            &row.key,
+                                            "Reply to",
+                                            &row.message.reply_to,
+                                            palette,
+                                        ))
+                                    },
+                                )
+                                .when(!row.message.cc.is_empty(), |el| {
+                                    el.child(reader_recipient(
+                                        &row.key,
+                                        "Cc",
+                                        &row.message.cc,
+                                        palette,
+                                    ))
+                                }),
+                        )
+                        .when(
+                            cached.is_some_and(|cached| !cached.source_html.is_empty()),
+                            |el| {
                                 let key = row.key.clone();
                                 el.child(
                                     Button::new(SharedString::from(format!(
-                                        "show-quote-{}-{}-{}",
+                                        "reader-format-{}-{}-{}",
                                         key.account_id, key.folder_path, key.uid
                                     )))
                                     .ghost()
                                     .small()
-                                    .label("Show quoted text")
-                                    .accessibility_label("Show the original quoted message text")
+                                    .self_start()
+                                    .label(if plain {
+                                        "Show formatting"
+                                    } else {
+                                        "Plain text"
+                                    })
+                                    .accessibility_label(if plain {
+                                        "Show formatted message"
+                                    } else {
+                                        "View message as plain text"
+                                    })
                                     .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.visible_quotes.insert(key.clone());
+                                        if plain {
+                                            this.plain_messages.remove(&key);
+                                        } else {
+                                            this.plain_messages.insert(key.clone());
+                                        }
                                         cx.notify();
                                     })),
                                 )
-                            })
-                            .when(selected_here, |el| {
-                                el.child(self.links_panel(snapshot, palette, cx)).child(
-                                    self.attachments_panel(snapshot, row.key.clone(), palette, cx),
-                                )
-                            })
+                            },
+                        )
+                        .child(body_element)
+                        .when(cached.is_none() && !selected_here, |el| {
+                            let key = row.key.clone();
+                            el.child(
+                                Button::new(SharedString::from(format!(
+                                    "load-thread-body-{}-{}-{}",
+                                    key.account_id, key.folder_path, key.uid
+                                )))
+                                .ghost()
+                                .small()
+                                .self_start()
+                                .label("Load message")
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.live.update(cx, |live, cx| {
+                                            live.select_message(key.clone(), cx)
+                                        });
+                                    },
+                                )),
+                            )
                         })
-                        .into_any_element()
-                }));
+                        .when(has_quote && self.preferences.hide_quoted_text, |el| {
+                            let key = row.key.clone();
+                            el.child(
+                                Button::new(SharedString::from(format!(
+                                    "show-quote-{}-{}-{}",
+                                    key.account_id, key.folder_path, key.uid
+                                )))
+                                .ghost()
+                                .small()
+                                .self_start()
+                                .label(if quote_visible {
+                                    "Hide quoted text"
+                                } else {
+                                    "Show quoted text"
+                                })
+                                .accessibility_label(if quote_visible {
+                                    "Hide the original quoted message text"
+                                } else {
+                                    "Show the original quoted message text"
+                                })
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        if quote_visible {
+                                            this.visible_quotes.remove(&key);
+                                        } else {
+                                            this.visible_quotes.insert(key.clone());
+                                        }
+                                        cx.notify();
+                                    },
+                                )),
+                            )
+                        })
+                        .when(
+                            members.len() > 1
+                                && cached.is_some()
+                                && !snapshot.folders.iter().any(|folder| {
+                                    folder.path == row.key.folder_path
+                                        && folder.kind == FolderKind::Drafts
+                                }),
+                            |el| {
+                                let reply = row.clone();
+                                let body = cached.unwrap().text.clone();
+                                let reply_all = reply.clone();
+                                let all_body = body.clone();
+                                let key = row.key.clone();
+                                let all_key = key.clone();
+                                el.child(
+                                    h_flex()
+                                        .w_full()
+                                        .min_w_0()
+                                        .flex_wrap()
+                                        .gap_1()
+                                        .pt_2()
+                                        .child(
+                                            Button::new(SharedString::from(format!(
+                                                "thread-reply-{}-{}-{}",
+                                                key.account_id, key.folder_path, key.uid
+                                            )))
+                                            .ghost()
+                                            .small()
+                                            .icon(Icon::new(IconName::CornerUpLeft))
+                                            .label("Reply")
+                                            .accessibility_label("Reply to this message")
+                                            .disabled(snapshot.pending_send)
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.live.update(cx, |live, cx| {
+                                                    live.select_message(key.clone(), cx)
+                                                });
+                                                let mut message = reply.message.clone();
+                                                message.body = body.to_string();
+                                                this.open_reply(message, window, cx);
+                                            })),
+                                        )
+                                        .child(
+                                            Button::new(SharedString::from(format!(
+                                                "thread-reply-all-{}-{}-{}",
+                                                all_key.account_id,
+                                                all_key.folder_path,
+                                                all_key.uid
+                                            )))
+                                            .ghost()
+                                            .small()
+                                            .label("Reply all")
+                                            .accessibility_label(
+                                                "Reply to all recipients of this message",
+                                            )
+                                            .disabled(snapshot.pending_send)
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.live.update(cx, |live, cx| {
+                                                    live.select_message(all_key.clone(), cx)
+                                                });
+                                                let mut message = reply_all.message.clone();
+                                                message.body = all_body.to_string();
+                                                this.open_reply_all(message, window, cx);
+                                            })),
+                                        ),
+                                )
+                            },
+                        )
+                        .when(selected_here, |el| {
+                            el.child(self.links_panel(snapshot, palette, cx)).child(
+                                self.attachments_panel(snapshot, row.key.clone(), palette, cx),
+                            )
+                        })
+                    })
+                    .into_any_element()
+            }));
         if self.preferences.reduced_motion || cx.reduce_motion() {
             content.into_any_element()
         } else {
@@ -5589,10 +5979,14 @@ impl Render for MailApp {
         let dark = cx.theme().is_dark();
         let palette = self.palette;
         let snapshot = self.live.read(cx).snapshot();
+        let available_width = f32::from(window.viewport_size().width);
+        let pane_scale = ((available_width - 1000.) / 280.).clamp(0., 1.);
+        let rail_width = px(192. + 40. * pane_scale);
+        let list_width = px(280. + 52. * pane_scale);
         let client_decorated = matches!(window.window_decorations(), Decorations::Client { .. });
         if self.reader_should_focus && self.view == View::Mailbox {
             self.reader_should_focus = false;
-            if snapshot.selected_key.is_some() {
+            if self.reader_follow_selection && snapshot.selected_key.is_some() {
                 self.reader_anchor.scroll_to(window, cx);
             } else {
                 self.reader_scroll
@@ -5744,7 +6138,7 @@ impl Render for MailApp {
             h_flex()
                 .flex_1()
                 .min_h_0()
-                .child(self.sidebar(&snapshot, palette, cx))
+                .child(self.sidebar(&snapshot, palette, cx, rail_width))
                 .child(self.appearance_view(palette, cx))
                 .into_any_element()
         } else if self.view == View::Setup || self.loading_profiles {
@@ -5764,8 +6158,8 @@ impl Render for MailApp {
             h_flex()
                 .flex_1()
                 .min_h_0()
-                .child(self.sidebar(&snapshot, palette, cx))
-                .child(self.message_pane(&snapshot, palette, cx))
+                .child(self.sidebar(&snapshot, palette, cx, rail_width))
+                .child(self.message_pane(&snapshot, palette, cx, list_width))
                 .child(if self.view == View::Compose {
                     self.composer_view(&snapshot, palette, cx)
                 } else {
@@ -6630,6 +7024,67 @@ fn initials(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn opening_a_thread_starts_at_the_subject_and_only_member_navigation_follows() {
+        let key = |uid| super::MessageKey {
+            account_id: 1,
+            folder_path: "INBOX".into(),
+            uid,
+        };
+        let first = key(1);
+        let reply = key(2);
+        let unrelated = key(3);
+        let members = [&first, &reply];
+        assert!(!super::reader_follows_selection(
+            None,
+            Some(&reply),
+            members.into_iter()
+        ));
+        assert!(!super::reader_follows_selection(
+            Some(&unrelated),
+            Some(&reply),
+            members.into_iter()
+        ));
+        assert!(super::reader_follows_selection(
+            Some(&first),
+            Some(&reply),
+            members.into_iter()
+        ));
+        assert!(!super::reader_follows_selection(
+            Some(&reply),
+            None,
+            members.into_iter()
+        ));
+    }
+
+    #[test]
+    fn reader_cache_keeps_formatted_quotes_and_counts_shared_markup_once() {
+        let key = super::MessageKey {
+            account_id: 1,
+            folder_path: "INBOX".into(),
+            uid: 42,
+        };
+        let rich = super::ReaderBody::new(
+            key.clone(),
+            "Current\n\n> Earlier",
+            "<p><b>Current</b></p><blockquote>Earlier</blockquote>".into(),
+            Some("<p><b>Current</b></p>".into()),
+        );
+        assert!(rich.has_quote);
+        assert!(rich.html_without_quote.contains("<b>Current</b>"));
+        assert!(!rich.html_without_quote.contains("Earlier"));
+        assert!(rich.html.contains("Earlier"));
+        assert!(rich.plain_html.contains("&gt; Earlier"));
+        let plain = super::ReaderBody::new(key, "&".repeat(100).as_str(), "".into(), None);
+        assert!(!plain.has_quote);
+        assert_eq!(
+            plain.retained_bytes,
+            plain.text.len() + plain.plain_html.len()
+        );
+        assert_eq!(plain.html, plain.plain_html);
+        assert_eq!(plain.html_without_quote, plain.plain_html);
+    }
+
     use super::{composer_can_close, composer_can_edit, composer_operation_pending};
 
     #[test]

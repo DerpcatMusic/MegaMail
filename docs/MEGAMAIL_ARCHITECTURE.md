@@ -191,11 +191,20 @@ Real-provider sending and delivery remain unverified.
 
 ## Reader, links, and attachments
 
-Incoming message bodies use a selectable, escaped plain-text view. The
-native reader does not render arbitrary email HTML in a browser engine or
-automatically fetch remote images or other resources. When quote hiding is
+Incoming message bodies use selectable native GPUI Kit semantic formatting.
+A bounded allowlist keeps headings, paragraphs, line breaks, emphasis, lists,
+quotes, code, tables, safe links, and text direction. It removes sender CSS,
+fixed dimensions, active content, forms, and resources; image alt text remains
+without fetching the image. Presentation tables become flowing blocks, while
+data tables use a local horizontal scroll viewport when needed. Sanitization
+and quote extraction run on the worker path before the UI receives the body.
+A per-message plain-text view remains available. The reader does not run a
+browser engine or automatically fetch remote images or other resources. Native
+wrapping shapes each visual row while preserving logical UTF-8 source positions
+for selection, copying, and link hit testing. When quote hiding is
 enabled, it collapses only a conservative trailing quoted block and preserves
-the source text so the user can restore it. Reply All uses the active account
+the full body so the user can restore it without flattening the remaining
+formatted message. Reply All uses the active account
 and excludes the user's own account addresses and aliases. The core can extract
 a separate, bounded list of links from HTML anchors; only validated `http` and
 `https` destinations without embedded user information are offered, and the
@@ -206,8 +215,8 @@ attachments and requires an explicit **Download attachments** action when a
 network fetch is needed. Each available file has an explicit **Save** action
 using the native save dialog. The composer supports file-picker attachments,
 with a limit of 20 files, 25 MiB per file, and 50 MiB total. These paths do
-not imply HTML rendering, inline attachment preview, or automatic remote
-content loading. Rich HTML composition, inline reply, all-folder/body search,
+not imply browser-style email CSS, inline attachment preview, or automatic
+remote content loading. Rich HTML composition, inline reply, all-folder/body search,
 and bulk triage are not ported.
 
 ## Appearance and Zeron material adaptation

@@ -4,6 +4,10 @@ on:
   push:
     paths:
       - 'apps/megamail/**'
+      - 'vendor/gpui-base/**'
+      - 'vendor/gpui-pre/**'
+      - 'vendor/gpui-pre-wgpu/**'
+      - 'vendor/cosmic-text/**'
       - 'crates/mail-core/**'
       - 'crates/zeron-theme/**'
       - 'src/**'
@@ -15,6 +19,10 @@ on:
   pull_request:
     paths:
       - 'apps/megamail/**'
+      - 'vendor/gpui-base/**'
+      - 'vendor/gpui-pre/**'
+      - 'vendor/gpui-pre-wgpu/**'
+      - 'vendor/cosmic-text/**'
       - 'crates/mail-core/**'
       - 'crates/zeron-theme/**'
       - 'src/**'
@@ -59,6 +67,14 @@ jobs:
         run: cargo test --manifest-path crates/mail-core/Cargo.toml --locked -j 2
       - name: Test Zeron theme model and importer
         run: cargo test --manifest-path crates/zeron-theme/Cargo.toml --locked -j 2
+      - name: Test bidi paragraph shaping
+        run: cargo test --manifest-path vendor/cosmic-text/Cargo.toml --lib --locked -j 2
+      - name: Test wrapped text geometry and caches
+        run: cargo test --manifest-path vendor/gpui-pre/Cargo.toml --no-default-features --features test-support --lib text_system::line_layout::tests --locked -j 2
+      - name: Test Linux bidi backend
+        run: cargo test --manifest-path vendor/gpui-pre-wgpu/Cargo.toml --lib --features test-support cosmic_text_system::tests --locked -j 2
+      - name: Test native reader foundation
+        run: cargo test --manifest-path vendor/gpui-base/Cargo.toml --lib --locked -j 2
       - name: Test native mailbox and composer
         run: cargo test --manifest-path apps/megamail/Cargo.toml --locked -j 2
       - name: Check native executable

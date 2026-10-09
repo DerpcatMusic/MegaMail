@@ -48,6 +48,7 @@ const COMMAND_QUEUE: usize = 64;
 const THUNDERBIRD_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 const BODY_CACHE_ENTRIES: usize = 8;
 const BODY_CACHE_BYTES: usize = 16 * 1024 * 1024;
+const READER_BODY_BYTES_LIMIT: usize = 2 * 1024 * 1024;
 const BRIDGE_REQUEST_FRAME_LIMIT: usize = 1024 * 1024;
 const TRANSFER_ID_FRAME_RESERVE: usize = 64;
 
@@ -185,6 +186,8 @@ struct AccountBinding {
 #[derive(Clone)]
 struct BodyPayload {
     body: String,
+    html: String,
+    html_without_quote: Option<String>,
     links: Vec<MailLink>,
     has_attachment: Option<bool>,
     reply_to: Option<String>,
@@ -238,6 +241,8 @@ impl BodyCache {
 impl BodyPayload {
     fn byte_len(&self) -> usize {
         self.body.len()
+            + self.html.len()
+            + self.html_without_quote.as_ref().map_or(0, String::len)
             + self
                 .links
                 .iter()
@@ -252,6 +257,8 @@ impl BodyPayload {
             message_id,
             path: path.to_owned(),
             body: self.body.clone(),
+            html: self.html.clone(),
+            html_without_quote: self.html_without_quote.clone(),
             links: self.links.clone(),
             has_attachment: self.has_attachment,
             reply_to: self.reply_to.clone(),
@@ -2215,23 +2222,41 @@ impl ActorState {
     }
 
     fn parse_body_payload(value: Value) -> Result<BodyPayload, String> {
-        let html = string(value.get("html"));
-        if html.len() > 2 * 1024 * 1024 {
+        let source_html = string(value.get("html"));
+        let plain = string(value.get("plainText"));
+        if source_html.len() > READER_BODY_BYTES_LIMIT || plain.len() > READER_BODY_BYTES_LIMIT {
             return Err("This message body exceeds the 2 MiB reader limit.".into());
         }
-        let plain = string(value.get("plainText"));
+        let html = if source_html.trim().is_empty() {
+            String::new()
+        } else {
+            megamail_core::mail_text::reader_html(&source_html)
+        };
+        let html_without_quote = megamail_core::mail_text::reader_html_without_quote(&html);
+        if html.len() > READER_BODY_BYTES_LIMIT
+            || html_without_quote
+                .as_ref()
+                .is_some_and(|html| html.len() > READER_BODY_BYTES_LIMIT)
+        {
+            return Err("This message body exceeds the 2 MiB reader limit.".into());
+        }
         let body = if !plain.is_empty() {
             plain
         } else {
-            megamail_core::markdown::plain_text(&html)
+            megamail_core::markdown::plain_text(&source_html)
         };
-        let links = if html.is_empty() {
+        if body.len() > READER_BODY_BYTES_LIMIT {
+            return Err("This message body exceeds the 2 MiB reader limit.".into());
+        }
+        let links = if source_html.is_empty() {
             Vec::new()
         } else {
-            megamail_core::mail_text::extract_links(&html)
+            megamail_core::mail_text::extract_links(&source_html)
         };
         Ok(BodyPayload {
             body,
+            html,
+            html_without_quote,
             links,
             has_attachment: value.get("hasAttachment").and_then(Value::as_bool),
             reply_to: value.get("replyTo").map(|_| string(value.get("replyTo"))),
@@ -4064,11 +4089,11 @@ fn default_accent(account_id: u32) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        BODY_CACHE_BYTES, BODY_CACHE_ENTRIES, BRIDGE_REQUEST_FRAME_LIMIT, BodyCache, BodyPayload,
-        SourceStore, StoredAccount, StoredProfile, address_from_identity, compact_error_summary,
-        compose_recipients, is_broken_bridge_error, parse_folders, preflight_request,
-        profile_actors, profile_sender, remove_profile_sender, reply_identity,
-        resolve_reply_remote_id, should_retire_after_add,
+        ActorState, BODY_CACHE_BYTES, BODY_CACHE_ENTRIES, BRIDGE_REQUEST_FRAME_LIMIT, BodyCache,
+        BodyPayload, READER_BODY_BYTES_LIMIT, SourceStore, StoredAccount, StoredProfile,
+        address_from_identity, compact_error_summary, compose_recipients, is_broken_bridge_error,
+        parse_folders, preflight_request, profile_actors, profile_sender, remove_profile_sender,
+        reply_identity, resolve_reply_remote_id, should_retire_after_add,
         suppress_started_accounts_on_broken_prefetch, validate_store,
     };
     use megamail_core::models::FolderKind;
@@ -4319,8 +4344,10 @@ mod tests {
     #[test]
     fn body_cache_is_lru_bounded_by_entries_and_memory() {
         let mut cache = BodyCache::default();
-        let payload = |body: String| BodyPayload {
+        let payload = |body: String, html: String| BodyPayload {
             body,
+            html,
+            html_without_quote: None,
             links: Vec::new(),
             has_attachment: None,
             reply_to: None,
@@ -4328,11 +4355,11 @@ mod tests {
         };
         let key = |uid| (7, "Inbox".to_owned(), uid);
         for uid in 1..=BODY_CACHE_ENTRIES as u32 {
-            cache.insert(key(uid), payload(format!("body-{uid}")));
+            cache.insert(key(uid), payload(format!("body-{uid}"), String::new()));
         }
         assert_eq!(cache.entries.len(), BODY_CACHE_ENTRIES);
         assert!(cache.get(&key(1)).is_some());
-        cache.insert(key(9), payload("body-9".into()));
+        cache.insert(key(9), payload("body-9".into(), String::new()));
         assert!(
             cache.get(&key(1)).is_some(),
             "a hit should refresh LRU order"
@@ -4343,10 +4370,55 @@ mod tests {
         );
 
         let large = "x".repeat(BODY_CACHE_BYTES / 2 + 1);
-        cache.insert(key(10), payload(large.clone()));
-        cache.insert(key(11), payload(large));
+        cache.insert(key(10), payload(large.clone(), String::new()));
+        cache.insert(key(11), payload(large, String::new()));
         assert!(cache.bytes <= BODY_CACHE_BYTES);
         assert_eq!(cache.entries.len(), 1);
+
+        let mut html_cache = BodyCache::default();
+        let mut formatted = payload("plain".into(), "<p>format</p>".into());
+        formatted.html_without_quote = Some("<p>format</p>".into());
+        let expected_bytes = formatted.body.len()
+            + formatted.html.len()
+            + formatted.html_without_quote.as_ref().unwrap().len();
+        html_cache.insert(key(12), formatted);
+        assert_eq!(html_cache.bytes, expected_bytes);
+        html_cache.insert(
+            key(13),
+            payload("plain".into(), "x".repeat(BODY_CACHE_BYTES)),
+        );
+        assert_eq!(html_cache.entries.len(), 1);
+        assert!(html_cache.get(&key(12)).is_some());
+    }
+
+    #[test]
+    fn thunderbird_body_keeps_allowlisted_html_and_plain_text() {
+        let payload = ActorState::parse_body_payload(json!({
+            "html": "<p>Hello <strong>world</strong><script>alert(1)</script><img src=\"https://tracker.test/pixel\"></p><blockquote><p>Earlier note</p></blockquote>",
+            "plainText": "Hello world",
+            "hasAttachment": false
+        }))
+        .unwrap();
+        assert_eq!(payload.body, "Hello world");
+        assert!(payload.html.contains("<strong>world</strong>"));
+        assert!(!payload.html.contains("<script"));
+        assert!(!payload.html.contains("tracker.test"));
+        assert!(payload.html_without_quote.is_some());
+        assert!(
+            !payload
+                .html_without_quote
+                .as_ref()
+                .unwrap()
+                .contains("Earlier note")
+        );
+    }
+
+    #[test]
+    fn thunderbird_body_rejects_oversized_plain_or_html_text() {
+        let oversized = "x".repeat(READER_BODY_BYTES_LIMIT + 1);
+        assert!(ActorState::parse_body_payload(json!({ "html": oversized })).is_err());
+        let oversized = "x".repeat(READER_BODY_BYTES_LIMIT + 1);
+        assert!(ActorState::parse_body_payload(json!({ "plainText": oversized })).is_err());
     }
 
     #[test]

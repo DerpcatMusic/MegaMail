@@ -59,8 +59,12 @@ star, and trash actions use the owning account worker.
 
 Search and filters cover loaded message headers in the active folder or
 Unified Inbox; full server-history and message-body search are not ported. The
-reader presents selectable escaped plain text, not raw HTML. Quote hiding
-collapses a conservative trailing quoted block that can be restored. Reply All
+reader presents selectable native text with sanitized HTML formatting: headings,
+paragraphs, emphasis, lists, quotes, code, and tables. Message CSS and remote
+resources are removed; presentation tables become flowing content, and data
+tables scroll locally when narrow. A per-message plain-text view remains
+available. Quote hiding collapses only a conservative trailing quoted block
+that can be restored, preserving formatting in the remaining body. Reply All
 excludes the user's own account addresses and aliases. Rich HTML composition,
 inline reply, and bulk triage are not ported. Settings expose account
 management, Regular/Compact density, conversation grouping, default Unified

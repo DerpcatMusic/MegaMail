@@ -6,9 +6,11 @@ copyright, and notice files when present. A declaration is not a substitute for 
 missing license text; missing or skipped files are listed explicitly below. GPUI Kit's
 crates.io archive omits its Apache file, so its exact tagged upstream copy is included.
 
-Lockfile SHA-256: `b736b5256622939e21774247fee47b2b6a73e57cf608d5823e0a98298d947763`  
-Resolved remote package graph SHA-256: `bbf62b1e25c9dba6b2c69442dcd3d277082bd33114790d5f5f6cfa83eda25882`  
-Remote packages: 955
+Lockfile SHA-256: `79608a42d35e143bcf5c1c4fefc26123c47add0fa6767466d47df35aa0ceddbc`
+
+Resolved remote package graph SHA-256: `9db40d791f9dcf257c262d648464ad613ec68f71e3d667e30ef270aeddf9aec9`
+
+Remote packages: 951
 
 ## Project and bundled asset notices
 
@@ -16,7 +18,18 @@ Remote packages: 955
 |---|---|---|
 | [`project/LICENSE`](project/LICENSE) | `LICENSE` | `3856ebcc85b6d97cc45645b7195dc9d622ddcfce8739ada6ab876b6724a44d8b` |
 | [`project/zeron-theme/LICENSE-MIT`](project/zeron-theme/LICENSE-MIT) | `crates/zeron-theme/LICENSE-MIT` | `e776600f641baae3fd37387829b40fe2d7c12d01785dc8b846658b7cbb0342e3` |
-| [`project/THIRD_PARTY_NOTICES.md`](project/THIRD_PARTY_NOTICES.md) | `THIRD_PARTY_NOTICES.md` | `ec8d295bce118a6161b65f67bd0061c1760bc4a74af96ab6596d5311739ce94a` |
+| [`project/THIRD_PARTY_NOTICES.md`](project/THIRD_PARTY_NOTICES.md) | `THIRD_PARTY_NOTICES.md` | `9500a2ea78226eeb9165cf598422ea1c5221c75532c6c353c0dd2ffa786c1643` |
+| [`project/gpui-base/LICENSE-APACHE`](project/gpui-base/LICENSE-APACHE) | `vendor/gpui-base/LICENSE-APACHE` | `d1b0449e5478c574ba4f686c2656df7fe77d66821a61f8b6ed3378a58ed9a811` |
+| [`project/gpui-base/MEGAMAIL_PATCH.md`](project/gpui-base/MEGAMAIL_PATCH.md) | `vendor/gpui-base/MEGAMAIL_PATCH.md` | `0297419b18d384447480924d94a061f8fa72ba60a471da0a5f12362b1e575d10` |
+| [`project/gpui-pre/LICENSE-APACHE`](project/gpui-pre/LICENSE-APACHE) | `vendor/gpui-pre/LICENSE-APACHE` | `752daf2fb234ca4a1fa372c073fe127f44b7b90fd2529ae44273a64f9d53da7a` |
+| [`project/gpui-pre/MEGAMAIL_PATCH.md`](project/gpui-pre/MEGAMAIL_PATCH.md) | `vendor/gpui-pre/MEGAMAIL_PATCH.md` | `55120cd3333f66fe1ca0436c52aabe362f8a0d939086b5cfee001679774aa199` |
+| [`project/gpui-pre/IBM-Plex-OFL.txt`](project/gpui-pre/IBM-Plex-OFL.txt) | `vendor/gpui-pre/test-fonts/ibm-plex-sans/license.txt` | `91c25c350d3cac39da2736d74f7ba37ef648f5237a4e330a240615bc8d8c4360` |
+| [`project/gpui-pre/Lilex-OFL.txt`](project/gpui-pre/Lilex-OFL.txt) | `vendor/gpui-pre/test-fonts/lilex/OFL.txt` | `a356708a399e3f54b937ec7d9b722c26dabba21365b60f95c56eb7ebca0dee40` |
+| [`project/gpui-pre-wgpu/LICENSE-APACHE`](project/gpui-pre-wgpu/LICENSE-APACHE) | `vendor/gpui-pre-wgpu/LICENSE-APACHE` | `752daf2fb234ca4a1fa372c073fe127f44b7b90fd2529ae44273a64f9d53da7a` |
+| [`project/gpui-pre-wgpu/MEGAMAIL_PATCH.md`](project/gpui-pre-wgpu/MEGAMAIL_PATCH.md) | `vendor/gpui-pre-wgpu/MEGAMAIL_PATCH.md` | `8a8af4757ea2a0e8cea8cd7bb9f345ab98152b1e8e3415c7a9eb97f5785c4201` |
+| [`project/cosmic-text/LICENSE-APACHE`](project/cosmic-text/LICENSE-APACHE) | `vendor/cosmic-text/LICENSE-APACHE` | `000b4962e6b27176a0ff89cce4be555b16472cafb5671eb2804a8fdac6854793` |
+| [`project/cosmic-text/LICENSE-MIT`](project/cosmic-text/LICENSE-MIT) | `vendor/cosmic-text/LICENSE-MIT` | `95557bafe728379e206f3b6d4aceeaa054d271c71d722411a6222e2dec01138c` |
+| [`project/cosmic-text/MEGAMAIL_PATCH.md`](project/cosmic-text/MEGAMAIL_PATCH.md) | `vendor/cosmic-text/MEGAMAIL_PATCH.md` | `bc15d65eccb6b92ed79496341d58ba93500de4d873b7cdc7608b416fd12375cb` |
 | [`project/assets/Geist-OFL.txt`](project/assets/Geist-OFL.txt) | `apps/megamail/assets/fonts/licenses/Geist-OFL.txt` | `942560b236adfa83745b2c64e5fc09ebaf91cb331751b1157eb92187e5d6e930` |
 | [`project/assets/LICENSE-LUCIDE`](project/assets/LICENSE-LUCIDE) | `apps/megamail/assets/icons/LICENSE-LUCIDE` | `b495047bd93a9b06913511076f504daba17d5bbeb3e0650f3bb53a4220329c57` |
 
@@ -153,7 +166,6 @@ GPUI Kit's tagged Apache-2.0 text appears with its dependency entry below.
 | `core-video` | `0.5.2` | `MIT OR Apache-2.0` | [`LICENSE-APACHE`](dependencies/core-video-0.5.2/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/core-video-0.5.2/LICENSE-MIT) |
 | `core_detect` | `1.0.0` | `MIT/Apache-2.0` | [`LICENSE-APACHE`](dependencies/core_detect-1.0.0/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/core_detect-1.0.0/LICENSE-MIT) |
 | `core_maths` | `0.1.1` | `MIT` | [`LICENSE`](dependencies/core_maths-0.1.1/LICENSE) |
-| `cosmic-text` | `0.19.0` | `MIT OR Apache-2.0` | [`LICENSE-APACHE`](dependencies/cosmic-text-0.19.0/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/cosmic-text-0.19.0/LICENSE-MIT) |
 | `cpufeatures` | `0.2.17` | `MIT OR Apache-2.0` | [`LICENSE-APACHE`](dependencies/cpufeatures-0.2.17/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/cpufeatures-0.2.17/LICENSE-MIT) |
 | `cpufeatures` | `0.3.1` | `MIT OR Apache-2.0` | [`LICENSE-APACHE`](dependencies/cpufeatures-0.3.1/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/cpufeatures-0.3.1/LICENSE-MIT) |
 | `crc32fast` | `1.5.2` | `MIT OR Apache-2.0` | [`LICENSE-APACHE`](dependencies/crc32fast-1.5.2/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/crc32fast-1.5.2/LICENSE-MIT) |
@@ -281,12 +293,10 @@ GPUI Kit's tagged Apache-2.0 text appears with its dependency entry below.
 | `gpu-allocator` | `0.28.0` | `MIT OR Apache-2.0` | [`LICENSE-APACHE`](dependencies/gpu-allocator-0.28.0/LICENSE-APACHE), [`LICENSE-MIT`](dependencies/gpu-allocator-0.28.0/LICENSE-MIT) |
 | `gpu-descriptor` | `0.3.2` | `MIT OR Apache-2.0` | **No regular license file found** |
 | `gpu-descriptor-types` | `0.2.0` | `MIT OR Apache-2.0` | **No regular license file found** |
-| `gpui-base` | `0.7.1` | `Apache-2.0` | [`LICENSE-APACHE`](dependencies/gpui-base-0.7.1/LICENSE-APACHE) |
 | `gpui-component` | `0.7.1` | `Apache-2.0` | [`LICENSE-APACHE`](dependencies/gpui-component-0.7.1/LICENSE-APACHE) |
 | `gpui-component-macros` | `0.7.1` | `Apache-2.0` | [`LICENSE-APACHE`](dependencies/gpui-component-macros-0.7.1/LICENSE-APACHE) |
 | `gpui-kit` | `0.7.1` | `Apache-2.0` | [`LICENSE-APACHE`](dependencies/gpui-kit-0.7.1/LICENSE-APACHE) (from [the matching upstream tag](https://raw.githubusercontent.com/longbridge/gpui-kit/v0.7.1/LICENSE-APACHE)) |
 | `gpui-kit-assets` | `0.7.1` | `Apache-2.0` | [`LICENSE-LUCIDE`](dependencies/gpui-kit-assets-0.7.1/LICENSE-LUCIDE) |
-| `gpui-pre` | `0.3.8` | `Apache-2.0` | [`LICENSE-APACHE`](dependencies/gpui-pre-0.3.8/LICENSE-APACHE) |
 | `gpui-pre-apple` | `0.3.8` | `Apache-2.0` | [`LICENSE-APACHE`](dependencies/gpui-pre-apple-0.3.8/LICENSE-APACHE) |
 | `gpui-pre-collections` | `0.3.8` | `Apache-2.0` | [`LICENSE-APACHE`](dependencies/gpui-pre-collections-0.3.8/LICENSE-APACHE) |
 | `gpui-pre-derive-refineable` | `0.3.8` | `Apache-2.0` | [`LICENSE-APACHE`](dependencies/gpui-pre-derive-refineable-0.3.8/LICENSE-APACHE) |
@@ -304,7 +314,6 @@ GPUI Kit's tagged Apache-2.0 text appears with its dependency entry below.
 | `gpui-pre-util` | `0.3.8` | `Apache-2.0` | [`LICENSE-APACHE`](dependencies/gpui-pre-util-0.3.8/LICENSE-APACHE) |
 | `gpui-pre-util-macros` | `0.3.8` | `Apache-2.0` | [`LICENSE-APACHE`](dependencies/gpui-pre-util-macros-0.3.8/LICENSE-APACHE) |
 | `gpui-pre-web` | `0.3.8` | `Apache-2.0` | [`LICENSE-APACHE`](dependencies/gpui-pre-web-0.3.8/LICENSE-APACHE) |
-| `gpui-pre-wgpu` | `0.3.8` | `Apache-2.0` | [`LICENSE-APACHE`](dependencies/gpui-pre-wgpu-0.3.8/LICENSE-APACHE) |
 | `gpui-pre-windows` | `0.3.8` | `Apache-2.0` | [`LICENSE-APACHE`](dependencies/gpui-pre-windows-0.3.8/LICENSE-APACHE) |
 | `gpui-pre-zlog` | `0.3.8` | `Apache-2.0` | [`LICENSE-APACHE`](dependencies/gpui-pre-zlog-0.3.8/LICENSE-APACHE) |
 | `gpui-pre-ztracing` | `0.3.8` | `Apache-2.0` | [`LICENSE-APACHE`](dependencies/gpui-pre-ztracing-0.3.8/LICENSE-APACHE) |

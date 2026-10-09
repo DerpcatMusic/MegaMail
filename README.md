@@ -38,8 +38,11 @@ username and password, or no SMTP login. Failed or offline direct-account
 sends can be retained in the durable Outbox for retry or discard. Imported
 Thunderbird accounts keep queued messages under Thunderbird's management;
 MegaMail has no native retry/discard controls for that path.
-The conversation reader shows selectable, escaped plain text rather than raw
-mail HTML. When quote hiding is enabled, it collapses only a trailing quoted
+The conversation reader preserves native semantic formatting from sanitized
+HTML: headings, emphasis, lists, quoted replies, code, and data tables.
+Paragraphs follow their writing direction, long content wraps within the pane,
+and each formatted message has a plain-text view. Sender CSS and remote
+resources are removed. When quote hiding is enabled, it collapses only a trailing quoted
 block and keeps that text available to restore. Reply and Reply All use the
 active account and remove the user's own addresses and aliases from recipients.
 Extracted validated HTTP(S) links and attachments stay in separate panels and

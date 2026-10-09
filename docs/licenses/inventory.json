@@ -1,10 +1,10 @@
 {
-  "copied_bytes": 7753303,
-  "copied_file_count": 1492,
-  "dependency_package_ids_sha256": "bbf62b1e25c9dba6b2c69442dcd3d277082bd33114790d5f5f6cfa83eda25882",
+  "copied_bytes": 7772197,
+  "copied_file_count": 1498,
+  "dependency_package_ids_sha256": "9db40d791f9dcf257c262d648464ad613ec68f71e3d667e30ef270aeddf9aec9",
   "generated_by": "tools/license-inventory.py",
   "lockfile": "apps/megamail/Cargo.lock",
-  "lockfile_sha256": "b736b5256622939e21774247fee47b2b6a73e57cf608d5823e0a98298d947763",
+  "lockfile_sha256": "79608a42d35e143bcf5c1c4fefc26123c47add0fa6767466d47df35aa0ceddbc",
   "manifest": "apps/megamail/Cargo.toml",
   "packages": [
     {
@@ -3318,35 +3318,6 @@
       "version": "0.1.1"
     },
     {
-      "id": "registry+https://github.com/rust-lang/crates.io-index#cosmic-text@0.19.0",
-      "issues": [],
-      "license": "MIT OR Apache-2.0",
-      "license_file": null,
-      "license_files": [
-        {
-          "origins": [
-            "package-root-name"
-          ],
-          "path": "dependencies/cosmic-text-0.19.0/LICENSE-APACHE",
-          "sha256": "000b4962e6b27176a0ff89cce4be555b16472cafb5671eb2804a8fdac6854793",
-          "size_bytes": 11357,
-          "source_name": "LICENSE-APACHE"
-        },
-        {
-          "origins": [
-            "package-root-name"
-          ],
-          "path": "dependencies/cosmic-text-0.19.0/LICENSE-MIT",
-          "sha256": "95557bafe728379e206f3b6d4aceeaa054d271c71d722411a6222e2dec01138c",
-          "size_bytes": 1075,
-          "source_name": "LICENSE-MIT"
-        }
-      ],
-      "name": "cosmic-text",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "version": "0.19.0"
-    },
-    {
       "id": "registry+https://github.com/rust-lang/crates.io-index#cpufeatures@0.2.17",
       "issues": [],
       "license": "MIT OR Apache-2.0",
@@ -6587,26 +6558,6 @@
       "version": "0.2.0"
     },
     {
-      "id": "registry+https://github.com/rust-lang/crates.io-index#gpui-base@0.7.1",
-      "issues": [],
-      "license": "Apache-2.0",
-      "license_file": null,
-      "license_files": [
-        {
-          "origins": [
-            "package-root-name"
-          ],
-          "path": "dependencies/gpui-base-0.7.1/LICENSE-APACHE",
-          "sha256": "d1b0449e5478c574ba4f686c2656df7fe77d66821a61f8b6ed3378a58ed9a811",
-          "size_bytes": 10305,
-          "source_name": "LICENSE-APACHE"
-        }
-      ],
-      "name": "gpui-base",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "version": "0.7.1"
-    },
-    {
       "id": "registry+https://github.com/rust-lang/crates.io-index#gpui-component@0.7.1",
       "issues": [],
       "license": "Apache-2.0",
@@ -6685,26 +6636,6 @@
       "name": "gpui-kit-assets",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "version": "0.7.1"
-    },
-    {
-      "id": "registry+https://github.com/rust-lang/crates.io-index#gpui-pre@0.3.8",
-      "issues": [],
-      "license": "Apache-2.0",
-      "license_file": null,
-      "license_files": [
-        {
-          "origins": [
-            "package-root-name"
-          ],
-          "path": "dependencies/gpui-pre-0.3.8/LICENSE-APACHE",
-          "sha256": "752daf2fb234ca4a1fa372c073fe127f44b7b90fd2529ae44273a64f9d53da7a",
-          "size_bytes": 10768,
-          "source_name": "LICENSE-APACHE"
-        }
-      ],
-      "name": "gpui-pre",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "version": "0.3.8"
     },
     {
       "id": "registry+https://github.com/rust-lang/crates.io-index#gpui-pre-apple@0.3.8",
@@ -7052,26 +6983,6 @@
         }
       ],
       "name": "gpui-pre-web",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "version": "0.3.8"
-    },
-    {
-      "id": "registry+https://github.com/rust-lang/crates.io-index#gpui-pre-wgpu@0.3.8",
-      "issues": [],
-      "license": "Apache-2.0",
-      "license_file": null,
-      "license_files": [
-        {
-          "origins": [
-            "package-root-name"
-          ],
-          "path": "dependencies/gpui-pre-wgpu-0.3.8/LICENSE-APACHE",
-          "sha256": "752daf2fb234ca4a1fa372c073fe127f44b7b90fd2529ae44273a64f9d53da7a",
-          "size_bytes": 10768,
-          "source_name": "LICENSE-APACHE"
-        }
-      ],
-      "name": "gpui-pre-wgpu",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "version": "0.3.8"
     },
@@ -24743,10 +24654,87 @@
     },
     {
       "path": "project/THIRD_PARTY_NOTICES.md",
-      "sha256": "ec8d295bce118a6161b65f67bd0061c1760bc4a74af96ab6596d5311739ce94a",
-      "size_bytes": 3990,
+      "sha256": "9500a2ea78226eeb9165cf598422ea1c5221c75532c6c353c0dd2ffa786c1643",
+      "size_bytes": 5407,
       "source": "THIRD_PARTY_NOTICES.md",
       "source_name": "THIRD_PARTY_NOTICES.md"
+    },
+    {
+      "path": "project/gpui-base/LICENSE-APACHE",
+      "sha256": "d1b0449e5478c574ba4f686c2656df7fe77d66821a61f8b6ed3378a58ed9a811",
+      "size_bytes": 10305,
+      "source": "vendor/gpui-base/LICENSE-APACHE",
+      "source_name": "LICENSE-APACHE"
+    },
+    {
+      "path": "project/gpui-base/MEGAMAIL_PATCH.md",
+      "sha256": "0297419b18d384447480924d94a061f8fa72ba60a471da0a5f12362b1e575d10",
+      "size_bytes": 3427,
+      "source": "vendor/gpui-base/MEGAMAIL_PATCH.md",
+      "source_name": "MEGAMAIL_PATCH.md"
+    },
+    {
+      "path": "project/gpui-pre/LICENSE-APACHE",
+      "sha256": "752daf2fb234ca4a1fa372c073fe127f44b7b90fd2529ae44273a64f9d53da7a",
+      "size_bytes": 10768,
+      "source": "vendor/gpui-pre/LICENSE-APACHE",
+      "source_name": "LICENSE-APACHE"
+    },
+    {
+      "path": "project/gpui-pre/MEGAMAIL_PATCH.md",
+      "sha256": "55120cd3333f66fe1ca0436c52aabe362f8a0d939086b5cfee001679774aa199",
+      "size_bytes": 2230,
+      "source": "vendor/gpui-pre/MEGAMAIL_PATCH.md",
+      "source_name": "MEGAMAIL_PATCH.md"
+    },
+    {
+      "path": "project/gpui-pre/IBM-Plex-OFL.txt",
+      "sha256": "91c25c350d3cac39da2736d74f7ba37ef648f5237a4e330a240615bc8d8c4360",
+      "size_bytes": 4360,
+      "source": "vendor/gpui-pre/test-fonts/ibm-plex-sans/license.txt",
+      "source_name": "license.txt"
+    },
+    {
+      "path": "project/gpui-pre/Lilex-OFL.txt",
+      "sha256": "a356708a399e3f54b937ec7d9b722c26dabba21365b60f95c56eb7ebca0dee40",
+      "size_bytes": 4382,
+      "source": "vendor/gpui-pre/test-fonts/lilex/OFL.txt",
+      "source_name": "OFL.txt"
+    },
+    {
+      "path": "project/gpui-pre-wgpu/LICENSE-APACHE",
+      "sha256": "752daf2fb234ca4a1fa372c073fe127f44b7b90fd2529ae44273a64f9d53da7a",
+      "size_bytes": 10768,
+      "source": "vendor/gpui-pre-wgpu/LICENSE-APACHE",
+      "source_name": "LICENSE-APACHE"
+    },
+    {
+      "path": "project/gpui-pre-wgpu/MEGAMAIL_PATCH.md",
+      "sha256": "8a8af4757ea2a0e8cea8cd7bb9f345ab98152b1e8e3415c7a9eb97f5785c4201",
+      "size_bytes": 1894,
+      "source": "vendor/gpui-pre-wgpu/MEGAMAIL_PATCH.md",
+      "source_name": "MEGAMAIL_PATCH.md"
+    },
+    {
+      "path": "project/cosmic-text/LICENSE-APACHE",
+      "sha256": "000b4962e6b27176a0ff89cce4be555b16472cafb5671eb2804a8fdac6854793",
+      "size_bytes": 11357,
+      "source": "vendor/cosmic-text/LICENSE-APACHE",
+      "source_name": "LICENSE-APACHE"
+    },
+    {
+      "path": "project/cosmic-text/LICENSE-MIT",
+      "sha256": "95557bafe728379e206f3b6d4aceeaa054d271c71d722411a6222e2dec01138c",
+      "size_bytes": 1075,
+      "source": "vendor/cosmic-text/LICENSE-MIT",
+      "source_name": "LICENSE-MIT"
+    },
+    {
+      "path": "project/cosmic-text/MEGAMAIL_PATCH.md",
+      "sha256": "bc15d65eccb6b92ed79496341d58ba93500de4d873b7cdc7608b416fd12375cb",
+      "size_bytes": 1184,
+      "source": "vendor/cosmic-text/MEGAMAIL_PATCH.md",
+      "source_name": "MEGAMAIL_PATCH.md"
     },
     {
       "path": "project/assets/Geist-OFL.txt",
@@ -24763,6 +24751,6 @@
       "source_name": "LICENSE-LUCIDE"
     }
   ],
-  "remote_package_count": 955,
+  "remote_package_count": 951,
   "schema_version": 1
 }
