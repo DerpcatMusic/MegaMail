@@ -69,9 +69,12 @@ and trash actions. Check that equal UIDs from different folders remain
 distinct and that matching subjects alone do not create conversations. Also
 review drafts, plain-text compose, attachment actions, links, and Outbox retry
 and discard. The Outbox's queued state is a durable local save for later
-sending, not a delivery receipt. Message bodies remain on the escaped plain-
-text path; there is no full-fidelity HTML renderer or automatic remote-content
-loading. Settings should expose account management, Regular/Compact density,
+sending, not a delivery receipt. Message bodies use native semantic formatting from a bounded HTML allowlist,
+with a per-message plain-text view and conservative quote hiding. The demo
+includes a linked LTR/RTL review thread with long URLs, headers, lists, code,
+and a data table. Inspect it at 1060 and 1280 logical pixels in both themes;
+check selection/copy, quoted replies, local table scrolling, and wrapping.
+There is no browser CSS renderer or automatic remote-content loading. Settings should expose account management, Regular/Compact density,
 conversation grouping, the default Unified Inbox, quote hiding, reduced motion,
 and the active keyboard shortcuts.
 
@@ -169,3 +172,17 @@ The root package, preserved Hylki packaging, and upstream workflows still
 describe Hylki artifacts. Use the native app manifest and MegaMail installer
 when working with the new client; do not treat an upstream Hylki release job
 as a MegaMail release.
+
+The native app patches GPUI Base 0.7.1 locally for HTML text direction and
+formatting behavior; see [patch notes](../vendor/gpui-base/MEGAMAIL_PATCH.md).
+The matching GPUI and Linux text backend patches delegate wrapping to the native
+shaper and retain per-row logical source ranges for selection and hit testing;
+see [GPUI notes](../vendor/gpui-pre/MEGAMAIL_PATCH.md) and
+[backend notes](../vendor/gpui-pre-wgpu/MEGAMAIL_PATCH.md).
+[Cosmic notes](../vendor/cosmic-text/MEGAMAIL_PATCH.md) explain explicit paragraph base levels.
+The native bidi backend is currently verified on Linux.
+Keep these patches limited to text layout and retain the upstream Apache licenses.
+
+```sh
+cargo test --manifest-path vendor/gpui-base/Cargo.toml --lib --locked -j 2
+```

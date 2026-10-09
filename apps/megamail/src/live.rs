@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use futures::StreamExt;
-use gpui_kit::{Context, Task};
+use gpui_kit::{Context, SharedString, Task};
 use megamail_core::{
     cache::MessageCursor,
     config::AccountConfig,
@@ -186,6 +186,9 @@ pub struct MailboxSnapshot {
     pub conversation_warning: Option<String>,
     pub selected_key: Option<MessageKey>,
     pub selected_message: Option<Arc<MessageRow>>,
+    pub selected_html: SharedString,
+    pub selected_html_without_quote: Option<SharedString>,
+    pub body_loaded: bool,
     pub attachment_key: Option<MessageKey>,
     pub links: Vec<MailLink>,
     pub attachment_state: AttachmentState,
@@ -241,6 +244,8 @@ pub(super) enum WorkerMailboxEvent {
         message_id: u32,
         path: String,
         body: String,
+        html: String,
+        html_without_quote: Option<String>,
         links: Vec<MailLink>,
         has_attachment: Option<bool>,
         reply_to: Option<String>,
@@ -255,6 +260,8 @@ pub(super) enum WorkerMailboxEvent {
         folder_id: u32,
         messages: Vec<Message>,
         links_by_uid: HashMap<u32, Vec<MailLink>>,
+        html_by_uid: HashMap<u32, String>,
+        html_without_quote_by_uid: HashMap<u32, String>,
     },
     Related {
         message_id: u32,
@@ -399,8 +406,13 @@ pub struct LiveMailbox {
     truncated: bool,
     selected_key: Option<MessageKey>,
     selected_row: Option<Arc<MessageRow>>,
+    selected_html: SharedString,
+    selected_html_without_quote: Option<SharedString>,
+    selected_body_loaded: bool,
     links: Vec<MailLink>,
     demo_links_by_key: HashMap<MessageKey, Vec<MailLink>>,
+    demo_html_by_key: HashMap<MessageKey, String>,
+    demo_html_without_quote_by_key: HashMap<MessageKey, String>,
     attachment_state: AttachmentState,
     pending_attachment: Option<PendingAttachment>,
     draft_source: Option<DraftSourceSnapshot>,
@@ -525,8 +537,13 @@ impl LiveMailbox {
             truncated: false,
             selected_key: None,
             selected_row: None,
+            selected_html: SharedString::from(""),
+            selected_html_without_quote: None,
+            selected_body_loaded: false,
             links: Vec::new(),
             demo_links_by_key: HashMap::new(),
+            demo_html_by_key: HashMap::new(),
+            demo_html_without_quote_by_key: HashMap::new(),
             attachment_state: AttachmentState::NotLoaded,
             pending_attachment: None,
             draft_source: None,
@@ -676,6 +693,9 @@ impl LiveMailbox {
             conversation_warning,
             selected_key: self.selected_key.clone(),
             selected_message,
+            selected_html: self.selected_html.clone(),
+            selected_html_without_quote: self.selected_html_without_quote.clone(),
+            body_loaded: self.selected_body_loaded,
             attachment_key: self.selected_key.clone(),
             links: self.links.clone(),
             attachment_state: self.attachment_state.clone(),
@@ -993,7 +1013,8 @@ impl LiveMailbox {
                 .selected_row
                 .as_ref()
                 .filter(|row| row.key == key)
-                .is_none_or(|row| row.message.body.is_empty());
+                .is_none_or(|row| row.message.body.is_empty())
+                && !self.selected_body_loaded;
             if needs_body && !self.body_loading {
                 self.request_selected_body(cx);
                 cx.notify();
@@ -1002,6 +1023,18 @@ impl LiveMailbox {
             return needs_body;
         }
         self.selected_key = Some(key.clone());
+        self.selected_html = self
+            .demo_html_by_key
+            .get(&key)
+            .cloned()
+            .map(SharedString::from)
+            .unwrap_or_else(|| SharedString::from(""));
+        self.selected_html_without_quote = self
+            .demo_html_without_quote_by_key
+            .get(&key)
+            .cloned()
+            .map(SharedString::from);
+        self.selected_body_loaded = false;
         self.body_loading = false;
         self.links = self
             .demo_links_by_key
@@ -1012,7 +1045,15 @@ impl LiveMailbox {
         self.pending_attachment = None;
         self.draft_source = None;
         self.refresh_selected_row();
-        self.request_selected_body(cx);
+        self.selected_body_loaded = self
+            .selected_row
+            .as_ref()
+            .is_some_and(|row| row.key == key && !row.message.body.is_empty())
+            || (self.demo_mode
+                && (self.page_keys.contains(&key) || self.demo_html_by_key.contains_key(&key)));
+        if !self.selected_body_loaded {
+            self.request_selected_body(cx);
+        }
         self.request_selected_conversation_members(false, cx);
         cx.notify();
         true
@@ -1820,6 +1861,9 @@ impl LiveMailbox {
             .is_some_and(|key| key.account_id == account_id)
         {
             self.body_loading = false;
+            self.selected_html = SharedString::from("");
+            self.selected_html_without_quote = None;
+            self.selected_body_loaded = false;
             self.links.clear();
             if let Some(row) = self
                 .selected_row
@@ -1979,6 +2023,8 @@ impl LiveMailbox {
                 message_id,
                 path,
                 body,
+                html,
+                html_without_quote,
                 links,
                 has_attachment,
                 reply_to,
@@ -1989,6 +2035,8 @@ impl LiveMailbox {
                     &path,
                     message_id,
                     body,
+                    html,
+                    html_without_quote,
                     links,
                     has_attachment,
                     reply_to,
@@ -2027,6 +2075,8 @@ impl LiveMailbox {
                 folder_id,
                 messages,
                 links_by_uid,
+                html_by_uid,
+                html_without_quote_by_uid,
             } => {
                 if self.demo_mode {
                     let Some(path) = self.path_for_folder(account_id, folder_id) else {
@@ -2048,6 +2098,20 @@ impl LiveMailbox {
                         links_by_uid
                             .into_iter()
                             .map(|(uid, links)| (message_key(account_id, &path, uid), links)),
+                    );
+                    self.demo_html_by_key
+                        .retain(|key, _| key.account_id != account_id || key.folder_path != path);
+                    self.demo_html_by_key.extend(
+                        html_by_uid
+                            .into_iter()
+                            .map(|(uid, html)| (message_key(account_id, &path, uid), html)),
+                    );
+                    self.demo_html_without_quote_by_key
+                        .retain(|key, _| key.account_id != account_id || key.folder_path != path);
+                    self.demo_html_without_quote_by_key.extend(
+                        html_without_quote_by_uid
+                            .into_iter()
+                            .map(|(uid, html)| (message_key(account_id, &path, uid), html)),
                     );
 
                     let mut messages = messages;
@@ -2135,6 +2199,22 @@ impl LiveMailbox {
                         .as_ref()
                         .is_some_and(|key| key.account_id == account_id)
                     {
+                        self.selected_html = self
+                            .selected_key
+                            .as_ref()
+                            .and_then(|key| self.demo_html_by_key.get(key))
+                            .cloned()
+                            .map(SharedString::from)
+                            .unwrap_or_else(|| SharedString::from(""));
+                        self.selected_html_without_quote = self
+                            .selected_key
+                            .as_ref()
+                            .and_then(|key| self.demo_html_without_quote_by_key.get(key))
+                            .cloned()
+                            .map(SharedString::from);
+                        self.selected_body_loaded = self.messages.iter().any(|message| {
+                            self.key_for(message).as_ref() == self.selected_key.as_ref()
+                        });
                         self.links = self
                             .selected_key
                             .as_ref()
@@ -2803,6 +2883,8 @@ impl LiveMailbox {
         path: &str,
         message_id: u32,
         body: String,
+        html: String,
+        html_without_quote: Option<String>,
         links: Vec<MailLink>,
         has_attachment: Option<bool>,
         reply_to: Option<String>,
@@ -2862,6 +2944,9 @@ impl LiveMailbox {
             key: pending.key,
             message: selected_message,
         }));
+        self.selected_html = SharedString::from(html);
+        self.selected_html_without_quote = html_without_quote.map(SharedString::from);
+        self.selected_body_loaded = true;
         if !self.demo_mode {
             self.messages[message_index].body.clear();
         }
@@ -2908,7 +2993,8 @@ impl LiveMailbox {
         let body_loaded = self
             .selected_row
             .as_ref()
-            .is_some_and(|row| row.key == key && !row.message.body.is_empty());
+            .is_some_and(|row| row.key == key && !row.message.body.is_empty())
+            || self.selected_body_loaded;
         if body_loaded {
             self.body_loading = false;
             return;
@@ -2966,7 +3052,22 @@ impl LiveMailbox {
                     .any(|conversation| conversation.members.iter().any(|row| row.key == *key))
         });
         if !selected_visible {
-            self.selected_key = self.page_rows.first().map(|row| row.key.clone());
+            let next_key = self.page_rows.first().map(|row| row.key.clone());
+            if self.selected_key != next_key {
+                self.selected_html = next_key
+                    .as_ref()
+                    .and_then(|key| self.demo_html_by_key.get(key))
+                    .cloned()
+                    .map(SharedString::from)
+                    .unwrap_or_else(|| SharedString::from(""));
+                self.selected_html_without_quote = next_key
+                    .as_ref()
+                    .and_then(|key| self.demo_html_without_quote_by_key.get(key))
+                    .cloned()
+                    .map(SharedString::from);
+                self.selected_body_loaded = false;
+            }
+            self.selected_key = next_key;
             self.body_loading = false;
             self.links = self
                 .selected_key
@@ -2980,6 +3081,14 @@ impl LiveMailbox {
         }
         if !selected_visible {
             self.refresh_selected_row();
+            self.selected_body_loaded = self
+                .selected_row
+                .as_ref()
+                .is_some_and(|row| !row.message.body.is_empty())
+                || (self.demo_mode
+                    && self.selected_key.as_ref().is_some_and(|key| {
+                        self.page_keys.contains(key) || self.demo_html_by_key.contains_key(key)
+                    }));
         }
         self.request_selected_body(cx);
         self.request_selected_conversation_members(false, cx);
@@ -3456,6 +3565,9 @@ impl LiveMailbox {
     fn refresh_selected_row(&mut self) {
         let Some(key) = self.selected_key.clone() else {
             self.selected_row = None;
+            self.selected_html = SharedString::from("");
+            self.selected_html_without_quote = None;
+            self.selected_body_loaded = false;
             return;
         };
         let selected_body = self
@@ -3491,6 +3603,9 @@ impl LiveMailbox {
     fn clear_selection(&mut self) {
         self.selected_key = None;
         self.selected_row = None;
+        self.selected_html = SharedString::from("");
+        self.selected_html_without_quote = None;
+        self.selected_body_loaded = false;
         self.body_loading = false;
         self.links.clear();
         self.attachment_state = AttachmentState::NotLoaded;
@@ -3526,6 +3641,8 @@ impl LiveMailbox {
         self.truncated = false;
         self.loading_more = false;
         self.demo_links_by_key.clear();
+        self.demo_html_by_key.clear();
+        self.demo_html_without_quote_by_key.clear();
         self.clear_selection();
     }
 
@@ -3854,6 +3971,8 @@ fn remap_demo_event(account_id: u32, mut event: WorkerMailboxEvent) -> WorkerMai
         if let WorkerMailboxEvent::DemoMessages {
             messages,
             links_by_uid,
+            html_by_uid,
+            html_without_quote_by_uid,
             ..
         } = &mut event
         {
@@ -3864,6 +3983,16 @@ fn remap_demo_event(account_id: u32, mut event: WorkerMailboxEvent) -> WorkerMai
             *links_by_uid = links
                 .into_iter()
                 .map(|(uid, links)| (uid.saturating_sub(29), links))
+                .collect();
+            let html = std::mem::take(html_by_uid);
+            *html_by_uid = html
+                .into_iter()
+                .map(|(uid, html)| (uid.saturating_sub(29), html))
+                .collect();
+            let quote_less = std::mem::take(html_without_quote_by_uid);
+            *html_without_quote_by_uid = quote_less
+                .into_iter()
+                .map(|(uid, html)| (uid.saturating_sub(29), html))
                 .collect();
         }
     }
@@ -3924,6 +4053,65 @@ fn demo_long_thread_reply() -> Message {
     }
 }
 
+fn demo_reader_thread_messages() -> [(Message, String); 2] {
+    [
+        (
+            Message {
+                id: 1_091,
+                account_id: 1,
+                folder_id: 1,
+                uid: 1_091,
+                from_name: "Nadia Haddad — Meridian Localization & Accessibility Review Group".into(),
+                from_addr: "nadia.haddad@example.test".into(),
+                reply_to: String::new(),
+                to: "launch.review.recipients@example.test, localization.qa.group@example.test, accessibility.signoff@example.test".into(),
+                cc: "megamail.reader.engineering@example.test".into(),
+                subject: "2026 accessibility and localization release review — final LTR/RTL QA, responsive wrapping, and thread sign-off".into(),
+                preview: "Review notes with formatted sections, a table, and a long link.".into(),
+                body: String::new(),
+                date: "Today, 11:18 AM".into(),
+                timestamp: 1_760_010_200,
+                unread: false,
+                starred: false,
+                keywords: Vec::new(),
+                has_attachment: false,
+                message_id: "<demo-reader-1091@megamail.local>".into(),
+                references: String::new(),
+                importance: megamail_core::models::Importance::Normal,
+                due: 0,
+            },
+            r#"<html><body><h2 dir="ltr">Release review: reader wrapping and message hierarchy</h2><p dir="ltr">Hi team, here is the final <strong>accessibility review</strong> for the mail reader. Please keep the message column fluid and let long content wrap within its own pane.</p><p>The <a href="https://example.test/reviews/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa">complete review URL</a> should stay inside the reader even when it is longer than a typical line. Thisisoneintentionallyunbrokenwordwithmorethanonehundredandfiftycharacterssotextwrappingcanbecheckedwithoutchangingthecopiedmessage.</p><p>Keyboard note: use <code>reader.direction = auto</code> for mixed language content.</p><ul><li>Keep paragraphs and lists readable.</li><li>Keep explicit links safe to open.</li><li>Preserve the original plain text for replies.</li></ul><table><thead><tr><th>Check</th><th>Expected result</th></tr></thead><tbody><tr><td>Long links</td><td>Wrap at the available reader width</td></tr><tr><td>Wide tables</td><td>Stay within the message pane</td></tr></tbody></table><blockquote><p>Previous note: the reader should remain a single continuous surface.</p></blockquote></body></html>"#.into(),
+        ),
+        (
+            Message {
+                id: 1_092,
+                account_id: 1,
+                folder_id: 1,
+                uid: 1_092,
+                from_name: "Leila Ben-David and the RTL Content Quality Working Group".into(),
+                from_addr: "leila.bendavid@example.test".into(),
+                reply_to: String::new(),
+                to: "launch.review.recipients@example.test, localization.qa.group@example.test, accessibility.signoff@example.test".into(),
+                cc: "megamail.reader.engineering@example.test".into(),
+                subject: "Re: 2026 accessibility and localization release review — final LTR/RTL QA, responsive wrapping, and thread sign-off".into(),
+                preview: "The Hebrew and Arabic paragraphs keep their own direction; the English product name stays legible.".into(),
+                body: String::new(),
+                date: "Today, 11:26 AM".into(),
+                timestamp: 1_760_010_260,
+                unread: true,
+                starred: false,
+                keywords: Vec::new(),
+                has_attachment: false,
+                message_id: "<demo-reader-1092@megamail.local>".into(),
+                references: "<demo-reader-1091@megamail.local>".into(),
+                importance: megamail_core::models::Importance::Normal,
+                due: 0,
+            },
+            r#"<html><body><div dir="rtl"><h2>הערות הבדיקה בעברית ובערבית</h2><p>שלום לכולם، تمت مراجعة عرض الرسائل في الاتجاهين. <strong>التنسيق الغامق</strong> وروابط البريد يجب أن تلتزم بعرض العمود.</p><p>اسم التطبيق <bdi dir="ltr">MegaMail</bdi> يبقى باتجاهه الطبيعي داخل النص. كمان חשוב שהעברית תישאר מיושרת נכון גם כשיש מילים באנגלית مثل <bdi dir="ltr">GPUI</bdi>.</p><p dir="rtl">MegaMail leads with Latin, then עברית and العربية, while this paragraph stays right-to-left.</p><p dir="ltr">שלום مرحباً — English follows explicit left-to-right direction.</p><p dir="rtl">Latin-only RTL paragraph with <code>inline_code</code> keeps one paragraph context.</p><p dir="ltr">English sign-off with <code>direction:auto</code>, Hebrew שלום, and Arabic مرحباً should stay a left-to-right paragraph while keeping each word readable.</p><ul><li>الفقرات العربية تبدأ من اليمين.</li><li>القائمة تلتف بدون تجاوز حدود القراءة.</li></ul><p><a href="https://example.test/rtl/review">رابط مراجعة التنسيق</a></p><blockquote dir="rtl"><p>الرسالة السابقة: keep each paragraph's natural writing direction and wrap it inside the reader.</p></blockquote></div></body></html>"#.into(),
+        ),
+    ]
+}
+
 fn spawn_account_worker(
     account_id: u32,
     config: AccountConfig,
@@ -3982,21 +4170,49 @@ fn compact_worker_event(event: WorkerEvent, demo_mode: bool) -> Option<WorkerMai
             messages,
         } if demo_mode => {
             let mut links_by_uid = HashMap::new();
-            let messages = messages
+            let mut html_by_uid = HashMap::new();
+            let mut html_without_quote_by_uid = HashMap::new();
+            let mut messages = messages
                 .into_iter()
                 .map(|mut message| {
-                    let (body, links) = plain_body_and_links(&message.body);
+                    let (body, html, html_without_quote, links) =
+                        body_content_and_links(&message.body);
                     message.body = body;
+                    if !html.is_empty() {
+                        html_by_uid.insert(message.uid, html);
+                    }
+                    if let Some(html) = html_without_quote {
+                        html_without_quote_by_uid.insert(message.uid, html);
+                    }
                     if !links.is_empty() {
                         links_by_uid.insert(message.uid, links);
                     }
                     message
                 })
-                .collect();
+                .collect::<Vec<_>>();
+            if folder_id == 1 && messages.iter().any(|message| message.account_id == 1) {
+                for (mut message, source_html) in demo_reader_thread_messages() {
+                    let (body, html, html_without_quote, links) =
+                        body_content_and_links(&source_html);
+                    message.body = body;
+                    if !html.is_empty() {
+                        html_by_uid.insert(message.uid, html);
+                    }
+                    if let Some(html) = html_without_quote {
+                        html_without_quote_by_uid.insert(message.uid, html);
+                    }
+                    if !links.is_empty() {
+                        links_by_uid.insert(message.uid, links);
+                    }
+                    messages.push(message);
+                }
+            }
             WorkerMailboxEvent::DemoMessages {
                 folder_id,
                 messages,
                 links_by_uid,
+                html_by_uid,
+                html_without_quote_by_uid,
             }
         }
         WorkerEvent::Messages { folder_id, .. } => WorkerMailboxEvent::FolderChanged { folder_id },
@@ -4028,11 +4244,13 @@ fn compact_worker_event(event: WorkerEvent, demo_mode: bool) -> Option<WorkerMai
             path,
             body,
         } => {
-            let (body, links) = plain_body_and_links(&body);
+            let (body, html, html_without_quote, links) = body_content_and_links(&body);
             WorkerMailboxEvent::Body {
                 message_id,
                 path,
                 body,
+                html,
+                html_without_quote,
                 links,
                 has_attachment: None,
                 reply_to: None,
@@ -4099,23 +4317,42 @@ fn compact_worker_event(event: WorkerEvent, demo_mode: bool) -> Option<WorkerMai
     })
 }
 
-/// Convert the worker's HTML reader representation before it crosses the GPUI
-/// event boundary. The reader receives text plus explicit HTTP(S) links only.
-fn plain_body_and_links(body: &str) -> (String, Vec<MailLink>) {
+/// Convert worker HTML off the UI thread; only allowlisted markup crosses the event boundary.
+fn body_content_and_links(body: &str) -> (String, String, Option<String>, Vec<MailLink>) {
     if body.len() > BODY_HTML_CAP {
         return (
             "This message body is over the 2 MiB reader limit.".into(),
+            String::new(),
+            None,
             Vec::new(),
         );
     }
     let html = body.trim_start().starts_with('<');
     if html {
+        let plain = megamail_core::markdown::plain_text(body);
+        let safe_html = megamail_core::mail_text::reader_html(body);
+        let html_without_quote = megamail_core::mail_text::reader_html_without_quote(&safe_html);
+        if plain.len() > BODY_HTML_CAP
+            || safe_html.len() > BODY_HTML_CAP
+            || html_without_quote
+                .as_ref()
+                .is_some_and(|html| html.len() > BODY_HTML_CAP)
+        {
+            return (
+                "This message body is over the 2 MiB reader limit.".into(),
+                String::new(),
+                None,
+                Vec::new(),
+            );
+        }
         (
-            megamail_core::markdown::plain_text(body),
+            plain,
+            safe_html,
+            html_without_quote,
             megamail_core::mail_text::extract_links(body),
         )
     } else {
-        (body.to_owned(), Vec::new())
+        (body.to_owned(), String::new(), None, Vec::new())
     }
 }
 
@@ -4543,16 +4780,17 @@ fn set_folder_unread(
 #[cfg(test)]
 mod tests {
     use super::{
-        ATTACHMENT_BYTES_CAP, ATTACHMENT_COUNT_CAP, BodyRequestSlot, ConversationKey,
-        ConversationRow, DraftSourceSnapshot, DraftSourceState, FolderPageState, MESSAGE_CAP,
-        MessageFilter, MessageRow, PAGE_SIZE, PageKey, PendingAttachment, PendingBody,
+        ATTACHMENT_BYTES_CAP, ATTACHMENT_COUNT_CAP, BODY_HTML_CAP, BodyRequestSlot,
+        ConversationKey, ConversationRow, DraftSourceSnapshot, DraftSourceState, FolderPageState,
+        MESSAGE_CAP, MessageFilter, MessageRow, PAGE_SIZE, PageKey, PendingAttachment, PendingBody,
         account_waiting_for_folders, active_representative, attachment_response_matches,
-        body_event_matches, bounded_attachments, bounded_attachments_with_limits,
-        clear_pending_pages_if_transport_closed, conversation_response_warning,
-        draft_export_matches, finish_superseded_page, is_reconnectable_thunderbird_failure,
+        body_content_and_links, body_event_matches, bounded_attachments,
+        bounded_attachments_with_limits, clear_pending_pages_if_transport_closed,
+        conversation_response_warning, demo_reader_thread_messages, draft_export_matches,
+        finish_superseded_page, is_reconnectable_thunderbird_failure,
         is_reconnectable_thunderbird_id, make_page_request, merge_message_batch,
         merge_message_batch_ordered, message_key, page_requests_loading, page_result_is_current,
-        plain_body_and_links, reconnectable_thunderbird_ids, remove_failed_body_request,
+        reconnectable_thunderbird_ids, remove_failed_body_request,
         retain_selected_body_after_error, set_folder_unread, stable_conversation_key,
         visible_message_indices,
     };
@@ -4783,15 +5021,60 @@ mod tests {
     }
 
     #[test]
-    fn reader_strips_html_and_keeps_only_explicit_safe_links() {
-        let (body, links) = plain_body_and_links(
-            r#"<html><body><p>Hi <b>Ari</b></p><a href="https://example.test/path">Open</a><a href="javascript:alert(1)">bad</a><img src="https://tracker.test/pixel"></body></html>"#,
+    fn reader_keeps_safe_formatting_and_only_explicit_safe_links() {
+        let (body, html, _, links) = body_content_and_links(
+            r#"<html><body><p>Hi <b>Ari</b></p><a href="https://example.test/path">Open</a><a href="javascript:alert(1)">bad</a><img src="https://tracker.test/pixel"><blockquote><p>Earlier note</p></blockquote></body></html>"#,
         );
         assert!(body.contains("Hi Ari"));
         assert!(!body.contains("<b>"));
+        assert!(html.contains("Hi"));
+        assert!(html.contains("Ari"));
+        assert!(!html.contains("javascript:"));
+        assert!(!html.contains("tracker.test"));
+        let (_, _, without_quote, _) = body_content_and_links(
+            r#"<p>Current reply</p><blockquote><p>Earlier note</p></blockquote>"#,
+        );
+        assert!(without_quote.is_some());
+        assert!(!without_quote.unwrap().contains("Earlier note"));
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].label, "Open");
         assert_eq!(links[0].url, "https://example.test/path");
+    }
+
+    #[test]
+    fn reader_rejects_oversized_markup_without_retaining_html() {
+        let input = format!("<p>{}</p>", "x".repeat(BODY_HTML_CAP));
+        let (body, html, _, links) = body_content_and_links(&input);
+        assert!(body.contains("2 MiB"));
+        assert!(html.is_empty());
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn demo_reader_fixture_covers_ltr_rtl_wrapping_and_threading() {
+        let [(original, original_html), (reply, reply_html)] = demo_reader_thread_messages();
+        assert_eq!(reply.references, original.message_id);
+        let (_, original_html, _, _) = body_content_and_links(&original_html);
+        let (reply_plain, reply_html, quote_less, _) = body_content_and_links(&reply_html);
+        assert!(original_html.contains("<table"));
+        assert!(original_html.contains("<code>"));
+        assert!(reply_html.contains("dir=\"rtl\""));
+        assert!(reply_html.contains("dir=\"ltr\""));
+        assert!(
+            reply_html.contains("<p dir=\"rtl\">MegaMail leads with Latin, then עברית and العربية")
+        );
+        assert!(reply_html.contains(
+            "<p dir=\"ltr\">שלום مرحباً — English follows explicit left-to-right direction."
+        ));
+        assert!(reply_html.contains(
+            "<p dir=\"rtl\">Latin-only RTL paragraph with <code dir=\"rtl\">inline_code</code>"
+        ));
+        assert!(reply_plain.contains("MegaMail leads with Latin, then עברית and العربية"));
+        assert!(
+            reply_plain.contains("שלום مرحباً — English follows explicit left-to-right direction.")
+        );
+        assert!(reply_plain.contains("Latin-only RTL paragraph with inline_code"));
+        assert!(quote_less.is_some());
     }
 
     #[test]

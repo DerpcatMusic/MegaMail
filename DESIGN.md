@@ -217,7 +217,7 @@ Zeron’s source hierarchy and its contrast targets are captured in the [design-
 
 ## Layout
 
-At the 1280×800 reference size, the open sidebar is 232px and the message list is 332px; the reader takes the remaining width. Unified Inbox is the default landing and combines independently paged Inbox headers from configured accounts. Each account keeps its own page state and can show a partial-failure warning without hiding successful results. Account and folder browsing remains available in the same rail. These are native desktop dimensions, not responsive web breakpoints.
+At the 1280×800 reference size, the open sidebar is 232px and the message list is 332px; the reader takes the remaining width. Unified Inbox is the default landing and combines independently paged Inbox headers from configured accounts. Each account keeps its own page state and can show a partial-failure warning without hiding successful results. Account and folder browsing remains available in the same rail. Between 1280 and 1000 logical pixels, the rail and list compact smoothly from 232px/332px to 192px/280px to leave the reader usable without a width jump. Reader actions wrap as needed; subject, metadata, and message body share one leading edge and scroll together. These are native desktop dimensions, not responsive web breakpoints.
 
 Use the observed 4/8/12/16/20/24px spacing steps for the app’s grouping. Tighten icon-and-label pairs, then give separate controls and content groups more room. Keep the window controls, search field, folder actions, focus, and keyboard message navigation native to GPUI Kit.
 
@@ -282,3 +282,5 @@ Settings manages accounts and mail preferences, and displays MegaMail’s active
 - **Don't** exceed the pane bleed caps or imply a per-pixel contrast guarantee.
 - **Don't** imply web/mobile responsiveness or measured performance from this native desktop app.
 - **Don't** add idle decorative animation or copy Zeron icons without their license and attribution.
+
+Incoming mail uses native semantic formatting with auto paragraph direction, selectable text, constrained wrapping, and local horizontal scrolling for wide data tables. Sender CSS cannot override the application theme or force fixed widths or arbitrary alignment. Thread headers stay flat, with recipients on wrapping selectable lines and a per-message plain-text control.

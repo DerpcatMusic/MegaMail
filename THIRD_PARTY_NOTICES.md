@@ -78,3 +78,30 @@ shared data. The repository does not publish a downloadable binary release.
 The application registers Kit's complete icon source so catalog mail icons are
 present. The Lucide ISC and Feather-derived MIT notices are retained in
 `apps/megamail/assets/icons/LICENSE-LUCIDE`.
+
+## Native rich-text direction fixes
+
+`vendor/gpui-base` contains GPUI Base 0.7.1 under its original Apache-2.0
+license. MegaMail patches its semantic HTML reader for paragraph direction,
+formatted mixed-language text, line breaks, and preformatted blocks. The
+upstream source and license are retained; patch details are in
+[`MEGAMAIL_PATCH.md`](vendor/gpui-base/MEGAMAIL_PATCH.md). The application
+continues to use official GPUI Kit 0.7.1.
+
+`vendor/gpui-pre` contains GPUI 0.3.8 under its original Apache-2.0 license.
+MegaMail patches native bidirectional line wrapping and selection geometry.
+The upstream source and license are retained; see its
+[patch notes](vendor/gpui-pre/MEGAMAIL_PATCH.md).
+
+The GPUI unit-test fixtures include IBM Plex Sans and Lilex fonts from the same
+Zed revision under their retained SIL Open Font Licenses. They are used by tests.
+
+`vendor/gpui-pre-wgpu` retains the matching GPUI 0.3.8 Linux renderer snapshot
+and its Apache-2.0 license. Its local text-shaping patch delegates wrapped
+paragraph layout to Cosmic Text; see its
+[patch notes](vendor/gpui-pre-wgpu/MEGAMAIL_PATCH.md).
+
+`vendor/cosmic-text` contains Cosmic Text 0.19.0 under its original dual
+MIT/Apache-2.0 license. A narrow optional base-level API lets the native reader
+honor explicit paragraph direction without inserting characters into the
+message source; see its [patch notes](vendor/cosmic-text/MEGAMAIL_PATCH.md).

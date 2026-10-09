@@ -23,3 +23,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [profile.dev]
 debug = 0
+
+[patch.crates-io]
+gpui-base = { path = "../../vendor/gpui-base" }
+gpui-pre = { path = "../../vendor/gpui-pre" }
+gpui-pre-wgpu = { path = "../../vendor/gpui-pre-wgpu" }
+
+cosmic-text = { path = "../../vendor/cosmic-text" }
