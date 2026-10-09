@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "MegaMail Thunderbird Bridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Private local bridge used by MegaMail to access its isolated Thunderbird profile.",
   "applications": { "gecko": { "id": "__EXTENSION_ID__", "strict_min_version": "153.0" } },
   "permissions": [

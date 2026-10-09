@@ -75,6 +75,14 @@ copied or automatically sent. New queued messages remain Thunderbird-managed;
 MegaMail does not provide native Outbox retry/discard controls for imported
 Thunderbird accounts.
 
+Imported account references survive rebuilds and restarts. The mailbox opens
+while saved accounts reconnect; a failed connection offers **Reconnect saved
+accounts** without importing again. Cached header pages load before network
+refresh. Inbox refresh runs in the background every minute, and the refresh
+button requests it immediately. Body and conversation requests run independently;
+recently opened bodies use a bounded memory cache. A failed or timed-out body
+request releases its loading state and offers retry.
+
 A private, authorized probe using six existing Thunderbird IMAP accounts
 authenticated all six, discovered their folders, and returned each account's
 initial Inbox page (up to 100 messages) with parsed headers, bodies, and unread
@@ -105,7 +113,7 @@ Open **Appearance** from the sidebar to use System, Light, or Dark mode, choose 
 
 Choose Aurora, Midnight, Paper, or a custom image. Original, Dither, ASCII, Halftone, and Scanlines are available for built-in and custom backgrounds. Treatment strength, wallpaper opacity, and bottom fade range from 0–100%; blur choices are 0, 10, and 16. MegaMail accepts PNG, JPEG, or WebP input up to 24 MiB and 16 million pixels, decodes within a 96 MiB allocation limit, and normalizes images to a maximum 2500-pixel edge before saving a private PNG copy. The original file path is not retained. Image processing is cached, and background changes crossfade over 240 ms. Theme contrast bounds pane wallpaper bleed at 24/10/5% for rail/list/reader. MegaMail does not use Zeron's renderer-specific backdrop blur or per-primitive edge fades.
 
-This checkout has automated core coverage, but it has not been verified against a live Gmail account or another real provider. A successful **Test and add** checks the entered account's IMAP and SMTP connection; it is not a claim that every provider or account policy is supported.
+Direct IMAP setup has automated core coverage; the private real-account checks above cover imported Thunderbird accounts. A successful **Test and add** checks the entered account's IMAP and SMTP connection; it is not a claim that every provider or account policy is supported.
 
 ## Account data and credentials
 

@@ -4,16 +4,19 @@
 //! Thunderbird IDs in the live actor only; it never writes message IDs or page
 //! rows to MegaMail's native cache.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use futures::channel::mpsc as gpui_mpsc;
+use megamail_core::mail_text::MailLink;
 use megamail_core::models::{
     Account, Folder, FolderKind, Importance, Message, ThreadLatest, ThreadSummary,
 };
@@ -42,6 +45,9 @@ const ATTACHMENT_BYTES_LIMIT: usize = 50 * 1024 * 1024;
 const RAW_BYTES_LIMIT: usize = 100 * 1024 * 1024;
 const TRANSFER_CHUNK: usize = 512 * 1024;
 const COMMAND_QUEUE: usize = 64;
+const THUNDERBIRD_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+const BODY_CACHE_ENTRIES: usize = 8;
+const BODY_CACHE_BYTES: usize = 16 * 1024 * 1024;
 const BRIDGE_REQUEST_FRAME_LIMIT: usize = 1024 * 1024;
 const TRANSFER_ID_FRAME_RESERVE: usize = 64;
 
@@ -52,8 +58,10 @@ type StartResult = Result<
 
 static PROFILE_ACTORS: OnceLock<Mutex<HashMap<PathBuf, Weak<SyncSender<Command>>>>> =
     OnceLock::new();
+static NEXT_SESSION_UID: AtomicU64 = AtomicU64::new(1);
 
 type EventSender = gpui_mpsc::UnboundedSender<MailboxEvent>;
+type BodyKey = (u32, String, u32);
 
 #[derive(Serialize, Deserialize, Default)]
 struct SourceStore {
@@ -89,6 +97,17 @@ pub(super) struct StartedAccount {
     pub error: Option<String>,
 }
 
+pub(super) fn has_saved_accounts() -> Result<bool, String> {
+    read_store()
+        .map(|store| {
+            store
+                .profiles
+                .iter()
+                .any(|profile| !profile.accounts.is_empty())
+        })
+        .map_err(|error| format!("Could not read Thunderbird imports: {error}"))
+}
+
 enum Command {
     Request {
         account_id: u32,
@@ -97,9 +116,55 @@ enum Command {
     Page(PageRequest),
     AddAccounts {
         selected: Vec<SelectedAccount>,
+        reconnectable_ids: HashSet<u32>,
         occupied_ids: HashSet<u32>,
         occupied_emails: HashSet<String>,
         response: SyncSender<StartResult>,
+    },
+    AddAccountsPrepared {
+        selected: Vec<SelectedAccount>,
+        reconnectable_ids: HashSet<u32>,
+        occupied_ids: HashSet<u32>,
+        occupied_emails: HashSet<String>,
+        prefetched: HashMap<u32, Result<(Value, Value), String>>,
+        response: SyncSender<StartResult>,
+    },
+    BodyFinished {
+        account_id: u32,
+        path: String,
+        message_id: u32,
+        uid: u32,
+        result: Result<Value, String>,
+    },
+    ConversationFinished {
+        account_id: u32,
+        task: ConversationTask,
+        result: Result<Value, String>,
+    },
+    FolderRefreshFinished {
+        account_id: u32,
+        folder_id: u32,
+        path: String,
+        force: bool,
+        result: Result<Value, String>,
+    },
+    FolderTreeFinished {
+        account_id: u32,
+        result: Result<Value, String>,
+    },
+}
+
+enum ConversationTask {
+    Related {
+        message_id: u32,
+        input_partial: bool,
+        scope_partial: bool,
+    },
+    ThreadSummaries {
+        groups: Vec<(String, Vec<String>)>,
+        fallback: Vec<(String, ThreadSummary)>,
+        input_partial: bool,
+        scope_partial: bool,
     },
 }
 
@@ -115,6 +180,84 @@ struct AccountBinding {
     identities: Vec<SenderIdentity>,
     primary_identity_id: String,
     folders: Vec<FolderBinding>,
+}
+
+#[derive(Clone)]
+struct BodyPayload {
+    body: String,
+    links: Vec<MailLink>,
+    has_attachment: Option<bool>,
+    reply_to: Option<String>,
+    references: Option<String>,
+}
+
+#[derive(Default)]
+struct BodyCache {
+    entries: HashMap<BodyKey, BodyPayload>,
+    order: VecDeque<BodyKey>,
+    bytes: usize,
+}
+
+impl BodyCache {
+    fn get(&mut self, key: &BodyKey) -> Option<BodyPayload> {
+        let payload = self.entries.get(key)?.clone();
+        if let Some(index) = self.order.iter().position(|candidate| candidate == key) {
+            self.order.remove(index);
+        }
+        self.order.push_back(key.clone());
+        Some(payload)
+    }
+
+    fn insert(&mut self, key: BodyKey, payload: BodyPayload) {
+        let size = payload.byte_len();
+        if size > BODY_CACHE_BYTES {
+            return;
+        }
+        if let Some(previous) = self.entries.remove(&key) {
+            self.bytes = self.bytes.saturating_sub(previous.byte_len());
+            if let Some(index) = self.order.iter().position(|candidate| candidate == &key) {
+                self.order.remove(index);
+            }
+        }
+        while self.entries.len() >= BODY_CACHE_ENTRIES
+            || self.bytes.saturating_add(size) > BODY_CACHE_BYTES
+        {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            if let Some(removed) = self.entries.remove(&oldest) {
+                self.bytes = self.bytes.saturating_sub(removed.byte_len());
+            }
+        }
+        self.bytes = self.bytes.saturating_add(size);
+        self.order.push_back(key.clone());
+        self.entries.insert(key, payload);
+    }
+}
+
+impl BodyPayload {
+    fn byte_len(&self) -> usize {
+        self.body.len()
+            + self
+                .links
+                .iter()
+                .map(|link| link.label.len() + link.url.len())
+                .sum::<usize>()
+            + self.reply_to.as_ref().map_or(0, String::len)
+            + self.references.as_ref().map_or(0, String::len)
+    }
+
+    fn event(&self, message_id: u32, path: &str) -> WorkerMailboxEvent {
+        WorkerMailboxEvent::Body {
+            message_id,
+            path: path.to_owned(),
+            body: self.body.clone(),
+            links: self.links.clone(),
+            has_attachment: self.has_attachment,
+            reply_to: self.reply_to.clone(),
+            references: self.references.clone(),
+        }
+    }
 }
 
 enum SendFailure {
@@ -138,9 +281,14 @@ struct ActorState {
     remote_by_uid: HashMap<(u32, u32), Value>,
     message_id_by_uid: HashMap<(u32, u32), String>,
     reply_identity_by_uid: HashMap<(u32, u32), (String, i64)>,
+    pending_bodies: HashSet<(u32, String, u32)>,
+    body_cache: BodyCache,
+    active_folder_by_account: HashMap<u32, (u32, String)>,
+    refresh_inflight: HashSet<(u32, u32)>,
+    last_refresh_started: HashMap<(u32, u32), Instant>,
+    retire_requested: bool,
     cursors: HashMap<(u32, u32, u32), String>,
     initial_pages: HashMap<(u32, u32), Value>,
-    next_uid: u32,
     next_cursor: u32,
     event_sender: EventSender,
 }
@@ -151,6 +299,7 @@ pub(super) fn import(
     selections: Vec<(ThunderbirdProfile, Vec<String>)>,
     reserved_ids: HashSet<u32>,
     running_thunderbird_ids: HashSet<u32>,
+    reconnectable_ids: HashSet<u32>,
     existing_emails: Vec<String>,
     event_sender: EventSender,
 ) {
@@ -158,6 +307,7 @@ pub(super) fn import(
         selections,
         reserved_ids,
         running_thunderbird_ids,
+        reconnectable_ids,
         existing_emails,
         event_sender.clone(),
     );
@@ -186,9 +336,15 @@ pub(super) fn import(
 pub(super) fn restore(
     event_sender: EventSender,
     reserved_ids: HashSet<u32>,
+    reconnectable_ids: HashSet<u32>,
     existing_emails: Vec<String>,
 ) {
-    let result = restore_saved(event_sender.clone(), reserved_ids, existing_emails);
+    let result = restore_saved(
+        event_sender.clone(),
+        reserved_ids,
+        reconnectable_ids,
+        existing_emails,
+    );
     match result {
         Ok((accounts, results, notice)) => {
             let error = outcome_error(&results);
@@ -214,6 +370,7 @@ fn import_selected(
     selections: Vec<(ThunderbirdProfile, Vec<String>)>,
     reserved_ids: HashSet<u32>,
     running_thunderbird_ids: HashSet<u32>,
+    reconnectable_ids: HashSet<u32>,
     existing_emails: Vec<String>,
     event_sender: EventSender,
 ) -> Result<
@@ -290,7 +447,8 @@ fn import_selected(
             };
             let email = account.email.clone().unwrap_or_default();
             if let Some(app_id) = stored.get(&source_id).copied() {
-                if running_thunderbird_ids.contains(&app_id) {
+                if running_thunderbird_ids.contains(&app_id) && !reconnectable_ids.contains(&app_id)
+                {
                     results.push(outcome(
                         &profile,
                         &source_id,
@@ -300,7 +458,7 @@ fn import_selected(
                     ));
                     continue;
                 }
-                if reserved_ids.contains(&app_id) {
+                if reserved_ids.contains(&app_id) && !reconnectable_ids.contains(&app_id) {
                     results.push(outcome(
                         &profile,
                         &source_id,
@@ -343,6 +501,7 @@ fn import_selected(
         match start_profile(
             profile.clone(),
             accounts.clone(),
+            reconnectable_ids.clone(),
             event_sender.clone(),
             connected_ids.clone(),
             connected_emails.clone(),
@@ -420,6 +579,7 @@ fn import_selected(
 fn restore_saved(
     event_sender: EventSender,
     reserved_ids: HashSet<u32>,
+    reconnectable_ids: HashSet<u32>,
     existing_emails: Vec<String>,
 ) -> Result<
     (
@@ -518,6 +678,7 @@ fn restore_saved(
         match start_profile(
             profile.clone(),
             selected,
+            reconnectable_ids.clone(),
             event_sender.clone(),
             connected_ids.clone(),
             connected_emails.clone(),
@@ -681,17 +842,26 @@ fn store_path() -> io::Result<PathBuf> {
 fn start_profile(
     profile: ThunderbirdProfile,
     selected: Vec<SelectedAccount>,
+    reconnectable_ids: HashSet<u32>,
     event_sender: EventSender,
     occupied_ids: HashSet<u32>,
     occupied_emails: HashSet<String>,
 ) -> StartResult {
     if let Some(sender) = profile_sender(&profile.path)? {
-        return add_accounts_to_actor(sender, selected, occupied_ids, occupied_emails);
+        return add_accounts_to_actor(
+            sender,
+            selected,
+            reconnectable_ids,
+            occupied_ids,
+            occupied_emails,
+        );
     }
 
     let (command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE);
     let command_sender = Arc::new(command_tx);
     let command_sender_weak = Arc::downgrade(&command_sender);
+    let cleanup_sender = command_sender_weak.clone();
+    let spawn_cleanup_sender = command_sender_weak.clone();
     {
         let mut actors = profile_actors().lock().map_err(|_| {
             (
@@ -702,13 +872,20 @@ fn start_profile(
         actors.retain(|_, sender| sender.strong_count() > 0);
         if let Some(existing) = actors.get(&profile.path).and_then(Weak::upgrade) {
             drop(actors);
-            return add_accounts_to_actor(existing, selected, occupied_ids, occupied_emails);
+            return add_accounts_to_actor(
+                existing,
+                selected,
+                reconnectable_ids,
+                occupied_ids,
+                occupied_emails,
+            );
         }
         actors.insert(profile.path.clone(), Arc::downgrade(&command_sender));
     }
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
     let actor_profile = profile.clone();
     let profile_path = profile.path.clone();
+    let spawn_cleanup_path = profile_path.clone();
     let actor_name = format!(
         "megamail-thunderbird-{}",
         profile
@@ -751,42 +928,126 @@ fn start_profile(
                 remote_by_uid: HashMap::new(),
                 message_id_by_uid: HashMap::new(),
                 reply_identity_by_uid: HashMap::new(),
+                pending_bodies: HashSet::new(),
+                body_cache: BodyCache::default(),
+                active_folder_by_account: HashMap::new(),
+                refresh_inflight: HashSet::new(),
+                last_refresh_started: HashMap::new(),
+                retire_requested: false,
                 cursors: HashMap::new(),
                 initial_pages: HashMap::new(),
-                next_uid: 1,
                 next_cursor: 1,
                 event_sender: event_sender.clone(),
             };
+            let prefetched = prefetch_accounts(&state.runtime, &state.remote_accounts, &selected);
             if ready_tx
-                .send(state.add_accounts(selected, occupied_ids, occupied_emails))
+                .send(state.add_accounts_prepared(
+                    selected,
+                    reconnectable_ids,
+                    occupied_ids,
+                    occupied_emails,
+                    prefetched,
+                ))
                 .is_err()
             {
                 return;
             }
-            while let Ok(command) = command_rx.recv() {
-                match command {
-                    Command::Request {
-                        account_id,
-                        request,
-                    } => state.handle_request(account_id, request),
-                    Command::Page(request) => state.handle_page(request),
-                    Command::AddAccounts {
-                        selected,
-                        occupied_ids,
-                        occupied_emails,
-                        response,
-                    } => {
-                        let _ = response.send(state.add_accounts(
+            let mut next_periodic_refresh = Instant::now() + THUNDERBIRD_REFRESH_INTERVAL;
+            loop {
+                if state.retire_requested {
+                    break;
+                }
+                let timeout = next_periodic_refresh.saturating_duration_since(Instant::now());
+                let command = match command_rx.recv_timeout(timeout) {
+                    Ok(command) => Some(command),
+                    Err(mpsc::RecvTimeoutError::Timeout) => None,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                };
+                if let Some(command) = command {
+                    match command {
+                        Command::Request {
+                            account_id,
+                            request,
+                        } => state.handle_request(account_id, request),
+                        Command::Page(request) => state.handle_page(request),
+                        Command::AddAccounts {
                             selected,
+                            reconnectable_ids,
                             occupied_ids,
                             occupied_emails,
-                        ));
+                            response,
+                        } => {
+                            if let Err((_, error)) = state.schedule_add_accounts(
+                                selected,
+                                reconnectable_ids,
+                                occupied_ids,
+                                occupied_emails,
+                                response.clone(),
+                            ) {
+                                let _ =
+                                    response.send(Err((ThunderbirdAccountState::Failed, error)));
+                            }
+                        }
+                        Command::AddAccountsPrepared {
+                            selected,
+                            reconnectable_ids,
+                            occupied_ids,
+                            occupied_emails,
+                            prefetched,
+                            response,
+                        } => {
+                            let _ = response.send(state.add_accounts_prepared(
+                                selected,
+                                reconnectable_ids,
+                                occupied_ids,
+                                occupied_emails,
+                                prefetched,
+                            ));
+                        }
+                        Command::BodyFinished {
+                            account_id,
+                            path,
+                            message_id,
+                            uid,
+                            result,
+                        } => {
+                            state.handle_body_finished(account_id, path, message_id, uid, result);
+                        }
+                        Command::ConversationFinished {
+                            account_id,
+                            task,
+                            result,
+                        } => state.handle_conversation_finished(account_id, task, result),
+                        Command::FolderRefreshFinished {
+                            account_id,
+                            folder_id,
+                            path,
+                            force,
+                            result,
+                        } => state.handle_folder_refresh_finished(
+                            account_id, folder_id, path, force, result,
+                        ),
+                        Command::FolderTreeFinished { account_id, result } => {
+                            state.handle_folder_tree_finished(account_id, result)
+                        }
                     }
                 }
+                if state.retire_requested {
+                    break;
+                }
+                if Instant::now() >= next_periodic_refresh {
+                    state.refresh_connected_inboxes();
+                    next_periodic_refresh = Instant::now() + THUNDERBIRD_REFRESH_INTERVAL;
+                }
+            }
+            let retired = state.retire_requested;
+            drop(state);
+            if retired {
+                remove_profile_sender(&profile_path, &cleanup_sender);
             }
         })
         .map_err(|error| {
-            remove_profile_sender(&profile_path, &command_sender);
+            remove_profile_sender(&spawn_cleanup_path, &spawn_cleanup_sender);
             (
                 ThunderbirdAccountState::Failed,
                 format!("Could not start Thunderbird worker: {error}"),
@@ -818,12 +1079,11 @@ fn profile_sender(
     Ok(actors.get(path).and_then(Weak::upgrade))
 }
 
-fn remove_profile_sender(path: &Path, sender: &Arc<SyncSender<Command>>) {
+fn remove_profile_sender(path: &Path, sender: &Weak<SyncSender<Command>>) {
     if let Ok(mut actors) = profile_actors().lock() {
         if actors
             .get(path)
-            .and_then(Weak::upgrade)
-            .is_some_and(|current| Arc::ptr_eq(&current, sender))
+            .is_some_and(|current| Weak::ptr_eq(current, sender))
         {
             actors.remove(path);
         }
@@ -833,6 +1093,7 @@ fn remove_profile_sender(path: &Path, sender: &Arc<SyncSender<Command>>) {
 fn add_accounts_to_actor(
     sender: Arc<SyncSender<Command>>,
     selected: Vec<SelectedAccount>,
+    reconnectable_ids: HashSet<u32>,
     occupied_ids: HashSet<u32>,
     occupied_emails: HashSet<String>,
 ) -> StartResult {
@@ -840,6 +1101,7 @@ fn add_accounts_to_actor(
     sender
         .try_send(Command::AddAccounts {
             selected,
+            reconnectable_ids,
             occupied_ids,
             occupied_emails,
             response: response_tx,
@@ -862,13 +1124,143 @@ fn add_accounts_to_actor(
     })?
 }
 
+fn prefetch_accounts(
+    runtime: &Runtime,
+    remote_accounts: &[Value],
+    selected: &[SelectedAccount],
+) -> HashMap<u32, Result<(Value, Value), String>> {
+    thread::scope(|scope| {
+        let handles = selected
+            .iter()
+            .map(|selected_account| {
+                let selected_account = selected_account.clone();
+                let remote_account = find_remote_account(remote_accounts, &selected_account);
+                let runtime = runtime.clone();
+                let app_id = selected_account.app_id;
+                let handle = scope.spawn(move || {
+                    let remote_account = remote_account?;
+                    let remote_id = remote_account.get("id").cloned().ok_or_else(|| {
+                        "Thunderbird returned an account without an ID.".to_owned()
+                    })?;
+                    let folders = runtime.call("folders", json!({ "accountId": remote_id }))?;
+                    let parsed = parse_folders(app_id, &folders)?;
+                    let initial_folder = parsed
+                        .iter()
+                        .find(|folder| folder.kind == FolderKind::Inbox)
+                        .or_else(|| parsed.first())
+                        .ok_or_else(|| {
+                            "Thunderbird returned no mail folders for this account.".to_owned()
+                        })?;
+                    let initial_page = runtime.call(
+                        "list",
+                        json!({
+                            "folderId": initial_folder.path.clone(),
+                            "limit": PAGE_LIMIT,
+                        }),
+                    )?;
+                    Ok((folders, initial_page))
+                });
+                (app_id, handle)
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .map(|(app_id, handle)| {
+                let result = handle.join().unwrap_or_else(|_| {
+                    Err("Thunderbird account discovery worker stopped unexpectedly.".into())
+                });
+                (app_id, result)
+            })
+            .collect()
+    })
+}
+
+fn find_remote_account(
+    remote_accounts: &[Value],
+    selected: &SelectedAccount,
+) -> Result<Value, String> {
+    if let Some(account) = remote_accounts
+        .iter()
+        .find(|account| string_id(account.get("id")) == selected.account.account_id)
+    {
+        return Ok(account.clone());
+    }
+    let email = selected
+        .account
+        .email
+        .as_deref()
+        .map(normalize_email)
+        .unwrap_or_default();
+    let matching = remote_accounts
+        .iter()
+        .filter(|account| {
+            identity_values(account)
+                .iter()
+                .any(|identity| normalize_email(&string(identity.get("email"))) == email)
+        })
+        .collect::<Vec<_>>();
+    if email.is_empty() || matching.len() != 1 {
+        return Err(
+            "This account could not be matched to Thunderbird's authenticated account list.".into(),
+        );
+    }
+    Ok(matching[0].clone())
+}
+
 impl ActorState {
-    fn add_accounts(
-        &mut self,
+    fn schedule_add_accounts(
+        &self,
         selected: Vec<SelectedAccount>,
+        reconnectable_ids: HashSet<u32>,
         occupied_ids: HashSet<u32>,
         occupied_emails: HashSet<String>,
+        response: SyncSender<StartResult>,
+    ) -> Result<(), (ThunderbirdAccountState, String)> {
+        let sender = self.command_sender.upgrade().ok_or_else(|| {
+            (
+                ThunderbirdAccountState::Failed,
+                "The Thunderbird session is shutting down.".into(),
+            )
+        })?;
+        let runtime = self.runtime.clone();
+        let remote_accounts = self.remote_accounts.clone();
+        thread::Builder::new()
+            .name("megamail-thunderbird-account-discovery".into())
+            .spawn(move || {
+                let prefetched = prefetch_accounts(&runtime, &remote_accounts, &selected);
+                let _ = sender.send(Command::AddAccountsPrepared {
+                    selected,
+                    reconnectable_ids,
+                    occupied_ids,
+                    occupied_emails,
+                    prefetched,
+                    response,
+                });
+            })
+            .map_err(|error| {
+                (
+                    ThunderbirdAccountState::Failed,
+                    format!("Could not schedule Thunderbird account discovery: {error}"),
+                )
+            })?;
+        Ok(())
+    }
+
+    fn add_accounts_prepared(
+        &mut self,
+        selected: Vec<SelectedAccount>,
+        reconnectable_ids: HashSet<u32>,
+        occupied_ids: HashSet<u32>,
+        occupied_emails: HashSet<String>,
+        mut prefetched: HashMap<u32, Result<(Value, Value), String>>,
     ) -> StartResult {
+        let broken_prefetch = prefetched.iter().find_map(|(account_id, result)| {
+            result
+                .as_ref()
+                .err()
+                .filter(|error| is_broken_bridge_error(error))
+                .map(|error| (*account_id, error.clone()))
+        });
         let profile = self.profile.clone();
         let remote_accounts = self.remote_accounts.clone();
         let command_sender = self.command_sender.upgrade().ok_or_else(|| {
@@ -880,8 +1272,10 @@ impl ActorState {
         let mut started = Vec::new();
         let mut outcomes = Vec::new();
         for selected_account in selected {
-            if occupied_ids.contains(&selected_account.app_id)
-                || self.accounts.contains_key(&selected_account.app_id)
+            let reconnecting = reconnectable_ids.contains(&selected_account.app_id);
+            if (occupied_ids.contains(&selected_account.app_id)
+                || self.accounts.contains_key(&selected_account.app_id))
+                && !reconnecting
             {
                 outcomes.push(outcome(
                     &profile,
@@ -916,11 +1310,24 @@ impl ActorState {
                 ));
                 continue;
             }
-            match self.add_account(&remote_accounts, &selected_account, command_sender.clone()) {
+            let account_prefetch =
+                prefetched
+                    .remove(&selected_account.app_id)
+                    .unwrap_or_else(|| {
+                        Err("Thunderbird account discovery did not return a result.".into())
+                    });
+            match self.add_account(
+                &remote_accounts,
+                &selected_account,
+                command_sender.clone(),
+                account_prefetch,
+            ) {
                 Ok((ready, binding, (folder_id, initial_page))) => {
                     if occupied_emails.contains(&normalize_email(&binding.email))
-                        || self.accounts.values().any(|existing| {
-                            normalize_email(&existing.email) == normalize_email(&binding.email)
+                        || self.accounts.iter().any(|(existing_id, existing)| {
+                            *existing_id != binding.app_id
+                                && normalize_email(&existing.email)
+                                    == normalize_email(&binding.email)
                         })
                     {
                         outcomes.push(outcome(
@@ -957,6 +1364,22 @@ impl ActorState {
                 )),
             }
         }
+        let has_broken_prefetch = broken_prefetch.is_some();
+        if let Some((failed_account_id, error)) = broken_prefetch {
+            let reason = friendly_error(&error);
+            suppress_started_accounts_on_broken_prefetch(&mut started, &mut outcomes, &reason);
+            self.emit(
+                failed_account_id,
+                WorkerMailboxEvent::Error {
+                    text: reason,
+                    connectivity: true,
+                },
+            );
+            self.retire_disconnected_runtime(failed_account_id);
+        }
+        if should_retire_after_add(started.len(), self.accounts.len(), has_broken_prefetch) {
+            self.retire_requested = true;
+        }
         Ok((started, outcomes))
     }
 
@@ -965,6 +1388,7 @@ impl ActorState {
         remote_accounts: &[Value],
         selected: &SelectedAccount,
         command_tx: Arc<SyncSender<Command>>,
+        prefetched: Result<(Value, Value), String>,
     ) -> Result<(StartedAccount, AccountBinding, (u32, Value)), (ThunderbirdAccountState, String)>
     {
         let source = &selected.account;
@@ -1024,10 +1448,8 @@ impl ActorState {
             .or_else(|| identities.first())
             .map(|identity| identity.id.clone())
             .unwrap_or_default();
-        let folders_value = self
-            .runtime
-            .call("folders", json!({ "accountId": remote_id }))
-            .map_err(|error| (classify_runtime_error(&error), friendly_error(&error)))?;
+        let (folders_value, initial_page) =
+            prefetched.map_err(|error| (classify_runtime_error(&error), friendly_error(&error)))?;
         let folders = parse_folders(selected.app_id, &folders_value)
             .map_err(|error| (ThunderbirdAccountState::Failed, error))?;
         if folders.is_empty() {
@@ -1042,17 +1464,6 @@ impl ActorState {
             .or_else(|| folders.first())
             .expect("non-empty folder list checked");
         let initial_folder_id = initial_folder.id;
-        let initial_folder_path = initial_folder.path.clone();
-        let initial_page = self
-            .runtime
-            .call(
-                "list",
-                json!({
-                    "folderId": initial_folder_path,
-                    "limit": PAGE_LIMIT,
-                }),
-            )
-            .map_err(|error| (classify_runtime_error(&error), friendly_error(&error)))?;
         if initial_page
             .get("messages")
             .and_then(Value::as_array)
@@ -1092,13 +1503,25 @@ impl ActorState {
         };
         let app_id = selected.app_id;
         let command_sender = command_tx.clone();
+        let event_sender = self.event_sender.clone();
         let request_sender: RequestSender = Arc::new(move |request| {
-            command_sender
-                .try_send(Command::Request {
-                    account_id: app_id,
-                    request,
-                })
-                .is_ok()
+            match command_sender.try_send(Command::Request {
+                account_id: app_id,
+                request,
+            }) {
+                Ok(()) => true,
+                Err(TrySendError::Full(_)) => false,
+                Err(TrySendError::Disconnected(_)) => {
+                    let _ = event_sender.unbounded_send(MailboxEvent::Worker(WorkerEnvelope {
+                        account_id: app_id,
+                        event: WorkerMailboxEvent::Error {
+                            text: "The Thunderbird worker session stopped.".into(),
+                            connectivity: true,
+                        },
+                    }));
+                    false
+                }
+            }
         });
         let page_sender = page_sender(command_tx, app_id);
         let ready = StartedAccount {
@@ -1114,6 +1537,18 @@ impl ActorState {
 
     fn handle_page(&mut self, request: PageRequest) {
         let result = self.page(request);
+        if let PageStatus::Failed(error) = &result.status {
+            if is_broken_bridge_error(error) {
+                self.emit(
+                    result.account_id,
+                    WorkerMailboxEvent::Error {
+                        text: friendly_error(error),
+                        connectivity: true,
+                    },
+                );
+                self.retire_disconnected_runtime(result.account_id);
+            }
+        }
         let _ = self.event_sender.unbounded_send(MailboxEvent::Page(result));
     }
 
@@ -1147,6 +1582,8 @@ impl ActorState {
             return failed("This Thunderbird folder is no longer available.".into());
         };
         let remote_folder_id = folder.remote_id.clone();
+        self.active_folder_by_account
+            .insert(account_id, (folder_id, path.clone()));
         if request.cursor.is_none() {
             self.cursors
                 .retain(|(id, f_id, _), _| *id != account_id || *f_id != folder_id);
@@ -1267,8 +1704,10 @@ impl ActorState {
             if self.remote_by_uid.len() >= SESSION_MESSAGE_LIMIT {
                 return Err("This Thunderbird session reached its 25,000-message safety limit. Restart the account to load more.".into());
             }
-            let uid = self.next_uid;
-            self.next_uid = self.next_uid.wrapping_add(1).max(1);
+            let uid =
+                u32::try_from(NEXT_SESSION_UID.fetch_add(1, Ordering::Relaxed)).map_err(|_| {
+                    "This Thunderbird session exhausted its message ID space.".to_owned()
+                })?;
             self.message_by_remote
                 .insert((account_id, folder_id, external_key.clone()), uid);
             self.remote_by_uid
@@ -1644,19 +2083,141 @@ impl ActorState {
             .collect()
     }
 
-    fn message_body_event(
-        &self,
+    fn cached_body(&mut self, key: &(u32, String, u32)) -> Option<BodyPayload> {
+        self.body_cache.get(key)
+    }
+
+    fn cache_body(&mut self, key: (u32, String, u32), payload: BodyPayload) {
+        self.body_cache.insert(key, payload);
+    }
+
+    fn schedule_body(
+        &mut self,
+        account_id: u32,
         message_id: u32,
         path: &str,
-        remote_id: Value,
-    ) -> Result<WorkerMailboxEvent, (String, bool)> {
-        let value = self.call("body", json!({ "messageId": remote_id }))?;
+        uid: u32,
+    ) -> Result<(), (String, bool)> {
+        let key = (account_id, path.to_owned(), uid);
+        if let Some(payload) = self.cached_body(&key) {
+            self.emit(account_id, payload.event(message_id, path));
+            return Ok(());
+        }
+        if self.pending_bodies.contains(&key) {
+            return Ok(());
+        }
+        let remote_id = match self.remote_message(account_id, path, message_id, uid) {
+            Ok(remote_id) => remote_id,
+            Err((text, _)) => {
+                self.emit(
+                    account_id,
+                    WorkerMailboxEvent::BodyFailed {
+                        message_id,
+                        path: path.to_owned(),
+                        text,
+                    },
+                );
+                return Ok(());
+            }
+        };
+        let Some(sender) = self.command_sender.upgrade() else {
+            self.emit(
+                account_id,
+                WorkerMailboxEvent::BodyFailed {
+                    message_id,
+                    path: path.to_owned(),
+                    text: "The Thunderbird session is shutting down.".into(),
+                },
+            );
+            return Ok(());
+        };
+        let runtime = self.runtime.clone();
+        let path = path.to_owned();
+        let command_path = path.clone();
+        let spawn = thread::Builder::new()
+            .name(format!("megamail-thunderbird-body-{account_id}-{uid}"))
+            .spawn(move || {
+                let result = runtime.call("body", json!({ "messageId": remote_id }));
+                let _ = sender.send(Command::BodyFinished {
+                    account_id,
+                    path: command_path,
+                    message_id,
+                    uid,
+                    result,
+                });
+            });
+        if let Err(error) = spawn {
+            self.emit(
+                account_id,
+                WorkerMailboxEvent::BodyFailed {
+                    message_id,
+                    path: path.clone(),
+                    text: format!("Could not schedule Thunderbird message body: {error}"),
+                },
+            );
+            return Ok(());
+        }
+        self.pending_bodies.insert((account_id, path, uid));
+        Ok(())
+    }
+
+    fn handle_body_finished(
+        &mut self,
+        account_id: u32,
+        path: String,
+        message_id: u32,
+        uid: u32,
+        result: Result<Value, String>,
+    ) {
+        let key = (account_id, path.clone(), uid);
+        self.pending_bodies.remove(&key);
+        let payload = match result {
+            Ok(value) => match Self::parse_body_payload(value) {
+                Ok(payload) => payload,
+                Err(text) => {
+                    self.emit(
+                        account_id,
+                        WorkerMailboxEvent::BodyFailed {
+                            message_id,
+                            path,
+                            text,
+                        },
+                    );
+                    return;
+                }
+            },
+            Err(error) => {
+                let text = friendly_error(&error);
+                self.emit(
+                    account_id,
+                    WorkerMailboxEvent::BodyFailed {
+                        message_id,
+                        path,
+                        text,
+                    },
+                );
+                if is_broken_bridge_error(&error) {
+                    self.emit(
+                        account_id,
+                        WorkerMailboxEvent::Error {
+                            text: "The Thunderbird bridge disconnected while loading this message."
+                                .into(),
+                            connectivity: true,
+                        },
+                    );
+                    self.retire_disconnected_runtime(account_id);
+                }
+                return;
+            }
+        };
+        self.cache_body(key, payload.clone());
+        self.emit(account_id, payload.event(message_id, &path));
+    }
+
+    fn parse_body_payload(value: Value) -> Result<BodyPayload, String> {
         let html = string(value.get("html"));
         if html.len() > 2 * 1024 * 1024 {
-            return Err((
-                "This message body exceeds the 2 MiB reader limit.".into(),
-                false,
-            ));
+            return Err("This message body exceeds the 2 MiB reader limit.".into());
         }
         let plain = string(value.get("plainText"));
         let body = if !plain.is_empty() {
@@ -1669,9 +2230,7 @@ impl ActorState {
         } else {
             megamail_core::mail_text::extract_links(&html)
         };
-        Ok(WorkerMailboxEvent::Body {
-            message_id,
-            path: path.to_owned(),
+        Ok(BodyPayload {
             body,
             links,
             has_attachment: value.get("hasAttachment").and_then(Value::as_bool),
@@ -1685,25 +2244,392 @@ impl ActorState {
     fn handle_request(&mut self, account_id: u32, request: MailRequest) {
         let result = self.request(account_id, request);
         if let Err((text, connectivity)) = result {
-            let _ = self
-                .event_sender
-                .unbounded_send(MailboxEvent::Worker(WorkerEnvelope {
-                    account_id,
-                    event: WorkerMailboxEvent::Error { text, connectivity },
-                }));
+            self.emit(
+                account_id,
+                WorkerMailboxEvent::Error {
+                    text: text.clone(),
+                    connectivity,
+                },
+            );
+            if connectivity && is_broken_bridge_error(&text) {
+                self.retire_disconnected_runtime(account_id);
+            }
         }
+    }
+
+    fn schedule_conversation(
+        &self,
+        account_id: u32,
+        params: Value,
+        task: ConversationTask,
+    ) -> Result<(), (String, bool)> {
+        let sender = self
+            .command_sender
+            .upgrade()
+            .ok_or_else(|| ("The Thunderbird session is shutting down.".into(), true))?;
+        let runtime = self.runtime.clone();
+        thread::Builder::new()
+            .name(format!("megamail-thunderbird-conversation-{account_id}"))
+            .spawn(move || {
+                let result = runtime.call("conversation", params);
+                let _ = sender.send(Command::ConversationFinished {
+                    account_id,
+                    task,
+                    result,
+                });
+            })
+            .map_err(|error| {
+                (
+                    format!("Could not schedule Thunderbird conversation lookup: {error}"),
+                    false,
+                )
+            })?;
+        Ok(())
+    }
+
+    fn handle_conversation_finished(
+        &mut self,
+        account_id: u32,
+        task: ConversationTask,
+        result: Result<Value, String>,
+    ) {
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => {
+                let connectivity = is_connectivity_error(&error);
+                let text = friendly_error(&error);
+                self.emit(account_id, WorkerMailboxEvent::Error { text, connectivity });
+                if connectivity && is_broken_bridge_error(&error) {
+                    self.retire_disconnected_runtime(account_id);
+                }
+                return;
+            }
+        };
+        let messages = match self.map_conversation_headers(account_id, &result) {
+            Ok(messages) => messages,
+            Err(error) => {
+                self.emit(
+                    account_id,
+                    WorkerMailboxEvent::Error {
+                        text: error,
+                        connectivity: false,
+                    },
+                );
+                return;
+            }
+        };
+        match task {
+            ConversationTask::Related {
+                message_id,
+                input_partial,
+                scope_partial,
+            } => {
+                let partial = input_partial
+                    || scope_partial
+                    || result
+                        .get("partial")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                let warning = if partial {
+                    Some("More messages may exist outside the indexed/query window".into())
+                } else {
+                    result
+                        .get("warning")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                };
+                self.emit(
+                    account_id,
+                    WorkerMailboxEvent::Related {
+                        message_id,
+                        messages,
+                        partial,
+                        warning,
+                    },
+                );
+            }
+            ConversationTask::ThreadSummaries {
+                groups,
+                fallback,
+                input_partial,
+                scope_partial,
+            } => {
+                let partial = input_partial
+                    || scope_partial
+                    || result
+                        .get("partial")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                let mut summaries = self.thread_summaries(account_id, &groups, messages);
+                let returned = summaries
+                    .iter()
+                    .map(|(tag, _)| tag.clone())
+                    .collect::<HashSet<_>>();
+                summaries.extend(
+                    fallback
+                        .into_iter()
+                        .filter(|(tag, _)| !returned.contains(tag)),
+                );
+                let warning = if partial {
+                    Some("More messages may exist outside the indexed/query window".into())
+                } else {
+                    result
+                        .get("warning")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                };
+                self.emit(
+                    account_id,
+                    WorkerMailboxEvent::ThreadSummaries { summaries, warning },
+                );
+            }
+        }
+    }
+
+    fn schedule_folder_refresh(
+        &mut self,
+        account_id: u32,
+        folder_id: u32,
+        path: &str,
+        force: bool,
+    ) -> Result<(), (String, bool)> {
+        let key = (account_id, folder_id);
+        if self.refresh_inflight.contains(&key) {
+            return Ok(());
+        }
+        if !force
+            && self
+                .last_refresh_started
+                .get(&key)
+                .is_some_and(|last| last.elapsed() < THUNDERBIRD_REFRESH_INTERVAL)
+        {
+            return Ok(());
+        }
+        let remote_id = self.folder_remote_id(account_id, path)?;
+        let sender = self
+            .command_sender
+            .upgrade()
+            .ok_or_else(|| ("The Thunderbird session is shutting down.".into(), true))?;
+        let runtime = self.runtime.clone();
+        let path = path.to_owned();
+        thread::Builder::new()
+            .name(format!(
+                "megamail-thunderbird-refresh-{account_id}-{folder_id}"
+            ))
+            .spawn(move || {
+                let result = runtime.call("refresh", json!({"folderId": remote_id}));
+                let _ = sender.send(Command::FolderRefreshFinished {
+                    account_id,
+                    folder_id,
+                    path,
+                    force,
+                    result,
+                });
+            })
+            .map_err(|error| {
+                (
+                    format!("Could not schedule Thunderbird folder refresh: {error}"),
+                    false,
+                )
+            })?;
+        self.refresh_inflight.insert(key);
+        self.last_refresh_started.insert(key, Instant::now());
+        Ok(())
+    }
+
+    fn refresh_active_folder(
+        &mut self,
+        account_id: u32,
+        force: bool,
+    ) -> Result<(), (String, bool)> {
+        let active = self
+            .active_folder_by_account
+            .get(&account_id)
+            .cloned()
+            .or_else(|| {
+                self.accounts.get(&account_id).and_then(|account| {
+                    account
+                        .folders
+                        .iter()
+                        .find(|folder| folder.folder.kind == FolderKind::Inbox)
+                        .or_else(|| account.folders.first())
+                        .map(|folder| (folder.folder.id, folder.folder.path.clone()))
+                })
+            });
+        if let Some((folder_id, path)) = active {
+            self.schedule_folder_refresh(account_id, folder_id, &path, force)?;
+        }
+        Ok(())
+    }
+
+    fn refresh_connected_inboxes(&mut self) {
+        let inboxes = self
+            .accounts
+            .iter()
+            .filter_map(|(account_id, account)| {
+                account
+                    .folders
+                    .iter()
+                    .find(|folder| folder.folder.kind == FolderKind::Inbox)
+                    .map(|folder| (*account_id, folder.folder.id, folder.folder.path.clone()))
+            })
+            .collect::<Vec<_>>();
+        for (account_id, folder_id, path) in inboxes {
+            if let Err((text, connectivity)) =
+                self.schedule_folder_refresh(account_id, folder_id, &path, false)
+            {
+                self.emit(account_id, WorkerMailboxEvent::Error { text, connectivity });
+            }
+        }
+    }
+
+    fn handle_folder_refresh_finished(
+        &mut self,
+        account_id: u32,
+        folder_id: u32,
+        _path: String,
+        force: bool,
+        result: Result<Value, String>,
+    ) {
+        self.refresh_inflight.remove(&(account_id, folder_id));
+        match result {
+            Ok(result) if result.get("synced").and_then(Value::as_bool) == Some(true) => {
+                if let Err(error) = self.schedule_folder_tree_refresh(account_id) {
+                    self.emit(
+                        account_id,
+                        WorkerMailboxEvent::Error {
+                            text: error,
+                            connectivity: false,
+                        },
+                    );
+                }
+                self.emit(account_id, WorkerMailboxEvent::FolderChanged { folder_id });
+            }
+            Ok(result) if force && result.get("local").and_then(Value::as_bool) == Some(true) => {
+                self.emit(
+                    account_id,
+                    WorkerMailboxEvent::Notice(
+                        "Thunderbird showed its local folder cache; remote mail was not refreshed."
+                            .into(),
+                    ),
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                let connectivity = is_connectivity_error(&error);
+                self.emit(
+                    account_id,
+                    WorkerMailboxEvent::Error {
+                        text: friendly_error(&error),
+                        connectivity,
+                    },
+                );
+                if connectivity && is_broken_bridge_error(&error) {
+                    self.retire_disconnected_runtime(account_id);
+                }
+            }
+        }
+    }
+
+    fn schedule_folder_tree_refresh(&self, account_id: u32) -> Result<(), String> {
+        let remote_id = self
+            .accounts
+            .get(&account_id)
+            .map(|account| account.remote_id.clone())
+            .ok_or_else(|| "This Thunderbird account is no longer connected.".to_owned())?;
+        let sender = self
+            .command_sender
+            .upgrade()
+            .ok_or_else(|| "The Thunderbird session is shutting down.".to_owned())?;
+        let runtime = self.runtime.clone();
+        thread::Builder::new()
+            .name(format!("megamail-thunderbird-folders-{account_id}"))
+            .spawn(move || {
+                let result = runtime.call("folders", json!({ "accountId": remote_id }));
+                let _ = sender.send(Command::FolderTreeFinished { account_id, result });
+            })
+            .map_err(|error| format!("Could not schedule Thunderbird folder refresh: {error}"))?;
+        Ok(())
+    }
+
+    fn handle_folder_tree_finished(&mut self, account_id: u32, result: Result<Value, String>) {
+        match result {
+            Ok(value) => {
+                if let Err((error, connectivity)) = self.apply_folder_tree(account_id, value) {
+                    self.emit(
+                        account_id,
+                        WorkerMailboxEvent::Error {
+                            text: friendly_error(&error),
+                            connectivity,
+                        },
+                    );
+                    if connectivity && is_broken_bridge_error(&error) {
+                        self.retire_disconnected_runtime(account_id);
+                    }
+                }
+            }
+            Err(error) => {
+                let connectivity = is_connectivity_error(&error);
+                self.emit(
+                    account_id,
+                    WorkerMailboxEvent::Error {
+                        text: friendly_error(&error),
+                        connectivity,
+                    },
+                );
+                if connectivity && is_broken_bridge_error(&error) {
+                    self.retire_disconnected_runtime(account_id);
+                }
+            }
+        }
+    }
+
+    fn retire_disconnected_runtime(&mut self, failed_account_id: u32) {
+        self.retire_requested = true;
+        let other_accounts = self
+            .accounts
+            .keys()
+            .copied()
+            .filter(|account_id| *account_id != failed_account_id)
+            .collect::<Vec<_>>();
+        for account_id in other_accounts {
+            self.emit(account_id, WorkerMailboxEvent::Error {
+                text: "The shared Thunderbird bridge stopped. Reconnect this profile to resume mail.".into(),
+                connectivity: true,
+            });
+        }
+    }
+
+    fn report_broken_bridge_error(&mut self, account_id: u32, error: &str) {
+        if !is_broken_bridge_error(error) {
+            return;
+        }
+        self.emit(
+            account_id,
+            WorkerMailboxEvent::Error {
+                text: friendly_error(error),
+                connectivity: true,
+            },
+        );
+        self.retire_disconnected_runtime(account_id);
     }
 
     fn request(&mut self, account_id: u32, request: MailRequest) -> Result<(), (String, bool)> {
         match request {
-            MailRequest::LoadMessages { .. } | MailRequest::SyncFolder { .. } | MailRequest::Settle { .. } => Ok(()),
-            MailRequest::RefreshUnread => self.refresh_folders(account_id),
-            MailRequest::Reconnect => self.refresh_folders(account_id),
+            MailRequest::LoadMessages { folder_id, path } => {
+                self.active_folder_by_account.insert(account_id, (folder_id, path.clone()));
+                self.schedule_folder_refresh(account_id, folder_id, &path, false)
+            }
+            MailRequest::SyncFolder { folder_id, path } => {
+                self.active_folder_by_account.insert(account_id, (folder_id, path.clone()));
+                self.schedule_folder_refresh(account_id, folder_id, &path, false)
+            }
+            MailRequest::Settle { .. } => Ok(()),
+            MailRequest::RefreshUnread | MailRequest::Reconnect => {
+                self.refresh_active_folder(account_id, true)
+            }
             MailRequest::LoadBody { message_id, path, uid } => {
-                let remote_id = self.remote_message(account_id, &path, message_id, uid)?;
-                let event = self.message_body_event(message_id, &path, remote_id)?;
-                self.emit(account_id, event);
-                Ok(())
+                self.schedule_body(account_id, message_id, &path, uid)
             }
             MailRequest::LoadBodies { items, path } => {
                 if items.len() > CONVERSATION_MEMBER_LIMIT {
@@ -1712,9 +2638,7 @@ impl ActorState {
                 let mut seen = HashSet::new();
                 for (message_id, uid) in items {
                     if seen.insert(uid) {
-                        let remote_id = self.remote_message(account_id, &path, message_id, uid)?;
-                        let event = self.message_body_event(message_id, &path, remote_id)?;
-                        self.emit(account_id, event);
+                        self.schedule_body(account_id, message_id, &path, uid)?;
                     }
                 }
                 Ok(())
@@ -1734,30 +2658,12 @@ impl ActorState {
                     });
                     return Ok(());
                 }
-                let result = self.call("conversation", json!({
+                self.schedule_conversation(account_id, json!({
                     "accountId": remote_account,
                     "folderIds": folder_ids,
                     "ids": ids,
                     "includeReplies": true,
-                }))?;
-                let messages = self
-                    .map_conversation_headers(account_id, &result)
-                    .map_err(|error| (error, false))?;
-                let partial = input_partial
-                    || scope_partial
-                    || result.get("partial").and_then(Value::as_bool).unwrap_or(false);
-                let warning = if partial {
-                    Some("More messages may exist outside the indexed/query window".into())
-                } else {
-                    result.get("warning").and_then(Value::as_str).map(str::to_owned)
-                };
-                self.emit(account_id, WorkerMailboxEvent::Related {
-                    message_id,
-                    messages,
-                    partial,
-                    warning,
-                });
-                Ok(())
+                }), ConversationTask::Related { message_id, input_partial, scope_partial })
             }
             MailRequest::LoadThreadSummaries { groups } => {
                 let fallback = groups
@@ -1819,36 +2725,18 @@ impl ActorState {
                     });
                     return Ok(());
                 }
-                let result = self.call("conversation", json!({
+                self.schedule_conversation(account_id, json!({
                     "accountId": remote_account,
                     "folderIds": folder_ids,
                     "ids": ids,
                     "seedIds": seed_ids,
                     "includeBatchRelated": true,
-                }))?;
-                let partial = input_partial
-                    || scope_partial
-                    || result.get("partial").and_then(Value::as_bool).unwrap_or(false);
-                let messages = self
-                    .map_conversation_headers(account_id, &result)
-                    .map_err(|error| (error, false))?;
-                let mut summaries = self.thread_summaries(account_id, &query_groups, messages);
-                let returned = summaries
-                    .iter()
-                    .map(|(tag, _)| tag.clone())
-                    .collect::<HashSet<_>>();
-                summaries.extend(
-                    fallback
-                        .into_iter()
-                        .filter(|(tag, _)| !returned.contains(tag)),
-                );
-                let warning = if partial {
-                    Some("More messages may exist outside the indexed/query window".into())
-                } else {
-                    result.get("warning").and_then(Value::as_str).map(str::to_owned)
-                };
-                self.emit(account_id, WorkerMailboxEvent::ThreadSummaries { summaries, warning });
-                Ok(())
+                }), ConversationTask::ThreadSummaries {
+                    groups: query_groups,
+                    fallback,
+                    input_partial,
+                    scope_partial,
+                })
             }
             MailRequest::LoadAttachments { message_id, path, uid, download } => {
                 if !download {
@@ -1874,8 +2762,15 @@ impl ActorState {
                         .unwrap_or(usize::MAX);
                     if size > ATTACHMENT_BYTES_LIMIT.saturating_sub(total) {
                         let transfer_id = string(meta.get("transferId"));
-                        if !transfer_id.is_empty() { let _ = self.call("download_end", json!({"transferId":transfer_id})); }
-                        return Err(("Attachments exceed MegaMail’s 50 MiB reader limit; save them from Thunderbird.".into(), false));
+                        let size_limit = "Attachments exceed MegaMail’s 50 MiB reader limit; save them from Thunderbird.";
+                        if !transfer_id.is_empty() {
+                            if let Err((error, _)) = self.call("download_end", json!({"transferId":transfer_id})) {
+                                if is_broken_bridge_error(&error) {
+                                    return Err((format!("{size_limit} {}", friendly_error(&error)), true));
+                                }
+                            }
+                        }
+                        return Err((size_limit.into(), false));
                     }
                     let transfer_id = string(meta.get("transferId"));
                     let bytes = self.download(&transfer_id, size)?;
@@ -1890,6 +2785,7 @@ impl ActorState {
             }
             MailRequest::ExportRaw { token, path, uid, max_bytes, .. } => {
                 let message_id = self.remote_for_path_uid(account_id, &path, uid)?;
+                let mut cleanup_error = None;
                 let downloaded: Result<Vec<u8>, String> = (|| {
                     let meta = self
                         .call("raw_start", json!({ "messageId": message_id }))
@@ -1898,14 +2794,27 @@ impl ActorState {
                     let size = meta.get("size").and_then(Value::as_u64).unwrap_or(u64::MAX);
                     let cap = max_bytes.unwrap_or(RAW_BYTES_LIMIT as u64).min(RAW_BYTES_LIMIT as u64);
                     if size > cap {
-                        let _ = self.call("download_end", json!({ "transferId": transfer_id }));
+                        if let Err((error, _)) = self.call("download_end", json!({ "transferId": transfer_id })) {
+                            if is_broken_bridge_error(&error) {
+                                cleanup_error = Some(error);
+                            }
+                        }
                         return Err(format!("This message is over the {} MiB draft editing limit and was left unchanged.", cap / 1024 / 1024));
                     }
                     self.download(&transfer_id, size as usize)
                         .map_err(|(error, _)| friendly_error(&error))
                 })();
+                let broken_bridge_error = downloaded
+                    .as_ref()
+                    .err()
+                    .filter(|error| is_broken_bridge_error(error))
+                    .cloned()
+                    .or(cleanup_error);
                 let raw = downloaded.map(Arc::new);
                 self.emit(account_id, WorkerMailboxEvent::RawExported { token, raw });
+                if let Some(error) = broken_bridge_error {
+                    self.report_broken_bridge_error(account_id, &error);
+                }
                 Ok(())
             }
             MailRequest::SetSeen { path, uid, seen } => self.update_message(account_id, &path, uid, json!({"read":seen})),
@@ -1930,7 +2839,8 @@ impl ActorState {
                                     reason: text.clone(),
                                 },
                             );
-                            self.emit(account_id, WorkerMailboxEvent::Notice(text));
+                            self.emit(account_id, WorkerMailboxEvent::Notice(text.clone()));
+                            self.report_broken_bridge_error(account_id, &text);
                             Ok(())
                     }
                     Err(SendFailure::Definite(text, _connectivity)) => {
@@ -1941,7 +2851,8 @@ impl ActorState {
                                     outcome: SendOutcome::Failed,
                                 },
                             );
-                            self.emit(account_id, WorkerMailboxEvent::Notice(text));
+                            self.emit(account_id, WorkerMailboxEvent::Notice(text.clone()));
+                            self.report_broken_bridge_error(account_id, &text);
                             Ok(())
                     }
                 }
@@ -2287,7 +3198,11 @@ impl ActorState {
             }
             Ok(bytes)
         })();
-        let _ = self.call("download_end", json!({ "transferId": transfer_id }));
+        if let Err((error, _)) = self.call("download_end", json!({ "transferId": transfer_id })) {
+            if is_broken_bridge_error(&error) {
+                return Err((error, true));
+            }
+        }
         result
     }
 
@@ -2327,10 +3242,8 @@ impl ActorState {
         let Ok(remote_id) = self.remote_for_path_uid(account_id, path, uid) else {
             return false;
         };
-        if self
-            .call("delete", json!({ "messageId": remote_id }))
-            .is_err()
-        {
+        if let Err((error, _)) = self.call("delete", json!({ "messageId": remote_id })) {
+            self.report_broken_bridge_error(account_id, &error);
             return false;
         }
         self.forget_message(account_id, path, uid);
@@ -2365,6 +3278,10 @@ impl ActorState {
         };
         let remote_id = binding.remote_id.clone();
         let value = self.call("folders", json!({ "accountId": remote_id }))?;
+        self.apply_folder_tree(account_id, value)
+    }
+
+    fn apply_folder_tree(&mut self, account_id: u32, value: Value) -> Result<(), (String, bool)> {
         let mut folders = parse_folders(account_id, &value).map_err(|error| (error, false))?;
         if let Some(previous) = self.accounts.get(&account_id) {
             for folder in &mut folders {
@@ -2687,23 +3604,76 @@ fn outcome_error(results: &[ThunderbirdAccountOutcome]) -> Option<String> {
     if failed.is_empty() {
         return None;
     }
-    Some(
+    let (mut summary, reason_count) = compact_error_summary(
         failed
             .iter()
-            .map(|result| {
-                let address = if result.email.is_empty() {
-                    result.name.as_str()
-                } else {
-                    result.email.as_str()
-                };
-                format!(
-                    "{address}: {}",
-                    result.message.as_deref().unwrap_or("Could not connect.")
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(" "),
-    )
+            .map(|result| result.message.as_deref().unwrap_or("Could not connect.")),
+    );
+    if reason_count > 3 {
+        summary.push_str("; other errors");
+    }
+    let noun = if failed.len() == 1 {
+        "account"
+    } else {
+        "accounts"
+    };
+    let verb = if failed.len() == 1 { "needs" } else { "need" };
+    Some(format!(
+        "{} Thunderbird {noun} {verb} attention: {summary}",
+        failed.len()
+    ))
+}
+
+fn should_retire_after_add(
+    started_accounts: usize,
+    active_accounts: usize,
+    broken_prefetch: bool,
+) -> bool {
+    broken_prefetch || (started_accounts == 0 && active_accounts == 0)
+}
+
+fn suppress_started_accounts_on_broken_prefetch<T>(
+    started: &mut Vec<T>,
+    outcomes: &mut [ThunderbirdAccountOutcome],
+    reason: &str,
+) {
+    started.clear();
+    for result in outcomes
+        .iter_mut()
+        .filter(|result| result.state == ThunderbirdAccountState::Connected)
+    {
+        result.state = ThunderbirdAccountState::Failed;
+        result.message = Some(reason.to_owned());
+    }
+}
+
+fn compact_error_summary<'a>(messages: impl IntoIterator<Item = &'a str>) -> (String, usize) {
+    let mut reasons: Vec<(String, usize)> = Vec::new();
+    for message in messages {
+        let reason = message
+            .chars()
+            .filter(|character| !character.is_control())
+            .take(160)
+            .collect::<String>();
+        if let Some((_, count)) = reasons.iter_mut().find(|(known, _)| known == &reason) {
+            *count += 1;
+        } else {
+            reasons.push((reason, 1));
+        }
+    }
+    let summary = reasons
+        .iter()
+        .take(3)
+        .map(|(reason, count)| {
+            if *count > 1 {
+                format!("{count}× {reason}")
+            } else {
+                reason.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    (summary, reasons.len())
 }
 
 fn classify_runtime_error(error: &str) -> ThunderbirdAccountState {
@@ -2760,6 +3730,9 @@ fn friendly_error(error: &str) -> String {
 }
 
 fn is_connectivity_error(error: &str) -> bool {
+    if is_broken_bridge_error(error) {
+        return true;
+    }
     let error = error.to_ascii_lowercase();
     [
         "timeout",
@@ -2769,6 +3742,27 @@ fn is_connectivity_error(error: &str) -> bool {
         "not authenticated",
         "sign in",
         "authentication",
+    ]
+    .iter()
+    .any(|part| error.contains(part))
+}
+
+pub(super) fn is_broken_bridge_error(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    [
+        "broken pipe",
+        "pipe closed",
+        "socket closed",
+        "socket is not connected",
+        "bridge is disconnected",
+        "bridge disconnected",
+        "bridge closed the connection",
+        "shared thunderbird bridge stopped",
+        "bridge disconnected while",
+        "connection reset",
+        "connection closed",
+        "worker session stopped",
+        "native messaging host has exited",
     ]
     .iter()
     .any(|part| error.contains(part))
@@ -3070,13 +4064,17 @@ fn default_accent(account_id: u32) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        BRIDGE_REQUEST_FRAME_LIMIT, SourceStore, StoredAccount, StoredProfile,
-        address_from_identity, compose_recipients, folder_kind, parse_folders, preflight_request,
-        reply_identity, resolve_reply_remote_id, validate_store,
+        BODY_CACHE_BYTES, BODY_CACHE_ENTRIES, BRIDGE_REQUEST_FRAME_LIMIT, BodyCache, BodyPayload,
+        SourceStore, StoredAccount, StoredProfile, address_from_identity, compact_error_summary,
+        compose_recipients, is_broken_bridge_error, parse_folders, preflight_request,
+        profile_actors, profile_sender, remove_profile_sender, reply_identity,
+        resolve_reply_remote_id, should_retire_after_add,
+        suppress_started_accounts_on_broken_prefetch, validate_store,
     };
     use megamail_core::models::FolderKind;
     use serde_json::{Value, json};
     use std::collections::HashMap;
+    use std::sync::{Arc, mpsc};
 
     #[test]
     fn folder_parser_rejects_duplicate_missing_and_excessively_nested_ids() {
@@ -3287,5 +4285,126 @@ mod tests {
     fn small_bridge_payload_passes_preflight() {
         let params: Value = json!({"subject": "Hello", "body": "World"});
         assert!(preflight_request("send", &params).is_ok());
+    }
+
+    #[test]
+    fn repeated_account_failures_are_collapsed_in_summary() {
+        let errors = vec!["Thunderbird bridge is disconnected."; 6];
+        let (summary, distinct) = compact_error_summary(errors);
+        assert_eq!(distinct, 1);
+        assert_eq!(summary, "6× Thunderbird bridge is disconnected.");
+        assert!(!summary.contains('@'));
+    }
+
+    #[test]
+    fn request_timeout_does_not_retire_a_healthy_bridge() {
+        assert!(!is_broken_bridge_error(
+            "Thunderbird timed out loading a body."
+        ));
+        assert!(is_broken_bridge_error(
+            "Thunderbird bridge disconnected while the operation was running."
+        ));
+        assert!(is_broken_bridge_error("Broken pipe"));
+        assert!(is_broken_bridge_error(
+            "Thunderbird did not confirm this send. Check Sent before retrying. Thunderbird bridge disconnected while the operation was running."
+        ));
+        assert!(is_broken_bridge_error(
+            "Thunderbird could not export raw source: socket closed"
+        ));
+        assert!(!is_broken_bridge_error(
+            "Thunderbird did not confirm draft deletion before the timeout."
+        ));
+    }
+
+    #[test]
+    fn body_cache_is_lru_bounded_by_entries_and_memory() {
+        let mut cache = BodyCache::default();
+        let payload = |body: String| BodyPayload {
+            body,
+            links: Vec::new(),
+            has_attachment: None,
+            reply_to: None,
+            references: None,
+        };
+        let key = |uid| (7, "Inbox".to_owned(), uid);
+        for uid in 1..=BODY_CACHE_ENTRIES as u32 {
+            cache.insert(key(uid), payload(format!("body-{uid}")));
+        }
+        assert_eq!(cache.entries.len(), BODY_CACHE_ENTRIES);
+        assert!(cache.get(&key(1)).is_some());
+        cache.insert(key(9), payload("body-9".into()));
+        assert!(
+            cache.get(&key(1)).is_some(),
+            "a hit should refresh LRU order"
+        );
+        assert!(
+            cache.get(&key(2)).is_none(),
+            "the least-recently-used entry should be evicted"
+        );
+
+        let large = "x".repeat(BODY_CACHE_BYTES / 2 + 1);
+        cache.insert(key(10), payload(large.clone()));
+        cache.insert(key(11), payload(large));
+        assert!(cache.bytes <= BODY_CACHE_BYTES);
+        assert_eq!(cache.entries.len(), 1);
+    }
+
+    #[test]
+    fn failed_empty_startup_retires_actor_so_retry_gets_a_new_channel() {
+        assert!(should_retire_after_add(0, 0, false));
+        assert!(should_retire_after_add(0, 2, true));
+        assert!(!should_retire_after_add(0, 1, false));
+
+        let path = std::env::temp_dir().join(format!(
+            "megamail-thunderbird-retry-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let (first_tx, _first_rx) = mpsc::sync_channel::<super::Command>(1);
+        let first = Arc::new(first_tx);
+        let first_weak = Arc::downgrade(&first);
+        profile_actors()
+            .lock()
+            .unwrap()
+            .insert(path.clone(), first_weak.clone());
+        remove_profile_sender(&path, &first_weak);
+        assert!(profile_sender(&path).unwrap().is_none());
+
+        let (retry_tx, _retry_rx) = mpsc::sync_channel::<super::Command>(1);
+        let retry = Arc::new(retry_tx);
+        let retry_weak = Arc::downgrade(&retry);
+        profile_actors()
+            .lock()
+            .unwrap()
+            .insert(path.clone(), retry_weak.clone());
+        let registered_retry = profile_sender(&path).unwrap().unwrap();
+        assert!(Arc::ptr_eq(&retry, &registered_retry));
+        remove_profile_sender(&path, &retry_weak);
+    }
+
+    #[test]
+    fn broken_startup_prefetch_never_returns_ready_accounts() {
+        let mut ready_accounts = vec![()];
+        let mut outcomes = vec![super::ThunderbirdAccountOutcome {
+            profile_path: std::path::PathBuf::from("synthetic-profile"),
+            source_account_id: "account-1".into(),
+            name: "Synthetic account".into(),
+            email: "synthetic@example.test".into(),
+            state: super::ThunderbirdAccountState::Connected,
+            message: None,
+        }];
+
+        suppress_started_accounts_on_broken_prefetch(
+            &mut ready_accounts,
+            &mut outcomes,
+            "Thunderbird bridge disconnected during startup.",
+        );
+
+        assert!(ready_accounts.is_empty());
+        assert_eq!(outcomes[0].state, super::ThunderbirdAccountState::Failed);
+        assert_eq!(
+            outcomes[0].message.as_deref(),
+            Some("Thunderbird bridge disconnected during startup.")
+        );
     }
 }

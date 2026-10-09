@@ -67,6 +67,14 @@ and queued source Outbox items are not copied or automatically sent. A
 primary-password prompt is not available in the headless runtime, so accounts
 that need that unlock cannot be imported yet.
 
+Imported account references survive rebuilds and restarts. The mailbox opens
+while saved accounts reconnect; a failed connection offers **Reconnect saved
+accounts** without importing again. Cached header pages load before network
+refresh. Inbox refresh runs in the background every minute, and the refresh
+button requests it immediately. Body and conversation requests run independently;
+recently opened bodies use a bounded memory cache. A failed or timed-out body
+request releases its loading state and offers retry.
+
 A private, authorized probe using six existing Thunderbird IMAP accounts
 authenticated all six, discovered their folders, and returned each account's
 initial Inbox page (up to 100 messages) with parsed headers, bodies, and unread

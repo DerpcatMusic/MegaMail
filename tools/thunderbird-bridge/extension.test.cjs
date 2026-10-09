@@ -138,11 +138,58 @@ const call = (method, params = {}) => { context.request = { method, params }; re
   let batchSeedMode = false;
   let includeAmbiguousCandidate = false;
   context.messenger.accounts = {
+    list: async () => [{
+      id: 'synthetic-account', name: 'Synthetic', type: 'imap',
+      identities: [{ id: 'synthetic-identity', email: 'me@example.invalid' }],
+      rootFolder: { id: 'root', subFolders: [{ id: 'nested-folder' }] },
+    }],
     get: async id => id === 'synthetic-account'
-      ? { id, type: 'imap', identities: [{ email: 'me@example.invalid' }] }
+      ? {
+        id, type: 'imap', identities: [{ email: 'me@example.invalid' }],
+        rootFolder: { id: 'root-folder', name: 'Synthetic', type: 'server', path: 'account://root' },
+      }
       : null,
   };
-  context.messenger.folders = { get: async id => folders.get(id) || null };
+  let folderDiscoveries = 0;
+  let cachedInboxAvailable = true;
+  let folderSyncs = 0;
+  const folderOperations = [];
+  context.messenger.folders = {
+    get: async id => folders.get(id) || null,
+    query: async () => cachedInboxAvailable
+      ? [{ id: 'inbox-id', accountId: 'synthetic-account', type: 'inbox' }] : [],
+    getSubFolders: async () => cachedInboxAvailable
+      ? [{ id: 'inbox-id', name: 'Inbox', type: 'inbox', path: 'account://Inbox' }] : [],
+  };
+  context.messenger.megamailSync = {
+    discoverFolders: async (accountId, refresh) => {
+      folderDiscoveries++;
+      folderOperations.push(`discover:${accountId}:${refresh === true}`);
+      cachedInboxAvailable = true;
+      return { discovered: true, cached: false };
+    },
+    getNewMessages: async folderId => {
+      folderSyncs++;
+      folderOperations.push(`sync:${folderId}`);
+      return { synced: true };
+    },
+  };
+  const accountSummaries = await call('accounts');
+  assert.equal(accountSummaries.length, 1);
+  assert.equal(accountSummaries[0].id, 'synthetic-account');
+  assert.equal('rootFolder' in accountSummaries[0], false,
+    'Account discovery returns compact identity metadata rather than every recursive folder tree');
+  assert.equal(folderDiscoveries, 0, 'Account listing must not perform network folder discovery');
+  const folderTree = await call('folders', { accountId: 'synthetic-account' });
+  assert.equal(folderTree.subFolders[0].type, 'inbox');
+  assert.equal(folderDiscoveries, 0, 'A locally cached Inbox is returned without network discovery');
+  await call('folders', { accountId: 'synthetic-account', refresh: true });
+  assert.equal(folderDiscoveries, 1);
+  assert.equal(cachedInboxAvailable, true, 'An explicit folders refresh leaves the local tree available');
+  cachedInboxAvailable = false;
+  const rediscoveredFolderTree = await call('folders', { accountId: 'synthetic-account' });
+  assert.equal(rediscoveredFolderTree.subFolders[0].type, 'inbox');
+  assert.equal(folderDiscoveries, 2, 'Missing local folders trigger discovery once');
   context.messenger.messages.abortList = async id => abortedLists.push(id);
   context.messenger.messages.getFull = async () => { bodyReads++; throw new Error('Conversation lookup must not read bodies'); };
   context.messenger.messages.getHeaders = async id => {
@@ -254,7 +301,6 @@ const call = (method, params = {}) => { context.request = { method, params }; re
   assert.equal(bodyReads, 0);
 
   folders.set('page-folder', { id: 'page-folder', accountId: 'synthetic-account', type: 'inbox' });
-  context.messenger.megamailSync = { getNewMessages: async () => ({ synced: true }) };
   context.messenger.messages.list = async () => ({ id: 'retry-page-token-1', messages: [messages[0]] });
   let continueAttempts = 0;
   context.messenger.messages.continueList = async id => {
@@ -264,11 +310,70 @@ const call = (method, params = {}) => { context.request = { method, params }; re
     return { messages: [messages[1]] };
   };
   const firstPage = await call('list', { folderId: 'page-folder', limit: 1 });
+  assert.equal(folderSyncs, 0, 'Listing headers reads Thunderbird’s local cache without waiting for IMAP sync');
+  const refreshOperationOffset = folderOperations.length;
+  await call('refresh', { folderId: 'page-folder' });
+  assert.equal(folderSyncs, 1, 'IMAP sync runs only through the explicit refresh operation');
+  assert.deepEqual(folderOperations.slice(refreshOperationOffset), [
+    'discover:synthetic-account:false', 'sync:page-folder',
+  ], 'Refresh waits for host folder discovery before selecting the IMAP folder');
   await assert.rejects(call('list', { cursor: firstPage.cursor }), /transient continuation failure/);
   const retryPage = await call('list', { cursor: firstPage.cursor });
   assert.equal(continueAttempts, 2, 'A transient continuation failure leaves the same cursor retryable');
   assert.equal(retryPage.messages.length, 1);
   await assert.rejects(call('list', { cursor: firstPage.cursor }), /expired/,
     'A successful continuation consumes its old cursor');
+
+  let folderDiscoveryRuns = 0;
+  let failNextDiscovery = false;
+  const serverListener = { OnStopRunningUrl() {} };
+  const incomingServer = {
+    type: 'imap', rootFolder: {}, QueryInterface: () => serverListener,
+  };
+  const apiContext = vm.createContext({
+    ChromeUtils: {
+      importESModule: uri => uri.includes('ExtensionCommon')
+        ? { ExtensionCommon: { ExtensionAPI: class {} } }
+        : uri.includes('MailServices')
+          ? { MailServices: {
+            accounts: { getAccount: () => ({ incomingServer }) },
+            imap: { discoverAllFolders: (_root, listener) => {
+              folderDiscoveryRuns++;
+              const status = failNextDiscovery ? 1 : 0;
+              failNextDiscovery = false;
+              setTimeout(() => listener.OnStopRunningUrl(null, status), 10);
+            } },
+          } }
+          : uri.includes('ExtensionAccounts')
+            ? { getFolder: () => ({ folder: { server: { type: 'imap' } } }) }
+            : { setTimeout, clearTimeout },
+      generateQI: () => () => {},
+    },
+    Services: { io: {} },
+    Components: {
+      interfaces: { nsIUrlListener: {}, nsIAppStartup: { eAttemptQuit: 0 } },
+      isSuccessCode: status => status === 0,
+    },
+    setTimeout, clearTimeout,
+  });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, 'extension/api/implementation.js'), 'utf8'), apiContext);
+  const syncApi = new apiContext.megamailSync().getAPI({}).megamailSync;
+  const firstDiscovery = await syncApi.discoverFolders('account3');
+  assert.equal(firstDiscovery.cached, false);
+  assert.equal((await syncApi.discoverFolders('account3')).cached, true,
+    'A successful discovery is reused by refreshes in the same runtime');
+  await syncApi.discoverFolders('account3', true);
+  assert.equal(folderDiscoveryRuns, 2, 'Explicit folder refresh forces another discovery');
+  const concurrent = await Promise.all([
+    syncApi.discoverFolders('account4'),
+    syncApi.discoverFolders('account4'),
+  ]);
+  assert.equal(folderDiscoveryRuns, 3, 'Concurrent requests share one in-flight folder discovery');
+  assert.equal(concurrent.filter(result => result.cached).length, 1);
+  failNextDiscovery = true;
+  await assert.rejects(syncApi.discoverFolders('account5'), /failed/);
+  assert.equal((await syncApi.discoverFolders('account5')).cached, false,
+    'Failed discovery is not remembered and can be retried');
+  assert.equal(folderDiscoveryRuns, 5);
   console.log('Thunderbird bridge protocol checks passed');
 })().catch(error => { console.error(error.stack || error.message); process.exitCode = 1; });
