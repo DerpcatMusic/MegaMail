@@ -1,0 +1,5 @@
+<?xml version="1.0"?>
+<!-- Deliberately rejected; this synthetic URL must never be fetched. -->
+<!DOCTYPE clientConfig [<!ENTITY external SYSTEM "https://invalid.example/never-fetch">]>
+<clientConfig><emailProvider id="yahoo.com"><domain>yahoo.com</domain>
+<displayName>&external;</displayName></emailProvider></clientConfig>

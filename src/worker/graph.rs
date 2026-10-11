@@ -466,6 +466,11 @@ pub(super) async fn run_graph(
             }
         };
         match req {
+            MailRequest::CancelQueued(request) => emit(WorkerEvent::QueuedCancelFinished { request, canceled: false }),
+            MailRequest::NativeMutation(request) => native_mutation::reject(request, &emit, "This backend does not support qualified native mutations."),
+            request @ MailRequest::LoadBodyAtEpoch { .. } => {
+                reject_unsupported_epoch_body(&request, &emit);
+            }
             MailRequest::Locate { message_id } => {
                 // No folders to search here beyond what the cache already
                 // held: answer "not found" so the app can report the miss.

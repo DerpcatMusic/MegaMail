@@ -11,6 +11,42 @@ const MAX_FRAME: usize = 1024 * 1024;
 const MAX_EXTENSION_FRAME: usize = 16 * 1024 * 1024;
 const EXTENSION_ID: &str = "bridge@megamail.local";
 
+/// Stable recovery categories for the existing string-returning API.
+/// A request timeout or overload does not mean the shared runtime is dead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BridgeFailureKind {
+    Disconnected,
+    Protocol,
+    RequestTimeout,
+    Busy,
+    Unsupported,
+    NeedsLogin,
+    Operation,
+}
+
+/// Classify only bridge-generated tags, not arbitrary provider error prose.
+/// `None` means the caller must retain its legacy/operation-specific handling.
+pub fn classify_bridge_error(error: &str) -> Option<BridgeFailureKind> {
+    let tags = [
+        ("disconnected", BridgeFailureKind::Disconnected),
+        ("protocol", BridgeFailureKind::Protocol),
+        ("request-timeout", BridgeFailureKind::RequestTimeout),
+        ("busy", BridgeFailureKind::Busy),
+        ("unsupported", BridgeFailureKind::Unsupported),
+        ("needs-login", BridgeFailureKind::NeedsLogin),
+        ("operation", BridgeFailureKind::Operation),
+    ];
+    tags.into_iter().find_map(|(tag, kind)| {
+        error
+            .starts_with(&format!("[megamail-tb:{tag}] "))
+            .then_some(kind)
+    })
+}
+
+fn bridge_error(tag: &str, message: &str) -> String {
+    format!("[megamail-tb:{tag}] {message}")
+}
+
 #[cfg(unix)]
 mod unix {
     use super::*;
@@ -19,12 +55,14 @@ mod unix {
     use std::collections::HashMap;
     use std::fs::{self, File, OpenOptions};
     use std::io::{Read, Write};
+    use std::os::fd::AsRawFd;
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
     use std::os::unix::net::{UnixListener, UnixStream};
+    use std::os::unix::process::CommandExt;
     use std::process::{Child, Command, Stdio};
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::mpsc::{self, SyncSender};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, TryLockError};
     use std::time::{Duration, Instant};
 
     static PRIVATE_FILE_ID: AtomicU64 = AtomicU64::new(0);
@@ -37,6 +75,11 @@ mod unix {
         include_str!("../../../tools/thunderbird-bridge/extension/api/schema.json");
     const SYNC_IMPL: &str =
         include_str!("../../../tools/thunderbird-bridge/extension/api/implementation.js");
+    const MAX_PENDING: usize = 64;
+    // JSON numbers must round-trip through JavaScript without losing identity.
+    const SHUTDOWN_ID: u64 = (1_u64 << 53) - 1;
+    const STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
+    const FRAME_TIMEOUT: Duration = Duration::from_secs(15);
     const METADATA_TIMEOUT: Duration = Duration::from_secs(15);
     const BODY_TIMEOUT: Duration = Duration::from_secs(30);
     const FOLDER_TIMEOUT: Duration = Duration::from_secs(90);
@@ -45,34 +88,83 @@ mod unix {
 
     struct RuntimeInner {
         stream: Mutex<UnixStream>,
-        sequence: AtomicU64,
-        pending: Arc<Mutex<HashMap<u64, SyncSender<Result<Value, String>>>>>,
+        control: UnixStream,
+        sequence: Arc<AtomicU64>,
+        pending: Arc<Mutex<HashMap<u64, PendingReply>>>,
         broken: Arc<AtomicBool>,
-        child: Arc<Mutex<Child>>,
+        child: Arc<Mutex<ChildGuard>>,
+        reader: Mutex<Option<std::thread::JoinHandle<()>>>,
         _profile_lock: File,
         manifest: PathBuf,
         temporary_dir: PathBuf,
         profile_dir: PathBuf,
     }
 
-    struct ChildGuard(Option<Child>);
+    struct PendingReply {
+        sender: SyncSender<Result<Value, String>>,
+        deadline: Instant,
+    }
+
+    struct ChildGuard {
+        child: Option<Child>,
+        isolated_group: bool,
+    }
 
     impl ChildGuard {
         fn child_mut(&mut self) -> &mut Child {
-            self.0.as_mut().expect("child guard is armed")
+            self.child.as_mut().expect("child guard is armed")
         }
-        fn take(&mut self) -> Child {
-            self.0.take().expect("child guard is armed")
+
+        fn terminate(&mut self) -> Option<std::process::ExitStatus> {
+            if let Some(mut child) = self.child.take() {
+                // The group was created by Command::process_group(0), and its
+                // leader has NOT been reaped. Never target a name or a scanned PID.
+                if self.isolated_group {
+                    if let Ok(pid) = libc::pid_t::try_from(child.id()) {
+                        // SAFETY: negative PID addresses only our dedicated group.
+                        unsafe {
+                            libc::kill(-pid, libc::SIGKILL);
+                        }
+                    }
+                }
+                let _ = child.kill();
+                return child.wait().ok();
+            }
+            None
         }
     }
 
     impl Drop for ChildGuard {
         fn drop(&mut self) {
-            if let Some(child) = &mut self.0 {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
+            let _ = self.terminate();
         }
+    }
+
+    // WNOWAIT keeps the leader unreaped until group cleanup. Reaping it first
+    // would allow its numeric PID/PGID to be reused by an unrelated process.
+    #[cfg(target_os = "linux")]
+    fn child_exited(child: &Child) -> io::Result<bool> {
+        let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+        // SAFETY: waitid initializes siginfo; it observes our child only.
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                child.id(),
+                info.as_mut_ptr(),
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        if result != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: waitid succeeded and the zero-initialized structure is valid.
+        Ok(unsafe { info.assume_init().si_pid() != 0 })
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn child_exited(_: &Child) -> io::Result<bool> {
+        // Linux is the verified target; timeout cleanup still owns the group.
+        Ok(false)
     }
 
     struct StartupArtifacts {
@@ -180,12 +272,16 @@ mod unix {
             let listener = UnixListener::bind(&socket_path).map_err(io_message(
                 "Could not create the private Thunderbird bridge socket",
             ))?;
-            let _ = fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600));
+            fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600)).map_err(
+                io_message("Could not secure the private Thunderbird bridge socket"),
+            )?;
             listener
                 .set_nonblocking(true)
                 .map_err(io_message("Could not configure the private bridge socket"))?;
 
+            let startup_deadline = Instant::now() + STARTUP_TIMEOUT;
             let child = Command::new(thunderbird_executable)
+                .process_group(0)
                 .arg("--headless")
                 .arg("--no-remote")
                 .arg("--profile")
@@ -195,129 +291,178 @@ mod unix {
                 .stderr(Stdio::null())
                 .spawn()
                 .map_err(io_message("Could not start Thunderbird"))?;
-            let mut child = ChildGuard(Some(child));
-
-            let started = Instant::now();
-            let stream = loop {
-                match listener.accept() {
-                    Ok((stream, _)) => break stream,
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                        if let Some(status) = child
-                            .child_mut()
-                            .try_wait()
-                            .map_err(io_message("Could not inspect Thunderbird startup"))?
-                        {
-                            return Err(format!("Thunderbird stopped during startup ({status}). The source profile was not changed."));
-                        }
-                        if started.elapsed() > Duration::from_secs(60) {
-                            return Err(
-                                "Thunderbird did not start its private bridge within 60 seconds."
-                                    .to_owned(),
-                            );
-                        }
-                        std::thread::sleep(Duration::from_millis(100));
-                    }
-                    Err(error) => {
-                        return Err(format!(
-                            "Could not accept the private Thunderbird bridge: {error}"
-                        ));
-                    }
-                }
+            let mut child = ChildGuard {
+                child: Some(child),
+                isolated_group: true,
             };
-            stream
-                .set_read_timeout(Some(Duration::from_secs(90)))
-                .map_err(io_message("Could not configure bridge response timeout"))?;
-            stream
-                .set_write_timeout(Some(Duration::from_secs(90)))
-                .map_err(io_message("Could not configure bridge request timeout"))?;
-            let mut stream = stream;
-            let hello = read_json_frame(&mut stream)?;
-            if hello.get("id").and_then(Value::as_u64) != Some(0)
-                || hello.pointer("/result/ready").and_then(Value::as_bool) != Some(true)
-            {
-                return Err(
-                    "Thunderbird started without a valid MegaMail bridge handshake.".to_owned(),
-                );
-            }
-            stream
-                .set_read_timeout(None)
-                .map_err(io_message("Could not configure bridge response reader"))?;
-            stream
-                .set_write_timeout(Some(Duration::from_secs(15)))
-                .map_err(io_message("Could not configure bridge request writer"))?;
+            let expected_version = extension_version(
+                MANIFEST,
+                serde_json::from_str::<Value>(MANIFEST)
+                    .map_err(|_| "Invalid bridge manifest".to_owned())?["version"]
+                    .as_str()
+                    .ok_or_else(|| "Missing bridge manifest version".to_owned())?,
+                &BACKGROUND.replace("__HOST_NAME__", &host_name),
+                SYNC_SCHEMA,
+                SYNC_IMPL,
+            );
+            let stream =
+                accept_ready_bridge(&listener, &mut child, startup_deadline, &expected_version)?;
+            let runtime = Self::from_connected(
+                stream,
+                child,
+                profile_lock,
+                manifest_path,
+                temporary_dir,
+                profile_dir,
+            )?;
+            artifacts.armed = false;
+            Ok(runtime)
+        }
+
+        fn from_connected(
+            stream: UnixStream,
+            child: ChildGuard,
+            profile_lock: File,
+            manifest: PathBuf,
+            temporary_dir: PathBuf,
+            profile_dir: PathBuf,
+        ) -> Result<Self, String> {
             let reader = stream
                 .try_clone()
                 .map_err(io_message("Could not clone Thunderbird response socket"))?;
             let pending = Arc::new(Mutex::new(HashMap::new()));
             let broken = Arc::new(AtomicBool::new(false));
-            let child = Arc::new(Mutex::new(child.take()));
+            let child = Arc::new(Mutex::new(child));
+            let sequence = Arc::new(AtomicU64::new(1));
             let runtime = Self(Arc::new(RuntimeInner {
+                control: stream
+                    .try_clone()
+                    .map_err(io_message("Could not clone bridge shutdown socket"))?,
                 stream: Mutex::new(stream),
-                sequence: AtomicU64::new(1),
+                sequence: sequence.clone(),
                 pending: pending.clone(),
                 broken: broken.clone(),
                 child: child.clone(),
+                reader: Mutex::new(None),
                 _profile_lock: profile_lock,
-                manifest: manifest_path,
+                manifest,
                 temporary_dir,
                 profile_dir,
             }));
-            std::thread::Builder::new()
+            let reader_thread = std::thread::Builder::new()
                 .name("megamail-thunderbird-bridge".to_owned())
-                .spawn(move || response_reader(reader, pending, broken, child))
+                .spawn(move || response_reader(reader, pending, broken, child, sequence))
                 .map_err(io_message("Could not start Thunderbird response reader"))?;
-            artifacts.armed = false;
+            *runtime
+                .0
+                .reader
+                .lock()
+                .map_err(|_| "Thunderbird bridge lock failed".to_owned())? = Some(reader_thread);
             Ok(runtime)
         }
 
-        /// Invoke one extension operation and return its JSON result. Error
-        /// responses contain Thunderbird's user-facing operation failure.
+        /// Invoke one extension operation and return its JSON result. The
+        /// budget includes writer admission, frame transfer and reply waiting.
         pub fn call(&self, method: &str, params: Value) -> Result<Value, String> {
+            self.call_until(method, params, Instant::now() + operation_timeout(method))
+        }
+
+        fn call_until(
+            &self,
+            method: &str,
+            params: Value,
+            deadline: Instant,
+        ) -> Result<Value, String> {
             if self.0.broken.load(Ordering::Acquire) {
-                return Err("Thunderbird bridge is disconnected. Restart the account runtime before trying again.".to_owned());
+                return Err(bridge_error("disconnected", "Thunderbird bridge is disconnected. Restart the account runtime before trying again."));
             }
-            if method.len() > 128 || method.chars().any(char::is_control) {
+            if method.is_empty() || method.len() > 128 || method.chars().any(char::is_control) {
                 return Err("Invalid Thunderbird bridge operation.".to_owned());
             }
-            let id = self.0.sequence.fetch_add(1, Ordering::Relaxed);
+            let id = self.0.sequence.fetch_update(Ordering::AcqRel, Ordering::Acquire, |id| {
+                (id < SHUTDOWN_ID).then(|| id + 1)
+            }).map_err(|_| bridge_error("busy", "Thunderbird request identifiers are exhausted. Reopen the runtime before submitting more work."))?;
             let request = json!({ "id": id, "method": method, "params": params });
-            let bytes = serde_json::to_vec(&request)
-                .map_err(|_| "Could not encode Thunderbird bridge request.".to_owned())?;
-            if bytes.len() > MAX_FRAME {
-                return Err(
-                    "Thunderbird bridge request exceeded the 1 MiB protocol frame limit."
-                        .to_owned(),
+            let bytes = encode_request(&request)?;
+            let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+            {
+                let mut pending = self
+                    .0
+                    .pending
+                    .lock()
+                    .map_err(|_| "Thunderbird bridge lock failed".to_owned())?;
+                // Pair admission with disconnect's drain. No waiter may be
+                // installed after retirement of the shared transport.
+                if self.0.broken.load(Ordering::Acquire) {
+                    return Err(bridge_error(
+                        "disconnected",
+                        "Thunderbird bridge is disconnected.",
+                    ));
+                }
+                if pending.len() >= MAX_PENDING {
+                    return Err(bridge_error("busy", "Thunderbird is busy with 64 pending operations. Try again after an operation finishes."));
+                }
+                pending.insert(
+                    id,
+                    PendingReply {
+                        sender: reply_tx,
+                        deadline,
+                    },
                 );
             }
-            let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-            self.0
-                .pending
-                .lock()
-                .map_err(|_| "Thunderbird bridge lock failed".to_owned())?
-                .insert(id, reply_tx);
-            let write_result = match self.0.stream.lock() {
-                Ok(mut stream) => write_frame_with_limit(&mut *stream, &bytes, MAX_FRAME),
-                Err(_) => Err("Thunderbird bridge lock failed".to_owned()),
+            let write_result = loop {
+                if Instant::now() >= deadline {
+                    break Err(operation_timeout_message(method));
+                }
+                match self.0.stream.try_lock() {
+                    Ok(mut stream) => {
+                        if self.0.broken.load(Ordering::Acquire) {
+                            break Err(bridge_error(
+                                "disconnected",
+                                "Thunderbird bridge is disconnected.",
+                            ));
+                        }
+                        break write_runtime_frame(&mut stream, &bytes, deadline);
+                    }
+                    Err(TryLockError::WouldBlock) => std::thread::sleep(Duration::from_millis(1)),
+                    Err(TryLockError::Poisoned(_)) => {
+                        break Err(bridge_error(
+                            "disconnected",
+                            "Thunderbird bridge writer lock failed.",
+                        ))
+                    }
+                }
             };
             if let Err(error) = write_result {
                 expire_pending(&self.0.pending, id);
-                self.mark_broken(error.clone());
+                // No bytes sent: timeout is local. A partial frame cannot be
+                // safely reused and must close the transport.
+                if classify_bridge_error(&error) != Some(BridgeFailureKind::RequestTimeout) {
+                    self.mark_broken(error.clone());
+                }
                 return Err(error);
             }
-            match reply_rx.recv_timeout(operation_timeout(method)) {
-                Ok(reply) => reply,
+            match reply_rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(reply) if Instant::now() <= deadline => reply,
+                Ok(_) => Err(operation_timeout_message(method)),
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     expire_pending(&self.0.pending, id);
                     Err(operation_timeout_message(method))
                 }
-                Err(mpsc::RecvTimeoutError::Disconnected) => Err(
-                    "Thunderbird bridge disconnected while the operation was running.".to_owned(),
-                ),
+                Err(mpsc::RecvTimeoutError::Disconnected) if Instant::now() >= deadline => {
+                    Err(operation_timeout_message(method))
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => Err(bridge_error(
+                    "disconnected",
+                    "Thunderbird bridge disconnected while the operation was running.",
+                )),
             }
         }
 
         fn mark_broken(&self, message: String) {
-            if let Ok(mut stream) = self.0.stream.lock() {
+            // Do not wait for the writer mutex merely to cancel its I/O.
+            let _ = self.0.control.shutdown(std::net::Shutdown::Both);
+            if let Ok(mut stream) = self.0.stream.try_lock() {
                 break_transport(
                     Some(&mut stream),
                     &self.0.pending,
@@ -336,9 +481,7 @@ mod unix {
             }
         }
 
-        /// Location of the app-owned Thunderbird profile for diagnostics. It
-        /// contains Thunderbird's own cache and credential store, never a copy
-        /// of the selected source profile's mail cache.
+        /// App-owned persistent clone; never the source mail cache.
         pub fn profile_dir(&self) -> &Path {
             &self.0.profile_dir
         }
@@ -346,39 +489,93 @@ mod unix {
 
     impl Drop for RuntimeInner {
         fn drop(&mut self) {
-            if !self.broken.load(Ordering::Acquire) {
+            let reader_started = self
+                .reader
+                .get_mut()
+                .ok()
+                .is_some_and(|reader| reader.is_some());
+            let shutdown_deadline = Instant::now() + Duration::from_secs(2);
+            if reader_started && !self.broken.load(Ordering::Acquire) {
                 let (reply_tx, reply_rx) = mpsc::sync_channel(1);
                 if let Ok(mut pending) = self.pending.lock() {
-                    pending.insert(u64::MAX, reply_tx);
+                    pending.insert(
+                        SHUTDOWN_ID,
+                        PendingReply {
+                            sender: reply_tx,
+                            deadline: shutdown_deadline,
+                        },
+                    );
                 }
-                let request = json!({ "id": u64::MAX, "method": "shutdown", "params": {} });
+                let request = json!({ "id": SHUTDOWN_ID, "method": "shutdown", "params": {} });
                 if let Ok(bytes) = serde_json::to_vec(&request) {
                     if let Ok(stream) = self.stream.get_mut() {
-                        let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
-                        let _ = write_frame_with_limit(stream, &bytes, MAX_FRAME);
+                        let _ = write_runtime_frame(stream, &bytes, shutdown_deadline);
                     }
-                    let _ = reply_rx.recv_timeout(Duration::from_secs(2));
+                    let _ = reply_rx
+                        .recv_timeout(shutdown_deadline.saturating_duration_since(Instant::now()));
                 }
             }
+            // Acknowledgment alone is not EOF. Wake and join the response
+            // reader before releasing the clone lock and transient artifacts.
+            let _ = self.control.shutdown(std::net::Shutdown::Both);
+            self.broken.store(true, Ordering::Release);
+            if let Ok(mut pending) = self.pending.lock() {
+                pending.clear();
+            }
             if let Ok(mut child) = self.child.lock() {
-                let deadline = Instant::now() + Duration::from_secs(5);
-                loop {
-                    match child.try_wait() {
-                        Ok(Some(_)) | Err(_) => break,
-                        Ok(None) if Instant::now() < deadline => {
-                            std::thread::sleep(Duration::from_millis(100))
-                        }
-                        Ok(None) => {
-                            let _ = child.kill();
-                            let _ = child.wait();
-                            break;
-                        }
-                    }
+                let _ = child.terminate();
+            }
+            if let Ok(reader) = self.reader.get_mut() {
+                if let Some(reader) = reader.take() {
+                    let _ = reader.join();
                 }
             }
             let _ = fs::remove_file(&self.manifest);
             let _ = fs::remove_dir_all(&self.temporary_dir);
         }
+    }
+
+    fn accept_ready_bridge(
+        listener: &UnixListener,
+        child: &mut ChildGuard,
+        deadline: Instant,
+        expected_version: &str,
+    ) -> Result<UnixStream, String> {
+        let mut stream = loop {
+            if Instant::now() >= deadline {
+                return Err(bridge_error(
+                    "disconnected",
+                    "Thunderbird did not start its private bridge before the startup deadline.",
+                ));
+            }
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    if let Some(child) = child.child.as_ref() {
+                        if child_exited(child)
+                            .map_err(io_message("Could not inspect Thunderbird startup"))?
+                        {
+                            return Err(bridge_error("disconnected", "Thunderbird stopped during startup. The source profile was not changed."));
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => {
+                    return Err(bridge_error(
+                        "disconnected",
+                        &format!("Could not accept the private Thunderbird bridge: {error}"),
+                    ))
+                }
+            }
+        };
+        let hello = read_runtime_json_frame(&mut stream, Some(deadline))?;
+        if hello.get("id").and_then(Value::as_u64) != Some(0)
+            || hello.pointer("/result/ready").and_then(Value::as_bool) != Some(true)
+            || hello.pointer("/result/version").and_then(Value::as_str) != Some(expected_version)
+        {
+            return Err(bridge_error("protocol", "Thunderbird started without the current MegaMail bridge handshake. Reopen the runtime to load the bundled extension."));
+        }
+        Ok(stream)
     }
 
     fn operation_timeout(method: &str) -> Duration {
@@ -393,27 +590,47 @@ mod unix {
     }
 
     fn operation_timeout_message(method: &str) -> String {
-        match method {
-            "send" => "Thunderbird did not confirm sending before the timeout. The message may still have been sent; check Sent and Outbox before retrying.".to_owned(),
-            "save" => "Thunderbird did not confirm saving the draft before the timeout. Check Drafts before retrying.".to_owned(),
-            _ => "Thunderbird did not finish this operation before its time limit. Its late reply will be ignored.".to_owned(),
-        }
+        let message = match method {
+            "send" => "Thunderbird did not confirm sending before the timeout. The message may still have been sent; check Sent and Outbox before retrying.",
+            "save" => "Thunderbird did not confirm saving the draft before the timeout. Check Drafts before retrying.",
+            _ => "Thunderbird did not finish this operation before its time limit. Its late reply will be ignored.",
+        };
+        bridge_error("request-timeout", message)
     }
 
     fn response_reader(
         mut stream: UnixStream,
-        pending: Arc<Mutex<HashMap<u64, SyncSender<Result<Value, String>>>>>,
+        pending: Arc<Mutex<HashMap<u64, PendingReply>>>,
         broken: Arc<AtomicBool>,
-        child: Arc<Mutex<Child>>,
+        child: Arc<Mutex<ChildGuard>>,
+        sequence: Arc<AtomicU64>,
     ) {
         loop {
-            let response = match read_json_frame(&mut stream) {
+            let response = match read_runtime_json_frame(&mut stream, None) {
                 Ok(response) => response,
                 Err(error) => {
                     break_transport(Some(&mut stream), &pending, &broken, &child, error);
                     return;
                 }
             };
+            let id = response.get("id").and_then(Value::as_u64);
+            let shutdown_pending = id == Some(SHUTDOWN_ID)
+                && pending.lock().is_ok_and(|p| p.contains_key(&SHUTDOWN_ID));
+            if !shutdown_pending
+                && !matches!(id, Some(id) if id > 0 && id < sequence.load(Ordering::Acquire))
+            {
+                break_transport(
+                    Some(&mut stream),
+                    &pending,
+                    &broken,
+                    &child,
+                    bridge_error(
+                        "protocol",
+                        "Thunderbird bridge disconnected after an uncorrelated response ID.",
+                    ),
+                );
+                return;
+            }
             if let Err(error) = route_response(response, &pending) {
                 break_transport(Some(&mut stream), &pending, &broken, &child, error);
                 return;
@@ -422,35 +639,54 @@ mod unix {
     }
 
     fn route_response(
-        response: Value,
-        pending: &Mutex<HashMap<u64, SyncSender<Result<Value, String>>>>,
+        mut response: Value,
+        pending: &Mutex<HashMap<u64, PendingReply>>,
     ) -> Result<(), String> {
-        let id = response
-            .get("id")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| "Thunderbird returned a response without a request ID.".to_owned())?;
-        let sender = pending
+        let id = response.get("id").and_then(Value::as_u64).ok_or_else(|| {
+            bridge_error(
+                "protocol",
+                "Thunderbird returned a response without a request ID.",
+            )
+        })?;
+        if response.get("error").is_some() == response.get("result").is_some()
+            || response.get("error").is_some_and(|v| !v.is_string())
+        {
+            return Err(bridge_error(
+                "protocol",
+                "Thunderbird bridge disconnected after an invalid response envelope.",
+            ));
+        }
+        let reply = pending
             .lock()
-            .map_err(|_| "Thunderbird bridge lock failed".to_owned())?
+            .map_err(|_| bridge_error("disconnected", "Thunderbird bridge lock failed"))?
             .remove(&id);
-        let Some(sender) = sender else {
+        let Some(reply) = reply else {
             return Ok(());
         };
+        if Instant::now() > reply.deadline {
+            return Ok(());
+        }
         let result = if let Some(error) = response.get("error").and_then(Value::as_str) {
-            Err(error.chars().take(1024).collect())
-        } else if let Some(result) = response.get("result").cloned() {
-            Ok(result)
+            // Only an explicit code is authentication evidence. Timeouts,
+            // snapshot problems and cached folder data never prove login.
+            let message: String = error
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(1024)
+                .collect();
+            if response.get("errorCode").and_then(Value::as_str) == Some("needs-login") {
+                Err(bridge_error("needs-login", &message))
+            } else {
+                Err(bridge_error("operation", &message))
+            }
         } else {
-            Err("Thunderbird returned an empty bridge response.".to_owned())
+            Ok(response["result"].take())
         };
-        let _ = sender.send(result);
+        let _ = reply.sender.try_send(result);
         Ok(())
     }
 
-    fn expire_pending(
-        pending: &Mutex<HashMap<u64, SyncSender<Result<Value, String>>>>,
-        id: u64,
-    ) -> bool {
+    fn expire_pending(pending: &Mutex<HashMap<u64, PendingReply>>, id: u64) -> bool {
         pending
             .lock()
             .ok()
@@ -460,9 +696,9 @@ mod unix {
 
     fn break_transport(
         stream: Option<&mut UnixStream>,
-        pending: &Mutex<HashMap<u64, SyncSender<Result<Value, String>>>>,
+        pending: &Mutex<HashMap<u64, PendingReply>>,
         broken: &AtomicBool,
-        child: &Mutex<Child>,
+        child: &Mutex<ChildGuard>,
         message: String,
     ) {
         if broken.swap(true, Ordering::AcqRel) {
@@ -472,13 +708,12 @@ mod unix {
             let _ = stream.shutdown(std::net::Shutdown::Both);
         }
         if let Ok(mut pending) = pending.lock() {
-            for (_, sender) in pending.drain() {
-                let _ = sender.send(Err(message.clone()));
+            for (_, reply) in pending.drain() {
+                let _ = reply.sender.try_send(Err(message.clone()));
             }
         }
         if let Ok(mut child) = child.lock() {
-            let _ = child.kill();
-            let _ = child.wait();
+            let _ = child.terminate();
         }
     }
 
@@ -594,15 +829,18 @@ mod unix {
         let file = options.open(&lock_path).map_err(io_message(
             "Could not open MegaMail's Thunderbird profile lock",
         ))?;
-        if !file
-            .metadata()
-            .map_err(io_message(
-                "Could not inspect MegaMail's Thunderbird profile lock",
-            ))?
-            .file_type()
-            .is_file()
+        let metadata = file.metadata().map_err(io_message(
+            "Could not inspect MegaMail's Thunderbird profile lock",
+        ))?;
+        // SAFETY: geteuid is a read-only process identity query.
+        if !metadata.file_type().is_file()
+            || metadata.nlink() != 1
+            || metadata.uid() != unsafe { libc::geteuid() }
         {
-            return Err("MegaMail's Thunderbird profile lock is not a regular file.".to_owned());
+            return Err(
+                "MegaMail's Thunderbird profile lock is not an owned, singly linked regular file."
+                    .to_owned(),
+            );
         }
         file.set_permissions(fs::Permissions::from_mode(0o600))
             .map_err(io_message(
@@ -619,9 +857,14 @@ mod unix {
         target: &Path,
         wanted_stamp: &str,
     ) -> Result<(), String> {
+        ensure_isolated_clone(&profile.path, target)?;
         let marker = target.join(".megamail-initialized");
         let stamp_path = target.join(".megamail-auth-stamp");
-        let current_stamp = fs::read_to_string(&stamp_path).ok();
+        validate_private_file_path(&marker)?;
+        validate_private_file_path(&stamp_path)?;
+        let current_stamp = read_bounded_source_file(&stamp_path, 4096, "private snapshot stamp")?
+            .map(String::from_utf8).transpose()
+            .map_err(|_| "MegaMail's private Thunderbird snapshot stamp is invalid. Repair the private clone before retrying.".to_owned())?;
         if current_stamp.as_deref() != Some(wanted_stamp) {
             if source_profile_locked(&profile.path) {
                 return Err("Thunderbird is using this source profile. Close Thunderbird before importing its updated encrypted credentials.".to_owned());
@@ -794,6 +1037,7 @@ mod unix {
         target: &Path,
         expected_stamp: &str,
     ) -> Result<(), String> {
+        ensure_isolated_clone(source, target)?;
         if credentials_stamp(source)? != expected_stamp {
             return Err("Thunderbird's credential snapshot changed before import. Close Thunderbird and retry.".to_owned());
         }
@@ -1116,16 +1360,107 @@ mod unix {
         Ok(())
     }
 
-    fn ensure_private_dir(path: &Path) -> Result<(), String> {
-        fs::create_dir_all(path).map_err(io_message(
-            "Could not create a private Thunderbird runtime directory",
+    fn reject_symlink_components(path: &Path) -> Result<(), String> {
+        let mut prefix = PathBuf::new();
+        for component in path.components() {
+            if matches!(component, std::path::Component::ParentDir) {
+                return Err(
+                    "Private Thunderbird paths must not contain parent traversal.".to_owned(),
+                );
+            }
+            prefix.push(component.as_os_str());
+            match fs::symlink_metadata(&prefix) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(
+                        "Private Thunderbird paths must not follow symbolic links.".to_owned()
+                    )
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(format!(
+                        "Could not inspect a private Thunderbird path: {error}"
+                    ))
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn ensure_isolated_clone(source: &Path, target: &Path) -> Result<(), String> {
+        reject_symlink_components(target)?;
+        let source = fs::canonicalize(source).map_err(io_message(
+            "Could not locate the source Thunderbird profile",
         ))?;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(io_message(
-            "Could not secure a private Thunderbird runtime directory",
-        ))
+        let target = fs::canonicalize(target)
+            .map_err(io_message("Could not locate the private Thunderbird clone"))?;
+        if source.starts_with(&target) || target.starts_with(&source) {
+            return Err(
+                "MegaMail's private Thunderbird clone must not overlap the source profile."
+                    .to_owned(),
+            );
+        }
+        Ok(())
+    }
+
+    fn ensure_private_dir(path: &Path) -> Result<(), String> {
+        use std::os::unix::fs::DirBuilderExt;
+        reject_symlink_components(path)?;
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)
+            .map_err(io_message(
+                "Could not create a private Thunderbird runtime directory",
+            ))?;
+        let directory = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY | libc::O_CLOEXEC)
+            .open(path)
+            .map_err(io_message(
+                "Could not inspect the private Thunderbird directory",
+            ))?;
+        let metadata = directory
+            .metadata()
+            .map_err(io_message("Could not inspect private directory ownership"))?;
+        // SAFETY: geteuid has no pointer arguments or side effects.
+        if metadata.uid() != unsafe { libc::geteuid() } {
+            return Err("The private Thunderbird directory belongs to another user.".to_owned());
+        }
+        directory
+            .set_permissions(fs::Permissions::from_mode(0o700))
+            .map_err(io_message(
+                "Could not secure a private Thunderbird runtime directory",
+            ))
+    }
+
+    fn validate_private_file_path(path: &Path) -> Result<(), String> {
+        reject_symlink_components(path)?;
+        match fs::symlink_metadata(path) {
+            Ok(metadata) => {
+                // SAFETY: geteuid is a read-only process identity query.
+                if !metadata.file_type().is_file()
+                    || metadata.nlink() != 1
+                    || metadata.uid() != unsafe { libc::geteuid() }
+                {
+                    return Err(
+                        "A private Thunderbird file is not an owned, singly linked regular file."
+                            .to_owned(),
+                    );
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "Could not inspect a private Thunderbird file: {error}"
+                ))
+            }
+        }
+        Ok(())
     }
 
     fn write_private_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
+        validate_private_file_path(path)?;
         let parent = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
@@ -1171,13 +1506,31 @@ mod unix {
     }
 
     fn write_private_bytes_if_changed(path: &Path, bytes: &[u8]) -> Result<(), String> {
-        if matches!(fs::read(path), Ok(current) if current == bytes) {
-            return Ok(());
+        validate_private_file_path(path)?;
+        let current = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(path);
+        if let Ok(mut file) = current {
+            let mut current = Vec::new();
+            if (&mut file)
+                .take(bytes.len() as u64 + 1)
+                .read_to_end(&mut current)
+                .is_ok()
+                && current == bytes
+            {
+                file.set_permissions(fs::Permissions::from_mode(0o600))
+                    .map_err(io_message(
+                        "Could not secure an unchanged private Thunderbird file",
+                    ))?;
+                return Ok(());
+            }
         }
         write_private_bytes(path, bytes)
     }
 
     fn write_new_private_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
+        validate_private_file_path(path)?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(io_message(
                 "Could not create a Thunderbird bridge file directory",
@@ -1262,49 +1615,111 @@ mod unix {
     }
 
     fn validate_thunderbird_version(executable: &Path) -> Result<(), String> {
-        let mut child = Command::new(executable)
+        let child = Command::new(executable)
+            .process_group(0)
             .arg("--version")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(io_message("Could not check the Thunderbird version"))?;
-        let started = Instant::now();
-        loop {
-            if let Some(status) = child
-                .try_wait()
-                .map_err(io_message("Could not check the Thunderbird version"))?
+        let mut child = ChildGuard {
+            child: Some(child),
+            isolated_group: true,
+        };
+        let mut stdout = child
+            .child_mut()
+            .stdout
+            .take()
+            .ok_or_else(|| "Missing Thunderbird version output".to_owned())?;
+        let mut stderr = child
+            .child_mut()
+            .stderr
+            .take()
+            .ok_or_else(|| "Missing Thunderbird version output".to_owned())?;
+        for fd in [stdout.as_raw_fd(), stderr.as_raw_fd()] {
+            // SAFETY: these are owned pipe descriptors. No other thread reads them.
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
             {
-                let output = child
-                    .wait_with_output()
-                    .map_err(io_message("Could not read the Thunderbird version"))?;
-                if !status.success() {
+                return Err("Could not configure bounded Thunderbird version output.".to_owned());
+            }
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut output = Vec::new();
+        loop {
+            drain_version_output(&mut stdout, &mut output)?;
+            drain_version_output(&mut stderr, &mut output)?;
+            if child_exited(child.child_mut())
+                .map_err(io_message("Could not check Thunderbird version status"))?
+            {
+                // Terminate the isolated group BEFORE reaping its leader.
+                let status = child.terminate();
+                drain_version_output(&mut stdout, &mut output)?;
+                drain_version_output(&mut stderr, &mut output)?;
+                if !status.is_some_and(|status| status.success()) {
                     return Err("Could not verify the installed Thunderbird version.".to_owned());
                 }
-                let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
-                text.push_str(&String::from_utf8_lossy(&output.stderr));
-                let major = parse_thunderbird_major(&text).ok_or_else(|| {
-                    "Could not determine the installed Thunderbird version. MegaMail requires Thunderbird 153 or newer.".to_owned()
-                })?;
-                if major < 153 {
-                    return Err(format!(
-                        "MegaMail requires Thunderbird 153 or newer; this installation is {major}."
-                    ));
-                }
-                return Ok(());
+                return validate_version_output(&String::from_utf8_lossy(&output));
             }
-            if started.elapsed() >= Duration::from_secs(5) {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err("Checking the Thunderbird version timed out. MegaMail requires Thunderbird 153 or newer.".to_owned());
+            if Instant::now() >= deadline {
+                return Err(bridge_error("unsupported", "Checking the Thunderbird version timed out. MegaMail requires Thunderbird 153 or newer."));
             }
-            std::thread::sleep(Duration::from_millis(50));
+            std::thread::sleep(Duration::from_millis(10));
         }
     }
 
+    fn drain_version_output(reader: &mut impl Read, output: &mut Vec<u8>) -> Result<(), String> {
+        let mut buffer = [0u8; 1024];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => return Ok(()),
+                Ok(size) if output.len() + size <= 16 * 1024 => {
+                    output.extend_from_slice(&buffer[..size])
+                }
+                Ok(_) => {
+                    return Err(bridge_error(
+                        "unsupported",
+                        "Thunderbird version output exceeds its 16 KiB limit.",
+                    ))
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(_) => return Err("Could not read Thunderbird version output.".to_owned()),
+            }
+        }
+    }
+
+    fn validate_version_output(output: &str) -> Result<(), String> {
+        let major = parse_thunderbird_major(output).ok_or_else(|| bridge_error("unsupported",
+            "Could not determine the installed Thunderbird version. MegaMail requires Thunderbird 153 or newer."))?;
+        // 153 is intentionally supported; 157 is the current loopback reference,
+        // not an upper bound or a claim that every later API was verified.
+        if major < 153 {
+            return Err(bridge_error(
+                "unsupported",
+                &format!(
+                    "MegaMail requires Thunderbird 153 or newer; this installation is {major}."
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     fn parse_thunderbird_major(output: &str) -> Option<u32> {
-        let (_, suffix) = output.split_once("Thunderbird")?;
-        let version = suffix.trim_start().split_whitespace().next()?;
-        version.split('.').next()?.parse().ok()
+        output.lines().find_map(|line| {
+            let version = line
+                .trim()
+                .strip_prefix("Mozilla Thunderbird ")
+                .or_else(|| line.trim().strip_prefix("Thunderbird "))?;
+            let token = version.split_whitespace().next()?;
+            if !token
+                .chars()
+                .all(|c| c.is_ascii_digit() || matches!(c, '.' | 'a' | 'b' | 'e' | 's' | 'r'))
+            {
+                return None;
+            }
+            token.split('.').next()?.parse().ok()
+        })
     }
 
     fn build_extension(host_name: &str) -> Result<Vec<u8>, String> {
@@ -1430,6 +1845,191 @@ mod unix {
         !crc
     }
 
+    fn encode_request(request: &Value) -> Result<Vec<u8>, String> {
+        struct BoundedBuffer(Vec<u8>);
+        impl Write for BoundedBuffer {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                if bytes.len() > MAX_FRAME.saturating_sub(self.0.len()) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "request frame limit",
+                    ));
+                }
+                self.0.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut buffer = BoundedBuffer(Vec::new());
+        serde_json::to_writer(&mut buffer, request).map_err(|_| "Thunderbird bridge request exceeded the 1 MiB protocol frame limit or could not be encoded.".to_owned())?;
+        Ok(buffer.0)
+    }
+
+    fn wait_socket(
+        stream: &UnixStream,
+        events: libc::c_short,
+        deadline: Option<Instant>,
+    ) -> io::Result<()> {
+        loop {
+            let timeout = match deadline {
+                Some(deadline) => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "bridge deadline expired",
+                        ));
+                    }
+                    remaining.as_millis().clamp(1, i32::MAX as u128) as i32
+                }
+                None => -1,
+            };
+            let mut descriptor = libc::pollfd {
+                fd: stream.as_raw_fd(),
+                events,
+                revents: 0,
+            };
+            // SAFETY: descriptor references our open socket for the whole call.
+            let result = unsafe { libc::poll(&mut descriptor, 1, timeout) };
+            if result > 0 {
+                return Ok(());
+            }
+            if result == 0 {
+                continue;
+            }
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::Interrupted {
+                return Err(error);
+            }
+        }
+    }
+
+    struct FrameReader<'a> {
+        stream: &'a UnixStream,
+        deadline: Option<Instant>,
+    }
+
+    impl Read for FrameReader<'_> {
+        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            if bytes.is_empty() {
+                return Ok(0);
+            }
+            loop {
+                wait_socket(self.stream, libc::POLLIN, self.deadline)?;
+                // MSG_DONTWAIT is per-call: changing O_NONBLOCK would also
+                // affect the writer's duplicated socket descriptor.
+                // SAFETY: bytes is a writable slice and the socket is live.
+                let size = unsafe {
+                    libc::recv(
+                        self.stream.as_raw_fd(),
+                        bytes.as_mut_ptr().cast(),
+                        bytes.len(),
+                        libc::MSG_DONTWAIT,
+                    )
+                };
+                if size >= 0 {
+                    if size > 0 && self.deadline.is_none() {
+                        self.deadline = Some(Instant::now() + FRAME_TIMEOUT);
+                    }
+                    return Ok(size as usize);
+                }
+                let error = io::Error::last_os_error();
+                if !matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) {
+                    return Err(error);
+                }
+            }
+        }
+    }
+
+    fn read_runtime_json_frame(
+        stream: &mut UnixStream,
+        deadline: Option<Instant>,
+    ) -> Result<Value, String> {
+        let mut reader = FrameReader { stream, deadline };
+        let bytes = read_frame_with_limit(&mut reader, MAX_EXTENSION_FRAME)
+            .map_err(|message| {
+                bridge_error(
+                    "protocol",
+                    &format!("Thunderbird bridge disconnected: {message}"),
+                )
+            })?
+            .ok_or_else(|| {
+                bridge_error("disconnected", "Thunderbird bridge closed the connection.")
+            })?;
+        serde_json::from_slice(&bytes).map_err(|_| {
+            bridge_error(
+                "protocol",
+                "Thunderbird bridge disconnected after invalid JSON.",
+            )
+        })
+    }
+
+    fn write_runtime_frame(
+        stream: &mut UnixStream,
+        bytes: &[u8],
+        deadline: Instant,
+    ) -> Result<(), String> {
+        if bytes.len() > MAX_FRAME {
+            return Err("Thunderbird request exceeds the protocol frame limit.".to_owned());
+        }
+        let header = (bytes.len() as u32).to_le_bytes();
+        let mut transferred = 0usize;
+        for part in [&header[..], bytes] {
+            let mut remaining = part;
+            while !remaining.is_empty() {
+                if let Err(error) = wait_socket(stream, libc::POLLOUT, Some(deadline)) {
+                    return Err(
+                        if transferred == 0 && error.kind() == io::ErrorKind::TimedOut {
+                            bridge_error(
+                                "request-timeout",
+                                "Thunderbird request writer timed out before sending the request.",
+                            )
+                        } else {
+                            bridge_error("disconnected", "Thunderbird bridge disconnected while writing a request frame. Its operation may be incomplete.")
+                        },
+                    );
+                }
+                // SAFETY: remaining is readable and the socket is live.
+                // Suppress SIGPIPE without changing the process-wide handler.
+                let size = unsafe {
+                    libc::send(
+                        stream.as_raw_fd(),
+                        remaining.as_ptr().cast(),
+                        remaining.len(),
+                        libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL,
+                    )
+                };
+                if size > 0 {
+                    transferred += size as usize;
+                    remaining = &remaining[size as usize..];
+                } else if size == 0 {
+                    return Err(bridge_error(
+                        "disconnected",
+                        "Thunderbird bridge disconnected during a request write.",
+                    ));
+                } else {
+                    let error = io::Error::last_os_error();
+                    if !matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                    ) {
+                        return Err(bridge_error(
+                            "disconnected",
+                            "Thunderbird bridge disconnected during a request write.",
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
     fn read_json_frame(reader: &mut impl Read) -> Result<Value, String> {
         let bytes = read_frame_with_limit(reader, MAX_EXTENSION_FRAME)?
             .ok_or_else(|| "Thunderbird bridge closed the connection.".to_owned())?;
@@ -1484,6 +2084,14 @@ mod unix {
     }
 
     #[cfg(test)]
+    mod runtime_batch2 {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/runtime_batch2/contract.rs"
+        ));
+    }
+
+    #[cfg(test)]
     mod tests {
         use super::*;
         use std::process::{Child, Command, Stdio};
@@ -1518,8 +2126,20 @@ mod unix {
             let pending = Mutex::new(HashMap::new());
             let (first_tx, first_rx) = mpsc::sync_channel(1);
             let (second_tx, second_rx) = mpsc::sync_channel(1);
-            pending.lock().unwrap().insert(1, first_tx);
-            pending.lock().unwrap().insert(2, second_tx);
+            pending.lock().unwrap().insert(
+                1,
+                PendingReply {
+                    sender: first_tx,
+                    deadline: Instant::now() + Duration::from_secs(1),
+                },
+            );
+            pending.lock().unwrap().insert(
+                2,
+                PendingReply {
+                    sender: second_tx,
+                    deadline: Instant::now() + Duration::from_secs(1),
+                },
+            );
 
             route_response(json!({ "id": 2, "result": "second" }), &pending).unwrap();
             route_response(json!({ "id": 1, "result": "first" }), &pending).unwrap();
@@ -1573,23 +2193,18 @@ mod unix {
                 .unwrap();
             });
             let stream = UnixStream::connect(root.join("bridge.sock")).unwrap();
-            let reader = stream.try_clone().unwrap();
-            let pending = Arc::new(Mutex::new(HashMap::new()));
-            let broken = Arc::new(AtomicBool::new(false));
-            let child = Arc::new(Mutex::new(Command::new("true").spawn().unwrap()));
-            let runtime = Runtime(Arc::new(RuntimeInner {
-                stream: Mutex::new(stream),
-                sequence: AtomicU64::new(1),
-                pending: pending.clone(),
-                broken: broken.clone(),
-                child: child.clone(),
-                _profile_lock: File::create(root.join("profile.lock")).unwrap(),
-                manifest: root.join("host.json"),
-                temporary_dir: root.clone(),
-                profile_dir: root.clone(),
-            }));
-            let reader_thread =
-                std::thread::spawn(move || response_reader(reader, pending, broken, child));
+            let runtime = Runtime::from_connected(
+                stream,
+                ChildGuard {
+                    child: None,
+                    isolated_group: false,
+                },
+                File::create(root.join("profile.lock")).unwrap(),
+                root.join("host.json"),
+                root.clone(),
+                root.clone(),
+            )
+            .unwrap();
 
             let (metadata_result_tx, metadata_result_rx) = mpsc::sync_channel(1);
             let metadata_runtime = runtime.clone();
@@ -1628,14 +2243,20 @@ mod unix {
             );
             drop(runtime);
             server.join().unwrap();
-            reader_thread.join().unwrap();
+            assert!(!root.exists());
         }
 
         #[test]
         fn timed_out_request_can_be_removed_without_breaking_transport() {
             let pending = Mutex::new(HashMap::new());
             let (reply_tx, _reply_rx) = mpsc::sync_channel(1);
-            pending.lock().unwrap().insert(7, reply_tx);
+            pending.lock().unwrap().insert(
+                7,
+                PendingReply {
+                    sender: reply_tx,
+                    deadline: Instant::now() + Duration::from_secs(1),
+                },
+            );
             let broken = AtomicBool::new(false);
 
             assert!(expire_pending(&pending, 7));

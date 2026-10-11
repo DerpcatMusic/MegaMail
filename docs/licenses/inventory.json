@@ -4,7 +4,7 @@
   "dependency_package_ids_sha256": "9db40d791f9dcf257c262d648464ad613ec68f71e3d667e30ef270aeddf9aec9",
   "generated_by": "tools/license-inventory.py",
   "lockfile": "apps/megamail/Cargo.lock",
-  "lockfile_sha256": "79608a42d35e143bcf5c1c4fefc26123c47add0fa6767466d47df35aa0ceddbc",
+  "lockfile_sha256": "f51837f5c1a5ddf634d338a20e00753f7b8f5769f35983d999ee12ad3b50550c",
   "manifest": "apps/megamail/Cargo.toml",
   "packages": [
     {

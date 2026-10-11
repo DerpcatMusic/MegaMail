@@ -4416,6 +4416,7 @@ dependencies = [
  "futures",
  "gpui-kit",
  "image",
+ "libc",
  "megamail-core",
  "serde",
  "serde_json",

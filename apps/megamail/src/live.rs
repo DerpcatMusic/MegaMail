@@ -1,6 +1,6 @@
 //! Live mailbox state backed by the extracted Hylki mail workers.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use futures::StreamExt;
@@ -37,23 +37,7 @@ pub struct SenderIdentity {
     pub primary: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ThunderbirdAccountState {
-    Connected,
-    NeedsLogin,
-    Unsupported,
-    Failed,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ThunderbirdAccountOutcome {
-    pub profile_path: std::path::PathBuf,
-    pub source_account_id: String,
-    pub name: String,
-    pub email: String,
-    pub state: ThunderbirdAccountState,
-    pub message: Option<String>,
-}
+pub use crate::account_session::{ThunderbirdAccountOutcome, ThunderbirdAccountState};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MessageKey {
@@ -125,6 +109,7 @@ pub struct OutboxSummary {
     pub attempts: u32,
     pub last_error: String,
     pub send_at: Option<i64>,
+    pub phase: megamail_core::models::OutboxPhase,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,6 +153,22 @@ pub struct DraftSourceSnapshot {
     pub state: DraftSourceState,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeMailboxEpoch {
+    /// Zero means the value is undisclosed by a correlated cache bootstrap.
+    /// A nonzero generation still names a worker-verified persisted namespace,
+    /// not proof that an offline snapshot matches today's online server.
+    pub uid_validity: u32,
+    /// Zero is unknown and can never authorize a body application.
+    pub generation: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DirectBodyVersion {
+    pub uid: u32,
+    pub source_generation: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct MailboxSnapshot {
     pub accounts: Vec<Account>,
@@ -187,13 +188,19 @@ pub struct MailboxSnapshot {
     pub selected_key: Option<MessageKey>,
     pub selected_message: Option<Arc<MessageRow>>,
     pub selected_html: SharedString,
+    pub selected_original: Option<Arc<crate::reader_session::OriginalBody>>,
+    pub selected_sender_check: Option<Arc<megamail_core::models::SenderCheck>>,
+    pub selected_body_version: Option<DirectBodyVersion>,
     pub selected_html_without_quote: Option<SharedString>,
     pub body_loaded: bool,
+    pub mailbox_epochs: HashMap<(u32, String), NativeMailboxEpoch>,
+    pub adapter_sessions: HashMap<u32, u64>,
     pub attachment_key: Option<MessageKey>,
     pub links: Vec<MailLink>,
     pub attachment_state: AttachmentState,
     pub draft_source: Option<DraftSourceSnapshot>,
     pub search_query: String,
+    pub search_error: Option<String>,
     pub filter: MessageFilter,
     /// Number of rows in the active search result page/cache, before this local filter.
     pub loaded_count: usize,
@@ -209,6 +216,7 @@ pub struct MailboxSnapshot {
     pub error: Option<String>,
     pub action_error: Option<String>,
     pub outbox: Vec<OutboxSummary>,
+    pub pending_queue_cancels: HashSet<(u32, u32)>,
     pub is_demo: bool,
     pub is_thunderbird_account: bool,
     pub sender_identities: Vec<SenderIdentity>,
@@ -231,10 +239,22 @@ pub(super) enum MailboxEvent {
         results: Vec<ThunderbirdAccountOutcome>,
         error: Option<String>,
         notice: Option<String>,
+        inventory: Option<crate::account_session::SourceStore>,
     },
 }
 
 pub(super) enum WorkerMailboxEvent {
+    AdapterSession {
+        session: u64,
+    },
+    AdapterStopped {
+        session: u64,
+    },
+    NativeMutationFinished(worker::NativeMutationReceipt),
+    QueuedCancelFinished {
+        request: worker::QueuedCancelRequest,
+        canceled: bool,
+    },
     Account(Account),
     Folders(Vec<Folder>),
     FolderChanged {
@@ -243,6 +263,9 @@ pub(super) enum WorkerMailboxEvent {
     Body {
         message_id: u32,
         path: String,
+        version: Option<DirectBodyVersion>,
+        sender_check: Option<Arc<megamail_core::models::SenderCheck>>,
+        original: Option<Arc<crate::reader_session::OriginalBody>>,
         body: String,
         html: String,
         html_without_quote: Option<String>,
@@ -250,6 +273,19 @@ pub(super) enum WorkerMailboxEvent {
         has_attachment: Option<bool>,
         reply_to: Option<String>,
         references: Option<String>,
+    },
+    MailboxEpochChanged {
+        path: String,
+        uid_validity: u32,
+        generation: u64,
+    },
+    BodyEpochStale {
+        message_id: u32,
+        path: String,
+        uid: u32,
+        expected_generation: u64,
+        actual_generation: Option<u64>,
+        reason: String,
     },
     BodyFailed {
         message_id: u32,
@@ -362,6 +398,7 @@ struct FolderPageState {
     truncated: bool,
 }
 
+#[derive(Debug, PartialEq, Eq)]
 enum BodyApplication {
     Ignored,
     Applied,
@@ -373,6 +410,17 @@ pub struct LiveMailbox {
     request_senders: HashMap<u32, RequestSender>,
     page_senders: HashMap<u32, PageSender>,
     thunderbird_accounts: HashSet<u32>,
+    direct_imap_accounts: HashSet<u32>,
+    mailbox_epochs: HashMap<(u32, String), NativeMailboxEpoch>,
+    adapter_sessions: HashMap<u32, u64>,
+    mutation_receipts: VecDeque<(u32, worker::NativeMutationReceipt)>,
+    pending_native_mutations:
+        HashMap<(u32, worker::NativeMutationToken), worker::NativeMutationRequest>,
+    pending_queue_cancels: HashMap<(u32, u32), worker::QueuedCancelRequest>,
+    pending_body_versions: HashMap<BodyRequestSlot, DirectBodyVersion>,
+    epoch_reloads: HashSet<PageKey>,
+    thunderbird_sources: HashMap<u32, crate::account_session::SavedIdentity>,
+    saved_thunderbird: Option<Result<crate::account_session::SourceStore, String>>,
     reconnectable_thunderbird_ids: HashSet<u32>,
     sender_identities: HashMap<u32, Vec<SenderIdentity>>,
     event_sender: futures::channel::mpsc::UnboundedSender<MailboxEvent>,
@@ -407,6 +455,9 @@ pub struct LiveMailbox {
     selected_key: Option<MessageKey>,
     selected_row: Option<Arc<MessageRow>>,
     selected_html: SharedString,
+    selected_original: Option<Arc<crate::reader_session::OriginalBody>>,
+    selected_sender_check: Option<Arc<megamail_core::models::SenderCheck>>,
+    selected_body_version: Option<DirectBodyVersion>,
     selected_html_without_quote: Option<SharedString>,
     selected_body_loaded: bool,
     links: Vec<MailLink>,
@@ -421,8 +472,11 @@ pub struct LiveMailbox {
     pending_sends: HashMap<u32, HashSet<u64>>,
     send_results: HashMap<u32, SendResult>,
     next_send_id: u64,
+    pending_draft_tickets: HashSet<(u32, u32)>,
+    saved_draft_tickets: HashSet<(u32, u32)>,
     outbox_by_account: HashMap<u32, Vec<OutboxSummary>>,
     search_query: String,
+    search_error: Option<String>,
     filter: MessageFilter,
     status: String,
     loading: bool,
@@ -432,7 +486,6 @@ pub struct LiveMailbox {
     query_errors: HashMap<u32, String>,
     action_errors: HashMap<u32, String>,
     thunderbird_loading: bool,
-    thunderbird_restore_started: bool,
     thunderbird_error: Option<String>,
     thunderbird_notice: Option<String>,
     thunderbird_results: Vec<ThunderbirdAccountOutcome>,
@@ -467,12 +520,16 @@ impl LiveMailbox {
         let mut request_senders = HashMap::new();
         let mut accounts = Vec::with_capacity(profiles.len());
         let mut account_ids = Vec::with_capacity(profiles.len());
+        let mut direct_imap_accounts = HashSet::new();
 
         for (account_id, config) in profiles {
             if account_ids.contains(&account_id) {
                 continue;
             }
             account_ids.push(account_id);
+            if config.protocol == megamail_core::config::Protocol::Imap {
+                direct_imap_accounts.insert(account_id);
+            }
             accounts.push(Account {
                 id: account_id,
                 name: config.name.clone(),
@@ -500,10 +557,47 @@ impl LiveMailbox {
             }
         });
 
+        let mut mailbox = Self::from_parts(
+            request_senders,
+            accounts,
+            current_account_id,
+            event_tx,
+            event_task,
+            query_service,
+            query_start_error,
+            demo_mode,
+        );
+        mailbox.direct_imap_accounts = direct_imap_accounts;
+        mailbox
+    }
+
+    // Construction and Ready installation are runtime-neutral seams. Synthetic
+    // tests can use the real mailbox without a cache, keyring, or transport.
+    fn from_parts(
+        request_senders: HashMap<u32, RequestSender>,
+        accounts: Vec<Account>,
+        current_account_id: Option<u32>,
+        event_tx: futures::channel::mpsc::UnboundedSender<MailboxEvent>,
+        event_task: Task<()>,
+        query_service: Option<QueryService>,
+        query_start_error: Option<String>,
+        demo_mode: bool,
+    ) -> Self {
+        let loading = !accounts.is_empty();
         Self {
             request_senders,
             page_senders: HashMap::new(),
             thunderbird_accounts: HashSet::new(),
+            direct_imap_accounts: HashSet::new(),
+            mailbox_epochs: HashMap::new(),
+            adapter_sessions: HashMap::new(),
+            mutation_receipts: VecDeque::new(),
+            pending_native_mutations: HashMap::new(),
+            pending_queue_cancels: HashMap::new(),
+            pending_body_versions: HashMap::new(),
+            epoch_reloads: HashSet::new(),
+            thunderbird_sources: HashMap::new(),
+            saved_thunderbird: None,
             reconnectable_thunderbird_ids: HashSet::new(),
             sender_identities: HashMap::new(),
             event_sender: event_tx,
@@ -538,6 +632,9 @@ impl LiveMailbox {
             selected_key: None,
             selected_row: None,
             selected_html: SharedString::from(""),
+            selected_original: None,
+            selected_sender_check: None,
+            selected_body_version: None,
             selected_html_without_quote: None,
             selected_body_loaded: false,
             links: Vec::new(),
@@ -552,18 +649,20 @@ impl LiveMailbox {
             pending_sends: HashMap::new(),
             send_results: HashMap::new(),
             next_send_id: 1,
+            pending_draft_tickets: HashSet::new(),
+            saved_draft_tickets: HashSet::new(),
             outbox_by_account: HashMap::new(),
             search_query: String::new(),
+            search_error: None,
             filter: MessageFilter::All,
             status: String::new(),
-            loading: !account_ids.is_empty(),
+            loading,
             loading_more: false,
             body_loading: false,
             connectivity_errors: HashMap::new(),
             query_errors: HashMap::new(),
             action_errors: HashMap::new(),
             thunderbird_loading: false,
-            thunderbird_restore_started: false,
             thunderbird_error: None,
             thunderbird_notice: None,
             thunderbird_results: Vec::new(),
@@ -694,13 +793,22 @@ impl LiveMailbox {
             selected_key: self.selected_key.clone(),
             selected_message,
             selected_html: self.selected_html.clone(),
+            selected_original: self
+                .selected_body_loaded
+                .then(|| self.selected_original.clone())
+                .flatten(),
+            selected_sender_check: self.selected_sender_check.clone(),
+            selected_body_version: self.selected_body_version,
             selected_html_without_quote: self.selected_html_without_quote.clone(),
             body_loaded: self.selected_body_loaded,
+            mailbox_epochs: self.mailbox_epochs.clone(),
+            adapter_sessions: self.adapter_sessions.clone(),
             attachment_key: self.selected_key.clone(),
             links: self.links.clone(),
             attachment_state: self.attachment_state.clone(),
             draft_source: self.draft_source.clone(),
             search_query: self.search_query.clone(),
+            search_error: self.search_error.clone(),
             filter: self.filter,
             loaded_count,
             status: self.status.clone(),
@@ -717,6 +825,7 @@ impl LiveMailbox {
             error,
             action_error,
             outbox,
+            pending_queue_cancels: self.pending_queue_cancels.keys().copied().collect(),
             is_demo: self.demo_mode,
             is_thunderbird_account: current_account_id
                 .is_some_and(|id| self.thunderbird_accounts.contains(&id)),
@@ -730,14 +839,347 @@ impl LiveMailbox {
         }
     }
 
-    /// Begin restoring previously imported Thunderbird accounts once the
-    /// native account list is settled. This is deliberately separate from
-    /// `new`: startup replaces the initial empty mailbox after reading config.
-    pub fn restore_thunderbird(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.demo_mode || self.thunderbird_restore_started || self.thunderbird_loading {
+    /// Install durable inventory without replacing the sole mailbox/event owner.
+    pub fn install_inventory(
+        &mut self,
+        inventory: crate::account_session::StartupInventory,
+        cx: &mut Context<Self>,
+    ) {
+        for (id, config) in inventory.direct {
+            if !self.request_senders.contains_key(&id) {
+                if let Err(error) = self.add_profile(id, config, cx) {
+                    self.connectivity_errors.insert(id, error);
+                }
+            }
+        }
+        match inventory.thunderbird {
+            Ok(store) => self.install_saved_thunderbird(store),
+            Err(error) => self.saved_thunderbird = Some(Err(error)),
+        }
+        self.restore_thunderbird(cx);
+        cx.notify();
+    }
+
+    fn install_saved_thunderbird(&mut self, store: crate::account_session::SourceStore) {
+        for account in store.dormant_accounts() {
+            if !self
+                .accounts
+                .iter()
+                .any(|existing| existing.id == account.id)
+            {
+                let id = account.id;
+                self.accounts.push(account);
+                self.thunderbird_accounts.insert(id);
+                self.reconnectable_thunderbird_ids.insert(id);
+                self.connectivity_errors.insert(
+                    id,
+                    "Saved account is not connected. Retry to reconnect; no import is required."
+                        .into(),
+                );
+                if self.current_account_id.is_none() {
+                    self.current_account_id = Some(id);
+                }
+            }
+        }
+        self.saved_thunderbird = Some(Ok(store));
+    }
+
+    /// Guard before the first import has even produced a saved manifest.
+    /// Successful mixed-backend admission is protected by the durable registry.
+    pub fn direct_add_block_reason(&self) -> Option<&'static str> {
+        if self.thunderbird_loading {
+            return Some("Thunderbird is connecting. Wait before adding a direct account.");
+        }
+        match &self.saved_thunderbird {
+            Some(Err(_)) => Some(
+                "Saved Thunderbird account storage needs repair. Retry before adding an account.",
+            ),
+            None => {
+                Some("Saved account inventory is still loading. Wait before adding an account.")
+            }
+            Some(Ok(store))
+                if store
+                    .profiles
+                    .iter()
+                    .flat_map(|p| &p.accounts)
+                    .any(|stored| {
+                        !self
+                            .accounts
+                            .iter()
+                            .any(|a| a.id == stored.app_id && !a.email.trim().is_empty())
+                    }) =>
+            {
+                Some(
+                    "A saved Thunderbird mailbox has no verified address yet. Retry it before adding an account so duplicate mailbox admission can be checked.",
+                )
+            }
+            Some(Ok(_)) => None,
+        }
+    }
+
+    /// The Compose button and action resolve the same usable owning account.
+    /// In Unified Inbox prefer the selected message owner, then current, then
+    /// a healthy roster member. Do not route an account-folder compose elsewhere.
+    pub fn composer_account_id(&self) -> Option<u32> {
+        let usable = |id| {
+            self.can_use_account(id) || (self.demo_mode && self.accounts.iter().any(|a| a.id == id))
+        };
+        if self.scope == MailboxScope::Unified {
+            self.selected_key
+                .as_ref()
+                .map(|key| key.account_id)
+                .filter(|id| usable(*id))
+                .or_else(|| self.current_account_id.filter(|id| usable(*id)))
+                .or_else(|| {
+                    self.accounts
+                        .iter()
+                        .map(|account| account.id)
+                        .find(|id| usable(*id))
+                })
+        } else {
+            self.current_account_id.filter(|id| usable(*id))
+        }
+    }
+
+    pub(crate) fn native_mutation_scope(
+        &self,
+        key: &MessageKey,
+    ) -> Option<worker::NativeMutationScope> {
+        if self.demo_mode || !self.can_use_account(key.account_id) {
+            return None;
+        }
+        let session = *self
+            .adapter_sessions
+            .get(&key.account_id)
+            .filter(|n| **n != 0)?;
+        if self.direct_imap_accounts.contains(&key.account_id) {
+            let epoch = self
+                .mailbox_epochs
+                .get(&(key.account_id, key.folder_path.clone()))?;
+            (epoch.uid_validity != 0 && epoch.generation != 0).then_some(
+                worker::NativeMutationScope::Imap {
+                    uid_validity: epoch.uid_validity,
+                    generation: epoch.generation,
+                    session,
+                },
+            )
+        } else if self.thunderbird_accounts.contains(&key.account_id) {
+            Some(worker::NativeMutationScope::Thunderbird { session })
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn refresh_mutated_folder(
+        &mut self,
+        account_id: u32,
+        path: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(folder) = self
+            .folders_by_account
+            .get(&account_id)
+            .and_then(|fs| fs.iter().find(|f| f.path == path))
+            .cloned()
+        else {
+            return;
+        };
+        self.send_request(
+            account_id,
+            MailRequest::SyncFolder {
+                folder_id: folder.id,
+                path: path.into(),
+            },
+            cx,
+        );
+        let key = PageKey {
+            account_id,
+            folder_path: path.into(),
+        };
+        if self.active_page_keys().contains(&key) {
+            self.request_page_for(&key, None, false, cx);
+        }
+    }
+
+    fn retire_native_session(&mut self, account_id: u32, session: u64) -> bool {
+        let mut changed = false;
+        if self.adapter_sessions.get(&account_id) == Some(&session) {
+            self.adapter_sessions.remove(&account_id);
+            changed = true;
+        }
+        let before = self.pending_queue_cancels.len();
+        self.pending_queue_cancels
+            .retain(|(account, _), request| *account != account_id || request.session != session);
+        if self.pending_queue_cancels.len() != before {
+            self.status = "The worker stopped before cancellation was confirmed. Refresh Outbox and review the schedule.".into();
+            changed = true;
+        }
+        let stopped: Vec<_> = self
+            .pending_native_mutations
+            .iter()
+            .filter(|((id, _), request)| {
+                *id == account_id
+                    && match request.scope {
+                        worker::NativeMutationScope::Imap { session: owner, .. }
+                        | worker::NativeMutationScope::Thunderbird { session: owner } => {
+                            owner == session
+                        }
+                    }
+            })
+            .map(|(token, request)| (*token, request.clone()))
+            .collect();
+        for (token, request) in stopped {
+            self.pending_native_mutations.remove(&token);
+            self.mutation_receipts.push_back((account_id, worker::NativeMutationReceipt { request,
+                        outcome: worker::NativeMutationOutcome::Uncertain("The owning worker/session stopped before its result was received. Review this item manually.".into()) }));
+            changed = true;
+        }
+        changed
+    }
+
+    fn record_native_receipt(
+        &mut self,
+        account_id: u32,
+        receipt: worker::NativeMutationReceipt,
+    ) -> bool {
+        let token = (account_id, receipt.request.token);
+        if self.pending_native_mutations.get(&token) != Some(&receipt.request) {
             return false;
         }
-        self.thunderbird_restore_started = true;
+        self.pending_native_mutations.remove(&token);
+        let key = MessageKey {
+            account_id,
+            folder_path: receipt.request.path.clone(),
+            uid: receipt.request.uid,
+        };
+        if receipt.outcome == worker::NativeMutationOutcome::Succeeded
+            && self.native_mutation_scope(&key) == Some(receipt.request.scope)
+        {
+            let folder_id = self
+                .folders_by_account
+                .get(&account_id)
+                .and_then(|fs| fs.iter().find(|f| f.path == key.folder_path))
+                .map(|f| f.id);
+            let matches = |m: &Message| {
+                m.account_id == account_id && Some(m.folder_id) == folder_id && m.uid == key.uid
+            };
+            match &receipt.request.action {
+                worker::NativeMutationAction::Move { .. } => {
+                    self.messages.retain(|m| !matches(m));
+                    for members in self.related_members.values_mut() {
+                        members.retain(|m| !matches(m));
+                    }
+                    self.page_keys.remove(&key);
+                    if self.selected_key.as_ref() == Some(&key) {
+                        self.clear_selection();
+                    }
+                }
+                action => {
+                    for message in self
+                        .messages
+                        .iter_mut()
+                        .chain(self.related_members.values_mut().flatten())
+                    {
+                        if matches(message) {
+                            match action {
+                                worker::NativeMutationAction::SetSeen(seen) => {
+                                    message.unread = !seen
+                                }
+                                worker::NativeMutationAction::SetFlagged(flagged) => {
+                                    message.starred = *flagged
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if self.mutation_receipts.len() >= 500 {
+            self.mutation_receipts.pop_front();
+        }
+        self.mutation_receipts.push_back((account_id, receipt));
+        true
+    }
+
+    pub(crate) fn take_mutation_receipts(&mut self) -> Vec<(u32, worker::NativeMutationReceipt)> {
+        self.mutation_receipts.drain(..).collect()
+    }
+
+    pub(crate) fn dispatch_native_mutation(
+        &mut self,
+        account_id: u32,
+        request: worker::NativeMutationRequest,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.demo_mode
+            || !request.valid()
+            || !self.can_use_account(account_id)
+            || !self.pending_native_mutations.is_empty()
+        {
+            return false;
+        }
+        let key = MessageKey {
+            account_id,
+            folder_path: request.path.clone(),
+            uid: request.uid,
+        };
+        if self.native_mutation_scope(&key) != Some(request.scope) {
+            return false;
+        }
+        let retained = request.clone();
+        if !self.send_request(account_id, MailRequest::NativeMutation(request), cx) {
+            return false;
+        }
+        self.pending_native_mutations
+            .insert((account_id, retained.token), retained);
+        true
+    }
+
+    pub fn is_direct_account(&self, id: u32) -> bool {
+        self.request_senders.contains_key(&id) && !self.thunderbird_accounts.contains(&id)
+    }
+
+    /// Saved v1 rows have no address or worker until restore succeeds.
+    pub fn can_use_account(&self, id: u32) -> bool {
+        self.request_senders.contains_key(&id)
+            && !self.reconnectable_thunderbird_ids.contains(&id)
+            && self
+                .accounts
+                .iter()
+                .any(|account| account.id == id && !account.email.trim().is_empty())
+    }
+
+    /// Restore from loaded inventory; no manifest I/O on the UI thread.
+    pub fn restore_thunderbird(&mut self, cx: &mut Context<Self>) -> bool {
+        self.retry_thunderbird(None, cx)
+    }
+
+    pub fn retry_thunderbird(&mut self, target: Option<u32>, cx: &mut Context<Self>) -> bool {
+        if self.demo_mode || self.thunderbird_loading {
+            return false;
+        }
+        let mut store = match self.saved_thunderbird.as_ref() {
+            Some(Ok(store)) => store.clone(),
+            Some(Err(error)) => {
+                self.thunderbird_error = Some(error.clone());
+                cx.notify();
+                return false;
+            }
+            None => return false,
+        };
+        if let Some(id) = target {
+            for profile in &mut store.profiles {
+                profile.accounts.retain(|account| account.app_id == id);
+            }
+        }
+        if store
+            .profiles
+            .iter()
+            .all(|profile| profile.accounts.is_empty())
+        {
+            return false;
+        }
         self.thunderbird_loading = true;
         self.thunderbird_error = None;
         self.thunderbird_notice = None;
@@ -746,34 +1188,47 @@ impl LiveMailbox {
             &self.thunderbird_accounts,
             &self.reconnectable_thunderbird_ids,
         );
+        // Dormant rows do not own a transport. Direct IDs stay reserved.
         let reserved_account_ids = self
-            .accounts
+            .request_senders
+            .keys()
+            .filter(|id| !reconnectable_ids.contains(*id))
+            .copied()
+            .collect();
+        let healthy = self
+            .thunderbird_sources
             .iter()
-            .filter(|account| !reconnectable_ids.contains(&account.id))
-            .map(|account| account.id)
+            .filter(|(id, _)| !reconnectable_ids.contains(*id))
+            .map(|(id, source)| (*id, source.clone()))
             .collect();
         let existing_emails = self
             .accounts
             .iter()
-            .filter(|account| !reconnectable_ids.contains(&account.id))
+            .filter(|account| {
+                self.request_senders.contains_key(&account.id)
+                    && !reconnectable_ids.contains(&account.id)
+            })
             .map(|account| account.email.clone())
             .collect();
-        std::thread::Builder::new()
+        if let Err(error) = std::thread::Builder::new()
             .name("megamail-thunderbird-restore".into())
             .spawn(move || {
                 crate::thunderbird_adapter::restore(
+                    store,
+                    healthy,
                     event_sender,
                     reserved_account_ids,
                     reconnectable_ids,
                     existing_emails,
                 )
             })
-            .map_err(|error| {
-                self.thunderbird_loading = false;
-                self.thunderbird_restore_started = false;
-                self.thunderbird_error = Some(format!("Could not restore Thunderbird: {error}"));
-            })
-            .ok();
+        {
+            self.thunderbird_loading = false;
+            self.thunderbird_error =
+                Some(format!("Could not restore Thunderbird: {error}. Retry."));
+            cx.notify();
+            return false;
+        }
         cx.notify();
         true
     }
@@ -805,10 +1260,11 @@ impl LiveMailbox {
             .filter(|account| !reconnectable_ids.contains(&account.id))
             .map(|account| account.id)
             .collect();
-        let running_thunderbird_ids = self
-            .thunderbird_accounts
-            .difference(&reconnectable_ids)
-            .copied()
+        let running_thunderbird_sources = self
+            .thunderbird_sources
+            .iter()
+            .filter(|(id, _)| !reconnectable_ids.contains(*id))
+            .map(|(id, source)| (*id, source.clone()))
             .collect();
         let existing_emails = self
             .accounts
@@ -827,7 +1283,7 @@ impl LiveMailbox {
                 crate::thunderbird_adapter::import(
                     selections,
                     reserved_account_ids,
-                    running_thunderbird_ids,
+                    running_thunderbird_sources,
                     reconnectable_ids,
                     existing_emails,
                     event_sender,
@@ -860,8 +1316,21 @@ impl LiveMailbox {
         config: AccountConfig,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        if self.request_senders.contains_key(&account_id) {
-            return Err("This account is already connected.".into());
+        if self.accounts.iter().any(|account| account.id == account_id)
+            || self
+                .saved_thunderbird
+                .as_ref()
+                .and_then(|store| store.as_ref().ok())
+                .is_some_and(|store| {
+                    store.profiles.iter().any(|profile| {
+                        profile
+                            .accounts
+                            .iter()
+                            .any(|account| account.app_id == account_id)
+                    })
+                })
+        {
+            return Err("This account ID is already reserved. Resolve the identity conflict before connecting; cache IDs cannot be renumbered.".into());
         }
         if self.accounts.iter().any(|account| {
             account
@@ -875,6 +1344,9 @@ impl LiveMailbox {
         let sender = spawn_account_worker(account_id, config.clone(), self.event_sender.clone());
         if !sender(MailRequest::LoadOutbox) {
             return Err("The new account worker could not be started.".into());
+        }
+        if config.protocol == megamail_core::config::Protocol::Imap {
+            self.direct_imap_accounts.insert(account_id);
         }
         self.accounts.push(Account {
             id: account_id,
@@ -926,7 +1398,7 @@ impl LiveMailbox {
     }
 
     pub fn switch_account(&mut self, account_id: u32, cx: &mut Context<Self>) -> bool {
-        if !self.request_senders.contains_key(&account_id)
+        if !self.accounts.iter().any(|account| account.id == account_id)
             || (self.current_account_id == Some(account_id) && self.scope == MailboxScope::Account)
         {
             return false;
@@ -949,8 +1421,9 @@ impl LiveMailbox {
                     .map(|folder| folder.path.clone())
             });
         self.clear_selection();
-        self.loading = self.current_folder_path.is_some()
-            || !self.folders_by_account.contains_key(&account_id);
+        self.loading = self.request_senders.contains_key(&account_id)
+            && (self.current_folder_path.is_some()
+                || !self.folders_by_account.contains_key(&account_id));
         if let Some(path) = self.current_folder_path.clone() {
             let key = PageKey {
                 account_id,
@@ -1023,6 +1496,9 @@ impl LiveMailbox {
             return needs_body;
         }
         self.selected_key = Some(key.clone());
+        self.selected_original = None;
+        self.selected_sender_check = None;
+        self.selected_body_version = None;
         self.selected_html = self
             .demo_html_by_key
             .get(&key)
@@ -1075,11 +1551,19 @@ impl LiveMailbox {
 
     pub fn set_search(&mut self, query: impl Into<String>, cx: &mut Context<Self>) {
         let query = query.into();
-        self.search_query = if self.demo_mode {
-            query.chars().take(256).collect()
-        } else {
-            query
+        let parsed = megamail_core::search::SearchQuery::parse(&query);
+        let error = match parsed {
+            Err(error) => Some(error.to_string()),
+            Ok(parsed) if parsed.requires_body() && (self.demo_mode || self.active_page_keys().iter().any(|key| !self.is_direct_account(key.account_id))) =>
+                Some("Body search is available only for locally cached direct-account mail. Select a direct account first.".into()),
+            _ => None,
         };
+        self.search_error = error;
+        if self.search_error.is_some() {
+            cx.notify();
+            return;
+        }
+        self.search_query = query;
         if !self.demo_mode {
             self.clear_all_page_data();
             self.loading =
@@ -1132,6 +1616,7 @@ impl LiveMailbox {
     }
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) -> bool {
+        self.epoch_reloads.clear();
         let reconnectable_ids = reconnectable_thunderbird_ids(
             &self.thunderbird_accounts,
             &self.reconnectable_thunderbird_ids,
@@ -1245,6 +1730,15 @@ impl LiveMailbox {
         sent
     }
 
+    /// A composer may belong to a selected Unified Inbox owner while the rail
+    /// still points at a dormant account. Completion is account+request scoped.
+    pub fn send_result_for(&self, account_id: u32, request_id: u64) -> Option<SendResult> {
+        self.send_results
+            .get(&account_id)
+            .copied()
+            .filter(|result| result.request_id == request_id)
+    }
+
     pub fn send_message(
         &mut self,
         message: OutgoingMessage,
@@ -1256,8 +1750,23 @@ impl LiveMailbox {
             return None;
         }
         let account_id = message.from_account_id;
+        if !self.can_use_account(account_id) {
+            self.action_errors.insert(
+                account_id,
+                "This saved account is unavailable. Retry before sending.".into(),
+            );
+            cx.notify();
+            return None;
+        }
         let request_id = self.next_send_id;
-        self.next_send_id = self.next_send_id.wrapping_add(1).max(1);
+        let Some(next_send_id) = self.next_send_id.checked_add(1) else {
+            self.set_action_error(
+                "Send request identity space exhausted. No new send was admitted.",
+            );
+            cx.notify();
+            return None;
+        };
+        self.next_send_id = next_send_id;
         let sent_path = self
             .folders_by_account
             .get(&account_id)
@@ -1291,6 +1800,21 @@ impl LiveMailbox {
         Some(request_id)
     }
 
+    fn record_draft_saved(&mut self, account_id: u32, ticket: Option<u32>) -> bool {
+        let Some(ticket) = ticket else {
+            return false;
+        };
+        if !self.pending_draft_tickets.remove(&(account_id, ticket)) {
+            return false;
+        }
+        self.saved_draft_tickets.insert((account_id, ticket));
+        true
+    }
+
+    pub fn take_draft_saved_for(&mut self, account_id: u32, ticket: u32) -> bool {
+        self.saved_draft_tickets.remove(&(account_id, ticket))
+    }
+
     pub fn save_draft(
         &mut self,
         message: OutgoingMessage,
@@ -1303,6 +1827,14 @@ impl LiveMailbox {
             return false;
         }
         let account_id = message.from_account_id;
+        if !self.can_use_account(account_id) {
+            self.action_errors.insert(
+                account_id,
+                "This saved account is unavailable. Retry before saving a draft.".into(),
+            );
+            cx.notify();
+            return false;
+        }
         let Some(folder) = self
             .folders_by_account
             .get(&account_id)
@@ -1324,6 +1856,11 @@ impl LiveMailbox {
             template: false,
         };
         let sent = self.send_request(account_id, request, cx);
+        if sent {
+            if let Some(ticket) = autosave {
+                self.pending_draft_tickets.insert((account_id, ticket));
+            }
+        }
         if autosave.is_none() && self.current_account_id == Some(account_id) {
             if sent {
                 self.status = "Saving draft…".into();
@@ -1334,6 +1871,66 @@ impl LiveMailbox {
         }
         cx.notify();
         sent
+    }
+
+    fn record_queued_cancel(
+        &mut self,
+        account: u32,
+        request: worker::QueuedCancelRequest,
+        canceled: bool,
+    ) -> bool {
+        if self.pending_queue_cancels.get(&(account, request.id)) != Some(&request) {
+            return false;
+        }
+        self.pending_queue_cancels.remove(&(account, request.id));
+        self.status = if canceled { "Queued message canceled before submission." } else {
+            "Cancellation was not confirmed. Refresh Outbox and check whether the message is due, held or already submitted."
+        }.into();
+        true
+    }
+
+    pub(crate) fn schedule_session(&self, account: u32) -> Option<u64> {
+        if self.demo_mode
+            || !self.direct_imap_accounts.contains(&account)
+            || !self.can_use_account(account)
+        {
+            return None;
+        }
+        self.adapter_sessions
+            .get(&account)
+            .copied()
+            .filter(|n| *n != 0)
+    }
+    pub(crate) fn cancel_queued(
+        &mut self,
+        account: u32,
+        request: worker::QueuedCancelRequest,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.pending_queue_cancels.is_empty()
+            || self.schedule_session(account) != Some(request.session)
+            || !self.outbox_by_account.get(&account).is_some_and(|items| {
+                items.iter().any(|item| {
+                    item.id == request.id
+                        && item.send_at == request.send_at
+                        && item.phase == megamail_core::models::OutboxPhase::Ready
+                        && request
+                            .send_at
+                            .is_none_or(|at| at > megamail_core::datefmt::now())
+                })
+            })
+        {
+            self.set_action_error("The queued message or account changed. Refresh Outbox and review it; no cancellation was dispatched.");
+            cx.notify();
+            return false;
+        }
+        if !self.send_request(account, MailRequest::CancelQueued(request), cx) {
+            return false;
+        }
+        self.pending_queue_cancels
+            .insert((account, request.id), request);
+        cx.notify();
+        true
     }
 
     pub fn flush_outbox(&mut self, id: Option<u32>, cx: &mut Context<Self>) -> bool {
@@ -1643,12 +2240,49 @@ impl LiveMailbox {
         );
     }
 
+    fn reload_epoch_scope(&mut self, account_id: u32, path: &str, cx: &mut Context<Self>) {
+        let key = PageKey {
+            account_id,
+            folder_path: path.to_owned(),
+        };
+        // The dedicated cache query lane is independent of a stalled network
+        // worker. Rebuild scoped headers there before the optional server reload.
+        if self.active_page_keys().contains(&key) || self.is_current_folder(account_id, path) {
+            self.request_page_for(&key, None, false, cx);
+        }
+        self.request_current_folder_for(account_id, path, cx);
+    }
+
+    pub fn server_draft_retirement_unavailable(&self, account_id: u32) -> bool {
+        self.direct_imap_accounts.contains(&account_id)
+    }
+
+    /// Native request boundary, not a rewrite of composer/recovery metadata.
+    /// The IMAP worker has no captured-origin generation retirement contract
+    /// and its legacy delete path can EXPUNGE unrelated deleted messages.
+    fn prepare_native_dispatch(&self, account_id: u32, mut request: MailRequest) -> MailRequest {
+        if self.server_draft_retirement_unavailable(account_id) {
+            match &mut request {
+                MailRequest::Send { message, .. } | MailRequest::SaveDraft { message, .. } => {
+                    if message.draft_origin.is_some() {
+                        let mut dispatch = message.as_ref().clone();
+                        dispatch.draft_origin = None;
+                        *message = Box::new(dispatch);
+                    }
+                }
+                _ => {}
+            }
+        }
+        request
+    }
+
     fn send_request(
         &mut self,
         account_id: u32,
         request: MailRequest,
         cx: &mut Context<Self>,
     ) -> bool {
+        let request = self.prepare_native_dispatch(account_id, request);
         let sent = self
             .request_senders
             .get(&account_id)
@@ -1672,137 +2306,19 @@ impl LiveMailbox {
                 results,
                 error,
                 notice,
+                inventory,
             } => {
-                self.thunderbird_loading = false;
-                self.thunderbird_restore_started = false;
-                self.thunderbird_results = results;
-                self.thunderbird_error = error;
-                self.thunderbird_notice = notice;
-                for started in accounts {
-                    let account_id = started.account.id;
-                    let reconnecting = is_reconnectable_thunderbird_id(
-                        account_id,
-                        &self.thunderbird_accounts,
-                        &self.reconnectable_thunderbird_ids,
-                    );
-                    let duplicate_id = (self.request_senders.contains_key(&account_id)
-                        || self.accounts.iter().any(|account| account.id == account_id))
-                        && !reconnecting;
-                    let duplicate_email = self.accounts.iter().any(|account| {
-                        account.id != account_id
-                            && account.email.eq_ignore_ascii_case(&started.account.email)
-                    });
-                    if duplicate_id || duplicate_email {
-                        self.thunderbird_error.get_or_insert_with(|| {
-                            format!("{} is already connected.", started.account.email)
-                        });
-                        continue;
+                let folders =
+                    self.install_thunderbird_ready(accounts, results, error, notice, inventory);
+                for (account_id, path) in folders {
+                    if self.scope == MailboxScope::Unified {
+                        let key = PageKey {
+                            account_id,
+                            folder_path: path.clone(),
+                        };
+                        self.request_page_for(&key, None, false, cx);
                     }
-                    if reconnecting {
-                        self.reset_thunderbird_runtime_requests(account_id);
-                    }
-                    if let Some(account) = self
-                        .accounts
-                        .iter_mut()
-                        .find(|account| account.id == account_id)
-                    {
-                        *account = started.account.clone();
-                    } else {
-                        self.accounts.push(started.account.clone());
-                    }
-                    self.request_senders
-                        .insert(account_id, started.request_sender);
-                    self.page_senders.insert(account_id, started.page_sender);
-                    self.thunderbird_accounts.insert(account_id);
-                    self.sender_identities
-                        .insert(account_id, started.identities);
-                    if !reconnecting || !started.folders.is_empty() {
-                        self.folders_by_account
-                            .insert(account_id, started.folders.clone());
-                    }
-                    let folders = self
-                        .folders_by_account
-                        .get(&account_id)
-                        .cloned()
-                        .unwrap_or_default();
-                    let selected_path = self
-                        .selected_folder_by_account
-                        .get(&account_id)
-                        .filter(|path| folders.iter().any(|folder| &folder.path == *path))
-                        .cloned()
-                        .or_else(|| {
-                            (self.current_account_id == Some(account_id))
-                                .then(|| self.current_folder_path.as_ref())
-                                .flatten()
-                                .filter(|path| folders.iter().any(|folder| &folder.path == *path))
-                                .cloned()
-                        })
-                        .or_else(|| {
-                            folders
-                                .iter()
-                                .find(|folder| folder.kind == FolderKind::Inbox)
-                                .or_else(|| folders.first())
-                                .map(|folder| folder.path.clone())
-                        });
-                    if let Some(path) = &selected_path {
-                        self.selected_folder_by_account
-                            .insert(account_id, path.clone());
-                    }
-                    if let Some(error) = started.error.as_ref() {
-                        if is_reconnectable_thunderbird_failure(error) {
-                            self.reconnectable_thunderbird_ids.insert(account_id);
-                            clear_pending_pages_if_transport_closed(
-                                &mut self.page_states,
-                                account_id,
-                                true,
-                                error,
-                            );
-                        }
-                        self.connectivity_errors.insert(account_id, error.clone());
-                    } else {
-                        self.reconnectable_thunderbird_ids.remove(&account_id);
-                        self.connectivity_errors.remove(&account_id);
-                        self.query_errors.remove(&account_id);
-                        if self
-                            .action_errors
-                            .get(&account_id)
-                            .is_some_and(|error| is_reconnectable_thunderbird_failure(error))
-                        {
-                            self.action_errors.remove(&account_id);
-                        }
-                    }
-                    if self.current_account_id.is_none() {
-                        self.current_account_id = Some(account_id);
-                        self.current_folder_path = (self.scope == MailboxScope::Account)
-                            .then(|| selected_path.clone())
-                            .flatten();
-                        self.loading = self.current_folder_path.is_some();
-                        self.clear_current_page();
-                    } else if self.current_account_id == Some(account_id)
-                        && self.scope == MailboxScope::Account
-                        && self.current_folder_path != selected_path
-                    {
-                        self.current_folder_path = selected_path.clone();
-                        self.clear_current_page();
-                    }
-                    let path = if self.scope == MailboxScope::Unified {
-                        folders
-                            .iter()
-                            .find(|folder| folder.kind == FolderKind::Inbox)
-                            .map(|folder| folder.path.clone())
-                    } else {
-                        selected_path
-                    };
-                    if let Some(path) = path {
-                        if self.scope == MailboxScope::Unified {
-                            let key = PageKey {
-                                account_id,
-                                folder_path: path.clone(),
-                            };
-                            self.request_page_for(&key, None, false, cx);
-                        }
-                        self.request_current_folder_for(account_id, &path, cx);
-                    }
+                    self.request_current_folder_for(account_id, &path, cx);
                 }
                 if self.scope == MailboxScope::Account && self.current_folder_path.is_some() {
                     let _ = self.request_page(None, false, cx);
@@ -1811,6 +2327,255 @@ impl LiveMailbox {
                 cx.notify();
             }
         }
+    }
+
+    fn install_thunderbird_ready(
+        &mut self,
+        accounts: Vec<crate::thunderbird_adapter::StartedAccount>,
+        results: Vec<ThunderbirdAccountOutcome>,
+        error: Option<String>,
+        notice: Option<String>,
+        inventory: Option<crate::account_session::SourceStore>,
+    ) -> Vec<(u32, String)> {
+        let mut folders_to_request = Vec::new();
+        if let Some(store) = inventory {
+            self.install_saved_thunderbird(store);
+        }
+        self.thunderbird_loading = false;
+        self.thunderbird_results = results;
+        self.thunderbird_error = error;
+        self.thunderbird_notice = notice;
+        for result in &self.thunderbird_results {
+            if result.state != ThunderbirdAccountState::Connected {
+                if let Some(Ok(store)) = &self.saved_thunderbird {
+                    if let Some(id) =
+                        store.account_id(&result.profile_path, &result.source_account_id)
+                    {
+                        // Never attach a TB failure to a direct owner.
+                        if self.thunderbird_accounts.contains(&id) {
+                            // A qualified failure can still carry configured identity
+                            // metadata. Retain it without installing a sender or
+                            // changing readiness; blank/foreign hints stay unknown.
+                            if !result.email.trim().is_empty() {
+                                if let Some(account) = self.accounts.iter_mut().find(|a| a.id == id)
+                                {
+                                    if account.email.trim().is_empty() {
+                                        account.email = result.email.trim().to_owned();
+                                    }
+                                }
+                            }
+                            self.connectivity_errors.insert(
+                                id,
+                                result.message.clone().unwrap_or_else(|| {
+                                    "Saved account is unavailable. Retry.".into()
+                                }),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        for started in accounts {
+            let account_id = started.account.id;
+            let reconnecting = is_reconnectable_thunderbird_id(
+                account_id,
+                &self.thunderbird_accounts,
+                &self.reconnectable_thunderbird_ids,
+            );
+            let source_matches = self
+                .saved_thunderbird
+                .as_ref()
+                .and_then(|store| store.as_ref().ok())
+                .is_some_and(|store| {
+                    store.account_id(&started.source.path, &started.source.source_id)
+                        == Some(account_id)
+                });
+            if !source_matches {
+                self.thunderbird_error.get_or_insert_with(|| "Thunderbird Ready does not match its durable source-qualified identity. Repair the inventory before Retry.".into());
+                continue;
+            }
+            let duplicate_id = (self.request_senders.contains_key(&account_id)
+                || self.accounts.iter().any(|account| account.id == account_id))
+                && !reconnecting;
+            let duplicate_email = self.accounts.iter().any(|account| {
+                account.id != account_id
+                    && account.email.eq_ignore_ascii_case(&started.account.email)
+            });
+            if duplicate_id || duplicate_email {
+                self.thunderbird_error.get_or_insert_with(|| {
+                    format!("{} is already connected.", started.account.email)
+                });
+                continue;
+            }
+            if reconnecting {
+                self.reset_thunderbird_runtime_requests(account_id);
+            }
+            if let Some(account) = self
+                .accounts
+                .iter_mut()
+                .find(|account| account.id == account_id)
+            {
+                *account = started.account.clone();
+            } else {
+                self.accounts.push(started.account.clone());
+            }
+            self.request_senders
+                .insert(account_id, started.request_sender);
+            self.page_senders.insert(account_id, started.page_sender);
+            self.thunderbird_accounts.insert(account_id);
+            self.thunderbird_sources
+                .insert(account_id, started.source.clone());
+            // Import commits before Ready. Retain its descriptor for Retry.
+            if self.saved_thunderbird.is_none() {
+                self.saved_thunderbird = Some(Ok(crate::account_session::SourceStore {
+                    version: 1,
+                    profiles: Vec::new(),
+                }));
+            }
+            if let Some(Ok(store)) = self.saved_thunderbird.as_mut() {
+                store.remember(account_id, started.source);
+            }
+            self.sender_identities
+                .insert(account_id, started.identities);
+            if !reconnecting || !started.folders.is_empty() {
+                self.folders_by_account
+                    .insert(account_id, started.folders.clone());
+            }
+            let folders = self
+                .folders_by_account
+                .get(&account_id)
+                .cloned()
+                .unwrap_or_default();
+            let selected_path = self
+                .selected_folder_by_account
+                .get(&account_id)
+                .filter(|path| folders.iter().any(|folder| &folder.path == *path))
+                .cloned()
+                .or_else(|| {
+                    (self.current_account_id == Some(account_id))
+                        .then(|| self.current_folder_path.as_ref())
+                        .flatten()
+                        .filter(|path| folders.iter().any(|folder| &folder.path == *path))
+                        .cloned()
+                })
+                .or_else(|| {
+                    folders
+                        .iter()
+                        .find(|folder| folder.kind == FolderKind::Inbox)
+                        .or_else(|| folders.first())
+                        .map(|folder| folder.path.clone())
+                });
+            if let Some(path) = &selected_path {
+                self.selected_folder_by_account
+                    .insert(account_id, path.clone());
+            }
+            if let Some(error) = started.error.as_ref() {
+                if is_reconnectable_thunderbird_failure(error) {
+                    self.reconnectable_thunderbird_ids.insert(account_id);
+                    clear_pending_pages_if_transport_closed(
+                        &mut self.page_states,
+                        account_id,
+                        true,
+                        error,
+                    );
+                }
+                self.connectivity_errors.insert(account_id, error.clone());
+            } else {
+                self.reconnectable_thunderbird_ids.remove(&account_id);
+                self.connectivity_errors.remove(&account_id);
+                self.query_errors.remove(&account_id);
+                if self
+                    .action_errors
+                    .get(&account_id)
+                    .is_some_and(|error| is_reconnectable_thunderbird_failure(error))
+                {
+                    self.action_errors.remove(&account_id);
+                }
+            }
+            if self.current_account_id.is_none() {
+                self.current_account_id = Some(account_id);
+                self.current_folder_path = (self.scope == MailboxScope::Account)
+                    .then(|| selected_path.clone())
+                    .flatten();
+                self.loading = self.current_folder_path.is_some();
+                self.clear_current_page();
+            } else if self.current_account_id == Some(account_id)
+                && self.scope == MailboxScope::Account
+                && self.current_folder_path != selected_path
+            {
+                self.current_folder_path = selected_path.clone();
+                self.clear_current_page();
+            }
+            let path = if self.scope == MailboxScope::Unified {
+                folders
+                    .iter()
+                    .find(|folder| folder.kind == FolderKind::Inbox)
+                    .map(|folder| folder.path.clone())
+            } else {
+                selected_path
+            };
+            if let Some(path) = path {
+                folders_to_request.push((account_id, path));
+            }
+        }
+        folders_to_request
+    }
+
+    /// Typed, correlated send completion shared by the production event handler
+    /// and synthetic direct-worker/composer integration regressions.
+    pub(super) fn record_send_completion(
+        &mut self,
+        account_id: u32,
+        event: &WorkerMailboxEvent,
+    ) -> Option<SendResult> {
+        let (request_id, outcome, uncertain) = match event {
+            WorkerMailboxEvent::SendFinished {
+                request_id,
+                outcome,
+            } => (*request_id, *outcome, false),
+            WorkerMailboxEvent::SendUnknown { request_id, .. } => {
+                (*request_id, SendOutcome::Failed, true)
+            }
+            _ => return None,
+        };
+        if !self
+            .pending_sends
+            .get_mut(&account_id)
+            .is_some_and(|sends| sends.remove(&request_id))
+        {
+            return None;
+        }
+        let result = SendResult {
+            account_id,
+            request_id,
+            outcome,
+            uncertain,
+        };
+        self.send_results.insert(account_id, result);
+        Some(result)
+    }
+
+    #[cfg(test)]
+    pub(super) fn synthetic_empty() -> Self {
+        let (tx, _rx) = futures::channel::mpsc::unbounded();
+        Self::from_parts(
+            HashMap::new(),
+            Vec::new(),
+            None,
+            tx,
+            Task::ready(()),
+            None,
+            None,
+            false,
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn synthetic_pending_send(&mut self, account_id: u32, request_id: u64) {
+        self.pending_sends
+            .entry(account_id)
+            .or_default()
+            .insert(request_id);
     }
 
     fn reset_thunderbird_runtime_requests(&mut self, account_id: u32) {
@@ -1824,6 +2589,8 @@ impl LiveMailbox {
             }
         }
         self.pending_bodies
+            .retain(|slot, _| slot.account_id != account_id);
+        self.pending_body_versions
             .retain(|slot, _| slot.account_id != account_id);
         self.pending_related
             .retain(|(pending_account, _), _| *pending_account != account_id);
@@ -1860,6 +2627,9 @@ impl LiveMailbox {
             .as_ref()
             .is_some_and(|key| key.account_id == account_id)
         {
+            self.selected_original = None;
+            self.selected_sender_check = None;
+            self.selected_body_version = None;
             self.body_loading = false;
             self.selected_html = SharedString::from("");
             self.selected_html_without_quote = None;
@@ -1884,6 +2654,26 @@ impl LiveMailbox {
         let account_id = envelope.account_id;
         let mut changed = false;
         match envelope.event {
+            WorkerMailboxEvent::AdapterSession { session } => {
+                if session != 0
+                    && self
+                        .adapter_sessions
+                        .get(&account_id)
+                        .is_none_or(|previous| session > *previous)
+                {
+                    self.adapter_sessions.insert(account_id, session);
+                    changed = true;
+                }
+            }
+            WorkerMailboxEvent::AdapterStopped { session } => {
+                changed = self.retire_native_session(account_id, session);
+            }
+            WorkerMailboxEvent::QueuedCancelFinished { request, canceled } => {
+                changed = self.record_queued_cancel(account_id, request, canceled);
+            }
+            WorkerMailboxEvent::NativeMutationFinished(receipt) => {
+                changed = self.record_native_receipt(account_id, receipt);
+            }
             WorkerMailboxEvent::Account(account) if account.id == account_id => {
                 if let Some(existing) = self
                     .accounts
@@ -2019,29 +2809,8 @@ impl LiveMailbox {
                     }
                 }
             }
-            WorkerMailboxEvent::Body {
-                message_id,
-                path,
-                body,
-                html,
-                html_without_quote,
-                links,
-                has_attachment,
-                reply_to,
-                references,
-            } => {
-                match self.apply_body(
-                    account_id,
-                    &path,
-                    message_id,
-                    body,
-                    html,
-                    html_without_quote,
-                    links,
-                    has_attachment,
-                    reply_to,
-                    references,
-                ) {
+            event @ WorkerMailboxEvent::Body { .. } => {
+                match self.apply_body_event(account_id, event) {
                     BodyApplication::Ignored => {}
                     BodyApplication::Applied => {
                         self.body_loading = false;
@@ -2054,11 +2823,32 @@ impl LiveMailbox {
                     }
                 }
             }
+            WorkerMailboxEvent::MailboxEpochChanged {
+                path,
+                uid_validity,
+                generation,
+            } => {
+                if self.retire_mailbox_epoch(account_id, &path, uid_validity, generation) {
+                    self.reload_epoch_scope(account_id, &path, cx);
+                    changed = true;
+                }
+            }
+            event @ WorkerMailboxEvent::BodyEpochStale { .. } => {
+                if let Some((path, reload)) = self.apply_epoch_stale_event(account_id, event) {
+                    if reload {
+                        self.reload_epoch_scope(account_id, &path, cx);
+                    }
+                    changed = true;
+                }
+            }
             WorkerMailboxEvent::BodyFailed {
                 message_id,
                 path,
                 text,
             } => {
+                if self.direct_imap_accounts.contains(&account_id) && !self.demo_mode {
+                    return; // Unversioned failure cannot consume a new epoch's slot.
+                }
                 if remove_failed_body_request(
                     &mut self.pending_bodies,
                     account_id,
@@ -2447,24 +3237,10 @@ impl LiveMailbox {
                 self.outbox_by_account.insert(account_id, items);
                 changed = true;
             }
-            WorkerMailboxEvent::SendFinished {
-                request_id,
-                outcome,
-            } => {
-                if self
-                    .pending_sends
-                    .get_mut(&account_id)
-                    .is_some_and(|sends| sends.remove(&request_id))
-                {
-                    self.send_results.insert(
-                        account_id,
-                        SendResult {
-                            account_id,
-                            request_id,
-                            outcome,
-                            uncertain: false,
-                        },
-                    );
+            event @ (WorkerMailboxEvent::SendFinished { .. }
+            | WorkerMailboxEvent::SendUnknown { .. }) => {
+                if let Some(result) = self.record_send_completion(account_id, &event) {
+                    let outcome = result.outcome;
                     if outcome == SendOutcome::Sent {
                         self.invalidate_conversation_cache(account_id);
                         if self.thunderbird_accounts.contains(&account_id) {
@@ -2474,7 +3250,11 @@ impl LiveMailbox {
                         }
                     }
                     if self.current_account_id == Some(account_id) {
-                        self.status = match outcome {
+                        self.status = if let WorkerMailboxEvent::SendUnknown { reason, .. } = event
+                        {
+                            reason
+                        } else {
+                            match outcome {
                             SendOutcome::Sent => "Sent".into(),
                             SendOutcome::Queued
                                 if self.thunderbird_accounts.contains(&account_id) =>
@@ -2486,30 +3266,10 @@ impl LiveMailbox {
                                 "Saved to Outbox. Retry or discard it from MegaMail.".into()
                             }
                             SendOutcome::Failed => "Send failed.".into(),
+                        }
                         };
                     }
                     changed = true;
-                }
-            }
-            WorkerMailboxEvent::SendUnknown { request_id, reason } => {
-                if self
-                    .pending_sends
-                    .get_mut(&account_id)
-                    .is_some_and(|sends| sends.remove(&request_id))
-                {
-                    self.send_results.insert(
-                        account_id,
-                        SendResult {
-                            account_id,
-                            request_id,
-                            outcome: SendOutcome::Failed,
-                            uncertain: true,
-                        },
-                    );
-                    if self.current_account_id == Some(account_id) {
-                        self.status = reason;
-                        changed = true;
-                    }
                 }
             }
             WorkerMailboxEvent::Sent => {
@@ -2522,6 +3282,7 @@ impl LiveMailbox {
                 autosave,
                 message_id,
             } => {
+                changed |= self.record_draft_saved(account_id, autosave);
                 if self.current_account_id == Some(account_id)
                     && (autosave.is_none() || message_id.is_some())
                 {
@@ -2754,9 +3515,23 @@ impl LiveMailbox {
             return false;
         };
         let sender = self.event_sender.clone();
-        let submitted = query_service.request_page(request, move |result| {
+        let complete = move |result| {
             let _ = sender.unbounded_send(MailboxEvent::Page(result));
-        });
+        };
+        let epoch = self
+            .direct_imap_accounts
+            .contains(&key.account_id)
+            .then(|| {
+                self.mailbox_epochs
+                    .get(&(key.account_id, key.folder_path.clone()))
+            })
+            .flatten()
+            .filter(|epoch| epoch.generation != 0);
+        let submitted = if let Some(epoch) = epoch {
+            query_service.request_page_at_epoch(request, epoch.generation, complete)
+        } else {
+            query_service.request_page(request, complete)
+        };
         if let Err(error) = submitted {
             if let Some(state) = self.page_states.get_mut(key) {
                 state.pending_generation = None;
@@ -2877,11 +3652,277 @@ impl LiveMailbox {
         cx.notify();
     }
 
+    /// Source epoch is captured by the worker, never inferred from a current
+    /// cache read while projecting an already queued response.
+    fn retire_mailbox_epoch(
+        &mut self,
+        account_id: u32,
+        path: &str,
+        uid_validity: u32,
+        generation: u64,
+    ) -> bool {
+        if self.demo_mode || !self.direct_imap_accounts.contains(&account_id) {
+            return false;
+        }
+        let scope = (account_id, path.to_owned());
+        let mut epoch = NativeMailboxEpoch {
+            uid_validity,
+            generation,
+        };
+        if let Some(previous) = self.mailbox_epochs.get(&scope) {
+            if generation < previous.generation || *previous == epoch {
+                return false;
+            }
+            if generation == previous.generation && uid_validity != previous.uid_validity {
+                if previous.uid_validity == 0 && uid_validity != 0 {
+                    // A typed cache-stale response establishes the persisted
+                    // source generation before UIDVALIDITY is disclosed.
+                    self.mailbox_epochs.insert(scope, epoch);
+                    return false;
+                }
+                if uid_validity == 0 {
+                    return false;
+                }
+                // Contradictory disclosed identities without a new generation
+                // fail closed rather than authorizing source bytes.
+                epoch = NativeMailboxEpoch {
+                    uid_validity: 0,
+                    generation: 0,
+                };
+            }
+        }
+        self.mailbox_epochs.insert(scope, epoch);
+        let page = PageKey {
+            account_id,
+            folder_path: path.to_owned(),
+        };
+        let folder_id = self.folder_id(account_id, path);
+        self.epoch_reloads.remove(&page);
+        if let Some(state) = self.page_states.get_mut(&page) {
+            state.generation = state.generation.wrapping_add(1).max(1);
+            state.pending_generation = None;
+            state.pending_append = false;
+            state.next_cursor = None;
+            state.truncated = false;
+        }
+        self.page_keys
+            .retain(|key| key.account_id != account_id || key.folder_path != path);
+        self.messages.retain(|message| {
+            message.account_id != account_id || Some(message.folder_id) != folder_id
+        });
+        self.pending_bodies
+            .retain(|slot, _| slot.account_id != account_id || slot.folder_path != path);
+        self.pending_body_versions
+            .retain(|slot, _| slot.account_id != account_id || slot.folder_path != path);
+        self.pending_sent_refresh.remove(&page);
+        self.pending_message_refresh.remove(&page);
+        self.sent_header_requests
+            .retain(|(account, folder)| *account != account_id || Some(*folder) != folder_id);
+        if self
+            .selected_key
+            .as_ref()
+            .is_some_and(|key| key.account_id == account_id && key.folder_path == path)
+        {
+            self.clear_selection();
+        }
+        if self.pending_attachment.as_ref().is_some_and(|pending| {
+            pending.key.account_id == account_id && pending.key.folder_path == path
+        }) {
+            self.pending_attachment = None;
+            self.attachment_state = AttachmentState::NotLoaded;
+        }
+        if self.draft_source.as_ref().is_some_and(|source| {
+            source.key.account_id == account_id && source.key.folder_path == path
+        }) {
+            self.draft_source = None;
+        }
+        // Related threads can span this folder and Sent. Retire this account's
+        // derived thread cache, while retaining other-folder page/header rows.
+        self.pending_related.retain(|(id, _), _| *id != account_id);
+        self.invalidate_conversation_cache(account_id);
+        true
+    }
+
+    fn prepare_body_request(&mut self, key: &MessageKey, message_id: u32) -> Option<MailRequest> {
+        let slot = BodyRequestSlot {
+            account_id: key.account_id,
+            folder_path: key.folder_path.clone(),
+            message_id,
+        };
+        let request = if self.direct_imap_accounts.contains(&key.account_id) && !self.demo_mode {
+            let page = PageKey {
+                account_id: key.account_id,
+                folder_path: key.folder_path.clone(),
+            };
+            if self.epoch_reloads.contains(&page) {
+                return None;
+            }
+            let expected_generation = self
+                .mailbox_epochs
+                .get(&(key.account_id, key.folder_path.clone()))
+                .map_or(0, |epoch| epoch.generation);
+            self.pending_body_versions.insert(
+                slot.clone(),
+                DirectBodyVersion {
+                    uid: key.uid,
+                    source_generation: expected_generation,
+                },
+            );
+            MailRequest::LoadBodyAtEpoch {
+                message_id,
+                path: key.folder_path.clone(),
+                uid: key.uid,
+                expected_generation,
+            }
+        } else {
+            MailRequest::LoadBody {
+                message_id,
+                path: key.folder_path.clone(),
+                uid: key.uid,
+            }
+        };
+        self.pending_bodies.insert(
+            slot,
+            PendingBody {
+                key: key.clone(),
+                message_id,
+            },
+        );
+        Some(request)
+    }
+
+    /// A stale response only finishes its exact pending source-generation slot.
+    /// Returns one bounded reload request; it never labels old bytes with a new epoch.
+    fn finish_body_epoch_stale(
+        &mut self,
+        account_id: u32,
+        path: &str,
+        message_id: u32,
+        uid: u32,
+        expected_generation: u64,
+        actual_generation: Option<u64>,
+        reason: String,
+    ) -> Option<bool> {
+        if !self.direct_imap_accounts.contains(&account_id) {
+            return None;
+        }
+        let slot = BodyRequestSlot {
+            account_id,
+            folder_path: path.to_owned(),
+            message_id,
+        };
+        let version = DirectBodyVersion {
+            uid,
+            source_generation: expected_generation,
+        };
+        if self.pending_body_versions.get(&slot) != Some(&version) {
+            return None;
+        }
+        self.pending_body_versions.remove(&slot);
+        let pending = self.pending_bodies.remove(&slot);
+        if pending
+            .as_ref()
+            .is_some_and(|pending| self.selected_key.as_ref() == Some(&pending.key))
+        {
+            self.body_loading = false;
+            self.selected_body_loaded = false;
+            self.action_errors.insert(account_id, reason);
+        }
+        let no_namespace = !self
+            .mailbox_epochs
+            .contains_key(&(account_id, path.to_owned()));
+        if let Some(actual) = actual_generation
+            .filter(|generation| *generation != 0 && expected_generation == 0 && no_namespace)
+        {
+            // This field is producer-captured evidence of a known persisted
+            // namespace (worker filters missing UIDVALIDITY before publishing).
+            // It authorizes a NEW request only; never relabel the rejected body.
+            self.retire_mailbox_epoch(account_id, path, 0, actual);
+            return Some(true);
+        }
+        // Missing epoch / ordinary read failure is terminal. Explicit Refresh
+        // can clear this guard; header callbacks cannot create a request loop.
+        self.epoch_reloads.insert(PageKey {
+            account_id,
+            folder_path: path.to_owned(),
+        });
+        Some(false)
+    }
+
+    fn apply_epoch_stale_event(
+        &mut self,
+        account_id: u32,
+        event: WorkerMailboxEvent,
+    ) -> Option<(String, bool)> {
+        let WorkerMailboxEvent::BodyEpochStale {
+            message_id,
+            path,
+            uid,
+            expected_generation,
+            actual_generation,
+            reason,
+        } = event
+        else {
+            return None;
+        };
+        let reload = self.finish_body_epoch_stale(
+            account_id,
+            &path,
+            message_id,
+            uid,
+            expected_generation,
+            actual_generation,
+            reason,
+        )?;
+        Some((path, reload))
+    }
+
+    fn apply_body_event(&mut self, account_id: u32, event: WorkerMailboxEvent) -> BodyApplication {
+        let WorkerMailboxEvent::Body {
+            message_id,
+            path,
+            version,
+            sender_check,
+            original,
+            body,
+            html,
+            html_without_quote,
+            links,
+            has_attachment,
+            reply_to,
+            references,
+        } = event
+        else {
+            return BodyApplication::Ignored;
+        };
+        let applied = self.apply_body(
+            account_id,
+            &path,
+            message_id,
+            version,
+            body,
+            html,
+            html_without_quote,
+            links,
+            has_attachment,
+            reply_to,
+            references,
+        );
+        if applied == BodyApplication::Applied {
+            self.body_loading = false;
+            self.selected_sender_check = sender_check;
+            self.selected_original = original;
+            self.selected_body_version = version;
+        }
+        applied
+    }
+
     fn apply_body(
         &mut self,
         account_id: u32,
         path: &str,
         message_id: u32,
+        version: Option<DirectBodyVersion>,
         body: String,
         html: String,
         html_without_quote: Option<String>,
@@ -2895,6 +3936,26 @@ impl LiveMailbox {
             folder_path: path.to_owned(),
             message_id,
         };
+        if self.direct_imap_accounts.contains(&account_id) && !self.demo_mode {
+            let Some(version) = version else {
+                return BodyApplication::Ignored;
+            };
+            let epoch = self.mailbox_epochs.get(&(account_id, path.to_owned()));
+            if self.pending_body_versions.get(&slot) != Some(&version)
+                || !epoch.is_some_and(|epoch| {
+                    epoch.generation != 0 && epoch.generation == version.source_generation
+                })
+                || !self
+                    .pending_bodies
+                    .get(&slot)
+                    .is_some_and(|pending| pending.key.uid == version.uid)
+            {
+                // A stale result cannot consume a newer request with the same
+                // account/path/message ID after UID reuse or selection changes.
+                return BodyApplication::Ignored;
+            }
+            self.pending_body_versions.remove(&slot);
+        }
         let Some(pending) = self.pending_bodies.remove(&slot) else {
             return BodyApplication::Ignored;
         };
@@ -3016,29 +4077,20 @@ impl LiveMailbox {
             // a subsequent selection attempt to issue a retry.
             self.pending_bodies.remove(&slot);
         }
-        self.pending_bodies.insert(
-            slot,
-            PendingBody {
-                key: key.clone(),
-                message_id,
-            },
-        );
+        let Some(request) = self.prepare_body_request(&key, message_id) else {
+            self.body_loading = false;
+            return;
+        };
         self.body_loading = true;
-        let sent = self.send_request(
-            key.account_id,
-            MailRequest::LoadBody {
-                message_id,
-                path: key.folder_path.clone(),
-                uid: key.uid,
-            },
-            cx,
-        );
+        let sent = self.send_request(key.account_id, request, cx);
         if !sent {
-            self.pending_bodies.remove(&BodyRequestSlot {
+            let slot = BodyRequestSlot {
                 account_id: key.account_id,
                 folder_path: key.folder_path,
                 message_id,
-            });
+            };
+            self.pending_bodies.remove(&slot);
+            self.pending_body_versions.remove(&slot);
             self.body_loading = false;
         }
     }
@@ -3067,6 +4119,9 @@ impl LiveMailbox {
                     .map(SharedString::from);
                 self.selected_body_loaded = false;
             }
+            self.selected_original = None;
+            self.selected_sender_check = None;
+            self.selected_body_version = None;
             self.selected_key = next_key;
             self.body_loading = false;
             self.links = self
@@ -3095,14 +4150,9 @@ impl LiveMailbox {
     }
 
     fn rebuild_visible(&mut self) {
-        let query = if self.demo_mode {
-            self.search_query.trim().to_lowercase()
-        } else {
-            String::new()
-        };
+        let parsed = megamail_core::search::SearchQuery::parse(&self.search_query).ok();
         let active_keys = self.active_page_keys();
         let active_set: HashSet<_> = active_keys.iter().cloned().collect();
-        let query = query.to_lowercase();
         let mut visible: Vec<_> = self
             .messages
             .iter()
@@ -3114,7 +4164,11 @@ impl LiveMailbox {
                             account_id: key.account_id,
                             folder_path: key.folder_path.clone(),
                         })
-                }) && (query.is_empty() || message_matches_query(message, &query))
+                }) && (!self.demo_mode && self.is_direct_account(message.account_id)
+                    || parsed.as_ref().is_some_and(|query| {
+                        query.matches(message, megamail_core::search::BodyText::NotLoaded)
+                            == megamail_core::search::SearchMatch::Match
+                    }))
                     && message_matches_filter(message, self.filter)
             })
             .filter_map(|(index, message)| {
@@ -3564,6 +4618,9 @@ impl LiveMailbox {
 
     fn refresh_selected_row(&mut self) {
         let Some(key) = self.selected_key.clone() else {
+            self.selected_original = None;
+            self.selected_sender_check = None;
+            self.selected_body_version = None;
             self.selected_row = None;
             self.selected_html = SharedString::from("");
             self.selected_html_without_quote = None;
@@ -3601,6 +4658,9 @@ impl LiveMailbox {
     }
 
     fn clear_selection(&mut self) {
+        self.selected_original = None;
+        self.selected_sender_check = None;
+        self.selected_body_version = None;
         self.selected_key = None;
         self.selected_row = None;
         self.selected_html = SharedString::from("");
@@ -3632,6 +4692,8 @@ impl LiveMailbox {
         self.thread_summary_requests.clear();
         self.pending_thread_summaries.clear();
         self.pending_related.clear();
+        self.pending_bodies.clear();
+        self.pending_body_versions.clear();
         self.conversation_errors.clear();
         self.conversation_warnings.clear();
         self.sent_header_requests.clear();
@@ -4158,11 +5220,48 @@ fn outbox_summary(item: &OutboxItem) -> OutboxSummary {
         attempts: item.attempts,
         last_error: item.last_error.clone(),
         send_at: item.send_at,
+        phase: item.phase,
     }
 }
 
-fn compact_worker_event(event: WorkerEvent, demo_mode: bool) -> Option<WorkerMailboxEvent> {
+fn bounded_sender_check(
+    check: megamail_core::models::SenderCheck,
+) -> Option<Arc<megamail_core::models::SenderCheck>> {
+    // Count nested metadata without allocating or logging private contents.
+    // Oversize data is unknown, never a truncated verification verdict.
+    struct Budget(usize);
+    impl std::fmt::Write for Budget {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            self.0 = self.0.checked_add(text.len()).ok_or(std::fmt::Error)?;
+            if self.0 > 64 * 1024 {
+                Err(std::fmt::Error)
+            } else {
+                Ok(())
+            }
+        }
+    }
+    let mut budget = Budget(0);
+    std::fmt::write(&mut budget, format_args!("{check:?}")).ok()?;
+    Some(Arc::new(check))
+}
+
+pub(super) fn compact_worker_event(
+    event: WorkerEvent,
+    demo_mode: bool,
+) -> Option<WorkerMailboxEvent> {
     Some(match event {
+        WorkerEvent::NativeWorkerStopped { session } => {
+            WorkerMailboxEvent::AdapterStopped { session }
+        }
+        WorkerEvent::NativeWorkerSession { session } => {
+            WorkerMailboxEvent::AdapterSession { session }
+        }
+        WorkerEvent::QueuedCancelFinished { request, canceled } => {
+            WorkerMailboxEvent::QueuedCancelFinished { request, canceled }
+        }
+        WorkerEvent::NativeMutationFinished(receipt) => {
+            WorkerMailboxEvent::NativeMutationFinished(receipt)
+        }
         WorkerEvent::Account(account) => WorkerMailboxEvent::Account(account),
         WorkerEvent::Folders(folders) => WorkerMailboxEvent::Folders(folders),
         WorkerEvent::Messages {
@@ -4244,10 +5343,16 @@ fn compact_worker_event(event: WorkerEvent, demo_mode: bool) -> Option<WorkerMai
             path,
             body,
         } => {
+            let original = Arc::new(crate::reader_session::OriginalBody::capture(
+                &body, None, None,
+            ));
             let (body, html, html_without_quote, links) = body_content_and_links(&body);
             WorkerMailboxEvent::Body {
                 message_id,
                 path,
+                version: None,
+                sender_check: None,
+                original: Some(original),
                 body,
                 html,
                 html_without_quote,
@@ -4257,6 +5362,66 @@ fn compact_worker_event(event: WorkerEvent, demo_mode: bool) -> Option<WorkerMai
                 references: None,
             }
         }
+        WorkerEvent::BodyAtEpoch {
+            message_id,
+            path,
+            uid,
+            generation,
+            body,
+            check,
+            has_attachments,
+        } => {
+            // Capture the producer's stamp before expensive off-UI HTML work.
+            let version = DirectBodyVersion {
+                uid,
+                source_generation: generation,
+            };
+            let original = Arc::new(crate::reader_session::OriginalBody::capture(
+                &body,
+                None,
+                check.as_ref(),
+            ));
+            let sender_check = check.and_then(bounded_sender_check);
+            let (body, html, html_without_quote, links) = body_content_and_links(&body);
+            WorkerMailboxEvent::Body {
+                message_id,
+                path,
+                version: Some(version),
+                sender_check,
+                original: Some(original),
+                body,
+                html,
+                html_without_quote,
+                links,
+                has_attachment: has_attachments,
+                reply_to: None,
+                references: None,
+            }
+        }
+        WorkerEvent::MailboxEpochChanged {
+            path,
+            uid_validity,
+            generation,
+        } => WorkerMailboxEvent::MailboxEpochChanged {
+            path,
+            uid_validity,
+            generation,
+        },
+        WorkerEvent::BodyEpochStale {
+            message_id,
+            path,
+            uid,
+            expected_generation,
+            actual_generation,
+            reason,
+        } => WorkerMailboxEvent::BodyEpochStale {
+            message_id,
+            path,
+            uid,
+            expected_generation,
+            actual_generation,
+            reason,
+        },
         WorkerEvent::Attachments {
             path,
             message_id,
@@ -4298,6 +5463,9 @@ fn compact_worker_event(event: WorkerEvent, demo_mode: bool) -> Option<WorkerMai
             request_id,
             outcome,
         },
+        WorkerEvent::SendUnknown { request_id, reason } => {
+            WorkerMailboxEvent::SendUnknown { request_id, reason }
+        }
         WorkerEvent::DraftSaved {
             autosave,
             message_id,
@@ -4452,6 +5620,13 @@ fn is_reconnectable_thunderbird_id(
 }
 
 fn is_reconnectable_thunderbird_failure(error: &str) -> bool {
+    if let Some(kind) = megamail_core::thunderbird_bridge::classify_bridge_error(error) {
+        use megamail_core::thunderbird_bridge::BridgeFailureKind;
+        return matches!(
+            kind,
+            BridgeFailureKind::Disconnected | BridgeFailureKind::Protocol
+        );
+    }
     if crate::thunderbird_adapter::is_broken_bridge_error(error) {
         return true;
     }
@@ -4775,6 +5950,922 @@ fn set_folder_unread(
     }
     folder.unread = unread;
     true
+}
+
+#[cfg(test)]
+mod epoch_integration_tests {
+    use super::*;
+    use megamail_core::models::SenderCheck;
+
+    fn mailbox() -> LiveMailbox {
+        let mut live = LiveMailbox::synthetic_empty();
+        live.direct_imap_accounts.insert(7);
+        for id in [7, 8] {
+            live.folders_by_account.insert(
+                id,
+                vec![
+                    Folder {
+                        id: 1,
+                        account_id: id,
+                        name: "Inbox".into(),
+                        path: "INBOX".into(),
+                        kind: FolderKind::Inbox,
+                        unread: 0,
+                    },
+                    Folder {
+                        id: 2,
+                        account_id: id,
+                        name: "Archive".into(),
+                        path: "Archive".into(),
+                        kind: FolderKind::Archive,
+                        unread: 0,
+                    },
+                ],
+            );
+        }
+        live.current_account_id = Some(7);
+        live.current_folder_path = Some("INBOX".into());
+        live
+    }
+    fn header(live: &mut LiveMailbox, account: u32, folder: u32, uid: u32) -> MessageKey {
+        let mut message = demo_team_sent_reply();
+        message.id = uid;
+        message.account_id = account;
+        message.folder_id = folder;
+        message.uid = uid;
+        message.body.clear();
+        message.references.clear();
+        message.message_id = format!("<{account}-{folder}-{uid}@example.test>");
+        message.has_attachment = true;
+        let key = message_key(account, if folder == 1 { "INBOX" } else { "Archive" }, uid);
+        live.page_keys.insert(key.clone());
+        live.messages.push(message);
+        key
+    }
+    fn mutation_fixture() -> (LiveMailbox, worker::NativeMutationRequest) {
+        let mut live = mailbox();
+        live.accounts.push(Account {
+            id: 7,
+            name: "Fixture".into(),
+            email: "owner@example.test".into(),
+            label: "Fixture".into(),
+            accent: "#888888".into(),
+        });
+        live.request_senders.insert(7, Arc::new(|_| true));
+        live.adapter_sessions.insert(7, 9);
+        live.mailbox_epochs.insert(
+            (7, "INBOX".into()),
+            NativeMailboxEpoch {
+                uid_validity: 12,
+                generation: 3,
+            },
+        );
+        header(&mut live, 7, 1, 42);
+        live.messages[0].unread = true;
+        let request = worker::NativeMutationRequest {
+            token: worker::NativeMutationToken {
+                batch_id: 1,
+                item_index: 0,
+            },
+            path: "INBOX".into(),
+            uid: 42,
+            scope: worker::NativeMutationScope::Imap {
+                uid_validity: 12,
+                generation: 3,
+                session: 9,
+            },
+            action: worker::NativeMutationAction::SetSeen(true),
+            required_current_flag: None,
+        };
+        live.pending_native_mutations
+            .insert((7, request.token), request.clone());
+        (live, request)
+    }
+
+    #[test]
+    fn native_receipts_require_the_complete_admitted_envelope() {
+        let (mut live, request) = mutation_fixture();
+        let receipt = worker::NativeMutationReceipt {
+            request: request.clone(),
+            outcome: worker::NativeMutationOutcome::Succeeded,
+        };
+        assert!(!live.record_native_receipt(8, receipt.clone()));
+        let mut wrong = receipt.clone();
+        wrong.request.action = worker::NativeMutationAction::SetFlagged(true);
+        assert!(!live.record_native_receipt(7, wrong));
+        assert!(live.messages[0].unread);
+        assert_eq!(live.pending_native_mutations.len(), 1);
+        assert!(live.record_native_receipt(7, receipt.clone()));
+        assert!(!live.messages[0].unread);
+        assert!(live.pending_native_mutations.is_empty());
+        assert!(!live.record_native_receipt(7, receipt.clone()));
+        assert_eq!(live.take_mutation_receipts(), vec![(7, receipt)]);
+    }
+
+    #[test]
+    fn retired_epoch_receipt_cannot_change_reused_uid() {
+        let (mut live, request) = mutation_fixture();
+        live.mailbox_epochs.insert(
+            (7, "INBOX".into()),
+            NativeMailboxEpoch {
+                uid_validity: 13,
+                generation: 4,
+            },
+        );
+        let receipt = worker::NativeMutationReceipt {
+            request,
+            outcome: worker::NativeMutationOutcome::Succeeded,
+        };
+        assert!(live.record_native_receipt(7, receipt.clone()));
+        assert!(live.messages[0].unread);
+        assert!(live.pending_native_mutations.is_empty());
+        assert_eq!(live.take_mutation_receipts(), vec![(7, receipt)]);
+    }
+
+    #[test]
+    fn queue_cancellation_receipts_require_the_exact_admitted_intent() {
+        let (mut live, _) = mutation_fixture();
+        let request = worker::QueuedCancelRequest {
+            id: 42,
+            send_at: Some(2000),
+            session: 9,
+        };
+        live.pending_queue_cancels.insert((7, 42), request);
+        assert!(!live.record_queued_cancel(8, request, true));
+        assert!(!live.record_queued_cancel(
+            7,
+            worker::QueuedCancelRequest {
+                session: 10,
+                ..request
+            },
+            true
+        ));
+        assert!(!live.record_queued_cancel(
+            7,
+            worker::QueuedCancelRequest {
+                send_at: None,
+                ..request
+            },
+            true
+        ));
+        assert_eq!(live.pending_queue_cancels.get(&(7, 42)), Some(&request));
+        assert!(live.record_queued_cancel(7, request, true));
+        assert!(live.pending_queue_cancels.is_empty());
+        assert!(!live.record_queued_cancel(7, request, true));
+    }
+
+    #[test]
+    fn stopped_session_does_not_clear_a_newer_schedule_cancellation() {
+        let (mut live, _) = mutation_fixture();
+        let request = worker::QueuedCancelRequest {
+            id: 42,
+            send_at: Some(2000),
+            session: 10,
+        };
+        live.pending_queue_cancels.insert((7, 42), request);
+        live.retire_native_session(7, 9);
+        assert_eq!(live.pending_queue_cancels.get(&(7, 42)), Some(&request));
+        live.retire_native_session(7, 10);
+        assert!(live.pending_queue_cancels.is_empty());
+    }
+
+    #[test]
+    fn stopped_worker_releases_only_its_own_physical_slot_with_uncertain_receipt() {
+        let (mut live, request) = mutation_fixture();
+        live.adapter_sessions.insert(7, 10);
+        assert!(!live.retire_native_session(7, 8));
+        assert_eq!(live.pending_native_mutations.len(), 1);
+        assert!(live.retire_native_session(7, 9));
+        assert_eq!(live.adapter_sessions.get(&7), Some(&10));
+        assert!(live.pending_native_mutations.is_empty());
+        let receipts = live.take_mutation_receipts();
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].1.request, request);
+        assert!(matches!(
+            receipts[0].1.outcome,
+            worker::NativeMutationOutcome::Uncertain(_)
+        ));
+        assert!(!live.retire_native_session(7, 9));
+    }
+
+    fn projected(
+        uid: u32,
+        generation: u64,
+        text: &str,
+        summary: Option<&str>,
+        attachments: Option<bool>,
+    ) -> WorkerMailboxEvent {
+        compact_worker_event(
+            WorkerEvent::BodyAtEpoch {
+                message_id: uid,
+                path: "INBOX".into(),
+                uid,
+                generation,
+                body: text.into(),
+                check: summary.map(|summary| SenderCheck {
+                    summary: summary.into(),
+                    ..SenderCheck::default()
+                }),
+                has_attachments: attachments,
+            },
+            false,
+        )
+        .unwrap()
+    }
+    fn epoch(live: &mut LiveMailbox, uid_validity: u32, generation: u64) {
+        let event = compact_worker_event(
+            WorkerEvent::MailboxEpochChanged {
+                path: "INBOX".into(),
+                uid_validity,
+                generation,
+            },
+            false,
+        )
+        .unwrap();
+        let WorkerMailboxEvent::MailboxEpochChanged {
+            path,
+            uid_validity,
+            generation,
+        } = event
+        else {
+            panic!("wrong projection");
+        };
+        live.retire_mailbox_epoch(7, &path, uid_validity, generation);
+    }
+    #[test]
+    fn actual_native_dispatch_retains_recovered_origin_and_lease_but_never_authorizes_imap_retirement()
+     {
+        use crate::draft_recovery::{
+            DraftKey, RecoveryStore, Retention, SaveOutcome, WriterCommand,
+        };
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!(
+            "megamail-native-dispatch-fixture-{}-{}",
+            std::process::id(),
+            megamail_core::rng::token(12).unwrap()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let attachment = root.join("attachment.bin");
+        std::fs::write(&attachment, b"fictional attachment bytes").unwrap();
+        std::fs::set_permissions(&attachment, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let account = AccountConfig {
+            email: "from@example.test".into(),
+            aliases: vec![megamail_core::config::AliasConfig {
+                identity: "Alias <alias@example.test>".into(),
+                smtp_host: String::new(),
+                smtp_port: 587,
+                smtp_username: String::new(),
+                smtp_password: String::new(),
+            }],
+            ..AccountConfig::new("from@example.test")
+        };
+        let key = DraftKey::from_parts(7, "abcdefghijklmnopqrstuvwx".into()).unwrap();
+        let mut capture = crate::compose_session::Capture {
+            key: Some(key.clone()),
+            retention: Retention::Ordinary,
+            ..Default::default()
+        };
+        let mut outgoing = crate::compose::new_message(7);
+        outgoing.from_alias = Some("Alias <alias@example.test>".into());
+        outgoing.to = "to@example.test".into();
+        outgoing.cc = "cc@example.test".into();
+        outgoing.bcc = "hidden@example.test".into();
+        outgoing.reply_to = "reply@example.test".into();
+        outgoing.subject = "Fictional recovered server draft".into();
+        outgoing.body = "Fictional text".into();
+        outgoing.html = "<p>Fictional text</p>".into();
+        outgoing.in_reply_to = "parent@example.test".into();
+        outgoing.references = "ancestor@example.test parent@example.test".into();
+        outgoing.draft_origin = Some(megamail_core::models::DraftOrigin {
+            account_id: 7,
+            folder_id: 1,
+            path: "INBOX".into(),
+            uid: 7,
+        });
+        outgoing.outbox_origin = Some(55);
+        outgoing.sign = true;
+        outgoing.encrypt = true;
+        outgoing.send_at = Some(1_900_000_000);
+        outgoing.calendar = Some(megamail_core::worker::CalendarPart {
+            ics: "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n".into(),
+            method: "REQUEST".into(),
+        });
+        outgoing.attachments = vec![attachment.to_string_lossy().into_owned()];
+        let original = outgoing.clone();
+        capture.observe(outgoing).unwrap();
+        let WriterCommand::Update(update) = capture.update(&account).unwrap() else {
+            panic!("wrong native recovery command")
+        };
+        let mut store = RecoveryStore::open(&root).unwrap();
+        assert_eq!(store.save(&update).unwrap(), SaveOutcome::Durable);
+        let recovered = crate::compose::prepare_local_recovery(&store, &key, &account, false)
+            .unwrap()
+            .unwrap();
+        let mut expected = original.clone();
+        expected.attachments = recovered.message.attachments.clone();
+        assert!(crate::compose_session::same(&expected, &recovered.message));
+        capture.last = Some(recovered.message.clone());
+        capture.lease = Some(recovered.attachment_lease.clone());
+        capture.restored_hold = true;
+        let mut live = mailbox();
+        epoch(&mut live, 10, 1);
+        // Real native epoch retirement followed by a reused UID. No current
+        // generation is stamped onto the old recovered server origin.
+        epoch(&mut live, 20, 2);
+        header(&mut live, 7, 1, 7);
+        let requests = [
+            MailRequest::Send {
+                message: Box::new(recovered.message.clone()),
+                sent_path: Some("Sent".into()),
+                request_id: Some(41),
+            },
+            MailRequest::SaveDraft {
+                message: Box::new(recovered.message.clone()),
+                folder_id: 3,
+                path: "Drafts".into(),
+                autosave: Some(19),
+                template: false,
+            },
+        ];
+        for request in requests {
+            let dispatch = live.prepare_native_dispatch(7, request);
+            let message = match dispatch {
+                MailRequest::Send {
+                    message,
+                    sent_path,
+                    request_id,
+                } => {
+                    assert_eq!(sent_path.as_deref(), Some("Sent"));
+                    assert_eq!(request_id, Some(41));
+                    message
+                }
+                MailRequest::SaveDraft {
+                    message,
+                    folder_id,
+                    path,
+                    autosave,
+                    template,
+                } => {
+                    assert_eq!(
+                        (folder_id, path.as_str(), autosave, template),
+                        (3, "Drafts", Some(19), false)
+                    );
+                    message
+                }
+                _ => panic!("native dispatch changed request kind"),
+            };
+            let mut sanitized = expected.clone();
+            sanitized.draft_origin = None;
+            assert!(crate::compose_session::same(&sanitized, &message));
+            assert!(
+                message.draft_origin.is_none(),
+                "IMAP worker must not reach delete_draft/EXPUNGE through this request"
+            );
+            assert_eq!(
+                std::fs::read(&message.attachments[0]).unwrap(),
+                b"fictional attachment bytes"
+            );
+            assert!(crate::compose_session::same(
+                &expected,
+                capture.last.as_ref().unwrap()
+            ));
+            assert!(capture.lease.is_some());
+        }
+        let reread = crate::compose::prepare_local_recovery(&store, &key, &account, false)
+            .unwrap()
+            .unwrap();
+        let mut reread_expected = original;
+        reread_expected.attachments = reread.message.attachments.clone();
+        assert!(
+            crate::compose_session::same(&reread_expected, &reread.message),
+            "dispatch must not rewrite durable recovery/origin"
+        );
+        drop(reread);
+        let (reaper, released) = std::sync::mpsc::sync_channel(1);
+        let mut held = crate::compose_session::HeldAttachments::default();
+        held.hold(
+            true,
+            7,
+            41,
+            Some(recovered.attachment_lease.clone()),
+            reaper,
+        );
+        let consumer_path = recovered.message.attachments[0].clone();
+        drop(recovered);
+        drop(capture);
+        assert_eq!(
+            std::fs::read(&consumer_path).unwrap(),
+            b"fictional attachment bytes",
+            "accepted request's lease must survive the view"
+        );
+        held.finish(true, 7, 41);
+        drop(
+            released
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .unwrap(),
+        );
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn actual_draft_projection_and_ticket_state_ignore_wrong_owner_id_and_duplicates() {
+        let mut live = mailbox();
+        live.pending_draft_tickets.insert((7, 19));
+        let event = compact_worker_event(
+            WorkerEvent::DraftSaved {
+                autosave: Some(19),
+                message_id: None,
+            },
+            false,
+        )
+        .unwrap();
+        let WorkerMailboxEvent::DraftSaved { autosave, .. } = event else {
+            panic!("wrong projection")
+        };
+        assert!(!live.record_draft_saved(8, autosave));
+        assert!(!live.record_draft_saved(7, Some(20)));
+        assert!(live.record_draft_saved(7, autosave));
+        assert!(!live.record_draft_saved(7, autosave));
+        assert!(live.take_draft_saved_for(7, 19));
+        assert!(!live.take_draft_saved_for(7, 19));
+    }
+    #[test]
+    fn actual_body_projection_accepts_original_and_metadata_atomically_and_retires_them() {
+        let mut live = mailbox();
+        epoch(&mut live, 10, 1);
+        let key = header(&mut live, 7, 1, 7);
+        live.selected_key = Some(key.clone());
+        live.prepare_body_request(&key, 7).unwrap();
+        let source = "<style>p{color:red}</style><p>Original fixture</p>";
+        assert_eq!(
+            live.apply_body_event(8, projected(7, 1, source, Some("foreign"), Some(false))),
+            BodyApplication::Ignored
+        );
+        assert!(live.selected_original.is_none());
+        assert_eq!(
+            live.apply_body_event(7, projected(7, 1, source, Some("accepted"), None)),
+            BodyApplication::Applied
+        );
+        let original = live.selected_original.as_ref().unwrap();
+        assert_eq!(original.source.as_deref(), Some(source));
+        assert_eq!(
+            original.completeness,
+            crate::reader_document::Completeness::Truncated,
+            "direct selected MIME completeness is not attested"
+        );
+        assert!(!live.selected_html.contains("<style>"));
+        assert_eq!(
+            live.selected_sender_check.as_ref().unwrap().summary,
+            "accepted"
+        );
+        assert!(
+            live.selected_row.as_ref().unwrap().message.has_attachment,
+            "unknown metadata preserves the header attachment fact"
+        );
+        epoch(&mut live, 11, 2);
+        assert!(live.selected_original.is_none());
+        assert!(live.selected_sender_check.is_none());
+    }
+    #[test]
+    fn queued_old_body_then_reset_cannot_consume_reused_uid_or_its_metadata() {
+        let mut live = mailbox();
+        epoch(&mut live, 10, 1);
+        let key = header(&mut live, 7, 1, 7);
+        live.selected_key = Some(key.clone());
+        live.prepare_body_request(&key, 7).unwrap();
+        // HTML compaction captures the OLD envelope before invalidation.
+        let old = projected(7, 1, "old private body", Some("old check"), Some(false));
+        epoch(&mut live, 11, 2);
+        assert!(live.messages.is_empty());
+        assert!(live.selected_key.is_none());
+        let reused = header(&mut live, 7, 1, 7);
+        live.selected_key = Some(reused.clone());
+        live.body_loading = true;
+        let request = live.prepare_body_request(&reused, 7).unwrap();
+        assert!(matches!(
+            request,
+            MailRequest::LoadBodyAtEpoch {
+                expected_generation: 2,
+                uid: 7,
+                ..
+            }
+        ));
+        assert_eq!(live.apply_body_event(7, old), BodyApplication::Ignored);
+        assert_eq!(live.pending_body_versions.len(), 1);
+        assert!(live.messages[0].has_attachment);
+        assert!(live.selected_sender_check.is_none());
+        assert_eq!(
+            live.apply_body_event(
+                7,
+                projected(7, 2, "new body", Some("new check"), Some(false))
+            ),
+            BodyApplication::Applied
+        );
+        assert_eq!(live.selected_row.as_ref().unwrap().message.body, "new body");
+        assert_eq!(
+            live.selected_sender_check.as_ref().unwrap().summary,
+            "new check"
+        );
+        assert!(!live.messages[0].has_attachment);
+        assert!(!live.body_loading);
+        assert_eq!(
+            live.apply_body_event(
+                7,
+                projected(7, 1, "late old", Some("bad overwrite"), Some(true))
+            ),
+            BodyApplication::Ignored
+        );
+        assert_eq!(
+            live.selected_sender_check.as_ref().unwrap().summary,
+            "new check"
+        );
+    }
+    #[test]
+    fn unknown_epoch_is_terminal_and_cannot_create_an_automatic_reload_loop() {
+        let mut live = mailbox();
+        let key = header(&mut live, 7, 1, 7);
+        live.selected_key = Some(key.clone());
+        live.body_loading = true;
+        assert!(matches!(
+            live.prepare_body_request(&key, 7).unwrap(),
+            MailRequest::LoadBodyAtEpoch {
+                expected_generation: 0,
+                ..
+            }
+        ));
+        assert_eq!(
+            live.finish_body_epoch_stale(
+                7,
+                "INBOX",
+                7,
+                7,
+                0,
+                None,
+                "Mailbox identity unavailable; Refresh when connected.".into()
+            ),
+            Some(false)
+        );
+        assert!(!live.body_loading);
+        assert!(live.pending_bodies.is_empty());
+        assert!(live.prepare_body_request(&key, 7).is_none());
+        assert_eq!(
+            live.finish_body_epoch_stale(7, "INBOX", 7, 7, 0, None, "duplicate stale".into()),
+            None
+        );
+    }
+    #[test]
+    fn known_persisted_cache_epoch_bootstraps_once_and_warm_none_preserves_flags() {
+        let mut live = mailbox();
+        let key = header(&mut live, 7, 1, 7);
+        live.selected_key = Some(key.clone());
+        live.body_loading = true;
+        live.prepare_body_request(&key, 7).unwrap();
+        let stale = compact_worker_event(
+            WorkerEvent::BodyEpochStale {
+                message_id: 7,
+                path: "INBOX".into(),
+                uid: 7,
+                expected_generation: 0,
+                actual_generation: Some(4),
+                reason: "known cached namespace".into(),
+            },
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            live.apply_epoch_stale_event(7, stale),
+            Some(("INBOX".into(), true))
+        );
+        assert!(live.selected_key.is_none());
+        assert!(!live.body_loading);
+        let key = header(&mut live, 7, 1, 7);
+        live.selected_key = Some(key.clone());
+        assert!(matches!(
+            live.prepare_body_request(&key, 7).unwrap(),
+            MailRequest::LoadBodyAtEpoch {
+                expected_generation: 4,
+                ..
+            }
+        ));
+        // The native accepted-cache path performs no SELECT, cache or transport I/O.
+        assert_eq!(
+            live.apply_body_event(7, projected(7, 4, "warm cached body", None, None)),
+            BodyApplication::Applied
+        );
+        assert!(live.messages[0].has_attachment);
+        assert!(live.selected_sender_check.is_none());
+        assert_eq!(live.selected_body_version.unwrap().source_generation, 4);
+    }
+    #[test]
+    fn rapid_selection_rejects_previous_body_without_consuming_selected_request() {
+        let mut live = mailbox();
+        epoch(&mut live, 10, 1);
+        let a = header(&mut live, 7, 1, 7);
+        let b = header(&mut live, 7, 1, 8);
+        live.selected_key = Some(a.clone());
+        live.prepare_body_request(&a, 7).unwrap();
+        live.selected_key = Some(b.clone());
+        live.prepare_body_request(&b, 8).unwrap();
+        assert_eq!(
+            live.apply_body_event(
+                7,
+                projected(
+                    7,
+                    1,
+                    "not selected",
+                    Some("wrong selected check"),
+                    Some(false)
+                )
+            ),
+            BodyApplication::Stale
+        );
+        assert_eq!(live.pending_body_versions.len(), 1);
+        assert!(live.selected_sender_check.is_none());
+        assert_eq!(
+            live.apply_body_event(7, projected(8, 1, "selected B", Some("B check"), None)),
+            BodyApplication::Applied
+        );
+        assert_eq!(live.selected_row.as_ref().unwrap().key, b);
+        assert_eq!(
+            live.selected_sender_check.as_ref().unwrap().summary,
+            "B check"
+        );
+    }
+    #[test]
+    fn scope_retirement_preserves_other_folder_and_account_headers() {
+        let mut live = mailbox();
+        epoch(&mut live, 10, 1);
+        header(&mut live, 7, 1, 7);
+        let archive = header(&mut live, 7, 2, 9);
+        let other = header(&mut live, 8, 1, 7);
+        live.selected_key = Some(other.clone());
+        live.prepare_body_request(&archive, 9).unwrap();
+        epoch(&mut live, 11, 2);
+        assert_eq!(live.messages.len(), 2);
+        assert!(live.page_keys.contains(&archive));
+        assert!(live.page_keys.contains(&other));
+        assert_eq!(live.selected_key, Some(other));
+        assert_eq!(live.pending_bodies.len(), 1);
+    }
+    #[test]
+    fn legacy_body_is_rejected_only_for_native_direct_imap() {
+        let mut live = mailbox();
+        let direct = header(&mut live, 7, 1, 7);
+        live.selected_key = Some(direct.clone());
+        live.prepare_body_request(&direct, 7).unwrap();
+        let event = compact_worker_event(
+            WorkerEvent::Body {
+                message_id: 7,
+                path: "INBOX".into(),
+                body: "legacy direct".into(),
+            },
+            false,
+        )
+        .unwrap();
+        assert_eq!(live.apply_body_event(7, event), BodyApplication::Ignored);
+        let compatible = header(&mut live, 8, 1, 8);
+        live.selected_key = Some(compatible.clone());
+        assert!(matches!(
+            live.prepare_body_request(&compatible, 8).unwrap(),
+            MailRequest::LoadBody { .. }
+        ));
+        let event = compact_worker_event(
+            WorkerEvent::Body {
+                message_id: 8,
+                path: "INBOX".into(),
+                body: "legacy non-IMAP".into(),
+            },
+            false,
+        )
+        .unwrap();
+        assert_eq!(live.apply_body_event(8, event), BodyApplication::Applied);
+    }
+    #[test]
+    fn late_bootstrap_stale_cannot_overwrite_known_newer_epoch_or_pending_request() {
+        let mut live = mailbox();
+        let key = header(&mut live, 7, 1, 7);
+        live.selected_key = Some(key.clone());
+        live.prepare_body_request(&key, 7).unwrap();
+        let old = compact_worker_event(
+            WorkerEvent::BodyEpochStale {
+                message_id: 7,
+                path: "INBOX".into(),
+                uid: 7,
+                expected_generation: 0,
+                actual_generation: Some(1),
+                reason: "old bootstrap evidence".into(),
+            },
+            false,
+        )
+        .unwrap();
+        epoch(&mut live, 77, 10);
+        let key = header(&mut live, 7, 1, 7);
+        live.selected_key = Some(key.clone());
+        live.prepare_body_request(&key, 7).unwrap();
+        assert!(live.apply_epoch_stale_event(7, old).is_none());
+        assert_eq!(live.mailbox_epochs[&(7, "INBOX".into())].generation, 10);
+        assert_eq!(live.pending_body_versions.len(), 1);
+        assert_eq!(
+            live.apply_body_event(7, projected(7, 10, "current namespace", None, None)),
+            BodyApplication::Applied
+        );
+    }
+
+    #[test]
+    fn oversized_sender_metadata_is_unknown_not_a_truncated_verdict() {
+        let check = SenderCheck {
+            summary: "x".repeat(65 * 1024),
+            ..SenderCheck::default()
+        };
+        assert!(bounded_sender_check(check).is_none());
+        assert!(bounded_sender_check(SenderCheck::default()).is_some());
+    }
+}
+
+#[cfg(test)]
+mod account_integration_tests {
+    use super::*;
+    use crate::account_session::{SavedIdentity, SourceStore, StoredAccount, StoredProfile};
+    use crate::thunderbird_adapter::StartedAccount;
+
+    fn store() -> SourceStore {
+        SourceStore {
+            version: 1,
+            profiles: vec![StoredProfile {
+                path: "/synthetic/tb".into(),
+                accounts: vec![
+                    StoredAccount {
+                        source_id: "account1".into(),
+                        app_id: 1,
+                    },
+                    StoredAccount {
+                        source_id: "account2".into(),
+                        app_id: 2,
+                    },
+                ],
+            }],
+        }
+    }
+    fn ready(id: u32, source_id: &str) -> StartedAccount {
+        StartedAccount {
+            source: SavedIdentity {
+                path: "/synthetic/tb".into(),
+                source_id: source_id.into(),
+            },
+            account: Account {
+                id,
+                name: format!("Synthetic {id}"),
+                email: format!("owner{id}@example.test"),
+                label: "Synthetic".into(),
+                accent: "#7c86ff".into(),
+            },
+            folders: Vec::new(),
+            request_sender: Arc::new(|_| true),
+            page_sender: Arc::new(|_| Ok(())),
+            identities: Vec::new(),
+            error: None,
+        }
+    }
+    #[test]
+    fn ready_installation_resolves_selected_owner_even_when_current_is_dormant() {
+        let mut live = LiveMailbox::synthetic_empty();
+        live.install_saved_thunderbird(store());
+        assert_eq!(live.current_account_id, Some(1));
+        assert_eq!(live.composer_account_id(), None);
+        live.install_thunderbird_ready(vec![ready(2, "account2")], Vec::new(), None, None, None);
+        live.scope = MailboxScope::Unified;
+        live.selected_key = Some(MessageKey {
+            account_id: 2,
+            folder_path: "INBOX".into(),
+            uid: 77,
+        });
+        assert_eq!(live.composer_account_id(), Some(2));
+        assert_eq!(live.current_account_id, Some(1));
+        live.scope = MailboxScope::Account;
+        assert_eq!(live.composer_account_id(), None);
+    }
+    #[test]
+    fn failed_import_installs_durable_roster_without_replacing_healthy_worker() {
+        let mut live = LiveMailbox::synthetic_empty();
+        live.install_thunderbird_ready(
+            vec![ready(2, "account2")],
+            Vec::new(),
+            None,
+            None,
+            Some(store()),
+        );
+        let sender = live.request_senders[&2].clone();
+        live.install_thunderbird_ready(
+            Vec::new(),
+            vec![ThunderbirdAccountOutcome {
+                profile_path: "/synthetic/tb".into(),
+                source_account_id: "account1".into(),
+                name: "Synthetic".into(),
+                email: "one@example.test".into(),
+                state: ThunderbirdAccountState::NeedsLogin,
+                message: Some("Sign in to this saved account, then Retry.".into()),
+            }],
+            Some("One account needs login".into()),
+            None,
+            Some(store()),
+        );
+        assert_eq!(live.accounts.len(), 2);
+        assert!(Arc::ptr_eq(&sender, &live.request_senders[&2]));
+        assert!(live.can_use_account(2));
+        assert!(!live.can_use_account(1));
+        assert!(live.connectivity_errors[&1].contains("Sign in"));
+        assert_eq!(
+            live.accounts.iter().find(|a| a.id == 1).unwrap().email,
+            "one@example.test"
+        );
+        assert!(
+            !live.request_senders.contains_key(&1),
+            "identity metadata is not a connected sender"
+        );
+        assert!(live.direct_add_block_reason().is_none());
+    }
+    #[test]
+    fn failed_import_without_qualified_address_stays_unknown_and_blocks_admission() {
+        let mut live = LiveMailbox::synthetic_empty();
+        live.install_thunderbird_ready(
+            vec![ready(2, "account2")],
+            vec![ThunderbirdAccountOutcome {
+                profile_path: "/synthetic/tb".into(),
+                source_account_id: "account1".into(),
+                name: "Synthetic".into(),
+                email: String::new(),
+                state: ThunderbirdAccountState::NeedsLogin,
+                message: Some("Sign in to this saved account, then Retry.".into()),
+            }],
+            None,
+            None,
+            Some(store()),
+        );
+        assert!(live.can_use_account(2));
+        assert!(!live.can_use_account(1));
+        assert!(!live.request_senders.contains_key(&1));
+        assert!(
+            live.direct_add_block_reason()
+                .unwrap()
+                .contains("no verified address")
+        );
+    }
+
+    #[test]
+    fn ready_cannot_replace_durable_owner_with_equal_numeric_id() {
+        let mut live = LiveMailbox::synthetic_empty();
+        live.install_saved_thunderbird(store());
+        live.install_thunderbird_ready(
+            vec![ready(1, "other-source")],
+            Vec::new(),
+            None,
+            None,
+            None,
+        );
+        assert!(!live.request_senders.contains_key(&1));
+        assert!(
+            live.thunderbird_error
+                .as_ref()
+                .unwrap()
+                .contains("source-qualified")
+        );
+    }
+    #[test]
+    fn direct_admission_blocks_first_import_before_any_saved_tb_exists() {
+        let mut live = LiveMailbox::synthetic_empty();
+        live.install_saved_thunderbird(SourceStore {
+            version: 1,
+            profiles: Vec::new(),
+        });
+        assert!(live.direct_add_block_reason().is_none());
+        live.thunderbird_loading = true;
+        assert!(live.direct_add_block_reason().is_some());
+        assert!(crate::account_registry::mutation_blocked(
+            false,
+            live.snapshot().thunderbird_loading
+        ));
+    }
+    #[test]
+    fn compose_falls_back_only_in_unified_and_never_uses_disconnected_owner() {
+        let mut live = LiveMailbox::synthetic_empty();
+        live.install_thunderbird_ready(
+            vec![ready(2, "account2")],
+            Vec::new(),
+            None,
+            None,
+            Some(store()),
+        );
+        live.scope = MailboxScope::Unified;
+        live.selected_key = Some(MessageKey {
+            account_id: 1,
+            folder_path: "INBOX".into(),
+            uid: 77,
+        });
+        assert_eq!(live.composer_account_id(), Some(2));
+        live.reconnectable_thunderbird_ids.insert(2);
+        assert_eq!(live.composer_account_id(), None);
+    }
 }
 
 #[cfg(test)]

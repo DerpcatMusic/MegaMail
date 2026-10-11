@@ -32,3 +32,7 @@ __pycache__/
 # Local design tooling and screenshot review scratch
 /.impeccable/hook.cache.json
 /.impeccable/review/
+
+# Generated HTML reader executables and test-only policy variant
+/tools/megamail-html-reader/build/
+/tools/megamail-html-reader/build-no-csp/

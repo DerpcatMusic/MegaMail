@@ -1,0 +1,22 @@
+// Synthetic settings only. No credentials, network endpoint, or executable code.
+user_pref("mail.accountmanager.accounts", "account1,account2");
+user_pref("mail.account.account1.server", "server1");
+user_pref("mail.account.account1.identities", "id1");
+user_pref("mail.server.server1.type", "imap");
+user_pref("mail.server.server1.hostname", "imap.example.test");
+user_pref("mail.server.server1.port", 993);
+user_pref("mail.server.server1.socketType", 3);
+user_pref("mail.server.server1.authMethod", 3);
+user_pref("mail.server.server1.userName", "synthetic@example.test");
+user_pref("mail.identity.id1.useremail", "synthetic@example.test");
+user_pref("mail.identity.id1.fullName", "Synthetic One");
+user_pref("mail.account.account2.server", "server2");
+user_pref("mail.account.account2.identities", "id2");
+user_pref("mail.server.server2.type", "imap");
+user_pref("mail.server.server2.hostname", "imap.example.test");
+user_pref("mail.server.server2.port", 993);
+user_pref("mail.server.server2.socketType", 3);
+user_pref("mail.server.server2.authMethod", 3);
+user_pref("mail.server.server2.userName", "second@example.test");
+user_pref("mail.identity.id2.useremail", "second@example.test");
+user_pref("mail.identity.id2.fullName", "Synthetic Two");

@@ -8,8 +8,8 @@ use gpui_kit::base::{Disableable as _, Selectable as _};
 use gpui_kit::{
     Animation, AnimationExt as _, AnyElement, App, AppContext as _, ClipboardItem, Context,
     Decorations, Entity, FocusHandle, Focusable as _, FontWeight, InteractiveElement as _,
-    IntoElement, KeyBinding, MouseButton, ParentElement as _, PathPromptOptions, Render,
-    ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
+    IntoElement, MouseButton, ParentElement as _, PathPromptOptions, Render, ScrollStrategy,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
     UniformListScrollHandle, Window, WindowBounds, WindowDecorations, WindowOptions, div,
     prelude::FluentBuilder as _, px, relative, rgb, size, uniform_list,
 };
@@ -40,36 +40,47 @@ use crate::live::{ConversationKey, ConversationRow, MailboxScope};
 use crate::onboarding::AccountForm;
 use crate::preferences::{Density, MailPreferences};
 
-mod action {
-    gpui_kit::actions!(
-        megamail,
-        [
-            NextMessage,
-            PreviousMessage,
-            ComposeMessage,
-            ReplyMessage,
-            ReplyAll,
-            FocusSearch,
-            RefreshMail,
-            UnifiedInbox
-        ]
-    );
-}
+use desktop_actions::action;
+mod account_registry;
+mod account_session;
 mod appearance;
 mod appearance_view;
+mod attachment_preview;
 mod compose;
+mod compose_productivity;
+mod compose_session;
+mod compose_tools_ui;
+mod contacts;
+mod desktop_actions;
+mod draft_recovery;
+mod feature_integration;
 mod instance;
+mod invitation;
 mod live;
+mod newsletter_actions;
 mod onboarding;
+mod outbox_review;
 mod preferences;
+mod provider_setup;
+mod reader_actions;
+mod reader_document;
+mod reader_find;
+mod reader_host;
+mod reader_session;
+mod rules_editor;
+mod rules_preview;
+mod rules_ui;
+mod scheduling;
 mod theme;
 mod thunderbird_adapter;
+mod triage;
+mod triage_ui;
 mod zeron_background;
 mod zeron_style;
 
 use action::{
-    ComposeMessage, FocusSearch, NextMessage, PreviousMessage, RefreshMail, ReplyAll, ReplyMessage,
-    UnifiedInbox,
+    ComposeMessage, FindInMessage, FocusMessages, FocusReader, FocusSearch, NextMessage,
+    PreviousMessage, RefreshMail, ReplyAll, ReplyMessage, UnifiedInbox,
 };
 
 fn packed_rgb(color: gpui_kit::Hsla) -> u32 {
@@ -80,16 +91,7 @@ fn packed_rgb(color: gpui_kit::Hsla) -> u32 {
 }
 
 fn init(cx: &mut App) {
-    cx.bind_keys([
-        KeyBinding::new("down", NextMessage, Some("MegaMailMessages")),
-        KeyBinding::new("up", PreviousMessage, Some("MegaMailMessages")),
-        KeyBinding::new("ctrl-n", ComposeMessage, Some("MegaMail")),
-        KeyBinding::new("ctrl-r", ReplyMessage, Some("MegaMail")),
-        KeyBinding::new("ctrl-shift-r", ReplyAll, Some("MegaMail")),
-        KeyBinding::new("ctrl-f", FocusSearch, Some("MegaMail")),
-        KeyBinding::new("ctrl-shift-l", UnifiedInbox, Some("MegaMail")),
-        KeyBinding::new("f5", RefreshMail, Some("MegaMail")),
-    ]);
+    desktop_actions::bind_keys(cx);
 }
 
 #[derive(Clone, Copy)]
@@ -253,6 +255,15 @@ enum View {
     Setup,
     Compose,
     Appearance,
+}
+
+fn startup_view(route: account_session::StartupRoute) -> View {
+    match route {
+        account_session::StartupRoute::FirstRun => View::Setup,
+        account_session::StartupRoute::Mailbox | account_session::StartupRoute::StorageRecovery => {
+            View::Mailbox
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -420,6 +431,8 @@ struct Composer {
     bcc: Entity<InputState>,
     subject: Entity<InputState>,
     body: Entity<TextareaState>,
+    tools: compose_tools_ui::Tools,
+    schedule: Entity<InputState>,
     error: Option<String>,
     send_request_id: Option<u64>,
     send_uncertain: bool,
@@ -430,6 +443,12 @@ struct Composer {
     attachment_error: Option<String>,
     notice: Option<String>,
     temporary_attachment_paths: Vec<PathBuf>,
+    recovery: compose_session::Capture,
+    draft_ticket: Option<u32>,
+    send_generation: Option<u64>,
+    sent_complete: bool,
+    draft_save_completed: bool,
+    _input_subscriptions: Vec<Subscription>,
 }
 
 #[derive(Clone)]
@@ -440,12 +459,22 @@ struct SenderChoice {
 
 impl Composer {
     fn new(message: OutgoingMessage, window: &mut Window, cx: &mut Context<MailApp>) -> Self {
-        Self {
+        let mut composer = Self {
             to: new_input_value(window, cx, "recipient@example.com", message.to.clone()),
             cc: new_input_value(window, cx, "Copy to", message.cc.clone()),
             bcc: new_input_value(window, cx, "Blind copy to", message.bcc.clone()),
             subject: new_input_value(window, cx, "Subject", message.subject.clone()),
             body: cx.new(|cx| TextareaState::new(window, cx).default_value(message.body.clone())),
+            tools: compose_tools_ui::Tools::new(window, cx),
+            schedule: new_input_value(
+                window,
+                cx,
+                "YYYY-MM-DD HH:MM +HH:MM",
+                message
+                    .send_at
+                    .and_then(megamail_core::datefmt::editable_send_time)
+                    .unwrap_or_default(),
+            ),
             message,
             error: None,
             send_request_id: None,
@@ -457,19 +486,52 @@ impl Composer {
             attachment_error: None,
             notice: None,
             temporary_attachment_paths: Vec::new(),
+            recovery: Default::default(),
+            draft_ticket: None,
+            send_generation: None,
+            sent_complete: false,
+            draft_save_completed: false,
+            _input_subscriptions: Vec::new(),
+        };
+        for input in [&composer.to, &composer.cc, &composer.bcc, &composer.subject] {
+            composer._input_subscriptions.push(cx.subscribe(
+                input,
+                |this, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        if let Some(composer) = &mut this.composer {
+                            composer.recovery.dirty_input = true;
+                        }
+                        cx.notify();
+                    }
+                },
+            ));
         }
+        composer._input_subscriptions.push(cx.subscribe(
+            &composer.body,
+            |this, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    if let Some(composer) = &mut this.composer {
+                        composer.recovery.dirty_input = true;
+                    }
+                    cx.notify();
+                }
+            },
+        ));
+        composer
     }
 
     fn new_prepared_draft(
         message: OutgoingMessage,
         temporary_attachment_paths: Vec<PathBuf>,
         notice: Option<String>,
+        attachment_lease: Option<draft_recovery::AttachmentLease>,
         window: &mut Window,
         cx: &mut Context<MailApp>,
     ) -> Self {
         let mut composer = Self::new(message, window, cx);
         composer.temporary_attachment_paths = temporary_attachment_paths;
         composer.notice = notice;
+        composer.recovery.lease = attachment_lease;
         composer
     }
 
@@ -480,7 +542,8 @@ impl Composer {
         message.bcc = self.bcc.read(cx).value().to_string();
         message.subject = self.subject.read(cx).value().to_string();
         message.body = self.body.read(cx).value().to_string();
-        message.html.clear();
+        // Keep recovered HTML unchanged. Editing it requires an explicit
+        // plain-text conversion; never silently flatten a restored alternative.
         message
     }
 
@@ -489,13 +552,7 @@ impl Composer {
             return false;
         };
         let current = self.outgoing(cx);
-        current.from_account_id == saved.from_account_id
-            && current.to == saved.to
-            && current.cc == saved.cc
-            && current.bcc == saved.bcc
-            && current.subject == saved.subject
-            && current.body == saved.body
-            && current.attachments == saved.attachments
+        compose_session::same(&current, saved)
     }
 
     fn operation_pending(&self) -> bool {
@@ -508,13 +565,15 @@ impl Composer {
     }
 
     fn can_edit(&self) -> bool {
-        composer_can_edit(
-            self.selecting_attachments,
-            self.send_request_id.is_some(),
-            self.draft_pending.is_some(),
-            self.send_queued,
-            self.send_uncertain,
-        )
+        !self.sent_complete
+            && self.message.html.is_empty()
+            && composer_can_edit(
+                self.selecting_attachments,
+                self.send_request_id.is_some(),
+                self.draft_pending.is_some(),
+                self.send_queued,
+                self.send_uncertain,
+            )
     }
 
     fn can_close(&self) -> bool {
@@ -545,6 +604,28 @@ fn composer_can_edit(
 ) -> bool {
     !composer_operation_pending(selecting_attachments, sending, saving_draft, send_uncertain)
         && !queued
+}
+
+fn changed_mailbox_scopes(
+    previous: &std::collections::HashMap<(u32, String), live::NativeMailboxEpoch>,
+    current: &std::collections::HashMap<(u32, String), live::NativeMailboxEpoch>,
+) -> HashSet<(u32, String)> {
+    current
+        .iter()
+        .filter(|(scope, epoch)| previous.get(*scope) != Some(*epoch))
+        .map(|(scope, _)| scope.clone())
+        .collect()
+}
+
+fn retire_reader_body_cache(
+    cache: &mut std::collections::VecDeque<ReaderBody>,
+    retired: &HashSet<(u32, String)>,
+) {
+    cache.retain(|body| reader_scope_retained(&body.key, retired));
+}
+
+fn reader_scope_retained(key: &MessageKey, retired: &HashSet<(u32, String)>) -> bool {
+    !retired.contains(&(key.account_id, key.folder_path.clone()))
 }
 
 fn reader_follows_selection<'a>(
@@ -621,6 +702,15 @@ struct ReaderBody {
 }
 
 impl ReaderBody {
+    fn markup(&self, plain: bool, quote_visible: bool) -> SharedString {
+        match (plain, quote_visible) {
+            (true, true) => self.plain_html.clone(),
+            (true, false) => self.plain_html_without_quote.clone(),
+            (false, true) => self.html.clone(),
+            (false, false) => self.html_without_quote.clone(),
+        }
+    }
+
     fn new(
         key: MessageKey,
         body: &str,
@@ -692,10 +782,44 @@ struct ListRow {
 
 struct MailApp {
     live: Entity<LiveMailbox>,
-    live_subscription: Option<Subscription>,
+    _live_subscription: Subscription,
     profiles: Vec<(u32, AccountConfig)>,
     search: Entity<InputState>,
     message_focus: FocusHandle,
+    mailbox_focus: FocusHandle,
+    mailbox_focus_admitted: bool,
+    compose_tools_busy: bool,
+    reader_text: Option<reader_session::SemanticTextTarget>,
+    rule_preview: Vec<String>,
+    newsletter_status: Option<String>,
+    rule_preview_busy: bool,
+    rule_move_plan: Option<rules_ui::MovePlan>,
+    rule_editor: rules_editor::State,
+    reader_export_busy: bool,
+    reader_find: reader_find::State,
+    attachment_preview: attachment_preview::State,
+    reader_export_status: Option<String>,
+    triage: triage_ui::State,
+    queue_cancel_confirmation: Option<(u32, worker::QueuedCancelRequest)>,
+    outbox_review: Option<(u32, u32)>,
+    activation: Option<std::sync::Arc<instance::ActivationInbox>>,
+    activation_confirmed_account: Option<u32>,
+    auth_controller: megamail_core::provider_auth::AuthController,
+    auth_cancel: Arc<std::sync::Mutex<Option<megamail_core::provider_auth::Attempt>>>,
+    auth_availability: Option<provider_setup::Availability>,
+    auth_cancelled: Arc<std::sync::atomic::AtomicBool>,
+    auth_inflight: bool,
+    next_draft_ticket: u32,
+    reader_source: Option<Arc<reader_session::OriginalBody>>,
+    invitation_preview: Option<Arc<invitation::InvitationPreview>>,
+    invitation_error: Option<String>,
+    microsoft_audience: megamail_core::provider_auth::MicrosoftAudience,
+    reader_session: reader_session::Session,
+    recovery: Option<compose_session::Service>,
+    recovery_error: Option<String>,
+    recovery_keys: Vec<draft_recovery::DraftKey>,
+    request_attachment_leases: compose_session::HeldAttachments,
+    recovery_listing: bool,
     list_scroll: UniformListScrollHandle,
     reader_scroll: gpui_kit::ScrollHandle,
     reader_anchor: gpui_kit::ScrollAnchor,
@@ -740,7 +864,9 @@ struct MailApp {
     collapsed_messages: std::collections::HashSet<MessageKey>,
     visible_quotes: std::collections::HashSet<MessageKey>,
     plain_messages: std::collections::HashSet<MessageKey>,
+    link_details: std::collections::HashSet<MessageKey>,
     reader_bodies: std::collections::VecDeque<ReaderBody>,
+    reader_mailbox_epochs: std::collections::HashMap<(u32, String), live::NativeMailboxEpoch>,
     list_rows: Arc<Vec<ListRow>>,
     appearance: appearance::AppearanceState,
     appearance_loading: bool,
@@ -751,7 +877,12 @@ struct MailApp {
 }
 
 impl MailApp {
-    fn new(window: &mut Window, cx: &mut Context<Self>, demo: bool) -> Self {
+    fn new(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        demo: bool,
+        activation: Option<Arc<instance::ActivationInbox>>,
+    ) -> Self {
         window.set_window_title(if demo {
             "MegaMail · Local demo"
         } else {
@@ -759,7 +890,8 @@ impl MailApp {
         });
         apply_palette(ThemeMode::Dark, Palette::new(true), window, cx);
 
-        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search loaded mail"));
+        let search = cx
+            .new(|cx| InputState::new(window, cx).placeholder("Search · from: subject: is: body:"));
         let live = cx.new(|cx| {
             if demo {
                 LiveMailbox::new_demo(cx)
@@ -798,10 +930,44 @@ impl MailApp {
         let reader_anchor = gpui_kit::ScrollAnchor::for_handle(reader_scroll.clone());
         let mut app = Self {
             live,
-            live_subscription: Some(live_subscription),
+            _live_subscription: live_subscription,
             profiles: Vec::new(),
             search,
             message_focus,
+            mailbox_focus: cx.focus_handle().tab_stop(true),
+            mailbox_focus_admitted: false,
+            compose_tools_busy: false,
+            reader_text: None,
+            rule_preview: Vec::new(),
+            newsletter_status: None,
+            rule_preview_busy: false,
+            rule_move_plan: None,
+            rule_editor: rules_editor::State::new(window, cx),
+            reader_export_busy: false,
+            reader_find: reader_find::State::new(window, cx),
+            attachment_preview: Default::default(),
+            reader_export_status: None,
+            triage: triage_ui::State::new(window, cx),
+            queue_cancel_confirmation: None,
+            outbox_review: None,
+            activation,
+            activation_confirmed_account: None,
+            auth_controller: Default::default(),
+            auth_cancel: Default::default(),
+            auth_availability: None,
+            auth_cancelled: Default::default(),
+            auth_inflight: false,
+            next_draft_ticket: 0,
+            reader_source: None,
+            invitation_preview: None,
+            invitation_error: None,
+            microsoft_audience: megamail_core::provider_auth::MicrosoftAudience::PersonalAndWork,
+            reader_session: Default::default(),
+            recovery: None,
+            recovery_error: None,
+            recovery_keys: Vec::new(),
+            request_attachment_leases: Default::default(),
+            recovery_listing: false,
             list_scroll: UniformListScrollHandle::new(),
             reader_scroll,
             reader_anchor,
@@ -846,7 +1012,9 @@ impl MailApp {
             collapsed_messages: std::collections::HashSet::new(),
             visible_quotes: std::collections::HashSet::new(),
             plain_messages: std::collections::HashSet::new(),
+            link_details: std::collections::HashSet::new(),
             reader_bodies: std::collections::VecDeque::new(),
+            reader_mailbox_epochs: std::collections::HashMap::new(),
             list_rows: Arc::new(Vec::new()),
             appearance: appearance::AppearanceState::default(),
             appearance_loading: true,
@@ -877,7 +1045,9 @@ impl MailApp {
                     Err(error) => this.preferences_error = Some(error),
                 }
                 this.preferences_loading = false;
-                this.rebuild_list_rows(&this.live.read(cx).snapshot());
+                let snapshot = this.live.read(cx).snapshot();
+                this.rebuild_list_rows(&snapshot, cx);
+                this.refresh_reader_text(&snapshot, cx);
                 if this.preferences.default_unified {
                     this.live.update(cx, |live, cx| live.select_unified(cx));
                 }
@@ -903,59 +1073,540 @@ impl MailApp {
 
         if !demo {
             app.watch_setup_email(window, cx);
-            cx.spawn(async move |this, cx| {
-                let loaded = cx
-                    .background_spawn(async move {
-                        compose::prune_stale_draft_attachment_dirs();
-                        (
-                            config::load_profiles(),
-                            thunderbird_adapter::has_saved_accounts(),
-                        )
-                    })
+            app.load_saved_accounts(cx);
+            app.start_native_features(cx);
+        }
+        app.start_native_event_pump(cx);
+
+        app
+    }
+
+    fn start_native_features(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let (availability, recovery) = cx
+                .background_spawn(async move {
+                    (
+                        provider_setup::availability(),
+                        compose_session::Service::open(),
+                    )
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.auth_availability = Some(availability);
+                match recovery {
+                    Ok(service) => this.recovery = Some(service),
+                    Err(error) => this.recovery_error = Some(error),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn action_state(&self, cx: &App) -> desktop_actions::ActionState {
+        let snapshot = self.live.read(cx).snapshot();
+        desktop_actions::ActionState {
+            mailbox_visible: self.view == View::Mailbox,
+            composer_present: self.composer.is_some(),
+            modal_active: self.loading_profiles || self.preferences_busy || self.recovery_listing,
+            has_accounts: !snapshot.accounts.is_empty(),
+            usable_sender: self.live.read(cx).composer_account_id().is_some(),
+            has_rows: !self.list_rows.is_empty(),
+            body_ready: snapshot.body_loaded
+                && !snapshot.body_loading
+                && snapshot.selected_message.as_ref().is_some_and(|row| {
+                    self.live.read(cx).composer_account_id() == Some(row.key.account_id)
+                }),
+        }
+    }
+
+    fn start_native_event_pump(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(150))
                     .await;
-                let (loaded, saved_thunderbird) = loaded;
-                let _ = this.update(cx, |this, cx| {
-                    this.loading_profiles = false;
-                    match loaded {
-                        Ok(profiles) if !profiles.is_empty() => {
-                            let selected = profiles.first().map(|(id, _)| *id);
-                            this.profiles = profiles.clone();
-                            this.replace_live(profiles, selected, cx);
-                            this.live.update(cx, |live, cx| {
-                                live.restore_thunderbird(cx);
-                            });
-                            this.setup = None;
-                            this.setup_email_subscription = None;
-                            this.view = View::Mailbox;
+                if this
+                    .update_in(cx, |this, window, cx| {
+                        this.pump_triage(cx);
+                        let previous_recovery_status =
+                            this.composer.as_ref().map(|c| c.recovery.status.clone());
+                        let previous_reader_notice = this.reader_session.notice.clone();
+                        let ready = this
+                            .action_state(cx)
+                            .allows(desktop_actions::MailboxAction::ComposeMessage)
+                            && this.setup.is_none()
+                            && this.startup_error.is_none()
+                            && !this.attachment_save_pending.is_some();
+                        // Explicit current account only: a Unified selection/URI
+                        // cannot choose the sender for an external composition.
+                        let snapshot = this.live.read(cx).snapshot();
+                        let account = snapshot.current_account_id.filter(|id| {
+                            this.activation_confirmed_account == Some(*id)
+                                && this.live.read(cx).composer_account_id() == Some(*id)
+                        });
+                        this.activation_confirmed_account = None;
+                        if let Some(intent) = this
+                            .activation
+                            .as_ref()
+                            .and_then(|inbox| inbox.take_if_ready(ready && account.is_some()))
+                        {
+                            let message =
+                                desktop_actions::compose_message(intent, account.unwrap_or(0));
+                            let mut composer = Composer::new(message, window, cx);
+                            composer.recovery.retention = draft_recovery::Retention::Ordinary;
+                            this.composer = Some(composer);
+                            this.view = View::Compose;
+                            cx.notify();
                         }
-                        Ok(_) => {
-                            this.thunderbird_auto_open_pending = this
-                                .live
-                                .update(cx, |live, cx| live.restore_thunderbird(cx));
-                            this.thunderbird_auto_open_seen_loading =
-                                this.thunderbird_auto_open_pending;
-                            if this.thunderbird_auto_open_pending {
-                                this.setup_return_view = View::Mailbox;
+                        this.capture_recovery(cx);
+                        if let Some(service) = &this.recovery {
+                            for event in service.events() {
+                                match &event {
+                                    draft_recovery::WriterEvent::Discarded { key, generation, removed }
+                                        if this.composer.as_ref().is_some_and(|c| c.sent_complete && c.recovery.key.as_ref() == Some(key) && c.recovery.generation == *generation) => {
+                                        if *removed { this.recovery_keys.retain(|candidate| candidate != key); }
+                                        this.recovery_error = if *removed { None } else { Some("Sent was confirmed, but no exact-generation local record was removed. Older recovery copies may remain; resend review is unavailable.".into()) };
+                                    }
+                                    draft_recovery::WriterEvent::Failed { key, generation, error }
+                                        if this.composer.as_ref().is_some_and(|c| c.sent_complete && c.recovery.key.as_ref() == Some(key) && c.recovery.generation == *generation) => {
+                                        this.recovery_error = Some(format!("Sent was confirmed; local recovery cleanup failed: {error}. Retry cleanup, not Send."));
+                                    }
+                                    _ => {}
+                                }
+                                if let Some(composer) = &mut this.composer {
+                                    composer.recovery.event(event);
+                                }
+                                cx.notify();
                             }
-                            this.view = if saved_thunderbird.unwrap_or(false) {
-                                View::Mailbox
-                            } else {
-                                View::Setup
-                            };
                         }
+                        let sent_can_close = this.composer.as_ref().is_some_and(|c| {
+                            c.sent_complete
+                                && (this.recovery.is_none()
+                                    || !c.recovery.requires_ack
+                                    || c.recovery.retired == Some(c.recovery.generation))
+                        });
+                        if sent_can_close {
+                            this.cleanup_composer_attachments(cx);
+                            this.composer = None;
+                            this.view = View::Mailbox;
+                            cx.notify();
+                        }
+                        if this.view != View::Mailbox
+                            && (this.reader_session.active.is_some()
+                                || this.reader_session.host.is_some())
+                        {
+                            this.retire_reader_session(cx);
+                        }
+                        let reader_generation_before_poll = this.reader_session.generation;
+                        for url in this.reader_session.poll() {
+                            cx.background_spawn(async move {
+                                megamail_core::oauth::open_uri(&url);
+                            })
+                            .detach();
+                        }
+                        if reader_generation_before_poll != this.reader_session.generation {
+                            let snapshot = this.live.read(cx).snapshot();
+                            this.refresh_reader_text(&snapshot, cx);
+                        }
+                        if previous_recovery_status
+                            != this.composer.as_ref().map(|c| c.recovery.status.clone())
+                            || previous_reader_notice != this.reader_session.notice
+                        {
+                            cx.notify();
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn list_local_recovery(&mut self, cx: &mut Context<Self>) {
+        if self.demo
+            || self.composer.is_some()
+            || self.recovery_listing
+            || self.view != View::Mailbox
+        {
+            return;
+        }
+        let snapshot = self.live.read(cx).snapshot();
+        let Some(id) = snapshot.current_account_id else {
+            return;
+        };
+        let Some(service) = &self.recovery else {
+            return;
+        };
+        if !self
+            .profiles
+            .iter()
+            .any(|(account_id, _)| *account_id == id)
+        {
+            self.recovery_error = Some("Local restore requires a validated direct-account From configuration; Thunderbird restore is not integrated.".into());
+            cx.notify();
+            return;
+        }
+        let root = service.root.clone();
+        self.recovery_listing = true;
+        self.recovery_keys.clear();
+        self.recovery_error = None;
+        let task = cx.background_spawn(async move {
+            draft_recovery::RecoveryStore::open(&root)
+                .map_err(|e| e.to_string())?
+                .list(id)
+                .map_err(|e| e.to_string())
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                this.recovery_listing = false;
+                if this.live.read(cx).snapshot().current_account_id != Some(id) { return; }
+                match result {
+                    Ok((keys, complete)) => { this.recovery_keys = keys; this.recovery_error = if !complete { Some("Recovery list is partial (256-entry limit). More records may exist; repair/pagination is not available.".into()) } else if this.recovery_keys.is_empty() { Some("No local recovery records found for this account. Session-only drafts are not crash recoverable.".into()) } else { None }; },
+                    Err(error) => this.recovery_error = Some(error),
+                }
+                cx.notify();
+            });
+        }).detach();
+        cx.notify();
+    }
+
+    fn restore_local_recovery(&mut self, key: draft_recovery::DraftKey, cx: &mut Context<Self>) {
+        if self.composer.is_some() || self.recovery_listing || self.view != View::Mailbox {
+            return;
+        }
+        let id = key.account_id();
+        if self.live.read(cx).snapshot().current_account_id != Some(id) {
+            return;
+        }
+        let Some((_, account)) = self
+            .profiles
+            .iter()
+            .find(|(id, _)| *id == key.account_id())
+            .cloned()
+        else {
+            return;
+        };
+        let Some(service) = &self.recovery else {
+            return;
+        };
+        let root = service.root.clone();
+        self.recovery_listing = true;
+        let reaper = service.reaper();
+        let task = cx.background_spawn(async move {
+            let store = draft_recovery::RecoveryStore::open(&root).map_err(|e| e.to_string())?;
+            // Sensitive restore requires a future explicit consent surface.
+            compose::prepare_local_recovery(&store, &key, &account, false)
+                .map(|recovered| compose_session::LeaseDelivery::new(recovered, reaper))
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.recovery_listing = false;
+                if this.composer.is_some() || this.view != View::Mailbox || this.live.read(cx).snapshot().current_account_id != Some(id) { return; }
+                match result {
+                    Ok(mut delivery) => {
+                        let Some(recovered) = delivery.take() else { this.recovery_error = Some("This recovery record is no longer available.".into()); cx.notify(); return; };
+                        let mut composer = Composer::new_prepared_draft(recovered.message, Vec::new(), Some("Recovered local copy. Sending is blocked until durable Outbox reconciliation; HTML editing needs explicit plain-text conversion.".into()), Some(recovered.attachment_lease), window, cx);
+                        composer.recovery.key = Some(recovered.key); composer.recovery.generation = recovered.generation;
+                        composer.recovery.retention = if recovered.sensitive { draft_recovery::Retention::DecryptedSessionOnly } else { draft_recovery::Retention::Ordinary };
+                        composer.recovery.restored_hold = true;
+                        this.composer = Some(composer); this.recovery_keys.clear(); this.view = View::Compose;
+                    },
+                    Err(error) => this.recovery_error = Some(error),
+                }
+                cx.notify();
+            });
+        }).detach();
+        cx.notify();
+    }
+
+    fn recovery_panel(&self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
+        v_flex().gap_1()
+            .child(Button::new("confirm-external-compose-account").ghost().small().label("Open queued email link")
+                .disabled(self.activation.is_none() || !self.action_state(cx).allows(desktop_actions::MailboxAction::ComposeMessage))
+                .on_click(cx.listener(|this, _, _, cx| { this.activation_confirmed_account = this.live.read(cx).snapshot().current_account_id; cx.notify(); })))
+            .child(div().text_size(px(11.)).text_color(palette.muted).child("Queued email links wait here. Choose a usable account in the rail, then explicitly open one link. This never sends."))
+            .child(Button::new("list-local-recovery").ghost().small().label(if self.recovery_listing { "Reading local recovery…" } else { "Recover local drafts" })
+                .disabled(self.demo || self.recovery.is_none() || self.composer.is_some() || self.recovery_listing || self.view != View::Mailbox)
+                .on_click(cx.listener(|this, _, _, cx| this.list_local_recovery(cx))))
+            .when_some(self.recovery_error.clone(), |el, error| el.child(div().text_size(px(11.)).text_color(palette.muted).child(error)))
+            .children(self.recovery_keys.iter().enumerate().filter(|(_, key)| Some(key.account_id()) == self.live.read(cx).snapshot().current_account_id).map(|(index, key)| {
+                let key = key.clone(); Button::new(SharedString::from(format!("restore-local-{index}"))).ghost().small().label(format!("Open local recovery {}", index + 1))
+                    .disabled(self.recovery_listing || self.composer.is_some()).on_click(cx.listener(move |this, _, _, cx| this.restore_local_recovery(key.clone(), cx)))
+            })).into_any_element()
+    }
+
+    fn retry_native_recovery(&mut self, cx: &mut Context<Self>) {
+        let Some(service) = &self.recovery else {
+            return;
+        };
+        let Some(composer) = &mut self.composer else {
+            return;
+        };
+        if composer.operation_pending() {
+            return;
+        }
+        if let Some((account_id, request_id, generation)) = composer.recovery.finished_send {
+            if composer.recovery.cleanup_in_flight || composer.recovery.retired == Some(generation)
+            {
+                return;
+            }
+            let Some(key) = composer.recovery.key.clone() else {
+                return;
+            };
+            if account_id != composer.message.from_account_id
+                || account_id != key.account_id()
+                || generation != composer.recovery.generation
+            {
+                return;
+            }
+            match service.submit(draft_recovery::WriterCommand::SendFinished {
+                key,
+                generation,
+                expected_request: request_id,
+                account_id,
+                request_id,
+                outcome: SendOutcome::Sent,
+                uncertain: false,
+            }) {
+                Ok(()) => {
+                    composer.recovery.cleanup_in_flight = true;
+                    composer.recovery.status =
+                        "Sent confirmed; local recovery cleanup is pending.".into();
+                }
+                Err(error) => composer.recovery.status = error,
+            }
+            cx.notify();
+            return;
+        }
+        composer.recovery.retry = true;
+        self.capture_recovery(cx);
+        cx.notify();
+    }
+
+    fn capture_recovery(&mut self, cx: &App) {
+        let (Some(service), Some(composer)) = (&mut self.recovery, &mut self.composer) else {
+            return;
+        };
+        if composer.recovery.key.is_none() {
+            match service.key(composer.message.from_account_id) {
+                Ok(key) => composer.recovery.key = Some(key),
+                Err(error) => {
+                    composer.recovery.status = error;
+                    return;
+                }
+            }
+        }
+        if !composer.recovery.dirty_input && !composer.recovery.retry {
+            return;
+        }
+        let changed = if composer.recovery.dirty_input {
+            let outgoing = composer.outgoing(cx);
+            match composer.recovery.observe(outgoing) {
+                Ok(changed) => {
+                    composer.recovery.dirty_input = false;
+                    changed
+                }
+                Err(error) => {
+                    composer.recovery.status = error;
+                    return;
+                }
+            }
+        } else {
+            false
+        };
+        if !changed && !composer.recovery.retry {
+            return;
+        }
+        // Thunderbird source identity/config is not a native AccountConfig.
+        // Do not synthesize one and claim durable From validation.
+        let Some((_, account)) = self
+            .profiles
+            .iter()
+            .find(|(id, _)| *id == composer.message.from_account_id)
+        else {
+            composer.recovery.requires_ack = false;
+            composer.recovery.status =
+                "Session only: this adapter has no validated native recovery From configuration."
+                    .into();
+            return;
+        };
+        match composer
+            .recovery
+            .update(account)
+            .and_then(|command| service.submit(command))
+        {
+            Ok(()) => {
+                composer.recovery.retry = false;
+                composer.recovery.in_flight = Some(composer.recovery.generation);
+                composer.recovery.status =
+                    "Local recovery pending; keep this composer open.".into();
+            }
+            Err(error) => {
+                composer.recovery.retry = true;
+                composer.recovery.status = error;
+            }
+        }
+    }
+
+    fn begin_provider_authorization(
+        &mut self,
+        provider: megamail_core::provider_auth::Provider,
+        cx: &mut Context<Self>,
+    ) {
+        let snapshot = self.live.read(cx).snapshot();
+        if self.demo
+            || self.loading_profiles
+            || self.startup_error.is_some()
+            || snapshot.thunderbird_loading
+            || self.live.read(cx).direct_add_block_reason().is_some()
+        {
+            return;
+        }
+        let Some(setup) = self.setup.as_mut() else {
+            return;
+        };
+        if setup.connecting || setup.discovering || setup.thunderbird_loading {
+            return;
+        }
+        let available = self
+            .auth_availability
+            .as_ref()
+            .is_some_and(|a| match provider {
+                megamail_core::provider_auth::Provider::GoogleImapSmtp => a.google.is_ok(),
+                _ => a.microsoft.is_ok(),
+            });
+        if !available {
+            setup.error =
+                Some(megamail_core::provider_auth::AuthError::RegistrationRequired.to_string());
+            cx.notify();
+            return;
+        }
+        let email = setup.inputs.email.read(cx).value().to_string();
+        if let Err(error) = provider_setup::check_new_account(
+            &email,
+            self.profiles.iter().map(|(_, p)| p.email.as_str()),
+            snapshot.accounts.iter().map(|a| a.email.as_str()),
+        ) {
+            setup.error = Some(error.to_string());
+            cx.notify();
+            return;
+        }
+        setup.connecting = true;
+        setup.error = None;
+        self.auth_inflight = true;
+        self.auth_cancelled
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        let controller = self.auth_controller.clone();
+        let cancellation = self.auth_cancel.clone();
+        let cancelled = self.auth_cancelled.clone();
+        let known_accounts = snapshot.accounts;
+        let task = cx.background_spawn(async move {
+            provider_setup::authorize(
+                controller,
+                provider,
+                email,
+                known_accounts,
+                cancellation,
+                cancelled,
+            )
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                // A committed SavedAccount wins a last-moment cancellation.
+                this.auth_inflight = false;
+                match result {
+                    Ok(added) => {
+                        this.profiles = added.profiles;
+                        let (id, profile) = added.added;
+                        match this.live.update(cx, |live, cx| live.add_profile(id, profile, cx)) {
+                            Ok(()) => { this.setup = None; this.setup_email_subscription = None; this.view = View::Mailbox; },
+                            Err(error) => { if let Some(setup) = &mut this.setup { setup.connecting = false; setup.error = Some(format!("Account saved, not connected: {error}. Restart after repairing storage/runtime.")); } },
+                        }
+                    },
+                    Err(error) => {
+                        if error.starts_with("The account was saved, but its profile could not be reloaded:") { this.startup_error = Some("Account saved, but reload failed. Repair profile storage and restart before adding another account.".into()); }
+                        if let Some(setup) = &mut this.setup { setup.connecting = false; setup.error = Some(error); }
+                    },
+                }
+                cx.notify();
+            });
+        }).detach();
+        cx.notify();
+    }
+
+    fn cancel_provider_authorization(&mut self, cx: &mut Context<Self>) {
+        self.auth_cancelled
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(slot) = self.auth_cancel.try_lock() {
+            if let Some(attempt) = slot.as_ref() {
+                attempt.cancel();
+            }
+        }
+        if let Some(setup) = &mut self.setup {
+            setup.error = Some("Cancelling sign-in. If save already started, its actual result will still be shown.".into());
+        }
+        cx.notify();
+    }
+
+    fn open_original_formatting(&mut self, cx: &mut Context<Self>) {
+        let snapshot = self.live.read(cx).snapshot();
+        let (Some(original), Some(row)) = (snapshot.selected_original, snapshot.selected_message)
+        else {
+            self.reader_session.notice = Some("Complete original HTML is unavailable for this selection. Native selectable formatting remains available.".into());
+            cx.notify();
+            return;
+        };
+        self.retire_reader_session(cx);
+        if self.reader_session.exhausted {
+            self.reader_session.notice = Some(
+                "Reader generation space exhausted. Original viewing is disabled until restart."
+                    .into(),
+            );
+            cx.notify();
+            return;
+        }
+        let scope = reader_session::scope(
+            &row.key,
+            snapshot.selected_body_version,
+            self.reader_session.generation,
+        );
+        self.reader_session.active = Some(scope.clone());
+        let semantic: Arc<str> = Arc::from(snapshot.selected_html.as_ref());
+        let plain: Arc<str> = Arc::from(row.message.body.as_str());
+        let title: Arc<str> = Arc::from(row.message.subject.as_str());
+        let worker_scope = scope.clone();
+        let task = cx.background_spawn(async move {
+            let path = reader_session::developer_helper()?;
+            let document = original.document(worker_scope, semantic, plain, title)?;
+            reader_host::ReaderHost::start(path, document).map_err(|_| {
+                "Original reader could not start; native text remains available.".to_owned()
+            })
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                if this.reader_session.accepts(&scope) {
+                    match result {
+                        Ok(host) => this.reader_session.host = Some(host),
                         Err(error) => {
-                            this.startup_error =
-                                Some(format!("Could not load MegaMail accounts: {error}"));
-                            this.view = View::Setup;
+                            this.reader_session.notice = Some(error);
+                            this.retire_reader_session(cx);
                         }
                     }
                     cx.notify();
-                });
-            })
-            .detach();
-        }
-
-        app
+                } else if let Ok(host) = result {
+                    host.cancel();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     fn watch_setup_email(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -997,28 +1648,207 @@ impl MailApp {
         }));
     }
 
-    fn replace_live(
-        &mut self,
-        profiles: Vec<(u32, AccountConfig)>,
-        selected: Option<u32>,
-        cx: &mut Context<Self>,
-    ) {
-        let live = cx.new(|cx| LiveMailbox::new(profiles.clone(), selected, cx));
-        self.live_subscription = Some(cx.observe(&live, |this, _, cx| this.on_live_change(cx)));
-        self.live = live;
-        if self.preferences.default_unified {
-            self.live.update(cx, |live, cx| live.select_unified(cx));
+    /// One background inventory load for startup and explicit storage Retry.
+    /// Keep the original LiveMailbox and its event channel for the whole session.
+    fn load_saved_accounts(&mut self, cx: &mut Context<Self>) {
+        if self.live.read(cx).snapshot().thunderbird_loading {
+            return;
         }
-        let query = self.search.read(cx).value().to_string();
-        if !query.is_empty() {
-            self.live.update(cx, |live, cx| live.set_search(query, cx));
+        self.loading_profiles = true;
+        cx.spawn(async move |this, cx| {
+            let inventory = cx
+                .background_spawn(async move {
+                    compose::prune_stale_draft_attachment_dirs();
+                    account_session::StartupInventory::load()
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.loading_profiles = false;
+                let route = inventory.route();
+                this.startup_error = inventory.direct_error.clone();
+                // A cross-backend identity conflict can still restore known
+                // direct workers. Retain their sender/alias configs, and never
+                // replace a healthy roster with an error-derived empty list.
+                let direct = (!inventory.direct.is_empty() || inventory.direct_error.is_none())
+                    .then(|| inventory.direct.clone());
+                this.live
+                    .update(cx, |live, cx| live.install_inventory(inventory, cx));
+                if let Some(direct) = direct {
+                    this.profiles = direct
+                        .into_iter()
+                        .filter(|(id, _)| this.live.read(cx).is_direct_account(*id))
+                        .collect();
+                }
+                if route != account_session::StartupRoute::FirstRun {
+                    this.setup = None;
+                    this.setup_email_subscription = None;
+                    this.setup_return_view = View::Mailbox;
+                    this.view = startup_view(route);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn reader_text_identity(
+        &self,
+        snapshot: &MailboxSnapshot,
+    ) -> Option<reader_session::SemanticTextIdentity> {
+        let key = snapshot.selected_key.as_ref()?;
+        // Exhausting the external helper's generation budget must not disable
+        // the independently selectable native body.
+        if self.collapsed_messages.contains(key)
+            || snapshot.selected_message.as_ref().map(|row| &row.key) != Some(key)
+        {
+            return None;
         }
-        self.list_scroll = UniformListScrollHandle::new();
+        self.reader_bodies
+            .iter()
+            .find(|body| &body.key == key && (!body.text.is_empty() || !body.html.is_empty()))?;
+        Some(reader_session::SemanticTextIdentity {
+            key: key.clone(),
+            version: snapshot.selected_body_version,
+            generation: self.reader_session.generation,
+            plain: self.plain_messages.contains(key),
+            quote_visible: !self.preferences.hide_quoted_text || self.visible_quotes.contains(key),
+        })
+    }
+
+    /// Helper retirement also changes the current semantic identity. Update
+    /// the real native consumer before notifying/rendering, even on refusal.
+    fn retire_reader_session(&mut self, cx: &mut Context<Self>) {
+        self.reader_session.retire();
+        let snapshot = self.live.read(cx).snapshot();
+        self.refresh_reader_text(&snapshot, cx);
+    }
+
+    /// Keep the actual selected TextView consumer outside the render path.
+    fn refresh_reader_text(&mut self, snapshot: &MailboxSnapshot, cx: &mut Context<Self>) {
+        let Some(identity) = self.reader_text_identity(snapshot) else {
+            self.reader_text = None;
+            self.reader_find.clear();
+            self.attachment_preview.clear();
+            self.rule_preview.clear();
+            self.newsletter_status = None;
+            self.rule_move_plan = None;
+            self.reader_export_status = None;
+            return;
+        };
+        let Some(body) = self
+            .reader_bodies
+            .iter()
+            .find(|body| body.key == identity.key)
+        else {
+            self.reader_text = None;
+            self.reader_find.clear();
+            self.attachment_preview.clear();
+            self.rule_preview.clear();
+            self.newsletter_status = None;
+            self.rule_move_plan = None;
+            self.reader_export_status = None;
+            return;
+        };
+        let html = body.markup(identity.plain, identity.quote_visible);
+        if self
+            .reader_text
+            .as_ref()
+            .is_some_and(|target| target.unchanged(&identity, &html))
+        {
+            return;
+        }
+        // A replaced body/mode gets a new state, so its old selection cannot
+        // survive into another message or an asynchronously parsed replacement.
+        self.rule_preview.clear();
+        self.newsletter_status = None;
+        self.rule_move_plan = None;
+        self.reader_export_status = None;
+        self.reader_find.clear();
+        self.attachment_preview.clear();
+        self.reader_text = Some(reader_session::SemanticTextTarget::new(identity, html, cx));
     }
 
     fn on_live_change(&mut self, cx: &mut Context<Self>) {
         let snapshot = self.live.read(cx).snapshot();
-        self.rebuild_list_rows(&snapshot);
+        let retired = changed_mailbox_scopes(&self.reader_mailbox_epochs, &snapshot.mailbox_epochs);
+        let same_source = match (&self.reader_source, &snapshot.selected_original) {
+            (Some(previous), Some(current)) => Arc::ptr_eq(previous, current),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same_source || self.reader_selected_key != snapshot.selected_key || !retired.is_empty()
+        {
+            self.reader_session.retire();
+            self.reader_session.notice = None;
+            self.reader_source = snapshot.selected_original.clone();
+            self.invitation_preview = None;
+            self.invitation_error = None;
+            if let (Some(row), Some(version), Some(check)) = (
+                &snapshot.selected_message,
+                snapshot.selected_body_version,
+                &snapshot.selected_sender_check,
+            ) {
+                let key = row.key.clone();
+                let generation = self.reader_session.generation;
+                let check = check.clone();
+                let metadata_key = invitation::InvitationMessageKey {
+                    scope: contacts::ContactScope {
+                        backend: contacts::ContactBackend::Direct,
+                        account_id: key.account_id,
+                    },
+                    folder_id: row.message.folder_id,
+                    message_id: row.message.id,
+                    session_epoch: version.source_generation,
+                    body_generation: generation,
+                };
+                let task = cx.background_spawn(async move {
+                    invitation::from_sender_check(metadata_key, &check).map_err(|e| e.to_string())
+                });
+                cx.spawn(async move |this, cx| {
+                    let result = task.await;
+                    let _ = this.update(cx, |this, cx| {
+                        let current = this.live.read(cx).snapshot();
+                        if !this.reader_session.exhausted
+                            && reader_session::selection_matches(
+                                &key,
+                                Some(version),
+                                generation,
+                                current.selected_key.as_ref(),
+                                current.selected_body_version,
+                                this.reader_session.generation,
+                            )
+                        {
+                            match result {
+                                Ok(preview) => this.invitation_preview = preview.map(Arc::new),
+                                Err(error) => this.invitation_error = Some(error),
+                            }
+                            cx.notify();
+                        }
+                    });
+                })
+                .detach();
+            } else if snapshot.body_loaded {
+                self.invitation_error = Some("Calendar metadata is unknown for this body/adapter; no invitation is inferred from HTML.".into());
+            }
+        }
+        if !retired.is_empty() {
+            retire_reader_body_cache(&mut self.reader_bodies, &retired);
+            self.plain_messages
+                .retain(|key| reader_scope_retained(key, &retired));
+            self.visible_quotes
+                .retain(|key| reader_scope_retained(key, &retired));
+            self.link_details
+                .retain(|key| reader_scope_retained(key, &retired));
+            self.expanded_messages
+                .retain(|key| reader_scope_retained(key, &retired));
+            self.collapsed_messages
+                .retain(|key| reader_scope_retained(key, &retired));
+            // Conversation identities may include replies from the retired folder.
+            self.expanded_conversations
+                .retain(|key| !retired.iter().any(|(id, _)| key.account_id == *id));
+        }
+        self.reader_mailbox_epochs = snapshot.mailbox_epochs.clone();
+        self.rebuild_list_rows(&snapshot, cx);
         let selected_position = snapshot.selected_key.as_ref().and_then(|key| {
             snapshot
                 .conversations
@@ -1079,6 +1909,7 @@ impl MailApp {
                 }
             }
         }
+        self.refresh_reader_text(&snapshot, cx);
         if let Some(setup) = self.setup.as_mut() {
             for outcome in &snapshot.thunderbird_results {
                 if outcome.state == ThunderbirdAccountState::Connected {
@@ -1103,21 +1934,68 @@ impl MailApp {
         }
         let mut close_composer = false;
         if let Some(composer) = self.composer.as_mut() {
-            if composer.draft_pending.is_some() {
-                if snapshot.status == "Draft saved" {
+            if let Some(ticket) = composer.draft_ticket {
+                if self.live.update(cx, |live, _| {
+                    live.take_draft_saved_for(composer.message.from_account_id, ticket)
+                }) {
+                    self.request_attachment_leases.finish(
+                        false,
+                        composer.message.from_account_id,
+                        u64::from(ticket),
+                    );
                     composer.draft_saved = composer.draft_pending.take();
+                    composer.draft_ticket = None;
+                    composer.draft_save_completed = true;
                     composer.error = None;
-                } else if snapshot.status != "Saving draft…"
-                    && (snapshot.action_error.is_some() || snapshot.error.is_some())
-                {
-                    composer.draft_pending = None;
+                } else if snapshot.action_error.is_some() || snapshot.error.is_some() {
+                    // Legacy failures carry no ticket. Never unlock/drop leases
+                    // on unrelated current-account status/error prose.
+                    composer.error = Some("Draft save is awaiting its account/request acknowledgment. The legacy error is uncorrelated; keep this composition open and inspect Drafts before retrying.".into());
                 }
             }
         }
-        if let (Some(composer), Some(result)) = (&mut self.composer, snapshot.send_result) {
+        let composer_result = self.composer.as_ref().and_then(|composer| {
+            composer.send_request_id.and_then(|request_id| {
+                self.live
+                    .read(cx)
+                    .send_result_for(composer.message.from_account_id, request_id)
+            })
+        });
+        if let (Some(composer), Some(result)) = (&mut self.composer, composer_result) {
             if composer.send_request_id == Some(result.request_id)
                 && composer.message.from_account_id == result.account_id
             {
+                if let (Some(service), Some(key), Some(generation)) = (
+                    &self.recovery,
+                    composer.recovery.key.clone(),
+                    composer.send_generation,
+                ) {
+                    if result.outcome == SendOutcome::Sent && !result.uncertain {
+                        composer.recovery.finished_send =
+                            Some((result.account_id, result.request_id, generation));
+                    }
+                    let cleanup = service.submit(draft_recovery::WriterCommand::SendFinished {
+                        key,
+                        generation,
+                        expected_request: result.request_id,
+                        account_id: result.account_id,
+                        request_id: result.request_id,
+                        outcome: result.outcome,
+                        uncertain: result.uncertain,
+                    });
+                    match cleanup {
+                        Ok(()) => {
+                            composer.recovery.cleanup_in_flight =
+                                composer.recovery.finished_send.is_some()
+                        }
+                        Err(error) => {
+                            self.recovery_error = Some(error.clone());
+                            composer.recovery.status = error;
+                        }
+                    }
+                }
+                self.request_attachment_leases
+                    .finish(true, result.account_id, result.request_id);
                 composer.send_request_id = None;
                 if result.uncertain {
                     composer.send_queued = false;
@@ -1125,7 +2003,12 @@ impl MailApp {
                     composer.error = None;
                 } else {
                     match result.outcome {
-                        SendOutcome::Sent => close_composer = true,
+                        SendOutcome::Sent => {
+                            composer.sent_complete = true;
+                            close_composer = self.recovery.is_none()
+                                || !composer.recovery.requires_ack
+                                || composer.recovery.retired == Some(composer.recovery.generation);
+                        }
                         SendOutcome::Queued => {
                             composer.send_queued = true;
                             composer.error = Some(
@@ -1235,9 +2118,32 @@ impl MailApp {
             .position(|choice| choice.alias == composer.message.from_alias)
             .unwrap_or(0);
         let next = (current + 1) % choices.len();
-        composer.message.from_alias = choices[next].alias.clone();
+        // Only the existing owning AccountConfig can authorize this choice.
+        // Runtime-discovered aliases without that validator remain display-only.
+        let Some((_, profile)) = self.profiles.iter().find(|(id, _)| *id == account_id) else {
+            composer.error = Some(
+                "Sender switching is unavailable for this adapter's unvalidated identities.".into(),
+            );
+            cx.notify();
+            return;
+        };
+        let choice = choices[next]
+            .alias
+            .as_ref()
+            .map_or(compose_productivity::SenderChoice::Primary, |identity| {
+                compose_productivity::SenderChoice::Alias(identity.clone())
+            });
+        if let Err(error) =
+            compose_productivity::choose_sender(&mut composer.message, account_id, profile, &choice)
+        {
+            composer.error = Some(format!("Sender choice rejected: {error:?}"));
+            cx.notify();
+            return;
+        }
+        composer.recovery.dirty_input = true;
         composer.draft_saved = None;
         composer.error = None;
+        self.capture_recovery(cx);
         cx.notify();
     }
 
@@ -1245,6 +2151,15 @@ impl MailApp {
         let Some(composer) = self.composer.as_mut() else {
             return;
         };
+        if let Some(lease) = composer.recovery.lease.take() {
+            if let Some(service) = &self.recovery {
+                if let Err(error) = service.release(lease) {
+                    self.recovery_error = Some(error);
+                }
+            } else {
+                std::mem::forget(lease);
+            }
+        }
         let paths = std::mem::take(&mut composer.temporary_attachment_paths);
         if !paths.is_empty() {
             cx.background_executor()
@@ -1254,12 +2169,23 @@ impl MailApp {
     }
 
     fn can_replace_composer(&mut self, cx: &App) -> bool {
+        self.capture_recovery(cx);
         let Some(composer) = self.composer.as_mut() else {
             return true;
         };
-        let error = if composer.send_uncertain {
+        let error = if self.recovery.is_some()
+            && composer.recovery.requires_ack
+            && if composer.sent_complete {
+                composer.recovery.retired != Some(composer.recovery.generation)
+            } else {
+                composer.recovery.acknowledged != composer.recovery.generation
+            } {
             Some(
-                "Check Sent before continuing. Confirm the message was not delivered to unlock this composer.",
+                "Local recovery has not acknowledged this composition. Keep it open or retry recovery before replacing it.",
+            )
+        } else if composer.send_uncertain {
+            Some(
+                "Inspect Sent/Outbox separately. Resend remains locked because durable send-ticket reconciliation is unavailable.",
             )
         } else if composer.operation_pending() {
             Some(
@@ -1300,8 +2226,7 @@ impl MailApp {
         if !composer.send_uncertain {
             return;
         }
-        composer.send_uncertain = false;
-        composer.error = None;
+        composer.error = Some("Resend remains locked: this adapter cannot reconcile the original durable send ticket. Inspect Sent/Outbox separately; a text confirmation cannot release a held intent.".into());
         cx.notify();
     }
 
@@ -1520,7 +2445,9 @@ impl MailApp {
                     Ok(preferences) => {
                         this.preferences = preferences;
                         this.list_scroll = UniformListScrollHandle::new();
-                        this.rebuild_list_rows(&this.live.read(cx).snapshot());
+                        let snapshot = this.live.read(cx).snapshot();
+                        this.rebuild_list_rows(&snapshot, cx);
+                        this.refresh_reader_text(&snapshot, cx);
                         if this.preferences.reduced_motion {
                             this.appearance.tick_transition(
                                 std::time::Instant::now() + Duration::from_secs(1),
@@ -1541,11 +2468,11 @@ impl MailApp {
             self.live
                 .update(cx, |live, cx| live.select_conversation(key, cx));
         }
-        self.rebuild_list_rows(&self.live.read(cx).snapshot());
+        self.rebuild_list_rows(&self.live.read(cx).snapshot(), cx);
         cx.notify();
     }
 
-    fn rebuild_list_rows(&mut self, snapshot: &MailboxSnapshot) {
+    fn rebuild_list_rows(&mut self, snapshot: &MailboxSnapshot, cx: &mut Context<Self>) {
         let mut rows = Vec::new();
         if self.preferences.group_conversations {
             for conversation in snapshot.conversations.iter() {
@@ -1570,6 +2497,8 @@ impl MailApp {
             }));
         }
         self.list_rows = Arc::new(rows);
+        self.refresh_triage(snapshot, cx);
+        self.pump_triage(cx);
     }
 
     fn restore_wallpaper(&mut self, cx: &mut Context<Self>) {
@@ -1772,25 +2701,32 @@ impl MailApp {
     }
 
     fn open_new_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self
+            .action_state(cx)
+            .allows(desktop_actions::MailboxAction::ComposeMessage)
+        {
+            return;
+        }
+        let Some(account_id) = self.live.read(cx).composer_account_id() else {
+            return;
+        };
         if !self.can_replace_composer(cx) {
             return;
         }
-        let snapshot = self.live.read(cx).snapshot();
-        let Some(account_id) = snapshot
-            .selected_key
-            .as_ref()
-            .map(|key| key.account_id)
-            .or(snapshot.current_account_id)
-            .or_else(|| snapshot.accounts.first().map(|account| account.id))
-        else {
-            return;
-        };
-        self.composer = Some(Composer::new(compose::new_message(account_id), window, cx));
+        let mut composer = Composer::new(compose::new_message(account_id), window, cx);
+        composer.recovery.retention = draft_recovery::Retention::Ordinary;
+        self.composer = Some(composer);
         self.view = View::Compose;
         cx.notify();
     }
 
     fn open_reply(&mut self, message: Message, window: &mut Window, cx: &mut Context<Self>) {
+        if !self
+            .action_state(cx)
+            .allows(desktop_actions::MailboxAction::ReplyMessage)
+        {
+            return;
+        }
         if !self.can_replace_composer(cx) {
             return;
         }
@@ -1836,6 +2772,12 @@ impl MailApp {
     }
 
     fn open_reply_all(&mut self, message: Message, window: &mut Window, cx: &mut Context<Self>) {
+        if !self
+            .action_state(cx)
+            .allows(desktop_actions::MailboxAction::ReplyAll)
+        {
+            return;
+        }
         if !self.can_replace_composer(cx) {
             return;
         }
@@ -1859,8 +2801,12 @@ impl MailApp {
             return;
         }
         let account_id = message.account_id;
-        self.composer = Some(Composer::new(
-            compose::forward(account_id, &message),
+        let prepared = compose::prepare_forward(account_id, &message);
+        self.composer = Some(Composer::new_prepared_draft(
+            prepared.message,
+            prepared.temporary_attachment_paths,
+            prepared.notice,
+            prepared.attachment_lease,
             window,
             cx,
         ));
@@ -1968,6 +2914,7 @@ impl MailApp {
                         let message = prepared.message.clone();
                         let paths = prepared.temporary_attachment_paths.clone();
                         let notice = prepared.notice.clone();
+                        let attachment_lease = prepared.attachment_lease.clone();
                         let to_publish = message.clone();
                         let published = this.update(cx, |this, cx| {
                             this.live.update(cx, |live, cx| {
@@ -1987,38 +2934,43 @@ impl MailApp {
                             return;
                         }
                         let paths_for_open = paths.clone();
-                        let opened =
-                            this.update_in(cx, |this, window, cx| {
-                                let accepted =
-                                    this.live.read(cx).snapshot().draft_source.is_some_and(
-                                        |source| {
-                                            source.key == key
-                                                && source.token == token
-                                                && matches!(
-                                                    source.state,
-                                                    DraftSourceState::Prepared(result)
-                                                        if result.is_ok()
-                                                )
-                                        },
-                                    );
-                                if !accepted {
-                                    return false;
-                                }
-                                this.composer = Some(Composer::new_prepared_draft(
-                                    message,
-                                    paths_for_open,
-                                    notice,
-                                    window,
-                                    cx,
-                                ));
-                                this.draft_open_error = None;
-                                this.view = View::Compose;
+                        let opened = this.update_in(cx, |this, window, cx| {
+                            let accepted =
+                                this.live
+                                    .read(cx)
+                                    .snapshot()
+                                    .draft_source
+                                    .is_some_and(|source| {
+                                        source.key == key
+                                            && source.token == token
+                                            && matches!(
+                                                source.state,
+                                                DraftSourceState::Prepared(result)
+                                                    if result.is_ok()
+                                            )
+                                    });
+                            if !accepted || this.composer.is_some() || this.view != View::Mailbox {
                                 this.live.update(cx, |live, cx| {
-                                    live.dismiss_draft_source(&key, token, cx);
+                                    live.dismiss_draft_source(&key, token, cx)
                                 });
-                                cx.notify();
-                                true
+                                return false;
+                            }
+                            this.composer = Some(Composer::new_prepared_draft(
+                                message,
+                                paths_for_open,
+                                notice,
+                                attachment_lease,
+                                window,
+                                cx,
+                            ));
+                            this.draft_open_error = None;
+                            this.view = View::Compose;
+                            this.live.update(cx, |live, cx| {
+                                live.dismiss_draft_source(&key, token, cx);
                             });
+                            cx.notify();
+                            true
+                        });
                         if !opened.ok().unwrap_or(false) {
                             cx.background_executor()
                                 .spawn(async move { compose::remove_staged_attachments(paths) })
@@ -2246,7 +3198,11 @@ impl MailApp {
         let Some(setup) = self.setup.as_mut() else {
             return;
         };
-        if setup.thunderbird_loading || importing {
+        if setup.thunderbird_loading
+            || account_registry::mutation_blocked(setup.connecting, importing)
+            || self.loading_profiles
+            || self.startup_error.is_some()
+        {
             return;
         }
         let mut selections = Vec::new();
@@ -2356,7 +3312,10 @@ impl MailApp {
     }
 
     fn connect_account(&mut self, cx: &mut Context<Self>) {
-        if self.setup.as_ref().is_some_and(|setup| setup.connecting) {
+        if account_registry::mutation_blocked(
+            self.setup.as_ref().is_some_and(|setup| setup.connecting),
+            self.live.read(cx).snapshot().thunderbird_loading,
+        ) {
             return;
         }
         if self.loading_profiles || self.startup_error.is_some() {
@@ -2364,6 +3323,13 @@ impl MailApp {
                 setup.error = Some(
                     "Saved accounts could not be loaded safely. Resolve the profile storage issue before adding another account.".into(),
                 );
+            }
+            cx.notify();
+            return;
+        }
+        if let Some(reason) = self.live.read(cx).direct_add_block_reason() {
+            if let Some(setup) = self.setup.as_mut() {
+                setup.error = Some(reason.into());
             }
             cx.notify();
             return;
@@ -2378,13 +3344,16 @@ impl MailApp {
                 return;
             }
         };
-        if self
-            .profiles
-            .iter()
-            .any(|(_, profile)| profile.email.eq_ignore_ascii_case(&account.email))
-        {
+        let known_accounts = self.live.read(cx).snapshot().accounts;
+        if let Err(error) = provider_setup::check_new_account(
+            &account.email,
+            self.profiles
+                .iter()
+                .map(|(_, profile)| profile.email.as_str()),
+            known_accounts.iter().map(|account| account.email.as_str()),
+        ) {
             if let Some(setup) = self.setup.as_mut() {
-                setup.error = Some("This email address is already added to MegaMail.".into());
+                setup.error = Some(error.to_string());
             }
             cx.notify();
             return;
@@ -2394,49 +3363,15 @@ impl MailApp {
         };
         setup.connecting = true;
         setup.error = None;
-        let email = account.email.clone();
-        let email_for_lookup = email.clone();
-
-        let mut profiles = self
-            .profiles
-            .iter()
-            .map(|(_, profile)| profile.clone())
-            .collect::<Vec<_>>();
-        if let Some(index) = profiles
-            .iter()
-            .position(|profile| profile.email.eq_ignore_ascii_case(&account.email))
-        {
-            profiles[index] = account.clone();
-        } else {
-            profiles.push(account.clone());
-        }
-
-        let task = cx.background_spawn(async move {
-            let outcome = worker::test_connection_blocking(account);
-            outcome.incoming.map_err(|error| {
-                format!("Could not connect to the incoming mail server: {error}")
-            })?;
-            outcome.smtp.map_err(|error| {
-                format!("Could not connect to the outgoing mail server: {error}")
-            })?;
-            config::save(&profiles)
-                .map_err(|error| format!("Could not save the account: {error}"))?;
-            let profiles = config::load_profiles().map_err(|error| {
-                format!("The account was saved, but its profile could not be reloaded: {error}")
-            })?;
-            let added = profiles
-                .iter()
-                .find(|(_, profile)| profile.email.eq_ignore_ascii_case(&email_for_lookup))
-                .cloned()
-                .ok_or_else(|| "The saved account was not found after reload.".to_owned())?;
-            Ok::<_, String>((profiles, added))
-        });
+        let task = cx
+            .background_spawn(async move { provider_setup::add_password(account, known_accounts) });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
                 match result {
-                    Ok((profiles, (account_id, profile))) => {
-                        this.profiles = profiles;
+                    Ok(added) => {
+                        this.profiles = added.profiles;
+                        let (account_id, profile) = added.added;
                         let added = this
                             .live
                             .update(cx, |live, cx| live.add_profile(account_id, profile, cx));
@@ -2479,6 +3414,12 @@ impl MailApp {
     }
 
     fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if !self
+            .action_state(cx)
+            .allows(desktop_actions::MailboxAction::NextMessage)
+        {
+            return;
+        }
         let snapshot = self.live.read(cx).snapshot();
         if self.list_rows.is_empty() {
             return;
@@ -2648,9 +3589,9 @@ impl MailApp {
             .rounded(px(4.))
             .px_2()
             .when(collapsed, |button| {
-                button.w(px(42.)).px_0().tooltip(account.email.clone())
+                button.w(px(42.)).px_0().tooltip(account.label.clone())
             })
-            .accessibility_label(format!("Switch to {}", account.email))
+            .accessibility_label(format!("Switch to {}", account.label))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.live
                     .update(cx, |live, cx| live.switch_account(account_id, cx));
@@ -2845,7 +3786,11 @@ impl MailApp {
                             .h(px(32.))
                             .icon(Icon::new(IconName::PenLine).size(px(14.)))
                             .label("New message")
-                            .disabled(snapshot.pending_send || snapshot.accounts.is_empty())
+                            .disabled(
+                                !self
+                                    .action_state(cx)
+                                    .allows(desktop_actions::MailboxAction::ComposeMessage),
+                            )
                             .on_click(
                                 cx.listener(|this, _, window, cx| {
                                     this.open_new_message(window, cx)
@@ -2862,6 +3807,7 @@ impl MailApp {
                     .px_2()
                     .py_2()
                     .gap_1()
+                    .child(self.recovery_panel(palette, cx))
                     .child(self.unified_button(snapshot, palette, dark, false, cx))
                     .children(primary.into_iter().map(|folder| {
                         self.folder_button(folder, snapshot, palette, dark, false, cx)
@@ -3104,8 +4050,14 @@ impl MailApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if snapshot.page.is_empty() {
+            let recovery = snapshot.current_folder_path.is_none()
+                && (snapshot.error.is_some()
+                    || self.startup_error.is_some()
+                    || snapshot.thunderbird_error.is_some());
             let message = if snapshot.thunderbird_loading {
                 "Reconnecting saved accounts…"
+            } else if recovery {
+                "Saved accounts need attention"
             } else if snapshot.loading {
                 "Loading messages…"
             } else if snapshot.filter != MessageFilter::All {
@@ -3135,7 +4087,9 @@ impl MailApp {
                 )
                 .child(div().text_size(px(11.)).text_color(palette.muted).child(
                     if snapshot.thunderbird_loading {
-                        "Your imported accounts are saved. No import is needed."
+                        "Your saved accounts are being reconnected. No import is needed."
+                    } else if recovery {
+                        "Use Retry above after resolving the reported problem. Account storage is kept."
                     } else if snapshot.filter != MessageFilter::All {
                         "Choose All or load more messages to broaden this view."
                     } else if snapshot.search_query.is_empty() {
@@ -3157,6 +4111,15 @@ impl MailApp {
         let labels = snapshot.account_labels.clone();
         let unified = snapshot.scope == MailboxScope::Unified;
         let owner = cx.entity().downgrade();
+        let bulk_open = self.triage.open;
+        let bulk_busy = self.triage.busy();
+        let bulk_selected: HashSet<_> = self
+            .triage
+            .selection
+            .keys()
+            .map(|k| k.message.clone())
+            .collect();
+        let bulk_available = self.triage.available.clone();
         uniform_list("message-rows", rows.len(), move |range, _, _| {
             range
                 .map(|index| {
@@ -3165,19 +4128,23 @@ impl MailApp {
                         conversation,
                         child,
                     } = rows[index].clone();
-                    let mut display_message = conversation
-                        .as_ref()
-                        .and_then(|thread| thread.latest_sent.as_ref())
-                        .filter(|sent| sent.message.timestamp > row.message.timestamp)
-                        .map_or_else(
-                            || row.message.clone(),
-                            |sent| {
-                                let mut message = sent.message.clone();
-                                message.from_name = "You".to_owned();
-                                message
-                            },
-                        );
-                    if let Some(thread) = &conversation {
+                    let mut display_message = if bulk_open {
+                        row.message.clone()
+                    } else {
+                        conversation
+                            .as_ref()
+                            .and_then(|thread| thread.latest_sent.as_ref())
+                            .filter(|sent| sent.message.timestamp > row.message.timestamp)
+                            .map_or_else(
+                                || row.message.clone(),
+                                |sent| {
+                                    let mut message = sent.message.clone();
+                                    message.from_name = "You".to_owned();
+                                    message
+                                },
+                            )
+                    };
+                    if let Some(thread) = conversation.as_ref().filter(|_| !bulk_open) {
                         display_message.starred =
                             thread.members.iter().any(|member| member.message.starred);
                         display_message.has_attachment = thread
@@ -3196,9 +4163,13 @@ impl MailApp {
                     };
                     let owner_select = owner.clone();
                     let key = row.key.clone();
-                    let unread = conversation
-                        .as_ref()
-                        .map_or(row.message.unread, |thread| thread.unread > 0);
+                    let unread = if bulk_open {
+                        row.message.unread
+                    } else {
+                        conversation
+                            .as_ref()
+                            .map_or(row.message.unread, |thread| thread.unread > 0)
+                    };
                     let mut element = h_flex()
                         .w_full()
                         .h(px(row_height))
@@ -3243,6 +4214,43 @@ impl MailApp {
                                     .flatten(),
                             )),
                         );
+                    if bulk_open {
+                        let bulk_key = row.key.clone();
+                        let selected = bulk_selected.contains(&bulk_key);
+                        let available = bulk_available.contains(&bulk_key);
+                        debug_assert!(
+                            !available
+                                || (display_message.uid == bulk_key.uid
+                                    && display_message.account_id == bulk_key.account_id)
+                        );
+                        let owner_bulk = owner.clone();
+                        element = element.child(
+                            Button::new(SharedString::from(format!(
+                                "bulk-select-{}-{}-{}-{child}",
+                                bulk_key.account_id, bulk_key.folder_path, bulk_key.uid
+                            )))
+                            .ghost()
+                            .small()
+                            .label(if selected { "Selected" } else { "Select" })
+                            .selected(selected)
+                            .disabled(!available || bulk_busy)
+                            .accessibility_label(format!(
+                                "{} message {}",
+                                if selected { "Deselect" } else { "Select" },
+                                row.message.subject
+                            ))
+                            .on_click(move |_, _, cx| {
+                                let _ = owner_bulk.update(cx, |this, cx| {
+                                    this.edit_triage_selection(
+                                        Some(bulk_key.clone()),
+                                        false,
+                                        false,
+                                        cx,
+                                    )
+                                });
+                            }),
+                        );
+                    }
                     if let Some(thread) = conversation
                         .filter(|thread| thread.count > 1 || thread.replied || thread.forwarded)
                     {
@@ -3384,7 +4392,11 @@ impl MailApp {
                             .ghost()
                             .small()
                             .icon(Icon::new(IconName::Mail))
-                            .disabled(snapshot.pending_send)
+                            .disabled(
+                                !self
+                                    .action_state(cx)
+                                    .allows(desktop_actions::MailboxAction::ComposeMessage),
+                            )
                             .accessibility_label("Compose a new message")
                             .tooltip("Compose a new message")
                             .on_click(
@@ -3423,14 +4435,27 @@ impl MailApp {
                                     .collect::<Vec<_>>()
                                     .join("\n"),
                             )
+                            .disabled(
+                                !self
+                                    .action_state(cx)
+                                    .allows(desktop_actions::MailboxAction::RefreshMail),
+                            )
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.live.update(cx, |live, cx| live.refresh(cx));
+                                if this
+                                    .action_state(cx)
+                                    .allows(desktop_actions::MailboxAction::RefreshMail)
+                                {
+                                    this.live.update(cx, |live, cx| live.refresh(cx));
+                                }
                             })),
                     )
                 },
             )
             .child(
                 v_flex()
+                    .id("mailbox-tools")
+                    .max_h(px(300.))
+                    .overflow_y_scroll()
                     .flex_shrink_0()
                     .gap_2()
                     .px_3()
@@ -3449,24 +4474,41 @@ impl MailApp {
                                             .text_color(palette.faint),
                                     )
                                     .cleanable(true)
-                                    .aria_label("Search loaded messages")
+                                    .aria_label("Search mail with field, date and status operators")
                                     .flex_1()
                                     .min_w_0(),
                             )
                             .child(self.filter_menu(snapshot, palette, cx)),
                     )
+                    .child(div().text_size(px(10.)).text_color(palette.muted).child(
+                        "Direct: cached folder headers and bodies. Thunderbird: loaded headers. Use from:, to:, subject:, body:, is:unread, has:attachment, before: or -term."
+                    ))
+                    .when_some(snapshot.search_error.clone(), |row, error| {
+                        row.child(error_banner("Search", &error, cx, palette))
+                    })
+                    .when_some(self.startup_error.clone(), |row, error| {
+                        row.child(error_banner("Saved account storage", &error, cx, palette))
+                            .child(
+                                Button::new("retry-account-storage")
+                                    .ghost()
+                                    .small()
+                                    .label("Retry saved accounts")
+                                    .disabled(self.loading_profiles || snapshot.thunderbird_loading)
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.load_saved_accounts(cx)),
+                                    ),
+                            )
+                    })
                     .when_some(snapshot.thunderbird_error.clone(), |row, error| {
                         row.child(error_banner("Thunderbird connection", &error, cx, palette))
                             .child(
                                 Button::new("reconnect-saved-thunderbird")
                                     .ghost()
                                     .small()
-                                    .label("Reconnect saved accounts")
+                                    .label("Retry saved accounts")
                                     .disabled(snapshot.thunderbird_loading)
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.live.update(cx, |live, cx| {
-                                            live.restore_thunderbird(cx);
-                                        });
+                                        this.load_saved_accounts(cx);
                                     })),
                             )
                     })
@@ -3477,10 +4519,27 @@ impl MailApp {
                             cx,
                             palette,
                         ))
+                        .when(snapshot.is_thunderbird_account, |row| {
+                            let target = snapshot.current_account_id;
+                            row.child(
+                                Button::new("retry-selected-saved-account")
+                                    .ghost()
+                                    .small()
+                                    .label("Retry this saved account")
+                                    .disabled(snapshot.thunderbird_loading)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.live.update(cx, |live, cx| {
+                                            live.retry_thunderbird(target, cx);
+                                        });
+                                    })),
+                            )
+                        })
                     })
                     .when_some(snapshot.action_error.clone(), |row, error| {
                         row.child(error_banner("Mail action failed", &error, cx, palette))
-                    }),
+                    })
+                    .child(self.triage_panel(palette, cx))
+                    .child(self.rule_editor_panel(palette, cx)),
             )
             .child(
                 h_flex()
@@ -3579,6 +4638,9 @@ impl MailApp {
             return div().into_any_element();
         }
         v_flex()
+            .id("native-outbox-panel")
+            .max_h(px(360.))
+            .overflow_y_scroll()
             .w_full()
             .border_b_1()
             .border_color(palette.border)
@@ -3593,7 +4655,7 @@ impl MailApp {
                         div()
                             .text_size(px(12.))
                             .font_weight(FontWeight::MEDIUM)
-                            .child("Waiting to send"),
+                            .child("Outbox"),
                     )
                     .child(
                         div()
@@ -3638,35 +4700,36 @@ impl MailApp {
                                     }),
                             ),
                     )
-                    .child(
-                        Button::new(SharedString::from(format!("retry-outbox-{id}")))
-                            .secondary()
-                            .small()
-                            .icon(Icon::new(IconName::RotateCw))
-                            .label("Retry")
-                            .disabled(snapshot.is_demo)
-                            .accessibility_label(format!(
-                                "Retry sending {subject_for_accessibility}"
-                            ))
+                    .when_some(item.send_at.filter(|at| *at > megamail_core::datefmt::now()), |el, at| el
+                        .child(div().text_size(px(11.)).child(format!("Scheduled {}", megamail_core::datefmt::date_time(at))))
+                        .when_some(snapshot.current_account_id.and_then(|account| self.live.read(cx).schedule_session(account).map(|session| (account, session))), |el, (account, session)| {
+                            let request = worker::QueuedCancelRequest { id, send_at: Some(at), session };
+                            el.child(Button::new(SharedString::from(format!("cancel-schedule-{id}"))).ghost().small()
+                                .label(if self.queue_cancel_confirmation == Some((account, request)) { "Confirm cancellation" } else { "Cancel scheduled send" })
+                                .disabled(item.phase != megamail_core::models::OutboxPhase::Ready || !snapshot.pending_queue_cancels.is_empty())
+                                .tooltip("Cancel only if this message is still scheduled and transmission has not started.")
+                                .on_click(cx.listener(move |this, _, _, cx| this.cancel_queued_item(account, request, cx))))
+                        }))
+                    .when_some(snapshot.current_account_id, |el, account| el.child(
+                        Button::new(SharedString::from(format!("review-outbox-{id}")))
+                            .secondary().small().label("Delivery details")
+                            .accessibility_label(format!("Review delivery of {subject_for_accessibility}"))
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.live
-                                    .update(cx, |live, cx| live.flush_outbox(Some(id), cx));
-                            })),
-                    )
-                    .child(
-                        Button::new(SharedString::from(format!("discard-outbox-{id}")))
-                            .ghost()
-                            .small()
-                            .icon(Icon::new(IconName::Trash))
-                            .disabled(snapshot.is_demo)
-                            .accessibility_label(format!(
-                                "Discard queued message {subject_for_accessibility}"
-                            ))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.live.update(cx, |live, cx| live.delete_outbox(id, cx));
-                            })),
-                    )
+                                this.outbox_review = Some((account, id));
+                                cx.notify();
+                            }))
+                    ))
+                    .when(item.send_at.is_none(), |el| el.when_some(snapshot.current_account_id.and_then(|account| self.live.read(cx).schedule_session(account).map(|session| (account, session))), |el, (account, session)| {
+                        let request = worker::QueuedCancelRequest { id, send_at: None, session };
+                        el.child(Button::new(SharedString::from(format!("discard-ready-outbox-{id}"))).ghost().small().icon(Icon::new(IconName::Trash))
+                            .label(if self.queue_cancel_confirmation == Some((account, request)) { "Confirm discard" } else { "Discard unsent copy" })
+                            .disabled(item.phase != megamail_core::models::OutboxPhase::Ready || !snapshot.pending_queue_cancels.is_empty())
+                            .tooltip("Remove only an unclaimed local Outbox copy. Held or already submitted mail requires manual review.")
+                            .accessibility_label(format!("Discard unsubmitted copy of {subject_for_accessibility}"))
+                            .on_click(cx.listener(move |this, _, _, cx| this.cancel_queued_item(account, request, cx))))
+                    }))
             }))
+            .child(self.outbox_review_panel(snapshot, palette, cx))
             .into_any_element()
     }
 
@@ -3679,51 +4742,74 @@ impl MailApp {
         if snapshot.links.is_empty() {
             return div().into_any_element();
         }
+        let Some(key) = snapshot.selected_key.clone() else {
+            return div().into_any_element();
+        };
+        let expanded = self.link_details.contains(&key);
         v_flex()
             .w_full()
             .min_w_0()
             .gap_2()
-            .pt_6()
+            .pt_3()
             .child(
-                div()
-                    .text_size(px(12.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .child("Links in this message"),
+                Button::new("reader-link-details")
+                    .ghost()
+                    .small()
+                    .self_start()
+                    .icon(Icon::new(if expanded {
+                        IconName::ChevronDown
+                    } else {
+                        IconName::ChevronRight
+                    }))
+                    .label(format!("Link details · {}", snapshot.links.len()))
+                    .accessibility_label(if expanded {
+                        "Hide link details"
+                    } else {
+                        "Show link details"
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if !this.link_details.remove(&key) {
+                            this.link_details.insert(key.clone());
+                        }
+                        cx.notify();
+                    })),
             )
-            .children(snapshot.links.iter().enumerate().map(|(index, link)| {
-                let url = link.url.clone();
-                let label = if link.label.trim().is_empty() {
-                    link.url.clone()
-                } else {
-                    link.label.clone()
-                };
-                v_flex()
-                    .w_full()
-                    .min_w_0()
-                    .gap_1()
-                    .child(
-                        Button::new(SharedString::from(format!("message-link-{index}")))
-                            .ghost()
-                            .small()
-                            .w_full()
-                            .min_w_0()
-                            .justify_start()
-                            .child(div().w_full().min_w_0().truncate().child(label.clone()))
-                            .accessibility_label(format!("Open {label} in your browser"))
-                            .tooltip(format!("Open {} in your browser", link.url))
-                            .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url))),
-                    )
-                    .child(
-                        div()
-                            .w_full()
-                            .min_w_0()
-                            .whitespace_normal()
-                            .pl_2()
-                            .text_size(px(10.))
-                            .text_color(palette.faint)
-                            .child(link.url.clone()),
-                    )
-            }))
+            .when(expanded, |el| {
+                el.children(snapshot.links.iter().enumerate().map(|(index, link)| {
+                    let url = link.url.clone();
+                    let label = if link.label.trim().is_empty() {
+                        link.url.clone()
+                    } else {
+                        link.label.clone()
+                    };
+                    v_flex()
+                        .w_full()
+                        .min_w_0()
+                        .gap_1()
+                        .child(
+                            Button::new(SharedString::from(format!("message-link-{index}")))
+                                .ghost()
+                                .small()
+                                .w_full()
+                                .min_w_0()
+                                .justify_start()
+                                .child(div().w_full().min_w_0().truncate().child(label.clone()))
+                                .accessibility_label(format!("Open {label} in your browser"))
+                                .tooltip(format!("Open {} in your browser", link.url))
+                                .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url))),
+                        )
+                        .child(
+                            div()
+                                .w_full()
+                                .min_w_0()
+                                .whitespace_normal()
+                                .pl_2()
+                                .text_size(px(10.))
+                                .text_color(palette.faint)
+                                .child(link.url.clone()),
+                        )
+                }))
+            })
             .into_any_element()
     }
 
@@ -3843,6 +4929,13 @@ impl MailApp {
                                         .child(format!("{} bytes", content.len())),
                                 ),
                         )
+                        .child(attachment_preview::preview_button(
+                            name.clone(),
+                            content.clone(),
+                            index,
+                            self.attachment_preview.busy(),
+                            cx,
+                        ))
                         .child(
                             Button::new(SharedString::from(format!(
                                 "save-message-attachment-{index}"
@@ -3864,6 +4957,7 @@ impl MailApp {
                         )
                 }))
             })
+            .child(self.attachment_preview_panel(snapshot, palette, cx))
             .when_some(self.attachment_save_error.clone(), |row, error| {
                 row.child(error_banner(
                     "Could not save attachment",
@@ -4090,7 +5184,7 @@ impl MailApp {
                                         .small()
                                         .icon(Icon::new(IconName::CornerUpLeft))
                                         .label("Reply")
-                                        .disabled(snapshot.pending_send || snapshot.body_loading)
+                                        .disabled(!self.action_state(cx).allows(desktop_actions::MailboxAction::ReplyMessage))
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             this.open_reply(
                                                 reply_message.message.clone(),
@@ -4104,7 +5198,7 @@ impl MailApp {
                                         .ghost()
                                         .small()
                                         .label("All")
-                                        .disabled(snapshot.pending_send || snapshot.body_loading)
+                                        .disabled(!self.action_state(cx).allows(desktop_actions::MailboxAction::ReplyAll))
                                         .tooltip("Reply all · Ctrl+Shift+R")
                                         .accessibility_label("Reply to all recipients")
                                         .on_click(cx.listener(move |this, _, window, cx| {
@@ -4203,6 +5297,21 @@ impl MailApp {
                             .min_w_0()
                             .max_w(px(680.))
                             .gap_4()
+                            .child(Button::new("open-original-formatting").ghost().small().label("Original formatting — temporary window")
+                                .disabled(snapshot.body_loading || snapshot.selected_original.is_none())
+                                .on_click(cx.listener(|this, _, _, cx| this.open_original_formatting(cx))))
+                            .when_some(self.reader_session.notice.clone(), |el, notice| el.child(div().text_size(px(11.)).text_color(palette.muted).child(notice)))
+                            .when_some(self.invitation_error.clone(), |el, error| el.child(div().text_size(px(11.)).text_color(palette.muted).child(error)))
+                            .when_some(self.invitation_preview.clone(), |el, invitation| {
+                                el.child(v_flex().gap_1().text_size(px(12.))
+                                    .child(format!("Invitation: {}", invitation.summary))
+                                    .child(format!("Starts: {} · {}", invitation.start.as_ref().map_or_else(|| "unknown".to_owned(), |stamp| format!("{} ({:?})", stamp.value, stamp.zone)), invitation.location))
+                                    .child(match invitation.rsvp {
+                                        invitation::RsvpCapability::NotRequested => "Read-only preview. No response was requested.",
+                                        invitation::RsvpCapability::Cancelled => "Cancelled invitation. No response is sent.",
+                                        invitation::RsvpCapability::CommandTransportUnavailable => "Read-only preview. RSVP transport is unavailable; no acceptance or email is sent.",
+                                    }))
+                            })
                             .child(
                                 gpui_kit::component::text::TextView::html(
                                     "reader-subject",
@@ -4320,61 +5429,60 @@ impl MailApp {
                 let body_element: AnyElement = if let Some(cached) =
                     cached.filter(|body| !body.text.is_empty() || !body.html.is_empty())
                 {
-                    gpui_kit::component::text::TextView::html(
-                        SharedString::from(format!(
-                            "mail-text-{}-{}-{}-{}",
-                            key.account_id,
-                            key.folder_path,
-                            key.uid,
-                            format!("{quote_visible}-{plain}")
-                        )),
-                        if plain {
-                            if quote_visible {
-                                cached.plain_html.clone()
-                            } else {
-                                cached.plain_html_without_quote.clone()
+                    let target = self.reader_text_identity(snapshot).and_then(|identity| {
+                        self.reader_text
+                            .as_ref()
+                            .filter(|target| selected_here && target.matches(&identity))
+                    });
+                    let text_view = if let Some(target) = target {
+                        gpui_kit::component::text::TextView::new(&target.state)
+                    } else {
+                        gpui_kit::component::text::TextView::html(
+                            SharedString::from(format!(
+                                "mail-text-{}-{}-{}-{quote_visible}-{plain}",
+                                key.account_id, key.folder_path, key.uid,
+                            )),
+                            cached.markup(plain, quote_visible),
+                        )
+                    };
+                    text_view
+                        .selectable(true)
+                        .w_full()
+                        .min_w_0()
+                        .on_link_click(|url, _, _, cx| {
+                            if megamail_core::mail_text::safe_browser_url(url) {
+                                cx.open_url(url);
                             }
-                        } else if quote_visible {
-                            cached.html.clone()
-                        } else {
-                            cached.html_without_quote.clone()
-                        },
-                    )
-                    .selectable(true)
-                    .w_full()
-                    .min_w_0()
-                    .on_link_click(|url, _, _, cx| {
-                        if megamail_core::mail_text::safe_browser_url(url) {
-                            cx.open_url(url);
-                        }
-                    })
-                    .style(gpui_kit::component::text::TextViewStyle {
-                        paragraph_gap: gpui_kit::rems(if plain || cached.source_html.is_empty() {
-                            0.
-                        } else {
-                            0.75
-                        }),
-                        heading_font_size: Some(Arc::new(|level, _| {
-                            px(match level {
-                                1 => 22.,
-                                2 => 19.,
-                                3 => 16.,
-                                _ => 14.,
-                            })
-                        })),
-                        table: {
-                            let mut style =
-                                gpui_kit::StyleRefinement::default().bg(palette.surface);
-                            style.overflow.x = Some(gpui_kit::Overflow::Scroll);
-                            style
-                        },
-                        is_dark: cx.theme().is_dark(),
-                        ..Default::default()
-                    })
-                    .text_size(px(14.))
-                    .line_height(relative(1.6))
-                    .text_color(palette.text)
-                    .into_any_element()
+                        })
+                        .style(gpui_kit::component::text::TextViewStyle {
+                            paragraph_gap: gpui_kit::rems(
+                                if plain || cached.source_html.is_empty() {
+                                    0.
+                                } else {
+                                    0.75
+                                },
+                            ),
+                            heading_font_size: Some(Arc::new(|level, _| {
+                                px(match level {
+                                    1 => 22.,
+                                    2 => 19.,
+                                    3 => 16.,
+                                    _ => 14.,
+                                })
+                            })),
+                            table: {
+                                let mut style =
+                                    gpui_kit::StyleRefinement::default().bg(palette.surface);
+                                style.overflow.x = Some(gpui_kit::Overflow::Scroll);
+                                style
+                            },
+                            is_dark: cx.theme().is_dark(),
+                            ..Default::default()
+                        })
+                        .text_size(px(14.))
+                        .line_height(relative(1.6))
+                        .text_color(palette.text)
+                        .into_any_element()
                 } else {
                     div()
                         .text_size(px(14.))
@@ -4424,6 +5532,8 @@ impl MailApp {
                         this.live
                             .update(cx, |live, cx| live.select_message(key.clone(), cx));
                     }
+                    let snapshot = this.live.read(cx).snapshot();
+                    this.refresh_reader_text(&snapshot, cx);
                     cx.notify();
                 }))
                 .child(
@@ -4454,14 +5564,14 @@ impl MailApp {
                                     div()
                                         .text_size(px(13.))
                                         .font_weight(FontWeight::SEMIBOLD)
-                                        .truncate()
+                                        .whitespace_normal()
                                         .child(sender),
                                 )
                                 .child(
                                     div()
                                         .text_size(px(12.))
                                         .text_color(palette.muted)
-                                        .truncate()
+                                        .whitespace_normal()
                                         .child(if open {
                                             row.message.from_addr.clone()
                                         } else {
@@ -4471,9 +5581,8 @@ impl MailApp {
                         )
                         .child(
                             div()
-                                .flex_shrink_0()
-                                .max_w(px(90.))
-                                .truncate()
+                                .max_w(px(110.))
+                                .whitespace_normal()
                                 .text_size(px(11.))
                                 .text_color(palette.muted)
                                 .child(row.message.date.clone()),
@@ -4523,6 +5632,12 @@ impl MailApp {
                                     palette,
                                 ))
                                 .child(reader_recipient(&row.key, "To", &row.message.to, palette))
+                                .child(reader_recipient(
+                                    &row.key,
+                                    "Date",
+                                    &row.message.datetime_full(),
+                                    palette,
+                                ))
                                 .when(
                                     !row.message.reply_to.is_empty()
                                         && row.message.reply_to != row.message.from_addr,
@@ -4572,11 +5687,56 @@ impl MailApp {
                                         } else {
                                             this.plain_messages.insert(key.clone());
                                         }
+                                        let snapshot = this.live.read(cx).snapshot();
+                                        this.refresh_reader_text(&snapshot, cx);
                                         cx.notify();
                                     })),
                                 )
                             },
                         )
+                        .when(selected_here, |el| {
+                            el.child(
+                                Button::new("preview-saved-rules")
+                                    .ghost()
+                                    .small()
+                                    .label(if self.rule_preview_busy {
+                                        "Previewing rules…"
+                                    } else {
+                                        "Preview saved rules"
+                                    })
+                                    .disabled(
+                                        self.demo
+                                            || self.rule_preview_busy
+                                            || !snapshot.body_loaded,
+                                    )
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.preview_saved_rules(cx)),
+                                    ),
+                            )
+                            .when(self.rule_move_plan.is_some(), |el| el.child(Button::new("prepare-previewed-rule-move").ghost().small()
+                                .label("Review move from this preview")
+                                .disabled(self.rule_preview_busy || self.triage.busy())
+                                .on_click(cx.listener(|this, _, _, cx| this.apply_previewed_rule_move(cx)))))
+                            .child(Button::new("save-readable-text").ghost().small()
+                                .label(if self.reader_export_busy { "Saving text…" } else { "Save readable text" })
+                                .disabled(self.reader_export_busy || !snapshot.body_loaded)
+                                .tooltip("Save the displayed body as plain text, including decrypted content if displayed. Hidden quotes, formatting and attachments are omitted. Choose a new filename.")
+                                .on_click(cx.listener(|this, _, _, cx| this.save_readable_text(cx))))
+                            .child(Button::new("save-printable-html").ghost().small().label("Save printable message")
+                                .disabled(self.reader_export_busy || !snapshot.body_loaded)
+                                .tooltip("Save the displayed text and From/To/Subject as private HTML, including decrypted text when displayed. Open it in a browser to print or save as PDF; attachments and hidden quotes are omitted.")
+                                .on_click(cx.listener(|this, _, _, cx| this.save_printable_html(cx))))
+                            .when_some(self.reader_export_status.clone(), |el, status| el.child(div().text_size(px(11.)).text_color(palette.muted).child(status)))
+                            .children(
+                                self.rule_preview.iter().cloned().map(|line| {
+                                    div()
+                                        .text_size(px(11.))
+                                        .text_color(palette.muted)
+                                        .child(line)
+                                }),
+                            )
+                        })
+                        .when(selected_here, |el| el.child(self.newsletter_panel(snapshot, palette, cx)).child(self.reader_find_panel(palette, cx)))
                         .child(body_element)
                         .when(cached.is_none() && !selected_here, |el| {
                             let key = row.key.clone();
@@ -4625,6 +5785,8 @@ impl MailApp {
                                         } else {
                                             this.visible_quotes.insert(key.clone());
                                         }
+                                        let snapshot = this.live.read(cx).snapshot();
+                                        this.refresh_reader_text(&snapshot, cx);
                                         cx.notify();
                                     },
                                 )),
@@ -4720,6 +5882,47 @@ impl MailApp {
                 )
                 .into_any_element()
         }
+    }
+
+    fn provider_controls(
+        &self,
+        setup: &SetupState,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use megamail_core::provider_auth::{MicrosoftAudience as Audience, Provider};
+        let admission_reason = self.live.read(cx).direct_add_block_reason();
+        let busy = self.demo
+            || self.loading_profiles
+            || self.startup_error.is_some()
+            || admission_reason.is_some()
+            || setup.connecting
+            || setup.discovering
+            || setup.thunderbird_loading
+            || self.live.read(cx).snapshot().thunderbird_loading;
+        let google = self
+            .auth_availability
+            .as_ref()
+            .is_some_and(|a| a.google.is_ok());
+        let microsoft = self
+            .auth_availability
+            .as_ref()
+            .is_some_and(|a| a.microsoft.is_ok());
+        v_flex().gap_2()
+            .child(h_flex().flex_wrap().gap_2()
+                .child(Button::new("google-browser-signin").secondary().small().label("Google · browser sign-in (IMAP/SMTP)").disabled(busy || !google)
+                    .on_click(cx.listener(|this, _, _, cx| this.begin_provider_authorization(Provider::GoogleImapSmtp, cx))))
+                .child(Button::new("microsoft-browser-signin").secondary().small().label("Microsoft · browser sign-in (Graph)").disabled(busy || !microsoft)
+                    .on_click(cx.listener(|this, _, _, cx| this.begin_provider_authorization(Provider::MicrosoftGraph(this.microsoft_audience), cx)))))
+            .child(Button::new("microsoft-audience").ghost().small().label(match self.microsoft_audience {
+                Audience::Personal => "Microsoft audience: personal", Audience::WorkOrSchool => "Microsoft audience: work/school", Audience::PersonalAndWork => "Microsoft audience: personal + work/school",
+            }).disabled(busy).on_click(cx.listener(|this, _, _, cx| {
+                this.microsoft_audience = match this.microsoft_audience { Audience::Personal => Audience::WorkOrSchool, Audience::WorkOrSchool => Audience::PersonalAndWork, Audience::PersonalAndWork => Audience::Personal }; cx.notify();
+            })))
+            .when(!google || !microsoft, |el| el.child(div().text_size(px(11.)).text_color(palette.muted).child("Browser sign-in is disabled without a configured MegaMail-owned desktop registration. App-password/manual IMAP and the separate Thunderbird runtime remain alternatives. Graph is not Exchange IMAP.")))
+            .when_some(admission_reason, |el, reason| el.child(div().text_size(px(11.)).text_color(palette.muted).child(reason)))
+            .when(self.auth_inflight, |el| el.child(Button::new("cancel-provider-signin").ghost().small().label("Cancel browser sign-in").on_click(cx.listener(|this, _, _, cx| this.cancel_provider_authorization(cx)))))
+            .into_any_element()
     }
 
     fn setup_view(&self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
@@ -4940,6 +6143,7 @@ impl MailApp {
                                         .child(error),
                                 )
                             })
+                            .child(self.provider_controls(setup, palette, cx))
                             .when_some(setup.report.as_ref(), |row, report| {
                                 row.child(candidate_picker(report, setup.selected_candidate, cx))
                             })
@@ -5205,7 +6409,9 @@ impl MailApp {
                                     .flex_1()
                                     .text_size(px(11.))
                                     .text_color(palette.muted)
-                                    .child(if setup.connecting {
+                                    .child(if self.auth_inflight {
+                                        "Finishing browser sign-in: validation, mailbox probe, then private save. Saved is not connected."
+                                    } else if setup.connecting {
                                         "Testing both servers…"
                                     } else if self.loading_profiles {
                                         "Loading saved accounts…"
@@ -5245,7 +6451,9 @@ impl MailApp {
                                         } else {
                                             IconName::ArrowRight
                                         }))
-                                        .label(if setup.connecting {
+                                        .label(if self.auth_inflight {
+                                            "Signing in…"
+                                        } else if setup.connecting {
                                             "Testing…"
                                         } else {
                                             "Test and add"
@@ -5254,6 +6462,7 @@ impl MailApp {
                                             setup.connecting
                                                 || setup.discovering
                                                 || setup.thunderbird_loading
+                                                || self.live.read(cx).direct_add_block_reason().is_some()
                                                 || self.loading_profiles
                                                 || self.startup_error.is_some()
                                                 || (settings_need_review && !settings_reviewed),
@@ -5311,9 +6520,9 @@ impl MailApp {
                 .small()
                 .icon(Icon::new(IconName::ChevronDown))
                 .label(format!("From {sender_label}"))
-                .disabled(!composer.can_edit())
                 .accessibility_label("Switch sender address")
-                .tooltip("Use another sender address")
+                .disabled(!composer.can_edit() || profile.is_none())
+                .tooltip(if profile.is_some() { "Choose an existing configured sender identity; provider send-as authorization is not proven" } else { "Sender switching needs an owning account identity validator for this adapter" })
                 .on_click(
                     cx.listener(move |this, _, _, cx| this.cycle_sender_identity(account_id, cx)),
                 )
@@ -5359,31 +6568,33 @@ impl MailApp {
                             .icon(Icon::new(if composer_done {
                                 IconName::Check
                             } else {
-                                IconName::Trash
+                                IconName::ArrowLeft
                             }))
-                            .label(if composer_done { "Done" } else { "Discard" })
+                            .label(if composer_done { "Done" } else { "Close" })
                             .disabled(!composer.can_close())
                             .accessibility_label(if composer.send_queued {
                                 "Close composer; queued message remains in Outbox"
                             } else if composer_saved {
                                 "Close composer; saved draft remains in Drafts"
                             } else {
-                                "Discard this unsent message"
+                                "Close composer; local recovery may remain, but session-only text will be lost"
                             })
                             .tooltip(if composer.send_queued {
                                 "Close composer; queued message remains in Outbox"
                             } else if composer_saved {
                                 "Close composer; saved draft remains in Drafts"
                             } else {
-                                "Discard this unsent message"
+                                "Close composer; local recovery may remain, but session-only text will be lost"
                             })
                             .on_click(cx.listener(|this, _, _, cx| {
-                                if this.composer.as_ref().is_some_and(Composer::can_close) {
-                                    this.cleanup_composer_attachments(cx);
-                                    this.composer = None;
-                                    this.view = View::Mailbox;
-                                    cx.notify();
+                                this.capture_recovery(cx);
+                                let acknowledged = this.composer.as_ref().is_some_and(|c| this.recovery.is_none() || !c.recovery.requires_ack || if c.sent_complete { c.recovery.retired == Some(c.recovery.generation) } else { c.recovery.acknowledged == c.recovery.generation });
+                                if !acknowledged {
+                                    if let Some(composer) = &mut this.composer { composer.error = Some("Local recovery is pending or failed. Keep this composer open and retry; close/shutdown durability is not acknowledged.".into()); }
+                                } else if this.composer.as_ref().is_some_and(Composer::can_close) {
+                                    this.cleanup_composer_attachments(cx); this.composer = None; this.view = View::Mailbox;
                                 }
+                                cx.notify();
                             })),
                     ),
             )
@@ -5422,6 +6633,13 @@ impl MailApp {
                                     .disabled(!composer.can_edit()),
                                 palette,
                             ))
+                            .child(self.compose_tools_view(palette, cx))
+                            .when(self.live.read(cx).schedule_session(composer.message.from_account_id).is_some(), |el| el
+                                .child(labeled_input("Send Later", Input::new(&composer.schedule).aria_label("Scheduled date, time and numeric UTC offset").disabled(!composer.can_edit()), palette))
+                                .child(h_flex().flex_wrap().gap_2()
+                                    .child(Button::new("apply-send-time").ghost().small().label("Set time").disabled(!composer.can_edit()).on_click(cx.listener(|this, _, window, cx| this.set_compose_schedule(false, window, cx))))
+                                    .child(Button::new("clear-send-time").ghost().small().label("Send now instead").disabled(!composer.can_edit() || composer.message.send_at.is_none()).on_click(cx.listener(|this, _, window, cx| this.set_compose_schedule(true, window, cx)))))
+                                .child(div().text_size(px(11.)).text_color(palette.muted).child("Local scheduling requires MegaMail running and connected. When closed, delivery resumes after the next launch.")))
                             .child(labeled_input(
                                 "Subject",
                                 Input::new(&composer.subject)
@@ -5514,6 +6732,7 @@ impl MailApp {
                                                             < composer.message.attachments.len()
                                                     {
                                                         composer.message.attachments.remove(index);
+                                                        composer.recovery.dirty_input = true;
                                                         composer.draft_saved = None;
                                                     }
                                                 }
@@ -5524,6 +6743,16 @@ impl MailApp {
                             ))
                             .when_some(composer.attachment_error.clone(), |row, error| {
                                 row.child(error_banner("Attachment", &error, cx, palette))
+                            })
+                            .child(div().text_size(px(11.)).text_color(palette.muted).child(composer.recovery.status.clone()))
+                            .when_some(self.recovery_error.clone(), |el, error| el.child(error_banner("Local recovery", &error, cx, palette)))
+                            .child(Button::new("retry-local-recovery").ghost().small().label(if composer.sent_complete { "Retry recovery cleanup" } else { "Retry local recovery" }).disabled(composer.operation_pending() || if composer.sent_complete { composer.recovery.cleanup_in_flight || composer.recovery.retired == Some(composer.recovery.generation) } else { composer.recovery.in_flight.is_some() || composer.recovery.acknowledged == composer.recovery.generation }).on_click(cx.listener(|this, _, _, cx| this.retry_native_recovery(cx))))
+                            .when(!composer.message.html.is_empty(), |el| el.child(Button::new("convert-recovered-html").ghost().small().label("Discard HTML alternative and edit plain text").disabled(composer.operation_pending()).on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(composer) = &mut this.composer { if !composer.operation_pending() { composer.message.html.clear(); composer.recovery.dirty_input = true; composer.notice = Some("HTML was discarded explicitly. Only the recovered plain-text alternative will be edited/sent.".into()); } }
+                                this.capture_recovery(cx); cx.notify();
+                            }))))
+                            .when(composer.message.draft_origin.is_some() && self.live.read(cx).server_draft_retirement_unavailable(composer.message.from_account_id), |row| {
+                                row.child(div().text_size(px(11.)).text_color(palette.muted).child("IMAP Send/Save draft uses a separate copy. The original server draft is retained for manual review: generation-qualified retirement is unavailable. No automatic deletion or EXPUNGE is authorized by this composer."))
                             })
                             .when_some(composer.notice.clone(), |row, notice| {
                                 row.child(
@@ -5555,7 +6784,7 @@ impl MailApp {
                                                 .text_size(px(11.))
                                                 .line_height(relative(1.4))
                                                 .text_color(palette.muted)
-                                                .child("Thunderbird did not confirm whether the server accepted this message. Check Sent before trying again. This message is locked to prevent a duplicate send."),
+                                                .child("The adapter did not confirm whether the server accepted this message. Inspect Sent and Outbox. Resend remains locked because ticket reconciliation is not available."),
                                         )
                                         .child(
                                             h_flex()
@@ -5609,8 +6838,9 @@ impl MailApp {
                                                     Button::new("confirm-not-sent")
                                                         .secondary()
                                                         .small()
-                                                        .label("Confirmed not sent")
-                                                        .tooltip("Only choose this after checking the Sent folder")
+                                                        .label("Resend review unavailable")
+                                                        .disabled(true)
+                                                        .tooltip("A typed durable send-ticket reconciliation is required; a text confirmation cannot unlock resend")
                                                         .on_click(cx.listener(|this, _, _, cx| {
                                                             this.confirm_send_not_delivered(cx)
                                                         })),
@@ -5619,7 +6849,7 @@ impl MailApp {
                                 )
                             })
                             .when_some(composer.error.clone(), |row, error| {
-                                row.child(error_banner("Message not sent", &error, cx, palette))
+                                row.child(error_banner("Composer", &error, cx, palette))
                             })
                             .when(!composer.send_uncertain && !snapshot.status.is_empty(), |row| {
                                 row.child(
@@ -5677,8 +6907,9 @@ impl MailApp {
                                                 "Save draft"
                                             })
                                             .disabled(
-                                                self.demo || !composer.can_edit() || composer_saved,
+                                                self.demo || !composer.can_edit() || composer_saved || composer.recovery.blocks_provider_origin(&composer.message),
                                             )
+                                            .tooltip(if composer.recovery.blocks_provider_origin(&composer.message) { "Recovered provider Draft/Outbox origins are unversioned; safe replacement/reconciliation is unavailable" } else { "Save to provider Drafts; this is separate from private local recovery" })
                                             .on_click(cx.listener(|this, _, _, cx| {
                                                 this.save_current_draft(cx)
                                             })),
@@ -5692,10 +6923,12 @@ impl MailApp {
                                                 "Sending…"
                                             } else if composer.send_queued {
                                                 "In Outbox"
+                                            } else if composer.message.send_at.is_some() {
+                                                "Schedule"
                                             } else {
                                                 "Send"
                                             })
-                                            .disabled(self.demo || !composer.can_edit())
+                                            .disabled(self.demo || !composer.can_edit() || composer.recovery.restored_hold)
                                             .on_click(cx.listener(|this, _, _, cx| {
                                                 this.send_current_message(cx)
                                             })),
@@ -5707,6 +6940,7 @@ impl MailApp {
     }
 
     fn send_current_message(&mut self, cx: &mut Context<Self>) {
+        self.capture_recovery(cx);
         let Some(composer) = self.composer.as_mut() else {
             return;
         };
@@ -5716,6 +6950,41 @@ impl MailApp {
             return;
         }
         if !composer.can_edit() {
+            return;
+        }
+        if composer.recovery.restored_hold {
+            composer.error = Some("Recovered content is not permission to resend. Reconciliation with held/queued Outbox is unavailable; sending remains blocked. You can edit and save a provider draft.".into());
+            cx.notify();
+            return;
+        }
+        let desired_schedule = megamail_core::datefmt::parse_send_time(
+            &composer.schedule.read(cx).value(),
+            megamail_core::datefmt::now(),
+        );
+        match desired_schedule {
+            Err(error) => {
+                composer.error = Some(error.into());
+                cx.notify();
+                return;
+            }
+            Ok(at) if at != composer.message.send_at => {
+                composer.error = Some(
+                    "Use Set time to review this schedule, or Send now instead to clear it.".into(),
+                );
+                cx.notify();
+                return;
+            }
+            _ => {}
+        }
+        if composer.message.send_at.is_some()
+            && self
+                .live
+                .read(cx)
+                .schedule_session(composer.message.from_account_id)
+                .is_none()
+        {
+            composer.error = Some("This account cannot schedule mail in MegaMail. Clear the schedule or choose a direct IMAP account.".into());
+            cx.notify();
             return;
         }
         let message = composer.outgoing(cx);
@@ -5732,12 +7001,23 @@ impl MailApp {
         if let Some(request_id) = request_id {
             if let Some(composer) = self.composer.as_mut() {
                 composer.send_request_id = Some(request_id);
+                composer.send_generation = Some(composer.recovery.generation);
+                if let Some(service) = &self.recovery {
+                    self.request_attachment_leases.hold(
+                        true,
+                        composer.message.from_account_id,
+                        request_id,
+                        composer.recovery.lease.clone(),
+                        service.reaper(),
+                    );
+                }
             }
         }
         cx.notify();
     }
 
     fn save_current_draft(&mut self, cx: &mut Context<Self>) {
+        self.capture_recovery(cx);
         let Some(composer) = self.composer.as_ref() else {
             return;
         };
@@ -5751,14 +7031,42 @@ impl MailApp {
         if !composer.can_edit() {
             return;
         }
+        if composer.recovery.blocks_provider_origin(&composer.message) {
+            if let Some(composer) = &mut self.composer {
+                composer.error = Some("Recovered provider Draft/Outbox origins are not replacement authority. A versioned origin or durable ticket reconciliation is required; no provider mutation was dispatched.".into());
+            }
+            cx.notify();
+            return;
+        }
+        if composer.draft_save_completed {
+            if let Some(composer) = &mut self.composer {
+                composer.error = Some("Reopen the saved draft from Drafts before saving a replacement: this adapter does not return a versioned remote draft origin.".into());
+            }
+            cx.notify();
+            return;
+        }
+        let Some(ticket) = self.next_draft_ticket.checked_add(1) else {
+            return;
+        };
+        self.next_draft_ticket = ticket;
         let message = composer.outgoing(cx);
         let pending_message = message.clone();
         let accepted = self
             .live
-            .update(cx, |live, cx| live.save_draft(message, None, cx));
+            .update(cx, |live, cx| live.save_draft(message, Some(ticket), cx));
         if accepted {
             if let Some(composer) = self.composer.as_mut() {
                 composer.draft_pending = Some(pending_message);
+                composer.draft_ticket = Some(ticket);
+                if let Some(service) = &self.recovery {
+                    self.request_attachment_leases.hold(
+                        false,
+                        composer.message.from_account_id,
+                        u64::from(ticket),
+                        composer.recovery.lease.clone(),
+                        service.reaper(),
+                    );
+                }
                 composer.error = None;
             }
         }
@@ -5817,6 +7125,7 @@ impl MailApp {
                     match validation {
                         Ok(paths) => {
                             composer.message.attachments.extend(paths);
+                            composer.recovery.dirty_input = true;
                             composer.draft_saved = None;
                             composer.attachment_error = None;
                         }
@@ -5984,6 +7293,38 @@ impl Render for MailApp {
         let rail_width = px(192. + 40. * pane_scale);
         let list_width = px(280. + 52. * pane_scale);
         let client_decorated = matches!(window.window_decorations(), Decorations::Client { .. });
+        // Admission, not a refresh hook: run once after the mailbox root mounts,
+        // and once on each Setup/Compose/Settings/modal -> Mailbox transition.
+        let admit = self
+            .action_state(cx)
+            .allows(desktop_actions::MailboxAction::FocusMessages);
+        if admit && !self.mailbox_focus_admitted {
+            self.mailbox_focus_admitted = true;
+            cx.on_next_frame(window, |this, window, cx| {
+                if !this
+                    .action_state(cx)
+                    .allows(desktop_actions::MailboxAction::FocusMessages)
+                {
+                    this.mailbox_focus_admitted = false;
+                    return;
+                }
+                // Keep any live search, native reader, or button focus. A retired
+                // Setup field is outside the now-mounted mailbox focus subtree.
+                let usable = window
+                    .focused(cx)
+                    .is_some_and(|focused| this.mailbox_focus.contains(&focused, window));
+                if !usable {
+                    let target = if this.list_rows.is_empty() {
+                        &this.mailbox_focus
+                    } else {
+                        &this.message_focus
+                    };
+                    target.focus(window, cx);
+                }
+            });
+        } else if !admit {
+            self.mailbox_focus_admitted = false;
+        }
         if self.reader_should_focus && self.view == View::Mailbox {
             self.reader_should_focus = false;
             if self.reader_follow_selection && snapshot.selected_key.is_some() {
@@ -6086,8 +7427,18 @@ impl Render for MailApp {
                                     .icon(Icon::new(IconName::RefreshCw))
                                     .accessibility_label("Refresh mail")
                                     .tooltip("Refresh mail")
+                                    .disabled(
+                                        !self
+                                            .action_state(cx)
+                                            .allows(desktop_actions::MailboxAction::RefreshMail),
+                                    )
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.live.update(cx, |live, cx| live.refresh(cx));
+                                        if this
+                                            .action_state(cx)
+                                            .allows(desktop_actions::MailboxAction::RefreshMail)
+                                        {
+                                            this.live.update(cx, |live, cx| live.refresh(cx));
+                                        }
                                     })),
                             )
                         },
@@ -6170,13 +7521,22 @@ impl Render for MailApp {
         window_border().child(
             v_flex()
                 .size_full()
-                .key_context("MegaMail")
+                .when(
+                    self.view == View::Mailbox && self.composer.is_none(),
+                    |el| {
+                        el.track_focus(&self.mailbox_focus)
+                            .key_context(desktop_actions::MAILBOX_CONTEXT)
+                    },
+                )
                 .on_action(cx.listener(|this, _: &ComposeMessage, window, cx| {
                     this.open_new_message(window, cx)
                 }))
                 .on_action(cx.listener(|this, _: &ReplyMessage, window, cx| {
                     let snapshot = this.live.read(cx).snapshot();
-                    if this.view == View::Mailbox && !snapshot.body_loading {
+                    if this
+                        .action_state(cx)
+                        .allows(desktop_actions::MailboxAction::ReplyMessage)
+                    {
                         if let Some(row) = snapshot.selected_message {
                             this.open_reply(row.message.clone(), window, cx);
                         }
@@ -6184,23 +7544,71 @@ impl Render for MailApp {
                 }))
                 .on_action(cx.listener(|this, _: &ReplyAll, window, cx| {
                     let snapshot = this.live.read(cx).snapshot();
-                    if this.view == View::Mailbox && !snapshot.body_loading {
+                    if this
+                        .action_state(cx)
+                        .allows(desktop_actions::MailboxAction::ReplyAll)
+                    {
                         if let Some(row) = snapshot.selected_message {
                             this.open_reply_all(row.message.clone(), window, cx);
                         }
                     }
                 }))
+                .on_action(cx.listener(|this, _: &FindInMessage, window, cx| {
+                    this.focus_reader_find(window, cx)
+                }))
                 .on_action(cx.listener(|this, _: &FocusSearch, window, cx| {
-                    if this.composer.is_none() {
-                        this.view = View::Mailbox;
+                    if this
+                        .action_state(cx)
+                        .allows(desktop_actions::MailboxAction::FocusSearch)
+                    {
                         this.search.read(cx).focus_handle(cx).focus(window, cx);
                     }
                 }))
                 .on_action(cx.listener(|this, _: &RefreshMail, _, cx| {
-                    this.live.update(cx, |live, cx| live.refresh(cx));
+                    if this
+                        .action_state(cx)
+                        .allows(desktop_actions::MailboxAction::RefreshMail)
+                    {
+                        this.live.update(cx, |live, cx| live.refresh(cx));
+                    }
+                }))
+                .on_action(cx.listener(|this, _: &FocusMessages, window, cx| {
+                    desktop_actions::focus_pane(
+                        desktop_actions::MailboxAction::FocusMessages,
+                        this.action_state(cx),
+                        if this.list_rows.is_empty() {
+                            &this.mailbox_focus
+                        } else {
+                            &this.message_focus
+                        },
+                        window,
+                        cx,
+                    );
+                }))
+                .on_action(cx.listener(|this, _: &FocusReader, window, cx| {
+                    let snapshot = this.live.read(cx).snapshot();
+                    if let Some(identity) = this.reader_text_identity(&snapshot) {
+                        if let Some(target) = this
+                            .reader_text
+                            .as_ref()
+                            .filter(|target| target.matches(&identity))
+                        {
+                            let handle = target.state.read(cx).focus_handle().clone();
+                            desktop_actions::focus_pane(
+                                desktop_actions::MailboxAction::FocusReader,
+                                this.action_state(cx),
+                                &handle,
+                                window,
+                                cx,
+                            );
+                        }
+                    }
                 }))
                 .on_action(cx.listener(|this, _: &UnifiedInbox, _, cx| {
-                    if this.composer.is_none() {
+                    if this
+                        .action_state(cx)
+                        .allows(desktop_actions::MailboxAction::UnifiedInbox)
+                    {
                         this.live.update(cx, |live, cx| live.select_unified(cx));
                         this.view = View::Mailbox;
                     }
@@ -6217,6 +7625,29 @@ impl Render for MailApp {
                 .child(chrome)
                 .child(body),
         )
+    }
+}
+
+impl Drop for MailApp {
+    fn drop(&mut self) {
+        self.auth_cancelled
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(slot) = self.auth_cancel.try_lock() {
+            if let Some(attempt) = slot.as_ref() {
+                attempt.cancel();
+            }
+        }
+        if let Some(composer) = &mut self.composer {
+            if let Some(lease) = composer.recovery.lease.take() {
+                if let Some(service) = &self.recovery {
+                    let _ = service.release(lease);
+                } else {
+                    std::mem::forget(lease);
+                }
+            }
+        }
+        // Pending request leases retain staging; no fabricated worker retirement
+        // or shutdown recovery acknowledgment. Session's Drop cancels its host.
     }
 }
 
@@ -6328,6 +7759,23 @@ fn message_row(
         )
 }
 
+fn candidate_auth_label(
+    incoming: discovery::AuthMethod,
+    outgoing: discovery::AuthMethod,
+) -> String {
+    let label = |auth| match auth {
+        discovery::AuthMethod::Password => "Password",
+        discovery::AuthMethod::OAuth2 => "OAuth",
+        discovery::AuthMethod::None => "None",
+        discovery::AuthMethod::Unsupported => "Unsupported",
+    };
+    format!(
+        "Incoming: {} · Outgoing: {}",
+        label(incoming),
+        label(outgoing)
+    )
+}
+
 fn candidate_picker(
     report: &DiscoveryReport,
     selected: usize,
@@ -6347,6 +7795,7 @@ fn candidate_picker(
             .children(report.candidates.iter().enumerate().map(|(index, candidate)| {
                 let name = candidate.provider_name.clone();
                 let source = source_label(candidate.source);
+                let auth = candidate_auth_label(candidate.incoming.auth, candidate.outgoing.auth);
                 let email = email.clone();
                 Button::new(SharedString::from(format!("server-candidate-{index}")))
                     .ghost()
@@ -6354,7 +7803,7 @@ fn candidate_picker(
                     .selected(index == selected)
                     .w_full()
                     .px_2()
-                    .accessibility_label(format!("Use {name} settings from {source}"))
+                    .accessibility_label(format!("Use {name} settings from {source}. {auth}"))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         if let Some(setup) = this.setup.as_mut() {
                             setup.selected_candidate = index;
@@ -6385,10 +7834,12 @@ fn candidate_picker(
                             .items_center()
                             .justify_between()
                             .child(
-                                div()
-                                    .text_size(px(12.))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(name),
+                                v_flex()
+                                    .min_w_0()
+                                    .flex_1()
+                                    .items_start()
+                                    .child(div().text_size(px(12.)).font_weight(FontWeight::MEDIUM).child(name))
+                                    .child(div().text_size(px(10.)).text_color(cx.theme().muted_foreground).child(auth)),
                             )
                             .child(
                                 div()
@@ -7025,6 +8476,49 @@ fn initials(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn saved_storage_recovery_uses_mailbox_not_import_setup() {
+        assert!(matches!(
+            super::startup_view(super::account_session::StartupRoute::StorageRecovery),
+            super::View::Mailbox
+        ));
+        assert!(matches!(
+            super::startup_view(super::account_session::StartupRoute::Mailbox),
+            super::View::Mailbox
+        ));
+        assert!(matches!(
+            super::startup_view(super::account_session::StartupRoute::FirstRun),
+            super::View::Setup
+        ));
+    }
+
+    #[test]
+    fn candidate_picker_distinguishes_explicit_auth_choices() {
+        use megamail_core::discovery::AuthMethod::{None, OAuth2, Password, Unsupported};
+        let labels = [
+            super::candidate_auth_label(OAuth2, OAuth2),
+            super::candidate_auth_label(OAuth2, Password),
+            super::candidate_auth_label(Password, OAuth2),
+            super::candidate_auth_label(Password, Password),
+        ];
+        assert_eq!(
+            labels
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            4
+        );
+        assert_eq!(labels[1], "Incoming: OAuth · Outgoing: Password");
+        assert_eq!(
+            super::candidate_auth_label(Password, None),
+            "Incoming: Password · Outgoing: None"
+        );
+        assert_eq!(
+            super::candidate_auth_label(Unsupported, Password),
+            "Incoming: Unsupported · Outgoing: Password"
+        );
+    }
+
+    #[test]
     fn opening_a_thread_starts_at_the_subject_and_only_member_navigation_follows() {
         let key = |uid| super::MessageKey {
             account_id: 1,
@@ -7058,6 +8552,28 @@ mod tests {
     }
 
     #[test]
+    fn managed_reader_markup_preserves_exact_semantic_plain_and_quote_variants() {
+        let cached = super::ReaderBody::new(
+            super::MessageKey {
+                account_id: 7,
+                folder_path: "INBOX".into(),
+                uid: 42,
+            },
+            "Current <literal>\n\n> Earlier",
+            "<p><b>Current &lt;literal&gt;</b></p><blockquote>Earlier</blockquote>".into(),
+            Some("<p><b>Current &lt;literal&gt;</b></p>".into()),
+        );
+        assert_eq!(cached.markup(false, true), cached.html);
+        assert_eq!(cached.markup(false, false), cached.html_without_quote);
+        assert_eq!(cached.markup(true, true), cached.plain_html);
+        assert_eq!(cached.markup(true, false), cached.plain_html_without_quote);
+        assert!(cached.markup(false, true).contains("<b>"));
+        assert!(!cached.markup(true, true).contains("<b>"));
+        assert!(cached.markup(true, true).contains("&lt;literal&gt;"));
+        assert!(!cached.markup(false, false).contains("Earlier"));
+    }
+
+    #[test]
     fn reader_cache_keeps_formatted_quotes_and_counts_shared_markup_once() {
         let key = super::MessageKey {
             account_id: 1,
@@ -7088,6 +8604,108 @@ mod tests {
     use super::{composer_can_close, composer_can_edit, composer_operation_pending};
 
     #[test]
+    fn actual_reader_cache_retirement_removes_only_the_changed_mailbox_scope() {
+        use std::collections::{HashMap, VecDeque};
+        let make = |account_id, folder_path: &str| {
+            super::ReaderBody::new(
+                super::MessageKey {
+                    account_id,
+                    folder_path: folder_path.into(),
+                    uid: 7,
+                },
+                "synthetic cached text",
+                "".into(),
+                None,
+            )
+        };
+        let mut cache = VecDeque::from([make(7, "INBOX"), make(7, "Archive"), make(8, "INBOX")]);
+        let old = HashMap::from([(
+            (7, "INBOX".into()),
+            super::live::NativeMailboxEpoch {
+                uid_validity: 10,
+                generation: 1,
+            },
+        )]);
+        let new = HashMap::from([(
+            (7, "INBOX".into()),
+            super::live::NativeMailboxEpoch {
+                uid_validity: 11,
+                generation: 2,
+            },
+        )]);
+        let retired = super::changed_mailbox_scopes(&old, &new);
+        super::retire_reader_body_cache(&mut cache, &retired);
+        assert_eq!(cache.len(), 2);
+        assert!(
+            cache
+                .iter()
+                .all(|body| body.key.account_id != 7 || body.key.folder_path != "INBOX")
+        );
+    }
+
+    #[test]
+    fn direct_uncertain_worker_completion_locks_compose_send_save_and_close() {
+        let mut live = super::LiveMailbox::synthetic_empty();
+        live.synthetic_pending_send(4, 81);
+        let compact = super::live::compact_worker_event(
+            megamail_core::worker::WorkerEvent::SendUnknown {
+                request_id: 81,
+                reason: "opaque acknowledgement failure, not classified by text".into(),
+            },
+            false,
+        )
+        .unwrap();
+        // Reject a different owner before consuming the matching pending send.
+        assert!(live.record_send_completion(5, &compact).is_none());
+        live.record_send_completion(4, &compact).unwrap();
+        // No current account is selected: the production composer resolves its
+        // owner/request result independently of snapshot's rail-account result.
+        let result = live.send_result_for(4, 81).unwrap();
+        assert!(live.send_result_for(5, 81).is_none());
+        assert!(live.send_result_for(4, 82).is_none());
+        assert!(result.uncertain);
+        assert!(composer_operation_pending(
+            false,
+            false,
+            false,
+            result.uncertain
+        ));
+        assert!(!composer_can_edit(
+            false,
+            false,
+            false,
+            false,
+            result.uncertain
+        ));
+        assert!(!composer_can_close(false, false, false, result.uncertain));
+        assert!(live.record_send_completion(4, &compact).is_none());
+    }
+
+    #[test]
+    fn direct_failed_completion_remains_editable_and_recoverable() {
+        let mut live = super::LiveMailbox::synthetic_empty();
+        live.synthetic_pending_send(4, 82);
+        let compact = super::live::compact_worker_event(
+            megamail_core::worker::WorkerEvent::SendFinished {
+                request_id: 82,
+                outcome: megamail_core::worker::SendOutcome::Failed,
+            },
+            false,
+        )
+        .unwrap();
+        let result = live.record_send_completion(4, &compact).unwrap();
+        assert!(!result.uncertain);
+        assert!(composer_can_edit(
+            false,
+            false,
+            false,
+            false,
+            result.uncertain
+        ));
+        assert!(composer_can_close(false, false, false, result.uncertain));
+    }
+
+    #[test]
     fn compose_actions_share_one_busy_policy_including_uncertain_delivery() {
         assert!(composer_can_edit(false, false, false, false, false));
         assert!(composer_can_close(false, false, false, false));
@@ -7113,9 +8731,11 @@ mod tests {
 }
 
 fn main() {
-    let mut arguments = std::env::args_os();
-    arguments.next();
-    if arguments.next().as_deref() == Some(std::ffi::OsStr::new("--thunderbird-host")) {
+    let mut arguments = std::env::args_os().skip(1).peekable();
+    if arguments.peek().map(|arg| arg.as_os_str())
+        == Some(std::ffi::OsStr::new("--thunderbird-host"))
+    {
+        arguments.next();
         let result = arguments
             .next()
             .ok_or_else(|| "Missing Thunderbird bridge socket".to_string())
@@ -7126,24 +8746,35 @@ fn main() {
         }
         return;
     }
-    let demo = std::env::args().any(|argument| argument == "--demo");
-    let _instance_lock = if demo {
+    let startup = match feature_integration::startup(arguments.collect()) {
+        Ok(startup) => startup,
+        Err(error) => {
+            eprintln!("Could not start MegaMail: {error}");
+            std::process::exit(2);
+        }
+    };
+    let demo = startup.demo;
+    // Retained outside the app closure through setup, workers and event-loop
+    // shutdown. Forwarded/error returns before GPUI or any worker is created.
+    let activation = if demo {
         None
     } else {
         let Some(config_dir) = config::config_base() else {
             eprintln!("Could not create MegaMail's private configuration directory.");
-            return;
+            std::process::exit(1);
         };
-        match instance::acquire(&config_dir.join("instance.lock")) {
-            Ok(lock) => Some(lock),
+        match instance::start_activation(&config_dir, startup.uri.as_deref()) {
+            Ok(instance::ActivationStartup::Primary(inbox)) => Some(Arc::new(inbox)),
+            Ok(instance::ActivationStartup::Forwarded) => return,
             Err(error) => {
                 eprintln!(
                     "Could not start MegaMail: another instance may be using its mail account data ({error})."
                 );
-                return;
+                std::process::exit(1);
             }
         }
     };
+    let activation_for_app = activation.clone();
     gpui_kit::application()
         .with_assets(gpui_kit::assets::AllAssets)
         .run(move |cx| {
@@ -7165,9 +8796,14 @@ fn main() {
                 ..TitleBar::window_options()
             };
             gpui_kit::open_window(options, cx, |window, cx| {
-                cx.new(|cx| MailApp::new(window, cx, demo))
+                cx.new(|cx| MailApp::new(window, cx, demo, activation_for_app.clone()))
             })
             .expect("Failed to open MegaMail window");
             cx.activate(true);
         });
+    // Workers have no joined retirement acknowledgment. Keep the primary lock
+    // until process teardown, rather than unlock while an admitted send may
+    // still consume attachments/Outbox. The next start verifies stale sockets.
+    // This is not graceful worker/socket shutdown or a recovery flush receipt.
+    std::mem::forget(activation);
 }

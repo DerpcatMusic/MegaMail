@@ -321,9 +321,75 @@ const IDLE_DONE_TIMEOUT: Duration = Duration::from_secs(5);
 /// wedged-connection reason as [`IDLE_DONE_TIMEOUT`].
 const IDLE_START_TIMEOUT: Duration = Duration::from_secs(10);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NativeMutationToken {
+    pub batch_id: u64,
+    pub item_index: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NativeMutationScope {
+    Imap { uid_validity: u32, generation: u64, session: u64 },
+    Thunderbird { session: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NativeMutationAction {
+    SetSeen(bool),
+    SetFlagged(bool),
+    Move { destination: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeMutationRequest {
+    pub token: NativeMutationToken,
+    pub path: String,
+    pub uid: u32,
+    pub scope: NativeMutationScope,
+    pub action: NativeMutationAction,
+    /// Undo checks the previously confirmed flag before submitting another write.
+    pub required_current_flag: Option<bool>,
+}
+impl NativeMutationRequest {
+    pub fn valid(&self) -> bool {
+        fn path(value: &str) -> bool { !value.is_empty() && value.len() <= 1024 && !value.chars().any(char::is_control) }
+        self.token.batch_id != 0 && self.token.item_index < 500 && self.uid != 0 && path(&self.path)
+            && match self.scope {
+                NativeMutationScope::Imap { uid_validity, generation, session } => uid_validity != 0 && generation != 0 && session != 0,
+                NativeMutationScope::Thunderbird { session } => session != 0,
+            }
+            && match &self.action {
+                NativeMutationAction::Move { destination } => self.required_current_flag.is_none() && path(destination) && destination != &self.path,
+                _ => true,
+            }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NativeMutationOutcome {
+    Succeeded,
+    Rejected(String),
+    Uncertain(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeMutationReceipt {
+    pub request: NativeMutationRequest,
+    pub outcome: NativeMutationOutcome,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueuedCancelRequest { pub id: u32, pub send_at: Option<i64>, pub session: u64 }
+
+#[path = "worker/native_mutation.rs"]
+mod native_mutation;
+
 /// A request from the UI to the worker.
 #[derive(Debug)]
 pub enum MailRequest {
+    /// Ordered native mutation with caller-owned identity and terminal receipt.
+    NativeMutation(NativeMutationRequest),
+    CancelQueued(QueuedCancelRequest),
     /// Load the message summaries for a folder.
     LoadMessages { folder_id: u32, path: String },
     /// Resync a folder's message list in the background: the same fetch as
@@ -340,6 +406,14 @@ pub enum MailRequest {
         message_id: u32,
         path: String,
         uid: u32,
+    },
+    /// Native direct IMAP read bound to the mailbox generation selected by the
+    /// caller. Legacy callers keep LoadBody unchanged.
+    LoadBodyAtEpoch {
+        message_id: u32,
+        path: String,
+        uid: u32,
+        expected_generation: u64,
     },
     /// Load several messages' bodies from one folder in a single IMAP fetch.
     ///
@@ -659,6 +733,10 @@ pub enum SendOutcome {
 /// An event pushed from the worker back to the UI.
 #[derive(Debug)]
 pub enum WorkerEvent {
+    NativeWorkerSession { session: u64 },
+    NativeWorkerStopped { session: u64 },
+    NativeMutationFinished(NativeMutationReceipt),
+    QueuedCancelFinished { request: QueuedCancelRequest, canceled: bool },
     /// A batch of a folder's attachments was described (not downloaded).
     /// `remaining` is how many of its messages are still unscanned.
     AttachmentsScanned { folder_path: String, added: u32, remaining: u32 },
@@ -786,6 +864,34 @@ pub enum WorkerEvent {
         path: String,
         body: String,
     },
+    /// Committed mailbox invalidation. The worker callback supplies account
+    /// scope. Retire old reader/header state before accepting new scope data.
+    MailboxEpochChanged {
+        path: String,
+        uid_validity: u32,
+        generation: u64,
+    },
+    /// Generation captured before this read, not the current value at emission.
+    BodyAtEpoch {
+        message_id: u32,
+        path: String,
+        uid: u32,
+        generation: u64,
+        body: String,
+        /// Trust, unsubscribe and invitation data from the same stamped read.
+        check: Option<crate::models::SenderCheck>,
+        /// None for a cached body without a definitive attachment read.
+        has_attachments: Option<bool>,
+    },
+    /// Terminal response for a stale, unavailable or failed versioned read.
+    BodyEpochStale {
+        message_id: u32,
+        path: String,
+        uid: u32,
+        expected_generation: u64,
+        actual_generation: Option<u64>,
+        reason: String,
+    },
     /// A message the cache listed is no longer in `path` on the server; its
     /// cached row has been dropped.
     Gone {
@@ -837,6 +943,13 @@ pub enum WorkerEvent {
         request_id: u64,
         outcome: SendOutcome,
     },
+    /// SMTP submission may have been accepted, but its acknowledgement was
+    /// lost. A correlated caller must lock repeat Send until informed review.
+    /// This replaces SendFinished for this attempt; it is not definite failure.
+    SendUnknown {
+        request_id: u64,
+        reason: String,
+    },
     /// A message that could be neither sent, queued nor saved as a draft, handed
     /// back so the app can open it in a composer again (#340): its composer
     /// closed when Send or Save was pressed, so this is the only copy left.
@@ -873,6 +986,472 @@ impl WorkerEvent {
 }
 
 type ImapSession = Session<ImapIo<TlsStream<TcpStream>>>;
+
+// run_imap owns one account per current-thread runtime. Its child IDLE watchers
+// use the same account. A second connection keeps SELECT observation local to
+// this worker without changing the shared ImapIo/public GTK API.
+thread_local! {
+    static IMAP_EPOCH_CACHE: std::cell::RefCell<Option<(u32, Cache)>> = const { std::cell::RefCell::new(None) };
+    static IMAP_UID_REQUEST_EPOCH: std::cell::RefCell<Option<(String, u64)>> = const { std::cell::RefCell::new(None) };
+    static IMAP_EPOCH_REQUIRED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static IMAP_EPOCH_EMIT: std::cell::RefCell<Option<std::rc::Rc<dyn Fn(WorkerEvent)>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[derive(Default)]
+struct EpochValidation {
+    online: std::collections::HashSet<u32>,
+    generations: std::collections::HashMap<(u32, String), u64>,
+    needs_headers: std::collections::HashSet<(u32, String)>,
+    invalidated: std::collections::HashSet<(u32, String)>,
+}
+
+static IMAP_EPOCH_VALIDATION: std::sync::LazyLock<std::sync::Mutex<EpochValidation>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn set_epoch_connection_state(account_id: u32, online: bool) {
+    if let Ok(mut state) = IMAP_EPOCH_VALIDATION.lock() {
+        state.generations.retain(|(id, _), _| *id != account_id);
+        if online {
+            state.online.insert(account_id);
+        } else {
+            state.online.remove(&account_id);
+        }
+    }
+}
+
+/// Serialized with cache-lane reads: invalidation and publication of the new
+/// epoch form one boundary. Missing UIDVALIDITY never validates UID cache.
+fn observe_selected_epoch(
+    path: &str,
+    uid_validity: Option<u32>,
+) -> Result<(), async_imap::error::Error> {
+    IMAP_EPOCH_CACHE.with(|context| {
+        let context = context.borrow();
+        let Some((account_id, cache)) = context.as_ref() else {
+            return if IMAP_EPOCH_REQUIRED.with(|required| required.get()) {
+                Err(std::io::Error::other("mailbox epoch persistence unavailable; UID access is blocked").into())
+            } else { Ok(()) };
+        };
+        let mut state = IMAP_EPOCH_VALIDATION.lock().map_err(|_| {
+            std::io::Error::other("mailbox epoch validation lock unavailable")
+        })?;
+        let key = (*account_id, path.to_string());
+        state.generations.remove(&key);
+        let uid_validity = uid_validity.filter(|v| *v != 0).ok_or_else(|| {
+            std::io::Error::other("SELECT did not provide a valid UIDVALIDITY; UID access is blocked")
+        })?;
+        let epoch = cache.observe_uid_validity(*account_id, path, uid_validity)
+            .map_err(|e| std::io::Error::other(format!("could not persist UIDVALIDITY: {e}")))?;
+        if epoch.invalidated {
+            state.needs_headers.insert(key.clone());
+            state.invalidated.insert(key.clone());
+            IMAP_EPOCH_EMIT.with(|emit| {
+                if let Some(emit) = emit.borrow().as_ref() {
+                    emit(WorkerEvent::MailboxEpochChanged {
+                        path: path.to_string(), uid_validity, generation: epoch.generation,
+                    });
+                }
+            });
+            if let Ok(mut tried) = ATTACHMENT_PREFETCH_TRIED.lock() {
+                tried.retain(|(id, scope, _)| id != account_id || scope != path);
+            }
+        }
+        state.generations.insert(key, epoch.generation);
+        let request_stale = IMAP_UID_REQUEST_EPOCH.with(|request| {
+            request.borrow().as_ref().is_some_and(|(scope, generation)| {
+                scope == path && *generation != epoch.generation
+            })
+        });
+        if request_stale {
+            return Err(std::io::Error::other("UIDVALIDITY changed while this UID request was in progress; stale UID access is blocked").into());
+        }
+        Ok(())
+    })
+}
+
+/// Offline cache is an explicitly local snapshot, not a validated server view.
+/// While online, only a scope observed by SELECT/EXAMINE may use its UID cache.
+fn with_imap_uid_cache<T>(
+    cache: &Cache,
+    account_id: u32,
+    path: &str,
+    read: impl FnOnce() -> T,
+) -> Option<T> {
+    let state = IMAP_EPOCH_VALIDATION.lock().ok()?;
+    let epoch = cache.mailbox_epoch(account_id, path).ok()?;
+    epoch.uid_validity?;
+    if state
+        .needs_headers
+        .contains(&(account_id, path.to_string()))
+        || (state.online.contains(&account_id)
+            && state.generations.get(&(account_id, path.to_string())) != Some(&epoch.generation))
+    {
+        return None;
+    }
+    // Keep the lock through the read/emission, so SELECT cannot invalidate
+    // between validation and returning a cached body on another thread.
+    Some(read())
+}
+
+fn imap_uid_request_path(req: &MailRequest) -> Option<&str> {
+    match req {
+        MailRequest::LoadBody { path, .. }
+        | MailRequest::LoadBodyAtEpoch { path, .. }
+        | MailRequest::LoadBodies { path, .. }
+        | MailRequest::LoadSource { path, .. }
+        | MailRequest::LoadAttachments { path, .. }
+        | MailRequest::SetSeen { path, .. }
+        | MailRequest::SetFlagged { path, .. }
+        | MailRequest::SetKeyword { path, .. }
+        | MailRequest::MarkSpam { path, .. }
+        | MailRequest::MarkHam { path, .. }
+        | MailRequest::MarkHamMany { path, .. }
+        | MailRequest::MoveMessage { path, .. }
+        | MailRequest::MoveMessages { path, .. }
+        | MailRequest::PurgeMessages { path, .. }
+        | MailRequest::ExportRaw { path, .. }
+        | MailRequest::DeleteAttachment { path, .. } => Some(path),
+        _ => None,
+    }
+}
+
+/// Reject a request naming the old UID space instead of fetching/mutating a
+/// different message that reused the UID. Fresh headers must be requested again.
+async fn validate_imap_uid_request(
+    req: &MailRequest,
+    session: &mut ImapSession,
+    cache: Option<&Cache>,
+    account_id: u32,
+    emit: &impl Fn(WorkerEvent),
+) -> bool {
+    let Some(path) = imap_uid_request_path(req) else {
+        return true;
+    };
+    let before = cache.and_then(|c| c.mailbox_epoch(account_id, path).ok());
+    let result = sel(session, path).await;
+    let unchanged = cache.is_none()
+        || before
+            .zip(cache.and_then(|c| c.mailbox_epoch(account_id, path).ok()))
+            .is_some_and(|(a, b)| a.uid_validity.is_some() && a.generation == b.generation);
+    let headers_ready = IMAP_EPOCH_VALIDATION
+        .lock()
+        .map(|state| {
+            !state
+                .needs_headers
+                .contains(&(account_id, path.to_string()))
+        })
+        .unwrap_or(false);
+    if result.is_ok() && unchanged && headers_ready {
+        return true;
+    }
+    emit(WorkerEvent::error(match result {
+        Err(e) => format!("Could not validate this mailbox before UID access: {e}"),
+        Ok(_) => "The mailbox UIDVALIDITY changed. This request was not applied; refresh the folder and select the message again.".into(),
+    }));
+    match req {
+        MailRequest::LoadBodyAtEpoch {
+            message_id,
+            uid,
+            expected_generation,
+            ..
+        } => {
+            finish_epoch_body_stale(
+                cache,
+                account_id,
+                path,
+                *uid,
+                *message_id,
+                *expected_generation,
+                "The mailbox epoch could not be validated. Refresh the folder.",
+                emit,
+            );
+        }
+        MailRequest::LoadBody {
+            message_id, uid, ..
+        } => emit(WorkerEvent::Gone {
+            message_id: *message_id,
+            path: path.into(),
+            uid: *uid,
+        }),
+        MailRequest::LoadBodies { items, .. } => {
+            for (message_id, uid) in items {
+                emit(WorkerEvent::Gone {
+                    message_id: *message_id,
+                    path: path.into(),
+                    uid: *uid,
+                });
+            }
+        }
+        MailRequest::SetSeen { uid, .. } => emit(WorkerEvent::SeenSettled {
+            path: path.into(),
+            uid: *uid,
+        }),
+        MailRequest::MoveMessages { .. }
+        | MailRequest::PurgeMessages { .. }
+        | MailRequest::MarkHamMany { .. } => emit(WorkerEvent::BulkComplete),
+        MailRequest::ExportRaw { token, .. } => emit(WorkerEvent::RawExported {
+            token: *token,
+            raw: Err("Mailbox epoch could not be validated".into()),
+        }),
+        MailRequest::DeleteAttachment {
+            message_id,
+            name,
+            size,
+            ..
+        } => emit(WorkerEvent::AttachmentNotDeleted {
+            message_id: *message_id,
+            name: name.clone(),
+            size: *size,
+        }),
+        _ => {}
+    }
+    false
+}
+
+fn epoch_unchanged(cache: Option<&Cache>, account_id: u32, path: &str, epoch: Option<u64>) -> bool {
+    cache.is_none()
+        || cache
+            .and_then(|c| c.mailbox_epoch(account_id, path).ok())
+            .is_some_and(|current| {
+                current.uid_validity.is_some() && Some(current.generation) == epoch
+            })
+}
+
+fn serve_imap_cached_body(
+    cache: &Cache,
+    account_id: u32,
+    path: &str,
+    uid: u32,
+    message_id: u32,
+    emit: &impl Fn(WorkerEvent),
+) -> bool {
+    with_imap_uid_cache(cache, account_id, path, || {
+        serve_cached_body(cache, account_id, path, uid, message_id, emit)
+    })
+    .unwrap_or(false)
+}
+
+fn finish_epoch_body_stale(
+    cache: Option<&Cache>,
+    account_id: u32,
+    path: &str,
+    uid: u32,
+    message_id: u32,
+    expected_generation: u64,
+    reason: &str,
+    emit: &impl Fn(WorkerEvent),
+) {
+    let actual_generation = cache
+        .and_then(|c| c.mailbox_epoch(account_id, path).ok())
+        .filter(|epoch| epoch.uid_validity.is_some())
+        .map(|epoch| epoch.generation);
+    emit(WorkerEvent::BodyEpochStale {
+        message_id,
+        path: path.to_string(),
+        uid,
+        expected_generation,
+        actual_generation,
+        reason: reason.to_string(),
+    });
+}
+
+/// Other engines do not own an IMAP UIDVALIDITY namespace. Finish a misplaced
+/// qualified request without I/O or fabricating an epoch/legacy body response.
+fn reject_unsupported_epoch_body(request: &MailRequest, emit: &impl Fn(WorkerEvent)) {
+    if let MailRequest::LoadBodyAtEpoch { message_id, path, uid, expected_generation } = request {
+        emit(WorkerEvent::BodyEpochStale {
+            message_id: *message_id,
+            path: path.clone(),
+            uid: *uid,
+            expected_generation: *expected_generation,
+            actual_generation: None,
+            reason: "UIDVALIDITY-qualified body reads are unavailable for this backend.".into(),
+        });
+    }
+}
+
+fn capture_body_epoch(
+    cache: Option<&Cache>,
+    account_id: u32,
+    path: &str,
+    expected: u64,
+) -> Option<u64> {
+    cache
+        .and_then(|c| c.mailbox_epoch(account_id, path).ok())
+        .filter(|epoch| epoch.uid_validity.is_some() && epoch.generation == expected)
+        .map(|epoch| epoch.generation)
+}
+
+/// True means the request completed (body or stale); false means cache miss.
+/// The immutable stamp is captured before reading and checked after reading.
+fn serve_cached_body_at_epoch(
+    cache: Option<&Cache>,
+    account_id: u32,
+    path: &str,
+    uid: u32,
+    message_id: u32,
+    expected_generation: u64,
+    emit: &impl Fn(WorkerEvent),
+) -> bool {
+    let Ok(validation) = IMAP_EPOCH_VALIDATION.lock() else {
+        finish_epoch_body_stale(
+            cache,
+            account_id,
+            path,
+            uid,
+            message_id,
+            expected_generation,
+            "The mailbox validation lock is unavailable.",
+            emit,
+        );
+        return true;
+    };
+    let Some(captured) = capture_body_epoch(cache, account_id, path, expected_generation) else {
+        finish_epoch_body_stale(
+            cache,
+            account_id,
+            path,
+            uid,
+            message_id,
+            expected_generation,
+            "The message belongs to an unavailable or changed mailbox epoch. Refresh the folder.",
+            emit,
+        );
+        return true;
+    };
+    let Some(cache) = cache else { return true };
+    if validation
+        .needs_headers
+        .contains(&(account_id, path.to_string()))
+    {
+        return false;
+    }
+    // This is a stamped persisted namespace snapshot, not proof of the current
+    // online server epoch. Do not wait for SELECT or unrelated network work.
+    let Some(body) = cache.load_body(account_id, path, uid) else {
+        return false;
+    };
+    if body == "(empty message)" {
+        return false;
+    }
+    let check = cache.load_sender_check(account_id, path, uid);
+    if capture_body_epoch(Some(cache), account_id, path, captured).is_none() {
+        finish_epoch_body_stale(
+            Some(cache),
+            account_id,
+            path,
+            uid,
+            message_id,
+            expected_generation,
+            "The mailbox epoch changed during the cache read. Refresh the folder.",
+            emit,
+        );
+    } else {
+        drop(validation); // The stamp makes a later queued event safe to reject.
+        emit(WorkerEvent::BodyAtEpoch {
+            message_id,
+            path: path.to_string(),
+            uid,
+            generation: captured,
+            body,
+            check,
+            has_attachments: None,
+        });
+    }
+    true
+}
+
+/// The actual direct IMAP network arm uses this completion/cache-write seam.
+/// Its tests inject only the external read future, never a replacement worker.
+async fn complete_body_at_epoch(
+    cache: Option<&Cache>,
+    account_id: u32,
+    path: &str,
+    uid: u32,
+    message_id: u32,
+    expected_generation: u64,
+    emit: &impl Fn(WorkerEvent),
+    read: impl std::future::Future<
+        Output = Result<(String, crate::models::SenderCheck, bool), async_imap::error::Error>,
+    >,
+) {
+    let Some(captured) = capture_body_epoch(cache, account_id, path, expected_generation) else {
+        finish_epoch_body_stale(
+            cache,
+            account_id,
+            path,
+            uid,
+            message_id,
+            expected_generation,
+            "The requested UID belongs to a stale or unavailable mailbox epoch. Refresh the folder.",
+            emit,
+        );
+        return; // The read future has never been polled.
+    };
+    let result = read.await;
+    let Ok(_validation) = IMAP_EPOCH_VALIDATION.lock() else {
+        finish_epoch_body_stale(
+            cache,
+            account_id,
+            path,
+            uid,
+            message_id,
+            expected_generation,
+            "The mailbox validation lock is unavailable after the read.",
+            emit,
+        );
+        return;
+    };
+    if capture_body_epoch(cache, account_id, path, captured).is_none() {
+        finish_epoch_body_stale(
+            cache,
+            account_id,
+            path,
+            uid,
+            message_id,
+            expected_generation,
+            "The mailbox epoch changed while this body was fetched. The old result was discarded.",
+            emit,
+        );
+        return;
+    }
+    match result {
+        Ok((body, check, has_attachments)) => {
+            if let Some(cache) = cache {
+                if body_cacheable(&check) {
+                    cache.save_body(account_id, path, uid, &body);
+                }
+                cache.save_sender_check(account_id, path, uid, &check);
+                cache.set_has_attachment(account_id, path, uid, has_attachments);
+            }
+            drop(_validation);
+            // Do not send unversioned sender/attachment events from a versioned
+            // read. They could update a different message after a UID reset.
+            emit(WorkerEvent::BodyAtEpoch {
+                message_id,
+                path: path.to_string(),
+                uid,
+                generation: captured,
+                body,
+                check: Some(check),
+                has_attachments: Some(has_attachments),
+            });
+        }
+        Err(e) => {
+            drop(_validation);
+            finish_epoch_body_stale(
+                cache,
+                account_id,
+                path,
+                uid,
+                message_id,
+                expected_generation,
+                &format!("The body read failed: {e}"),
+                emit,
+            );
+        }
+    }
+}
 
 /// Run blocking work (an HTTP request, a cache query) off the async
 /// threads; a task that panicked reads as an error.
@@ -1001,8 +1580,24 @@ fn cache_lane(
             continue;
         };
         let forward = match req {
+            MailRequest::LoadBodyAtEpoch { message_id, path, uid, expected_generation } => {
+                if protocol != Some(crate::config::Protocol::Imap) {
+                    finish_epoch_body_stale(Some(c), account_id, &path, uid, message_id, expected_generation,
+                        "Versioned body requests are supported only by direct IMAP", &emit);
+                    None
+                } else if serve_cached_body_at_epoch(Some(c), account_id, &path, uid, message_id, expected_generation, &emit) {
+                    None
+                } else {
+                    Some(MailRequest::LoadBodyAtEpoch { message_id, path, uid, expected_generation })
+                }
+            }
             MailRequest::LoadBody { message_id, path, uid } => {
-                if serve_cached_body(c, account_id, &path, uid, message_id, &emit) {
+                let hit = if protocol == Some(crate::config::Protocol::Imap) {
+                    serve_imap_cached_body(c, account_id, &path, uid, message_id, &emit)
+                } else {
+                    serve_cached_body(c, account_id, &path, uid, message_id, &emit)
+                };
+                if hit {
                     None
                 } else {
                     Some(MailRequest::LoadBody { message_id, path, uid })
@@ -1012,7 +1607,11 @@ fn cache_lane(
                 let items: Vec<(u32, u32)> = items
                     .into_iter()
                     .filter(|(message_id, uid)| {
-                        !serve_cached_body(c, account_id, &path, *uid, *message_id, &emit)
+                        !(if protocol == Some(crate::config::Protocol::Imap) {
+                            serve_imap_cached_body(c, account_id, &path, *uid, *message_id, &emit)
+                        } else {
+                            serve_cached_body(c, account_id, &path, *uid, *message_id, &emit)
+                        })
                     })
                     .collect();
                 if items.is_empty() {
@@ -1022,7 +1621,12 @@ fn cache_lane(
                 }
             }
             MailRequest::LoadAttachments { message_id, path, uid, download } => {
-                let items = c.load_attachments(account_id, &path, uid);
+                let items = if protocol == Some(crate::config::Protocol::Imap) {
+                    with_imap_uid_cache(c, account_id, &path, || c.load_attachments(account_id, &path, uid))
+                        .unwrap_or_default()
+                } else {
+                    c.load_attachments(account_id, &path, uid)
+                };
                 if !items.is_empty() {
                     emit(WorkerEvent::Attachments { path: path.to_string(), message_id, items });
                     None
@@ -1184,6 +1788,7 @@ fn is_reader_load(req: &MailRequest) -> bool {
     matches!(
         req,
         MailRequest::LoadBody { .. }
+            | MailRequest::LoadBodyAtEpoch { .. }
             | MailRequest::LoadBodies { .. }
             | MailRequest::LoadSource { .. }
             | MailRequest::LoadAttachments { download: true, .. }
@@ -1284,6 +1889,11 @@ async fn run_imap(
     mut rx: mpsc::UnboundedReceiver<MailRequest>,
     emit: impl Fn(WorkerEvent) + Clone + Send + 'static,
 ) {
+    static NEXT_NATIVE_WORKER_SESSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let native_session = NEXT_NATIVE_WORKER_SESSION.fetch_update(std::sync::atomic::Ordering::Relaxed,
+        std::sync::atomic::Ordering::Relaxed, |n| n.checked_add(1)).unwrap_or(0);
+    emit(WorkerEvent::NativeWorkerSession { session: native_session });
+    let _native_lifetime = native_mutation::Lifetime { session: native_session, emit: emit.clone() };
     // Resolve the password off the main thread: migrate a legacy plaintext
     // password into the keyring (and strip it from disk), otherwise load it from
     // the keyring.
@@ -1335,6 +1945,13 @@ async fn run_imap(
     let cache = Cache::open()
         .map_err(|e| tracing::warn!("cache unavailable: {e}"))
         .ok();
+
+    set_epoch_connection_state(account_id, false);
+    IMAP_EPOCH_REQUIRED.with(|required| required.set(true));
+    IMAP_EPOCH_EMIT.with(|callback| *callback.borrow_mut() = Some(std::rc::Rc::new(emit.clone())));
+    IMAP_EPOCH_CACHE.with(|context| {
+        *context.borrow_mut() = Cache::open().ok().map(|cache| (account_id, cache));
+    });
 
     // Show the account + any cached folders immediately, before any network.
     emit(WorkerEvent::Account(Account {
@@ -1460,19 +2077,34 @@ async fn run_imap(
     // (one notice per session, not one per tagged message).
     let mut local_tags_noticed = false;
     loop {
+        IMAP_UID_REQUEST_EPOCH.with(|request| *request.borrow_mut() = None);
+        let invalidated: Vec<String> = IMAP_EPOCH_VALIDATION.lock().map(|mut state| {
+            let paths = state.invalidated.iter().filter(|(id, _)| *id == account_id)
+                .map(|(_, path)| path.clone()).collect::<Vec<_>>();
+            state.invalidated.retain(|(id, _)| *id != account_id);
+            paths
+        }).unwrap_or_default();
+        for path in invalidated {
+            body_emitted.retain(|(scope, _)| *scope != path);
+            body_prefetch.retain(|(scope, _)| *scope != path);
+            prefetch.retain(|(scope, _)| *scope != path);
+            for job in &mut backfill {
+                if job.path == path { job.remaining = None; }
+            }
+            if let Some(folder) = cache.as_ref().and_then(|c| c.load_folders(account_id)
+                .into_iter().find(|folder| folder.path == path))
+            {
+                backlog.push_back(MailRequest::LoadMessages { folder_id: folder.id, path });
+            }
+        }
         // Back online with something queued: send it before anything else, so a
         // message the user thinks they sent doesn't sit behind a mailbox sync.
-        if session.is_some() {
-            if !outbox_flushed {
-                outbox_flushed = true;
-                flush_outbox(
-                    cache.as_ref(), account_id, &account, None, &mut session, &mut use_envelope,
-                    &emit, false,
-                )
-                .await;
-            }
-        } else {
-            outbox_flushed = false;
+        if claim_connection_flush(session.is_some(), &mut outbox_flushed) {
+            flush_outbox(
+                cache.as_ref(), account_id, &account, None, &mut session, &mut use_envelope,
+                &emit, false,
+            )
+            .await;
         }
 
         if !inbox_watch_spawned && session.is_some() {
@@ -1740,6 +2372,8 @@ async fn run_imap(
         let req = reorder_reader_loads(req, &mut rx, &mut backlog);
 
         if matches!(req, MailRequest::Reconnect) {
+            outbox_flushed = false;
+            set_epoch_connection_state(account_id, false);
             session = connect_and_list(account_id, &account, cache.as_ref(), &emit).await;
             sweep_due = true;
             continue;
@@ -1750,9 +2384,58 @@ async fn run_imap(
             continue;
         }
 
+        if let MailRequest::CancelQueued(request) = req {
+            let canceled = request.id != 0 && request.session == native_session && native_session != 0
+                && cache.as_ref().is_some_and(|c| c.cancel_queued_outbox(account_id, request.id, request.send_at, crate::datefmt::now()).unwrap_or(false));
+            emit(WorkerEvent::QueuedCancelFinished { request, canceled });
+            emit_outbox(cache.as_ref(), account_id, &emit);
+            continue;
+        }
+
+        if let MailRequest::NativeMutation(request) = req {
+            native_mutation::execute(request, &mut session, cache.as_ref(), account_id, &account, native_session, &emit).await;
+            IMAP_UID_REQUEST_EPOCH.with(|stamp| *stamp.borrow_mut() = None);
+            continue;
+        }
+
+        if let MailRequest::LoadBodyAtEpoch { message_id, path, uid, expected_generation } = &req {
+            if serve_cached_body_at_epoch(cache.as_ref(), account_id, path, *uid, *message_id, *expected_generation, &emit) {
+                continue;
+            }
+            let Some(req) = prepare_imap_request(req, &mut session, cache.as_ref(), account_id,
+                &account, &emit, connect_and_list(account_id, &account, cache.as_ref(), &emit)).await else { continue };
+            let MailRequest::LoadBodyAtEpoch { message_id, path, uid, expected_generation } = req else { continue };
+            let Some(sess) = session.as_mut() else { continue };
+            if !validate_imap_uid_request(&MailRequest::LoadBodyAtEpoch {
+                message_id, path: path.clone(), uid, expected_generation,
+            }, sess, cache.as_ref(), account_id, &emit).await {
+                session = None;
+                set_epoch_connection_state(account_id, false);
+                continue;
+            }
+            // SELECT cannot authorize a caller that named the old generation.
+            // complete_body_at_epoch checks this stamp before polling its read.
+            IMAP_UID_REQUEST_EPOCH.with(|request| *request.borrow_mut() = Some((path.clone(), expected_generation)));
+            complete_body_at_epoch(cache.as_ref(), account_id, &path, uid, message_id,
+                expected_generation, &emit, load_body_retry(&mut session, &account, &path, uid)).await;
+            continue;
+        }
+
         // Bodies of a `LoadBodies` batch that the disk cache couldn't answer, so
         // the network arm below fetches only those.
         let mut pending_bodies: Vec<(u32, u32)> = Vec::new();
+
+        // Online UID reads and mutations validate SELECT before any cached
+        // body/attachment can short-circuit the network arm. Offline cache is
+        // still a local snapshot, served without an invented server epoch.
+        let validated_online = if let Some(sess) = session.as_mut() {
+            if !validate_imap_uid_request(&req, sess, cache.as_ref(), account_id, &emit).await {
+                session = None; // Even a partial SELECT error must not reuse this stream.
+                set_epoch_connection_state(account_id, false);
+                continue;
+            }
+            true
+        } else { false };
 
         // Serve from cache first so mail appears instantly (and offline).
         match &req {
@@ -1790,7 +2473,7 @@ async fn run_imap(
             } => {
                 if cache
                     .as_ref()
-                    .is_some_and(|c| serve_cached_body(c, account_id, path, *uid, *message_id, &emit))
+                    .is_some_and(|c| serve_imap_cached_body(c, account_id, path, *uid, *message_id, &emit))
                 {
                     continue; // already cached; no network needed
                 }
@@ -1801,7 +2484,7 @@ async fn run_imap(
                 // cached costs no network at all.
                 for (message_id, uid) in items {
                     if !cache.as_ref().is_some_and(|c| {
-                        serve_cached_body(c, account_id, path, *uid, *message_id, &emit)
+                        serve_imap_cached_body(c, account_id, path, *uid, *message_id, &emit)
                     }) {
                         pending_bodies.push((*message_id, *uid));
                     }
@@ -1817,7 +2500,8 @@ async fn run_imap(
                 download,
             } => {
                 if let Some(c) = cache.as_ref() {
-                    let items = c.load_attachments(account_id, path, *uid);
+                    let items = with_imap_uid_cache(c, account_id, path, || c.load_attachments(account_id, path, *uid))
+                        .unwrap_or_default();
                     if !items.is_empty() {
                         emit(WorkerEvent::Attachments {
                             path: path.to_string(),
@@ -1837,25 +2521,35 @@ async fn run_imap(
             _ => {}
         }
 
-        // Everything below needs a live session.
-        if session.is_none() {
-            session = connect_and_list(account_id, &account, cache.as_ref(), &emit).await;
-            if session.is_none() {
-                // Still offline; cached data (if any) was already sent. Close
-                // the folder's index anyway (#218): "we tried and could not
-                // reach the server" has to end the list's "Loading more…"
-                // spinner the same way success does, or an unreachable account
-                // is indistinguishable from one that is still streaming — and
-                // in a unified view one such account pins the spinner for
-                // every account's mail.
-                if let MailRequest::LoadMessages { folder_id, .. }
-                | MailRequest::SyncFolder { folder_id, .. } = &req
-                {
-                    emit(WorkerEvent::BackfillDone { folder_id: *folder_id });
+        let Some(req) = prepare_imap_request(
+            req,
+            &mut session,
+            cache.as_ref(),
+            account_id,
+            &account,
+            &emit,
+            connect_and_list(account_id, &account, cache.as_ref(), &emit),
+        )
+        .await
+        else {
+            continue;
+        };
+        if !validated_online {
+            if let Some(sess) = session.as_mut() {
+                if !validate_imap_uid_request(&req, sess, cache.as_ref(), account_id, &emit).await {
+                    session = None;
+                    set_epoch_connection_state(account_id, false);
+                    continue;
                 }
-                continue;
             }
         }
+        let uid_epoch = imap_uid_request_path(&req).and_then(|path| {
+            cache.as_ref().and_then(|c| c.mailbox_epoch(account_id, path).ok()).map(|epoch| epoch.generation)
+        });
+        IMAP_UID_REQUEST_EPOCH.with(|request| {
+            *request.borrow_mut() = imap_uid_request_path(&req)
+                .zip(uid_epoch).map(|(path, generation)| (path.to_string(), generation));
+        });
         // On a connection-shaped failure we drop the session to force a reconnect.
         let mut lost = false;
         // A background resync keeps quiet and leaves IDLE/watching alone.
@@ -1870,6 +2564,7 @@ async fn run_imap(
         }
 
         match req {
+            MailRequest::NativeMutation(_) | MailRequest::CancelQueued(_) => unreachable!("native mutations use their qualified lane"),
             // Served from cache before this network match; never reached here.
             MailRequest::LoadRelated { .. } | MailRequest::LoadThreadSummaries { .. } => {}
             MailRequest::LoadMessages { folder_id, path }
@@ -1904,6 +2599,9 @@ async fn run_imap(
                             // Upsert (not replace) so the background-indexed tail
                             // isn't wiped by a fast first-page load.
                             c.upsert_messages(account_id, &path, &messages);
+                        }
+                        if let Ok(mut state) = IMAP_EPOCH_VALIDATION.lock() {
+                            state.needs_headers.remove(&(account_id, path.clone()));
                         }
                         // Ensure this folder gets fully indexed (if not already
                         // queued this session).
@@ -2000,6 +2698,10 @@ async fn run_imap(
                 uid,
             } => match load_body_retry(&mut session, &account, &path, uid).await {
                 Ok((body, check, has_attachments)) => {
+                    if !epoch_unchanged(cache.as_ref(), account_id, &path, uid_epoch) {
+                        emit(WorkerEvent::Gone { message_id, path, uid });
+                        continue; // Never cache or publish a body fetched in the old epoch.
+                    }
                     if let Some(c) = cache.as_ref() {
                         if body_cacheable(&check) {
                             c.save_body(account_id, &path, uid, &body);
@@ -2034,6 +2736,12 @@ async fn run_imap(
                     let uids: Vec<u32> = group.iter().map(|(_, uid)| *uid).collect();
                     match load_bodies_retry(&mut session, &account, &path, &uids).await {
                         Ok(mut fetched) => {
+                            if !epoch_unchanged(cache.as_ref(), account_id, &path, uid_epoch) {
+                                for (message_id, uid) in group {
+                                    emit(WorkerEvent::Gone { message_id: *message_id, path: path.clone(), uid: *uid });
+                                }
+                                break;
+                            }
                             // The UIDs the server answered without a body.
                             let mut missing: Vec<(u32, u32)> = Vec::new();
                             for (message_id, uid) in group {
@@ -2100,6 +2808,10 @@ async fn run_imap(
                 download: _,
             } => match load_raw_retry(&mut session, &account, &path, uid).await {
                 Ok(raw) => {
+                    if !epoch_unchanged(cache.as_ref(), account_id, &path, uid_epoch) {
+                        emit(WorkerEvent::Gone { message_id, path, uid });
+                        continue;
+                    }
                     let (items, cacheable) = attachments_of(&raw);
                     if let Some(c) = cache.as_ref() {
                         if cacheable {
@@ -2806,8 +3518,12 @@ async fn run_imap(
                     at,
                     &emit,
                 );
-                // The draft it was opened from is superseded by the queued copy.
-                if let Some(o) = message.draft_origin.clone() {
+                // Only a durable queued copy supersedes the draft.
+                if let Some(o) = message
+                    .draft_origin
+                    .clone()
+                    .filter(|_| outcome == SendOutcome::Queued)
+                {
                     if o.account_id == account_id {
                         if let Some(sess) = session.as_mut() {
                             let _ = delete_draft(sess, &o.path, o.uid).await;
@@ -2843,16 +3559,21 @@ async fn run_imap(
             } => {
                 emit(WorkerEvent::Status(i18n("Sending…")));
                 restore_msgid_case(cache.as_ref(), &mut message);
-                match send_smtp(&account, &message).await {
-                    Ok(raw) => {
+                match send_imap_intent(
+                    cache.as_ref(), account_id, &account, &message,
+                    sent_path.as_deref(), request_id, &emit, &AccountSmtp(&account),
+                ).await {
+                    Some((raw, intent_id, state_saved)) => {
                         emit(WorkerEvent::Status(String::new()));
-                        // Save a copy to the Sent folder; sending still counts as
-                        // success even if this part fails.
+                        // Acceptance is independent of Sent-copy storage. Keep the
+                        // durable accepted bytes if this separate step fails.
+                        let mut copy_saved = sent_path.is_none();
                         if let Some(path) = sent_path {
                             let sess = session.as_mut().unwrap();
                             if let Err(e) = append_to_sent(sess, &path, &raw).await {
                                 emit(WorkerEvent::error(i18n_f("Message sent, but saving to Sent failed: {e}", &[("e", &(e).to_string())])));
                             } else {
+                                copy_saved = true;
                                 index_sent_copy(
                                     account_id, &mut session, &account, &path,
                                     &mut use_envelope, cache.as_ref(), &emit,
@@ -2884,24 +3605,16 @@ async fn run_imap(
                                 }
                             }
                         }
-                        // This version replaces the queued one it was edited from.
-                        drop_superseded_outbox(cache.as_ref(), account_id, &message, &emit);
+                        if let Some(c) = cache.as_ref() {
+                            retire_accepted_intent(c, account_id, intent_id, state_saved, copy_saved, &emit);
+                        }
+                        emit_outbox(cache.as_ref(), account_id, &emit);
                         emit(WorkerEvent::Sent);
-                        finish_send(request_id, SendOutcome::Sent, &emit);
                     }
-                    Err(e) => {
+                    None => {
+                        // send_imap_intent already completed the accepted request,
+                        // and retained the draft and durable failure/unknown copy.
                         emit(WorkerEvent::Status(String::new()));
-                        let outcome = send_failed(
-                            cache.as_ref(),
-                            account_id,
-                            &account,
-                            &message,
-                            sent_path.as_deref(),
-                            &e.to_string(),
-                            smtp_refused(&e),
-                            &emit,
-                        );
-                        finish_send(request_id, outcome, &emit);
                     }
                 }
             }
@@ -2999,7 +3712,8 @@ async fn run_imap(
                 }
             }
 
-            MailRequest::Reconnect | MailRequest::Settle { .. } => unreachable!("handled above"),
+            MailRequest::Reconnect | MailRequest::Settle { .. }
+            | MailRequest::LoadBodyAtEpoch { .. } => unreachable!("handled above"),
         }
 
         if invalidates_selection {
@@ -3008,6 +3722,7 @@ async fn run_imap(
             }
         }
         if lost {
+            set_epoch_connection_state(account_id, false);
             session = None;
         }
     }
@@ -3015,6 +3730,83 @@ async fn run_imap(
     if let Some(mut session) = session {
         let _ = session.logout().await;
     }
+}
+
+/// Settle local Outbox requests before reconnecting, and complete sends even
+/// when incoming mail is unreachable. The lazy connection future is the only
+/// injected dependency: tests use a failed connection without credentials,
+/// profile I/O, SMTP, or background Outbox flushing.
+async fn prepare_imap_request(
+    req: MailRequest,
+    session: &mut Option<ImapSession>,
+    cache: Option<&Cache>,
+    account_id: u32,
+    account: &AccountConfig,
+    emit: &impl Fn(WorkerEvent),
+    connect: impl std::future::Future<Output = Option<ImapSession>>,
+) -> Option<MailRequest> {
+    match req {
+        MailRequest::CancelQueued(request) => { emit(WorkerEvent::QueuedCancelFinished { request, canceled: false }); return None; }
+        MailRequest::LoadOutbox => {
+            emit_outbox(cache, account_id, emit);
+            return None;
+        }
+        MailRequest::DeleteOutbox { id } => {
+            delete_queued(cache, account_id, id, emit);
+            return None;
+        }
+        _ => {}
+    }
+    if session.is_none() {
+        *session = connect.await;
+    }
+    if session.is_some() {
+        return Some(req);
+    }
+
+    match req {
+        MailRequest::LoadBodyAtEpoch { message_id, path, uid, expected_generation } => {
+            finish_epoch_body_stale(cache, account_id, &path, uid, message_id, expected_generation,
+                "Incoming mail is offline and this body is not cached.", emit);
+        }
+        MailRequest::Send {
+            mut message,
+            sent_path,
+            request_id,
+        } => {
+            restore_msgid_case(cache, &mut message);
+            let outcome = match message.send_at.filter(|at| *at > crate::datefmt::now()) {
+                Some(at) => schedule_send(
+                    cache,
+                    account_id,
+                    account,
+                    &message,
+                    sent_path.as_deref(),
+                    at,
+                    emit,
+                ),
+                None => send_failed(
+                    cache,
+                    account_id,
+                    account,
+                    &message,
+                    sent_path.as_deref(),
+                    &i18n("Incoming mail is offline"),
+                    false,
+                    emit,
+                ),
+            };
+            // There is no live session to retire a server draft. Keep it (and
+            // its cached copy), especially when durable queueing failed.
+            finish_send(request_id, outcome, emit);
+        }
+        MailRequest::LoadMessages { folder_id, .. } | MailRequest::SyncFolder { folder_id, .. } => {
+            // End the list's loading spinner even when reconnect failed.
+            emit(WorkerEvent::BackfillDone { folder_id });
+        }
+        _ => {}
+    }
+    None
 }
 
 /// Connect, announce the account, and list folders, updating the cache. Emits a
@@ -3031,6 +3823,7 @@ async fn connect_and_list(
 
     let result = match connect(account).await {
         Ok(mut session) => {
+            set_epoch_connection_state(account_id, true);
             emit(WorkerEvent::Account(Account {
                 id: account_id,
                 name: account.name.clone(),
@@ -3323,7 +4116,9 @@ async fn run_one_prefetch(
             .map(|c| c.attachments_checked(account_id, &path, uid))
             .unwrap_or(false);
         if !already {
+            let epoch = cache.and_then(|c| c.mailbox_epoch(account_id, &path).ok()).map(|e| e.generation);
             if let Ok(raw) = load_raw_retry(session, account, &path, uid).await {
+                if !epoch_unchanged(cache, account_id, &path, epoch) { return; }
                 // OpenPGP mail is left for an explicit open (#133): nothing
                 // of it is cached, and decrypting here would raise the
                 // passphrase prompt out of nowhere.
@@ -3452,12 +4247,8 @@ async fn run_one_body_prefetch(
     // verdict stored alongside it. The two must always travel together: the UI
     // renders from whichever arrives, and a body without its verdict leaves the
     // sender badge blank with no second chance to fill it.
-    if let Some(body) = cache.and_then(|c| c.load_body(account_id, &path, uid)) {
+    if cache.is_some_and(|c| serve_imap_cached_body(c, account_id, &path, uid, uid, emit)) {
         queue.pop_front();
-        emit(WorkerEvent::Body { message_id: uid, path: path.clone(), body });
-        if let Some(check) = cache.and_then(|c| c.load_sender_check(account_id, &path, uid)) {
-            emit(WorkerEvent::SenderChecked { path: path.to_string(), message_id: uid, check });
-        }
         emitted.insert((path, uid));
         return;
     }
@@ -3469,6 +4260,7 @@ async fn run_one_body_prefetch(
         return;
     }
     queue.pop_front();
+    let epoch = cache.and_then(|c| c.mailbox_epoch(account_id, &path).ok()).map(|e| e.generation);
     let Ok(raw) = load_raw_retry(session, account, &path, uid).await else {
         // One failed read is enough for this session: left out of `emitted`,
         // the message would be queued again by every resync and fetched
@@ -3476,6 +4268,9 @@ async fn run_one_body_prefetch(
         emitted.insert((path, uid));
         return;
     };
+    if !epoch_unchanged(cache, account_id, &path, epoch) {
+        return; // Old prefetched UID; fresh headers must rebuild this queue.
+    }
     {
         // OpenPGP mail (#133) is left for an explicit open: nothing of it is
         // cached or pushed ahead, and rendering it here would decrypt in the
@@ -4257,6 +5052,207 @@ fn guess_mime(name: &str) -> String {
 
 type SmtpError = Box<dyn std::error::Error + Send + Sync>;
 
+/// Lettre does not expose the DATA/ack phase on an I/O error. Only a local
+/// pre-submit failure or an explicit negative SMTP response is safe to retry.
+struct SmtpAttemptFailure {
+    error: SmtpError,
+    uncertain: bool,
+    refused: bool,
+}
+
+trait SmtpSender {
+    async fn send(
+        &self,
+        envelope: &lettre::address::Envelope,
+        raw: &[u8],
+    ) -> Result<(), SmtpAttemptFailure>;
+}
+
+struct AccountSmtp<'a>(&'a AccountConfig);
+
+impl SmtpSender for AccountSmtp<'_> {
+    async fn send(
+        &self,
+        envelope: &lettre::address::Envelope,
+        raw: &[u8],
+    ) -> Result<(), SmtpAttemptFailure> {
+        send_raw_smtp_attempt(self.0, envelope, raw).await
+    }
+}
+
+#[derive(Debug)]
+enum IntentAttempt {
+    Accepted { state_saved: bool },
+    Retryable(String),
+    Unknown(String),
+    Held(String),
+    NotClaimed(String),
+}
+
+/// The same durable claim/transition seam is used by immediate IMAP sends and
+/// all automatic/explicit Outbox flushes. No transmission on a false claim.
+async fn transmit_outbox_intent(
+    cache: &Cache,
+    account_id: u32,
+    id: u32,
+    envelope: &lettre::address::Envelope,
+    raw: &[u8],
+    sender: &impl SmtpSender,
+) -> IntentAttempt {
+    match cache.mark_outbox_before_transmission(account_id, id) {
+        Ok(true) => {}
+        Ok(false) => {
+            return IntentAttempt::NotClaimed(
+                "The message is no longer ready to send; no SMTP attempt was made.".into(),
+            );
+        }
+        Err(e) => {
+            return IntentAttempt::NotClaimed(format!(
+                "Could not persist transmission intent; no SMTP attempt was made: {e}"
+            ));
+        }
+    }
+    match sender.send(envelope, raw).await {
+        Ok(()) => IntentAttempt::Accepted {
+            // If this fails the durable in-flight hold still forbids retry.
+            state_saved: cache.mark_outbox_accepted(account_id, id).unwrap_or(false),
+        },
+        Err(failure) => {
+            let error = failure.error.to_string();
+            let (recorded, uncertain, retryable) = if failure.uncertain {
+                (
+                    cache.mark_outbox_uncertain(account_id, id, &error),
+                    true,
+                    false,
+                )
+            } else if failure.refused {
+                (
+                    cache.mark_outbox_refused(account_id, id, &error),
+                    false,
+                    false,
+                )
+            } else {
+                (
+                    cache.mark_outbox_retryable(account_id, id, &error),
+                    false,
+                    true,
+                )
+            };
+            if !matches!(recorded, Ok(true)) {
+                return IntentAttempt::Unknown(format!(
+                    "SMTP outcome could not be saved. The persisted transmission intent is held for review; do not resend blindly. {error}",
+                ));
+            }
+            if uncertain {
+                IntentAttempt::Unknown(format!(
+                    "SMTP acceptance is unknown (the acknowledgement may have been lost). The message is held in the Outbox for review and will not be retried automatically. {error}",
+                ))
+            } else if retryable {
+                IntentAttempt::Retryable(error)
+            } else {
+                IntentAttempt::Held(format!(
+                    "The SMTP server refused the message. It is held in the Outbox for correction. {error}"
+                ))
+            }
+        }
+    }
+}
+
+/// An accepted raw copy is recoverable until its Sent-copy obligation is done.
+fn retire_accepted_intent(
+    cache: &Cache,
+    account_id: u32,
+    id: u32,
+    state_saved: bool,
+    copy_saved: bool,
+    emit: &impl Fn(WorkerEvent),
+) {
+    if state_saved && copy_saved {
+        if let Err(e) = cache.delete_outbox_scoped(account_id, id) {
+            emit(WorkerEvent::error(format!(
+                "SMTP accepted the message, but its completed Outbox intent could not be removed: {e}"
+            )));
+        }
+    } else {
+        emit(WorkerEvent::error(
+            "SMTP accepted the message. Its raw copy is retained in the Outbox because acceptance persistence or Sent-copy storage is incomplete. Do not resend it.",
+        ));
+    }
+}
+
+/// Durably own the exact MIME/envelope before SMTP. Tests replace only SMTP,
+/// not the production persistence, claim, completion or recoverability paths.
+async fn send_imap_intent(
+    cache: Option<&Cache>,
+    account_id: u32,
+    account: &AccountConfig,
+    message: &OutgoingMessage,
+    sent_path: Option<&str>,
+    request_id: Option<u64>,
+    emit: &impl Fn(WorkerEvent),
+    sender: &impl SmtpSender,
+) -> Option<(Vec<u8>, u32, bool)> {
+    if let (Some(cache), Some(origin)) = (cache, message.outbox_origin) {
+        if matches!(cache.outbox_delivery_state(account_id, origin), Ok(Some(state))
+            if matches!(state.as_str(), "in_flight" | "uncertain" | "accepted"))
+        {
+            finish_send_unknown(request_id,
+                "The original Outbox intent is already accepted or has an unresolved SMTP outcome. No new SMTP attempt was made; review it before composing a replacement.".into(), emit);
+            return None;
+        }
+    }
+    let prepared = build_email(account, message).and_then(|email| {
+        let cache = cache.ok_or_else(|| -> SmtpError {
+            std::io::Error::other("The durable Outbox is unavailable; no SMTP attempt was made")
+                .into()
+        })?;
+        let raw = email.formatted();
+        let id = queue_built_outbox(cache, account_id, message, sent_path, "", None, &email)
+            .ok_or_else(|| -> SmtpError {
+                std::io::Error::other("Could not persist the message; no SMTP attempt was made")
+                    .into()
+            })?;
+        Ok((email.envelope().clone(), raw, id, cache))
+    });
+    let (envelope, raw, id, cache) = match prepared {
+        Ok(prepared) => prepared,
+        Err(e) => {
+            emit(WorkerEvent::error(format!(
+                "Send failed before transmission: {e}"
+            )));
+            emit(WorkerEvent::Unsent(Box::new(message.clone())));
+            finish_send(request_id, SendOutcome::Failed, emit);
+            return None;
+        }
+    };
+    // queue_built_outbox inserted/replaced the scoped source atomically.
+    let result = match transmit_outbox_intent(cache, account_id, id, &envelope, &raw, sender).await
+    {
+        IntentAttempt::Accepted { state_saved } => {
+            finish_send(request_id, SendOutcome::Sent, emit);
+            Some((raw, id, state_saved))
+        }
+        IntentAttempt::Retryable(error) => {
+            emit(WorkerEvent::error(format!(
+                "Send failed before SMTP acceptance: {error}. The message is durably queued in the Outbox."
+            )));
+            finish_send(request_id, SendOutcome::Queued, emit);
+            None
+        }
+        IntentAttempt::Unknown(reason) => {
+            finish_send_unknown(request_id, reason, emit);
+            None
+        }
+        IntentAttempt::Held(error) | IntentAttempt::NotClaimed(error) => {
+            emit(WorkerEvent::error(error));
+            finish_send(request_id, SendOutcome::Failed, emit);
+            None
+        }
+    };
+    emit_outbox(Some(cache), account_id, emit);
+    result
+}
+
 // ---------------------------------------------------------------------------
 // Outbox
 // ---------------------------------------------------------------------------
@@ -4270,9 +5266,34 @@ fn emit_outbox(cache: Option<&Cache>, account_id: u32, emit: &impl Fn(WorkerEven
 /// The user deleted a queued message from the Outbox.
 fn delete_queued(cache: Option<&Cache>, account_id: u32, id: u32, emit: &impl Fn(WorkerEvent)) {
     if let Some(c) = cache {
-        c.delete_outbox(id);
+        if matches!(c.outbox_delivery_state(account_id, id), Ok(Some(state)) if state == "in_flight") {
+            emit(WorkerEvent::Notice("This message has an unresolved SMTP attempt. Its durable intent cannot be discarded while that attempt is in flight.".into()));
+            emit_outbox(cache, account_id, emit);
+            return;
+        }
+        delete_owned_outbox(c, account_id, id);
+        // A concurrent claimant can win after the first lookup. The cache's
+        // atomic scoped DELETE refuses that active row; report the refusal.
+        if matches!(c.outbox_delivery_state(account_id, id), Ok(Some(state)) if state == "in_flight") {
+            emit(WorkerEvent::Notice("The message became in-flight before discard. Its durable recovery intent was retained.".into()));
+        }
     }
     emit_outbox(cache, account_id, emit);
+}
+
+/// Row IDs are global to the cache, but discard/replacement is account-local.
+fn delete_owned_outbox(cache: &Cache, account_id: u32, id: u32) {
+    match cache.outbox_delivery_state(account_id, id) {
+        Ok(Some(state)) if state == "in_flight" => return,
+        Err(e) => {
+            tracing::warn!(account_id, id, "could not inspect outbox intent before discard: {e}");
+            return;
+        }
+        _ => {}
+    }
+    if let Err(e) = cache.delete_outbox_scoped(account_id, id) {
+        tracing::warn!(account_id, id, "could not discard scoped outbox intent: {e}");
+    }
 }
 
 /// The message went out, or was saved as a draft instead: the queued copy it
@@ -4284,7 +5305,7 @@ fn drop_superseded_outbox(
     emit: &impl Fn(WorkerEvent),
 ) {
     if let (Some(queued), Some(c)) = (msg.outbox_origin, cache) {
-        c.delete_outbox(queued);
+        delete_owned_outbox(c, account_id, queued);
         emit_outbox(cache, account_id, emit);
     }
 }
@@ -4292,6 +5313,13 @@ fn drop_superseded_outbox(
 /// Send a request-correlated completion when the caller asked for one. Keep
 /// this separate from `WorkerEvent::Sent`, which also reports background
 /// Outbox retries and cannot safely complete a particular composer.
+fn finish_send_unknown(request_id: Option<u64>, reason: String, emit: &impl Fn(WorkerEvent)) {
+    emit(WorkerEvent::Notice(reason.clone()));
+    if let Some(request_id) = request_id {
+        emit(WorkerEvent::SendUnknown { request_id, reason });
+    }
+}
+
 fn finish_send(request_id: Option<u64>, outcome: SendOutcome, emit: &impl Fn(WorkerEvent)) {
     if let Some(request_id) = request_id {
         emit(WorkerEvent::SendFinished {
@@ -4321,11 +5349,7 @@ fn send_failed(
 ) -> SendOutcome {
     let queued =
         !refused && queue_outbox_message(cache, account_id, account, msg, sent_path, error, None);
-    // Queue first, drop the superseded row second: a crash in between leaves
-    // the message queued twice, which is recoverable, rather than not at all.
-    if let (true, Some(old), Some(c)) = (queued, msg.outbox_origin, cache) {
-        c.delete_outbox(old);
-    }
+    // Replacement is part of the insertion transaction; no second delete.
     emit(WorkerEvent::error(if queued {
         i18n_f(
             "Send failed: {e}. The message is in the Outbox and will be sent when the connection is back.",
@@ -4362,9 +5386,6 @@ fn schedule_send(
 ) -> SendOutcome {
     let queued = queue_outbox_message(cache, account_id, account, msg, sent_path, "", Some(at));
     if queued {
-        if let (Some(old), Some(c)) = (msg.outbox_origin, cache) {
-            c.delete_outbox(old);
-        }
         emit(WorkerEvent::Notice(i18n_f(
             "“{subject}” will be sent {when}",
             &[("subject", &msg.subject), ("when", &crate::datefmt::date_time(at))],
@@ -4402,7 +5423,19 @@ fn queue_outbox_message(
             return false;
         }
     };
-    let envelope = email.envelope().clone();
+    queue_built_outbox(cache, account_id, msg, sent_path, error, send_at, &email).is_some()
+}
+
+fn queue_built_outbox(
+    cache: &Cache,
+    account_id: u32,
+    msg: &OutgoingMessage,
+    sent_path: Option<&str>,
+    error: &str,
+    send_at: Option<i64>,
+    email: &LettreMessage,
+) -> Option<u32> {
+    let envelope = email.envelope();
     let raw = email.formatted();
     let recipients = [&msg.to, &msg.cc]
         .iter()
@@ -4410,22 +5443,35 @@ fn queue_outbox_message(
         .map(|s| s.trim().to_string())
         .collect::<Vec<_>>()
         .join(", ");
-    let preview: String = msg.body.split_whitespace().collect::<Vec<_>>().join(" ");
-    let preview: String = preview.chars().take(160).collect();
-    cache
-        .queue_outbox(
-            account_id,
-            envelope.from().map(|f| f.to_string()).unwrap_or_default().as_str(),
-            &envelope.to().iter().map(|a| a.to_string()).collect::<Vec<_>>(),
-            &recipients,
-            &msg.subject,
-            &preview,
-            &raw,
-            sent_path,
-            error,
-            send_at,
-        )
-        .is_some()
+    // Encryption wraps the MIME, not msg.body. Never copy that plaintext into
+    // SQLite (including WAL); deleting an accepted intent would not erase it.
+    let preview = if msg.encrypt {
+        String::new()
+    } else {
+        let collapsed = msg.body.split_whitespace().collect::<Vec<_>>().join(" ");
+        collapsed.chars().take(160).collect::<String>()
+    };
+    cache.queue_outbox_replacing(
+        account_id,
+        envelope
+            .from()
+            .map(|f| f.to_string())
+            .unwrap_or_default()
+            .as_str(),
+        &envelope
+            .to()
+            .iter()
+            .map(|a| a.to_string())
+            .collect::<Vec<_>>(),
+        &recipients,
+        &msg.subject,
+        &preview,
+        &raw,
+        sent_path,
+        error,
+        send_at,
+        msg.outbox_origin,
+    )
 }
 
 /// Try the queue: one message when `id` is given, otherwise all of them, oldest
@@ -4481,6 +5527,20 @@ fn pick_queued_sent_copy(
         })
 }
 
+/// One automatic retry pass per available connection, never while offline.
+/// Shared by run_imap and its lifecycle regressions; this is not a timer.
+fn claim_connection_flush(connected: bool, flushed: &mut bool) -> bool {
+    if !connected {
+        *flushed = false;
+        return false;
+    }
+    if *flushed {
+        return false;
+    }
+    *flushed = true;
+    true
+}
+
 async fn flush_outbox(
     cache: Option<&Cache>,
     account_id: u32,
@@ -4491,12 +5551,45 @@ async fn flush_outbox(
     emit: &impl Fn(WorkerEvent),
     loud: bool,
 ) {
+    flush_outbox_with_sender(
+        cache,
+        account_id,
+        account,
+        id,
+        session,
+        use_envelope,
+        emit,
+        loud,
+        &AccountSmtp(account),
+    )
+    .await;
+}
+
+/// Production flush seam: only the external SMTP transport is injected in tests.
+async fn flush_outbox_with_sender(
+    cache: Option<&Cache>,
+    account_id: u32,
+    account: &AccountConfig,
+    id: Option<u32>,
+    session: &mut Option<ImapSession>,
+    use_envelope: &mut bool,
+    emit: &impl Fn(WorkerEvent),
+    loud: bool,
+    sender: &impl SmtpSender,
+) {
     let Some(cache) = cache else { return };
-    // A scheduled message waits for its time; asking for it by id (Send Now,
-    // or the app's clock) sends it regardless.
+    // Explicit Send Now may override a schedule, but NEVER a delivery hold.
     let now = crate::datefmt::now();
-    let items: Vec<crate::models::OutboxItem> = cache
-        .outbox_items(account_id)
+    let items = match cache.outbox_ready_items(account_id) {
+        Ok(items) => items,
+        Err(e) => {
+            emit(WorkerEvent::error(format!(
+                "Could not read the durable Outbox: {e}"
+            )));
+            return;
+        }
+    };
+    let items: Vec<crate::models::OutboxItem> = items
         .into_iter()
         .filter(|item| match id {
             Some(wanted) => wanted == item.id,
@@ -4518,39 +5611,68 @@ async fn flush_outbox(
             None => {
                 // Unsendable as stored: keep it, but say so rather than retrying
                 // it forever in silence.
-                cache.record_outbox_failure(item.id, "the stored recipients are not valid addresses");
+                if cache
+                    .mark_outbox_before_transmission(account_id, item.id)
+                    .unwrap_or(false)
+                {
+                    let _ = cache.mark_outbox_refused(
+                        account_id,
+                        item.id,
+                        "the stored recipients are not valid addresses",
+                    );
+                }
                 continue;
             }
         };
-        match send_raw_smtp(account, &envelope, &item.raw).await {
-            Ok(()) => {
+        match transmit_outbox_intent(cache, account_id, item.id, &envelope, &item.raw, sender).await
+        {
+            IntentAttempt::Accepted { state_saved } => {
                 sent_any = true;
                 sent += 1;
-                cache.delete_outbox(item.id);
                 let dest = current_sent_copy_path(
                     account,
                     account_id,
                     Some(cache),
                     item.sent_path.as_deref(),
                 );
+                let mut copy_saved = dest.is_none();
                 if let (Some(path), Some(sess)) = (dest.as_deref(), session.as_mut()) {
                     if let Err(e) = append_to_sent(sess, path, &item.raw).await {
-                        tracing::warn!("outbox: sent, but saving the copy failed: {e}");
+                        emit(WorkerEvent::error(format!(
+                            "SMTP accepted the message, but saving to Sent failed: {e}. The accepted copy remains in the Outbox; do not resend it.",
+                        )));
                     } else {
+                        copy_saved = true;
                         index_sent_copy(
-                            account_id, session, account, path, use_envelope, Some(cache), emit,
+                            account_id,
+                            session,
+                            account,
+                            path,
+                            use_envelope,
+                            Some(cache),
+                            emit,
                         )
                         .await;
                     }
                 }
+                retire_accepted_intent(cache, account_id, item.id, state_saved, copy_saved, emit);
             }
-            Err(e) => {
-                cache.record_outbox_failure(item.id, &e.to_string());
+            IntentAttempt::Unknown(reason) => {
+                // Also visible for automatic reconnect flushes: a held unknown
+                // must not look like a merely offline/retryable row.
+                emit(WorkerEvent::Notice(reason));
+                break;
+            }
+            IntentAttempt::Retryable(error)
+            | IntentAttempt::Held(error)
+            | IntentAttempt::NotClaimed(error) => {
                 if loud {
-                    emit(WorkerEvent::error(i18n_f("Still could not send “{subject}”: {e}", &[("subject", &item.subject.to_string()), ("e", &e.to_string())])));
+                    emit(WorkerEvent::error(format!(
+                        "Could not send “{}”: {error}",
+                        item.subject
+                    )));
                 }
-                // A failure now will almost certainly repeat for the rest of the
-                // queue (the connection is down), so stop rather than hammering.
+                // Stop on a failure; never hammer the remaining queue.
                 break;
             }
         }
@@ -5095,6 +6217,15 @@ fn build_message(
     // text/calendar for their calendar, as alternatives of one another —
     // the shape Evolution, Outlook and Google Calendar all send.
     if let Some(cal) = &msg.calendar {
+        // This early-return MIME branch does not reach OpenPGP wrapping or
+        // attachment assembly. Refuse unsupported intent rather than silently
+        // sending plaintext/unsigned mail or dropping the user's files.
+        if msg.sign || msg.encrypt {
+            return Err(i18n("Calendar messages cannot be signed or encrypted by this send path.").into());
+        }
+        if !msg.attachments.is_empty() {
+            return Err(i18n("Calendar messages with extra attachments are not supported by this send path. Your files were not sent.").into());
+        }
         let ctype = format!("text/calendar; charset=utf-8; method={}", cal.method);
         let part = SinglePart::builder()
             .header(ContentType::parse(&ctype).unwrap_or(ContentType::TEXT_PLAIN))
@@ -5562,6 +6693,16 @@ async fn send_raw_smtp(
     envelope: &lettre::address::Envelope,
     raw: &[u8],
 ) -> Result<(), SmtpError> {
+    send_raw_smtp_attempt(account, envelope, raw)
+        .await
+        .map_err(|failure| failure.error)
+}
+
+async fn send_raw_smtp_attempt(
+    account: &AccountConfig,
+    envelope: &lettre::address::Envelope,
+    raw: &[u8],
+) -> Result<(), SmtpAttemptFailure> {
     // The envelope sender names the identity this leaves as. When it is an
     // alias with its own SMTP, the mail goes out through that transport (#34);
     // Outbox retries come through here too, so a queued alias send retries on
@@ -5569,7 +6710,13 @@ async fn send_raw_smtp(
     let alias = envelope
         .from()
         .and_then(|f| alias_with_own_smtp(account, f.as_ref()));
-    let mailer = smtp_transport(account, alias).await?;
+    let mailer = smtp_transport(account, alias)
+        .await
+        .map_err(|error| SmtpAttemptFailure {
+            error,
+            uncertain: false,
+            refused: false,
+        })?;
     // The SMTP leg for the console: size and recipient count, then the verdict.
     tracing::debug!(
         target: "hylki::smtp",
@@ -5583,7 +6730,18 @@ async fn send_raw_smtp(
         Ok(_) => tracing::debug!(target: "hylki::smtp", "< OK (send)"),
         Err(e) => tracing::warn!(target: "hylki::smtp", "< {e} (send)"),
     }
-    r?;
+    r.map_err(|error| {
+        let negative_reply = error
+            .status()
+            .is_some_and(|code| (400..600).contains(&u16::from(code)));
+        let error: SmtpError = Box::new(error);
+        let refused = smtp_refused(&error);
+        SmtpAttemptFailure {
+            error,
+            uncertain: !negative_reply,
+            refused,
+        }
+    })?;
     Ok(())
 }
 
@@ -5895,7 +7053,8 @@ async fn sel(session: &mut ImapSession, path: &str) -> Result<async_imap::types:
     wire(&cmd);
     session.as_mut().set_selected_folder(None);
     let r = session.select(path).await;
-    if r.is_ok() {
+    if let Ok(mailbox) = &r {
+        observe_selected_epoch(path, mailbox.uid_validity)?;
         session.as_mut().set_selected_folder(Some(path));
     }
     wired(&cmd, &r);
@@ -5907,7 +7066,8 @@ async fn exam(session: &mut ImapSession, path: &str) -> Result<async_imap::types
     wire(&cmd);
     session.as_mut().set_selected_folder(None);
     let r = session.examine(path).await;
-    if r.is_ok() {
+    if let Ok(mailbox) = &r {
+        observe_selected_epoch(path, mailbox.uid_validity)?;
         session.as_mut().set_selected_folder(Some(path));
     }
     wired(&cmd, &r);
@@ -7405,6 +8565,7 @@ async fn load_messages(
     cache: Option<&Cache>,
 ) -> Result<Vec<Message>, async_imap::error::Error> {
     let mailbox = sel(session, path).await?;
+    let epoch = cache.and_then(|c| c.mailbox_epoch(account_id, path).ok()).map(|e| e.generation);
     note_synced_uid_next(account_id, path, mailbox.uid_next);
     let total = mailbox.exists;
     if total == 0 {
@@ -7423,6 +8584,9 @@ async fn load_messages(
     if cached.is_empty() {
         let mut messages =
             fetch_window(account_id, session, folder_id, total, FIRST_PAGE, use_envelope).await?;
+        if !epoch_unchanged(cache, account_id, path, epoch) {
+            return Err(std::io::Error::other("mailbox epoch changed during header fetch").into());
+        }
         reconcile_attachment_flags(cache, account_id, path, &mut messages);
         Ok(messages)
     } else {
@@ -7435,6 +8599,9 @@ async fn load_messages(
         // forever), and prune it from the cache so it doesn't come back. The full
         // UID set is a cheap server-side search even for large mailboxes.
         let server: std::collections::HashSet<u32> = search_uids(session, "ALL").await?;
+        if !epoch_unchanged(cache, account_id, path, epoch) {
+            return Err(std::io::Error::other("mailbox epoch changed during header reconciliation").into());
+        }
         if let Some(c) = cache {
             for m in merged.iter().filter(|m| !server.contains(&m.uid)) {
                 c.delete_message(account_id, path, m.uid);
@@ -8614,10 +9781,17 @@ async fn run_one_backfill(
     let take = rem.len().min(BACKFILL_CHUNK);
     let chunk: Vec<u32> = rem.drain(..take).collect();
 
+    let epoch = cache.and_then(|c| c.mailbox_epoch(account_id, &job.path).ok()).map(|e| e.generation);
     match fetch_summaries_by_uid(account_id, &mut s, job.folder_id, &job.path, &chunk, *use_envelope)
         .await
     {
         Ok(msgs) => {
+            if !epoch_unchanged(cache, account_id, &job.path, epoch) {
+                job.remaining = None;
+                queue.push_back(job);
+                *session = Some(s);
+                return;
+            }
             if let Some(c) = cache {
                 c.upsert_messages(account_id, &job.path, &msgs);
             }
@@ -9439,6 +10613,11 @@ async fn run_pop3(
                 // held: answer "not found" so the app can report the miss.
                 emit(WorkerEvent::Located { message_id: message_id.clone(), hit: None });
             }
+            MailRequest::CancelQueued(request) => emit(WorkerEvent::QueuedCancelFinished { request, canceled: false }),
+            MailRequest::NativeMutation(request) => native_mutation::reject(request, &emit, "Demo and mock accounts cannot apply qualified mutations."),
+            request @ MailRequest::LoadBodyAtEpoch { .. } => {
+                reject_unsupported_epoch_body(&request, &emit);
+            }
             // POP3 downloads every message in full, so an attachment is either
             // already in the cache or does not exist: there is nothing a scan
             // could add.
@@ -9923,6 +11102,11 @@ async fn run_mock(
                 // No folders to search here beyond what the cache already
                 // held: answer "not found" so the app can report the miss.
                 emit(WorkerEvent::Located { message_id: message_id.clone(), hit: None });
+            }
+            MailRequest::CancelQueued(request) => emit(WorkerEvent::QueuedCancelFinished { request, canceled: false }),
+            MailRequest::NativeMutation(request) => native_mutation::reject(request, &emit, "Demo and mock accounts cannot apply qualified mutations."),
+            request @ MailRequest::LoadBodyAtEpoch { .. } => {
+                reject_unsupported_epoch_body(&request, &emit);
             }
             // Demo mode seeds its in-memory cache up front (see
             // `backend::seed_demo_cache`), so every attachment is already
@@ -11531,6 +12715,1413 @@ NIL NIL NIL NIL NIL NIL NIL))\r\n";
         }
     }
 
+    const OUTBOX_FICTIONAL_SECRET: &str = "FICTIONAL-ORCHID-VAULT-7F2C";
+
+    struct OutboxPrivacyDb(std::path::PathBuf);
+
+    impl OutboxPrivacyDb {
+        fn new() -> Self {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "megamail-outbox-privacy-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            ));
+            std::fs::create_dir(&dir).expect("unique synthetic cache directory");
+            Self(dir)
+        }
+
+        fn path(&self) -> std::path::PathBuf {
+            self.0.join("cache.db")
+        }
+
+        fn assert_no_plaintext(&self) {
+            let reader = rusqlite::Connection::open_with_flags(
+                self.path(),
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .unwrap();
+            for table in ["outbox", "outbox_delivery"] {
+                let mut stmt = reader.prepare(&format!("SELECT * FROM {table}")).unwrap();
+                let columns = stmt.column_count();
+                let mut rows = stmt.query([]).unwrap();
+                while let Some(row) = rows.next().unwrap() {
+                    for column in 0..columns {
+                        let bytes = match row.get_ref(column).unwrap() {
+                            rusqlite::types::ValueRef::Text(bytes)
+                            | rusqlite::types::ValueRef::Blob(bytes) => bytes,
+                            _ => continue,
+                        };
+                        assert!(!bytes
+                            .windows(OUTBOX_FICTIONAL_SECRET.len())
+                            .any(|w| w == OUTBOX_FICTIONAL_SECRET.as_bytes()));
+                    }
+                }
+            }
+            // Check only this test's new synthetic SQLite files, including WAL.
+            // This is not evidence that old production plaintext was erased.
+            for file in std::fs::read_dir(&self.0).unwrap() {
+                let bytes = std::fs::read(file.unwrap().path()).unwrap();
+                assert!(!bytes
+                    .windows(OUTBOX_FICTIONAL_SECRET.len())
+                    .any(|w| w == OUTBOX_FICTIONAL_SECRET.as_bytes()));
+            }
+        }
+    }
+
+    impl Drop for OutboxPrivacyDb {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn encrypted_outbox_composition() -> OutgoingMessage {
+        OutgoingMessage {
+            from_account_id: 7001,
+            to: "to@example.invalid".into(),
+            cc: "cc@example.invalid".into(),
+            bcc: "hidden@example.invalid".into(),
+            body: format!("{OUTBOX_FICTIONAL_SECRET} never persist this fictional body"),
+            html: format!("<p>{OUTBOX_FICTIONAL_SECRET}</p>"),
+            encrypt: true,
+            ..sample_outgoing()
+        }
+    }
+
+    /// Already-built synthetic PGP/MIME shape, NOT real encryption or signing.
+    /// No build_email, GPG, key lookup or transport is invoked by this fixture.
+    fn synthetic_encrypted_outbox_mime(payload: &str) -> LettreMessage {
+        use lettre::message::{header::ContentType, MultiPart, SinglePart};
+        LettreMessage::builder()
+            .from("Alias <alias@example.invalid>".parse().unwrap())
+            .to("to@example.invalid".parse().unwrap())
+            .cc("cc@example.invalid".parse().unwrap())
+            .bcc("hidden@example.invalid".parse().unwrap())
+            .subject("Subject")
+            .message_id(Some("synthetic-outbox@example.invalid".into()))
+            .multipart(
+                MultiPart::encrypted("application/pgp-encrypted".into())
+                    .singlepart(
+                        SinglePart::builder()
+                            .header(ContentType::parse("application/pgp-encrypted").unwrap())
+                            .body("Version: 1\r\n".to_string()),
+                    )
+                    .singlepart(
+                        SinglePart::builder()
+                            .header(ContentType::parse("application/octet-stream").unwrap())
+                            .body(format!(
+                                "-----BEGIN PGP MESSAGE-----\r\n{payload}\r\n-----END PGP MESSAGE-----\r\n"
+                            )),
+                    ),
+            )
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn encrypted_outbox_preview_persists_no_body_and_retains_exact_accepted_mime() {
+        let db = OutboxPrivacyDb::new();
+        let cache = Cache::open_at(&db.path()).unwrap();
+        let msg = OutgoingMessage {
+            sign: true,
+            ..encrypted_outbox_composition()
+        };
+        let email = synthetic_encrypted_outbox_mime("SYNTHETIC-CIPHERTEXT-ONE");
+        let raw = email.formatted();
+        let id = queue_built_outbox(&cache, 7001, &msg, Some("Sent"), "", None, &email)
+            .expect("actual production queue seam");
+        let row = cache.outbox_items(7001).remove(0);
+        assert_eq!(row.id, id);
+        assert_eq!(row.account_id, 7001);
+        assert_eq!(row.preview, "");
+        assert_eq!(row.raw, raw);
+        assert_eq!(row.from_addr, "alias@example.invalid");
+        assert_eq!(
+            row.rcpts,
+            [
+                "to@example.invalid",
+                "cc@example.invalid",
+                "hidden@example.invalid"
+            ]
+        );
+        assert_eq!(row.recipients, "to@example.invalid, cc@example.invalid");
+        assert_eq!(row.subject, msg.subject);
+        assert_eq!(row.sent_path.as_deref(), Some("Sent"));
+        let envelope = outbox_envelope(&row).unwrap();
+        assert_eq!(&envelope, email.envelope());
+        let parsed = mail_parser::MessageParser::default().parse(&raw).unwrap();
+        assert!(parsed.bcc().is_none(), "Bcc remains envelope-only");
+        assert!(
+            !row.as_message().preview.is_empty(),
+            "existing UI keeps queue status"
+        );
+        assert!(!row.as_message().preview.contains(OUTBOX_FICTIONAL_SECRET));
+        db.assert_no_plaintext();
+
+        let sender = fixture_smtp(&cache, FixtureVerdict::Accept);
+        assert!(matches!(
+            transmit_outbox_intent(&cache, 7001, id, &envelope, &raw, &sender).await,
+            IntentAttempt::Accepted { state_saved: true }
+        ));
+        assert_eq!(sender.calls.get(), 1);
+        assert_eq!(
+            cache.outbox_delivery_state(7001, id).unwrap().as_deref(),
+            Some("accepted")
+        );
+        assert!(cache.outbox_ready_items(7001).unwrap().is_empty());
+        db.assert_no_plaintext();
+        drop(sender);
+        drop(cache);
+        let reopened = Cache::open_at(&db.path()).unwrap();
+        let row = reopened.outbox_items(7001).remove(0);
+        assert_eq!(row.raw, raw);
+        assert_eq!(row.preview, "");
+        assert_eq!(&outbox_envelope(&row).unwrap(), email.envelope());
+        db.assert_no_plaintext();
+    }
+
+    #[test]
+    fn encrypted_outbox_preview_plaintext_behavior_is_unchanged() {
+        let cache = Cache::in_memory().unwrap();
+        for sign in [false, true] {
+            let msg = OutgoingMessage {
+                to: "to@example.invalid".into(),
+                body: format!("  Café\tmeeting\n\n{}  ", "é".repeat(170)),
+                sign,
+                encrypt: false,
+                ..sample_outgoing()
+            };
+            // Build without GPG; sign-only still has the ordinary preview policy.
+            let email = build_email(
+                &sample_account(),
+                &OutgoingMessage {
+                    sign: false,
+                    ..msg.clone()
+                },
+            )
+            .unwrap();
+            let id = queue_built_outbox(&cache, 7001, &msg, None, "", None, &email).unwrap();
+            let row = cache
+                .outbox_items(7001)
+                .into_iter()
+                .find(|row| row.id == id)
+                .unwrap();
+            let expected = format!("Café meeting {}", "é".repeat(147));
+            assert_eq!(row.preview, expected);
+            assert_eq!(row.preview.chars().count(), 160);
+            assert_eq!(row.raw, email.formatted());
+        }
+    }
+
+    #[test]
+    fn encrypted_outbox_preview_replacement_and_rollback_keep_only_safe_rows() {
+        let db = OutboxPrivacyDb::new();
+        let cache = Cache::open_at(&db.path()).unwrap();
+        let msg = encrypted_outbox_composition();
+        let old_email = synthetic_encrypted_outbox_mime("SYNTHETIC-CIPHERTEXT-OLD");
+        let old_id =
+            queue_built_outbox(&cache, 7001, &msg, Some("Sent"), "", None, &old_email).unwrap();
+        let sibling = queue_built_outbox(&cache, 7002, &msg, None, "", None, &old_email).unwrap();
+        let old = cache.outbox_items(7001).remove(0);
+        assert_eq!(old.preview, "");
+        let replacement = OutgoingMessage {
+            outbox_origin: Some(old_id),
+            ..msg
+        };
+        let new_email = synthetic_encrypted_outbox_mime("SYNTHETIC-CIPHERTEXT-NEW");
+        let sql = rusqlite::Connection::open(db.path()).unwrap();
+        sql.execute_batch("CREATE TRIGGER fail_private_replacement BEFORE DELETE ON outbox BEGIN SELECT RAISE(ABORT, 'synthetic rollback'); END;").unwrap();
+        // Failure occurs after insertion, inside the real replacement transaction.
+        assert_eq!(
+            queue_built_outbox(
+                &cache,
+                7001,
+                &replacement,
+                Some("Sent"),
+                "",
+                Some(123),
+                &new_email
+            ),
+            None
+        );
+        assert_eq!(cache.outbox_items(7001).len(), 1);
+        assert_eq!(
+            format!("{:?}", cache.outbox_items(7001)[0]),
+            format!("{old:?}")
+        );
+        assert_eq!(cache.outbox_ready_items(7001).unwrap()[0].id, old_id);
+        db.assert_no_plaintext();
+        sql.execute_batch("DROP TRIGGER fail_private_replacement;")
+            .unwrap();
+        // The same old ID cannot be retired from another account.
+        assert_eq!(
+            queue_built_outbox(&cache, 7002, &replacement, None, "", None, &new_email),
+            None
+        );
+        assert_eq!(cache.outbox_items(7002)[0].id, sibling);
+        let new_id = queue_built_outbox(
+            &cache,
+            7001,
+            &replacement,
+            Some("Sent"),
+            "",
+            Some(123),
+            &new_email,
+        )
+        .unwrap();
+        assert_ne!(new_id, old_id);
+        assert_eq!(cache.outbox_delivery_state(7001, old_id).unwrap(), None);
+        let rows = cache.outbox_items(7001);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].raw, new_email.formatted());
+        assert_eq!(&outbox_envelope(&rows[0]).unwrap(), new_email.envelope());
+        assert_eq!(rows[0].preview, "");
+        assert_eq!(rows[0].send_at, Some(123));
+        assert_eq!(cache.outbox_items(7002)[0].raw, old_email.formatted());
+        assert!(cache.mark_outbox_before_transmission(7001, new_id).unwrap());
+        let held_replacement = OutgoingMessage {
+            outbox_origin: Some(new_id),
+            ..replacement
+        };
+        assert_eq!(
+            queue_built_outbox(&cache, 7001, &held_replacement, None, "", None, &old_email),
+            None
+        );
+        assert_eq!(cache.outbox_items(7001)[0].raw, new_email.formatted());
+        assert!(cache.outbox_ready_items(7001).unwrap().is_empty());
+        db.assert_no_plaintext();
+    }
+
+    #[derive(Clone, Copy)]
+    enum FixtureVerdict {
+        Accept,
+        Retryable,
+        Refuse,
+        LostAck,
+    }
+
+    struct FixtureSmtp<'a> {
+        cache: &'a Cache,
+        account_id: u32,
+        verdict: FixtureVerdict,
+        calls: std::cell::Cell<usize>,
+    }
+
+    impl SmtpSender for FixtureSmtp<'_> {
+        async fn send(
+            &self,
+            envelope: &lettre::address::Envelope,
+            raw: &[u8],
+        ) -> Result<(), SmtpAttemptFailure> {
+            self.calls.set(self.calls.get() + 1);
+            let row = self
+                .cache
+                .outbox_items(self.account_id)
+                .into_iter()
+                .find(|item| item.raw == raw)
+                .expect("production persisted exact wire bytes before SMTP");
+            assert_eq!(
+                self.cache
+                    .outbox_delivery_state(self.account_id, row.id)
+                    .unwrap()
+                    .as_deref(),
+                Some("in_flight")
+            );
+            assert_eq!(row.rcpts.len(), envelope.to().len());
+            match self.verdict {
+                FixtureVerdict::Accept => Ok(()),
+                FixtureVerdict::Retryable | FixtureVerdict::Refuse | FixtureVerdict::LostAck => {
+                    Err(SmtpAttemptFailure {
+                        error: std::io::Error::other("fictional SMTP fault").into(),
+                        uncertain: matches!(self.verdict, FixtureVerdict::LostAck),
+                        refused: matches!(self.verdict, FixtureVerdict::Refuse),
+                    })
+                }
+            }
+        }
+    }
+
+    fn fixture_smtp(cache: &Cache, verdict: FixtureVerdict) -> FixtureSmtp<'_> {
+        FixtureSmtp {
+            cache,
+            account_id: 7001,
+            verdict,
+            calls: std::cell::Cell::new(0),
+        }
+    }
+
+    async fn fixture_flush(
+        cache: &Cache,
+        sender: &impl SmtpSender,
+        id: Option<u32>,
+    ) -> Vec<WorkerEvent> {
+        let events = std::cell::RefCell::new(Vec::new());
+        flush_outbox_with_sender(
+            Some(cache),
+            7001,
+            &sample_account(),
+            id,
+            &mut None,
+            &mut true,
+            &|event| events.borrow_mut().push(event),
+            false,
+            sender,
+        )
+        .await;
+        events.into_inner()
+    }
+
+    #[tokio::test]
+    async fn actual_imap_intent_completes_acceptance_once_and_keeps_failed_sent_copy() {
+        let cache = Cache::in_memory().unwrap();
+        let sender = fixture_smtp(&cache, FixtureVerdict::Accept);
+        let events = std::cell::RefCell::new(Vec::new());
+        let message = OutgoingMessage {
+            to: "to@example.invalid".into(),
+            ..sample_outgoing()
+        };
+        let (raw, id, saved) = send_imap_intent(
+            Some(&cache),
+            7001,
+            &sample_account(),
+            &message,
+            Some("Sent"),
+            Some(71),
+            &|e| events.borrow_mut().push(e),
+            &sender,
+        )
+        .await
+        .unwrap();
+        assert_eq!(sender.calls.get(), 1);
+        assert!(saved);
+        assert_eq!(cache.outbox_items(7001)[0].raw, raw);
+        retire_accepted_intent(&cache, 7001, id, saved, false, &|e| {
+            events.borrow_mut().push(e)
+        });
+        assert_eq!(
+            cache.outbox_delivery_state(7001, id).unwrap().as_deref(),
+            Some("accepted")
+        );
+        fixture_flush(&cache, &sender, Some(id)).await;
+        assert_eq!(
+            sender.calls.get(),
+            1,
+            "ordinary Retry must not resend accepted bytes"
+        );
+        let events = events.into_inner();
+        let terminal: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    WorkerEvent::SendFinished { .. } | WorkerEvent::SendUnknown { .. }
+                )
+            })
+            .collect();
+        assert_eq!(terminal.len(), 1);
+        assert!(matches!(
+            terminal[0],
+            WorkerEvent::SendFinished {
+                request_id: 71,
+                outcome: SendOutcome::Sent
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn actual_imap_unknown_ack_is_typed_once_and_never_auto_or_explicit_retried() {
+        let cache = Cache::in_memory().unwrap();
+        let sender = fixture_smtp(&cache, FixtureVerdict::LostAck);
+        let events = std::cell::RefCell::new(Vec::new());
+        let message = OutgoingMessage {
+            to: "to@example.invalid".into(),
+            ..sample_outgoing()
+        };
+        assert!(
+            send_imap_intent(
+                Some(&cache),
+                7001,
+                &sample_account(),
+                &message,
+                None,
+                Some(72),
+                &|e| events.borrow_mut().push(e),
+                &sender
+            )
+            .await
+            .is_none()
+        );
+        let id = cache.outbox_items(7001)[0].id;
+        assert_eq!(
+            cache.outbox_delivery_state(7001, id).unwrap().as_deref(),
+            Some("uncertain")
+        );
+        let events = events.into_inner();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, WorkerEvent::SendUnknown { request_id: 72, .. }))
+                .count(),
+            1
+        );
+        assert!(!events.iter().any(|e| matches!(
+            e,
+            WorkerEvent::SendFinished { .. } | WorkerEvent::Unsent(_) | WorkerEvent::Sent
+        )));
+        let mut flushed = false;
+        for connected in [false, true, true, false, true] {
+            if claim_connection_flush(connected, &mut flushed) {
+                fixture_flush(&cache, &sender, None).await;
+            }
+        }
+        fixture_flush(&cache, &sender, Some(id)).await;
+        assert_eq!(sender.calls.get(), 1);
+    }
+
+    #[tokio::test]
+    async fn actual_flush_schedule_and_connection_gates_share_the_production_path() {
+        let cache = Cache::in_memory().unwrap();
+        let sender = fixture_smtp(&cache, FixtureVerdict::Accept);
+        let message = OutgoingMessage {
+            to: "to@example.invalid".into(),
+            ..sample_outgoing()
+        };
+        assert!(queue_outbox_message(
+            Some(&cache),
+            7001,
+            &sample_account(),
+            &message,
+            None,
+            "",
+            Some(crate::datefmt::now() + 3600)
+        ));
+        let id = cache.outbox_items(7001)[0].id;
+        let mut flushed = false;
+        assert!(!claim_connection_flush(false, &mut flushed));
+        assert!(claim_connection_flush(true, &mut flushed));
+        let events = fixture_flush(&cache, &sender, None).await;
+        assert_eq!(
+            sender.calls.get(),
+            0,
+            "automatic reconnect respects Send Later"
+        );
+        assert!(!claim_connection_flush(true, &mut flushed));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, WorkerEvent::Sent | WorkerEvent::SendFinished { .. }))
+        );
+        let events = fixture_flush(&cache, &sender, Some(id)).await;
+        assert_eq!(
+            sender.calls.get(),
+            1,
+            "explicit Send Now overrides time only"
+        );
+        assert!(events.iter().any(|e| matches!(e, WorkerEvent::Sent)));
+        assert!(!events.iter().any(|e| matches!(
+            e,
+            WorkerEvent::SendFinished { .. } | WorkerEvent::SendUnknown { .. }
+        )));
+        assert!(cache.outbox_items(7001).is_empty());
+    }
+
+    #[tokio::test]
+    async fn actual_intent_definite_failure_is_queued_but_refusal_is_held() {
+        for (verdict, state, outcome) in [
+            (FixtureVerdict::Retryable, "ready", SendOutcome::Queued),
+            (FixtureVerdict::Refuse, "refused", SendOutcome::Failed),
+        ] {
+            let cache = Cache::in_memory().unwrap();
+            let sender = fixture_smtp(&cache, verdict);
+            let events = std::cell::RefCell::new(Vec::new());
+            let message = OutgoingMessage {
+                to: "to@example.invalid".into(),
+                ..sample_outgoing()
+            };
+            send_imap_intent(
+                Some(&cache),
+                7001,
+                &sample_account(),
+                &message,
+                None,
+                Some(73),
+                &|e| events.borrow_mut().push(e),
+                &sender,
+            )
+            .await;
+            let id = cache.outbox_items(7001)[0].id;
+            assert_eq!(
+                cache.outbox_delivery_state(7001, id).unwrap().as_deref(),
+                Some(state)
+            );
+            assert_offline_completion(&events.into_inner(), 73, outcome);
+        }
+    }
+
+    #[tokio::test]
+    async fn actual_intent_queue_failure_never_calls_smtp_and_returns_composition() {
+        let cache = Cache::in_memory().unwrap();
+        let sender = fixture_smtp(&cache, FixtureVerdict::Accept);
+        let events = std::cell::RefCell::new(Vec::new());
+        let message = OutgoingMessage {
+            to: "to@example.invalid".into(),
+            ..sample_outgoing()
+        };
+        send_imap_intent(
+            None,
+            7001,
+            &sample_account(),
+            &message,
+            None,
+            Some(74),
+            &|e| events.borrow_mut().push(e),
+            &sender,
+        )
+        .await;
+        assert_eq!(sender.calls.get(), 0);
+        let events = events.into_inner();
+        assert_offline_completion(&events, 74, SendOutcome::Failed);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, WorkerEvent::Unsent(m) if m.body == message.body))
+        );
+    }
+
+    #[tokio::test]
+    async fn actual_transmission_false_claim_and_discard_race_do_not_mutate_other_scope() {
+        let cache = Cache::in_memory().unwrap();
+        let sender = fixture_smtp(&cache, FixtureVerdict::Accept);
+        let message = OutgoingMessage {
+            to: "to@example.invalid".into(),
+            ..sample_outgoing()
+        };
+        assert!(queue_outbox_message(
+            Some(&cache),
+            7001,
+            &sample_account(),
+            &message,
+            None,
+            "",
+            None
+        ));
+        let row = cache.outbox_items(7001).remove(0);
+        let envelope = outbox_envelope(&row).unwrap();
+        assert!(matches!(
+            transmit_outbox_intent(&cache, 7002, row.id, &envelope, &row.raw, &sender).await,
+            IntentAttempt::NotClaimed(_)
+        ));
+        assert_eq!(
+            cache
+                .outbox_delivery_state(7001, row.id)
+                .unwrap()
+                .as_deref(),
+            Some("ready")
+        );
+        delete_owned_outbox(&cache, 7002, row.id);
+        assert_eq!(cache.outbox_items(7001).len(), 1);
+        delete_owned_outbox(&cache, 7001, row.id);
+        assert!(matches!(
+            transmit_outbox_intent(&cache, 7001, row.id, &envelope, &row.raw, &sender).await,
+            IntentAttempt::NotClaimed(_)
+        ));
+        assert_eq!(sender.calls.get(), 0);
+    }
+
+    #[tokio::test]
+    async fn actual_transmission_persistence_failure_forbids_smtp() {
+        let fixture = OfflineAttachment::new(b"");
+        let cache = Cache::open_at(&fixture.0).unwrap();
+        let readonly = cache.read_connection().unwrap();
+        let sender = fixture_smtp(&cache, FixtureVerdict::Accept);
+        let message = OutgoingMessage {
+            to: "to@example.invalid".into(),
+            ..sample_outgoing()
+        };
+        assert!(queue_outbox_message(
+            Some(&cache),
+            7001,
+            &sample_account(),
+            &message,
+            None,
+            "",
+            None
+        ));
+        let row = cache.outbox_items(7001).remove(0);
+        let envelope = outbox_envelope(&row).unwrap();
+        assert!(matches!(
+            transmit_outbox_intent(&readonly, 7001, row.id, &envelope, &row.raw, &sender).await,
+            IntentAttempt::NotClaimed(_)
+        ));
+        assert_eq!(sender.calls.get(), 0);
+        assert_eq!(
+            cache
+                .outbox_delivery_state(7001, row.id)
+                .unwrap()
+                .as_deref(),
+            Some("ready")
+        );
+    }
+
+    #[tokio::test]
+    async fn actual_flush_restart_keeps_in_flight_and_lost_ack_held() {
+        // A fresh fictional SQLite path; never Cache::open() or a user profile.
+        let fixture = OfflineAttachment::new(b"");
+        {
+            let cache = Cache::open_at(&fixture.0).unwrap();
+            let message = OutgoingMessage {
+                to: "to@example.invalid".into(),
+                ..sample_outgoing()
+            };
+            for _ in 0..2 {
+                assert!(queue_outbox_message(
+                    Some(&cache),
+                    7001,
+                    &sample_account(),
+                    &message,
+                    None,
+                    "",
+                    None
+                ));
+            }
+            let rows = cache.outbox_items(7001);
+            assert!(
+                cache
+                    .mark_outbox_before_transmission(7001, rows[0].id)
+                    .unwrap()
+            );
+            assert!(
+                cache
+                    .mark_outbox_before_transmission(7001, rows[1].id)
+                    .unwrap()
+            );
+            assert!(
+                cache
+                    .mark_outbox_uncertain(7001, rows[1].id, "ack lost")
+                    .unwrap()
+            );
+        }
+        let cache = Cache::open_at(&fixture.0).unwrap();
+        let sender = fixture_smtp(&cache, FixtureVerdict::Accept);
+        fixture_flush(&cache, &sender, None).await;
+        for row in cache.outbox_items(7001) {
+            fixture_flush(&cache, &sender, Some(row.id)).await;
+        }
+        assert_eq!(sender.calls.get(), 0);
+        assert_eq!(cache.outbox_items(7001).len(), 2);
+    }
+
+    #[test]
+    fn actual_select_observation_blocks_old_cached_body_and_stale_request_epoch() {
+        let account_id = 7999; // Unique scope; does not collide with other tests.
+        let cache = Cache::in_memory().unwrap();
+        IMAP_EPOCH_CACHE.with(|context| *context.borrow_mut() = Some((account_id, cache)));
+        set_epoch_connection_state(account_id, true);
+        observe_selected_epoch("INBOX", Some(10)).unwrap();
+        IMAP_EPOCH_CACHE.with(|context| {
+            let context = context.borrow();
+            let (_, cache) = context.as_ref().unwrap();
+            IMAP_EPOCH_VALIDATION
+                .lock()
+                .unwrap()
+                .needs_headers
+                .remove(&(account_id, "INBOX".into()));
+            cache.save_body(account_id, "INBOX", 7, "old epoch body");
+            assert!(serve_imap_cached_body(
+                cache,
+                account_id,
+                "INBOX",
+                7,
+                7,
+                &|_| {}
+            ));
+            let generation = cache.mailbox_epoch(account_id, "INBOX").unwrap().generation;
+            IMAP_UID_REQUEST_EPOCH
+                .with(|request| *request.borrow_mut() = Some(("INBOX".into(), generation)));
+        });
+        assert!(
+            observe_selected_epoch("INBOX", Some(11)).is_err(),
+            "the SELECT seam rejects a stale in-flight UID request"
+        );
+        IMAP_EPOCH_CACHE.with(|context| {
+            let context = context.borrow();
+            let (_, cache) = context.as_ref().unwrap();
+            assert!(!serve_imap_cached_body(
+                cache,
+                account_id,
+                "INBOX",
+                7,
+                7,
+                &|_| panic!("old body escaped")
+            ));
+            assert!(cache.load_body(account_id, "INBOX", 7).is_none());
+        });
+        assert!(observe_selected_epoch("INBOX", None).is_err());
+        IMAP_UID_REQUEST_EPOCH.with(|request| *request.borrow_mut() = None);
+        IMAP_EPOCH_CACHE.with(|context| *context.borrow_mut() = None);
+        set_epoch_connection_state(account_id, false);
+    }
+
+    #[tokio::test]
+    async fn versioned_warm_cache_is_independent_of_unrelated_network_stall_and_offline() {
+        let cache = Cache::in_memory().unwrap();
+        let id = 7996;
+        let epoch = cache
+            .observe_uid_validity(id, "INBOX", 100)
+            .unwrap()
+            .generation;
+        cache.save_body(id, "INBOX", 9, "warm cached body");
+        cache.save_sender_check(
+            id,
+            "INBOX",
+            9,
+            &crate::models::SenderCheck {
+                summary: "cached invitation and trust metadata".into(),
+                ..Default::default()
+            },
+        );
+        set_epoch_connection_state(id, true); // Online, but no SELECT on this scope yet.
+        let events = std::cell::RefCell::new(Vec::new());
+        let unrelated_network = std::future::pending::<()>();
+        tokio::pin!(unrelated_network);
+        assert!(serve_cached_body_at_epoch(
+            Some(&cache),
+            id,
+            "INBOX",
+            9,
+            9,
+            epoch,
+            &|e| events.borrow_mut().push(e)
+        ));
+        assert!(
+            matches!(events.borrow().as_slice(), [WorkerEvent::BodyAtEpoch {
+            uid: 9, generation, body, check: Some(check), has_attachments: None, ..
+        }] if *generation == epoch && body == "warm cached body" && check.summary == "cached invitation and trust metadata")
+        );
+        set_epoch_connection_state(id, false);
+        assert!(serve_cached_body_at_epoch(
+            Some(&cache),
+            id,
+            "INBOX",
+            9,
+            9,
+            epoch,
+            &|_| {}
+        ));
+        // The cached path neither polls nor releases the unrelated pending job.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(1), &mut unrelated_network)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn versioned_missing_epoch_finishes_without_polling_the_network() {
+        let cache = Cache::in_memory().unwrap();
+        let events = std::cell::RefCell::new(Vec::new());
+        let polled = std::cell::Cell::new(false);
+        complete_body_at_epoch(
+            Some(&cache),
+            7997,
+            "INBOX",
+            9,
+            9,
+            0,
+            &|e| events.borrow_mut().push(e),
+            async {
+                polled.set(true);
+                Ok(("must not be read".into(), Default::default(), false))
+            },
+        )
+        .await;
+        assert!(!polled.get());
+        assert!(matches!(
+            events.borrow().as_slice(),
+            [WorkerEvent::BodyEpochStale {
+                uid: 9,
+                expected_generation: 0,
+                actual_generation: None,
+                ..
+            }]
+        ));
+    }
+
+    #[tokio::test]
+    async fn versioned_in_flight_body_reset_rejects_write_and_preserves_queued_old_stamp() {
+        let id = 7998;
+        let cache = Cache::in_memory().unwrap();
+        let old = cache
+            .observe_uid_validity(id, "INBOX", 100)
+            .unwrap()
+            .generation;
+        cache.save_body(id, "INBOX", 9, "old cached body");
+        cache.save_sender_check(
+            id,
+            "INBOX",
+            9,
+            &crate::models::SenderCheck {
+                summary: "old sender and invitation stamp".into(),
+                ..Default::default()
+            },
+        );
+        let queued = std::cell::RefCell::new(Vec::new());
+        assert!(serve_cached_body_at_epoch(
+            Some(&cache),
+            id,
+            "INBOX",
+            9,
+            9,
+            old,
+            &|e| queued.borrow_mut().push(e)
+        ));
+        let delayed_old = queued.into_inner().pop().unwrap();
+        IMAP_EPOCH_CACHE.with(|context| *context.borrow_mut() = Some((id, cache)));
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let recorded = events.clone();
+        IMAP_EPOCH_EMIT.with(|callback| {
+            *callback.borrow_mut() = Some(std::rc::Rc::new(move |e| recorded.borrow_mut().push(e)))
+        });
+        // The actual SELECT observer invalidates the same production cache.
+        IMAP_EPOCH_CACHE.with(|context| {
+            let context = context.borrow();
+            let (_, cache) = context.as_ref().unwrap();
+            assert_eq!(cache.mailbox_epoch(id, "INBOX").unwrap().generation, old);
+        });
+        // A fresh cached result is queued before SELECT resets the namespace.
+        observe_selected_epoch("INBOX", Some(101)).unwrap();
+        IMAP_EPOCH_CACHE.with(|context| {
+            let context = context.borrow();
+            let (_, cache) = context.as_ref().unwrap();
+            let new = cache.mailbox_epoch(id, "INBOX").unwrap().generation;
+            cache.save_body(id, "INBOX", 9, "new body with reused UID");
+            events.borrow_mut().push(delayed_old);
+            assert!(matches!(&events.borrow()[0], WorkerEvent::MailboxEpochChanged { generation, .. } if *generation == new));
+            assert!(matches!(&events.borrow()[1], WorkerEvent::BodyAtEpoch { generation, body, check: Some(check), .. }
+                if *generation == old && body == "old cached body" && check.summary == "old sender and invitation stamp"));
+            assert!(cache.load_sender_check(id, "INBOX", 9).is_none(), "epoch invalidation deletes old sender/invitation metadata too");
+            let stale = std::cell::RefCell::new(Vec::new());
+            assert!(serve_cached_body_at_epoch(Some(cache), id, "INBOX", 9, 9, old,
+                &|e| stale.borrow_mut().push(e)));
+            assert!(matches!(stale.borrow().as_slice(), [WorkerEvent::BodyEpochStale { actual_generation: Some(generation), .. }] if *generation == new));
+        });
+        let cache = IMAP_EPOCH_CACHE.with(|context| context.borrow_mut().take().unwrap().1);
+        let polled = std::cell::Cell::new(false);
+        complete_body_at_epoch(
+            Some(&cache),
+            id,
+            "INBOX",
+            9,
+            9,
+            old,
+            &|e| events.borrow_mut().push(e),
+            async {
+                polled.set(true);
+                Ok(("wrong reused UID".into(), Default::default(), false))
+            },
+        )
+        .await;
+        assert!(
+            !polled.get(),
+            "an old expected generation cannot read the reused UID"
+        );
+        IMAP_EPOCH_EMIT.with(|callback| *callback.borrow_mut() = None);
+        set_epoch_connection_state(id, false);
+    }
+
+    #[tokio::test]
+    async fn versioned_network_body_and_metadata_share_one_captured_stamp() {
+        let cache = Cache::in_memory().unwrap();
+        let id = 7994;
+        let epoch = cache
+            .observe_uid_validity(id, "INBOX", 1)
+            .unwrap()
+            .generation;
+        let events = std::cell::RefCell::new(Vec::new());
+        complete_body_at_epoch(
+            Some(&cache),
+            id,
+            "INBOX",
+            9,
+            9,
+            epoch,
+            &|e| events.borrow_mut().push(e),
+            async {
+                Ok((
+                    "<p>original HTML body</p>".into(),
+                    crate::models::SenderCheck {
+                        summary: "same-read sender/invitation metadata".into(),
+                        ..Default::default()
+                    },
+                    true,
+                ))
+            },
+        )
+        .await;
+        assert!(
+            matches!(events.borrow().as_slice(), [WorkerEvent::BodyAtEpoch {
+            generation, body, check: Some(check), has_attachments: Some(true), ..
+        }] if *generation == epoch && body == "<p>original HTML body</p>" && check.summary == "same-read sender/invitation metadata")
+        );
+        assert_eq!(
+            cache.load_body(id, "INBOX", 9).as_deref(),
+            Some("<p>original HTML body</p>")
+        );
+        assert_eq!(
+            cache.load_sender_check(id, "INBOX", 9).unwrap().summary,
+            "same-read sender/invitation metadata"
+        );
+    }
+
+    #[tokio::test]
+    async fn versioned_network_completion_keeps_captured_epoch_and_discards_reset_body() {
+        let cache = Cache::in_memory().unwrap();
+        let id = 7995;
+        let old = cache
+            .observe_uid_validity(id, "INBOX", 1)
+            .unwrap()
+            .generation;
+        let events = std::cell::RefCell::new(Vec::new());
+        complete_body_at_epoch(
+            Some(&cache),
+            id,
+            "INBOX",
+            9,
+            9,
+            old,
+            &|e| events.borrow_mut().push(e),
+            async {
+                cache.observe_uid_validity(id, "INBOX", 2).unwrap();
+                Ok(("old in-flight body".into(), Default::default(), false))
+            },
+        )
+        .await;
+        assert!(cache.load_body(id, "INBOX", 9).is_none());
+        assert!(
+            matches!(events.borrow().as_slice(), [WorkerEvent::BodyEpochStale { expected_generation, .. }] if *expected_generation == old)
+        );
+    }
+
+    // Drive the production connection gate with admitted channel requests.
+    // Neither the real startup path (keyring/profile I/O) nor SMTP runs here.
+    async fn offline_imap_requests(
+        requests: Vec<MailRequest>,
+        cache: Option<&Cache>,
+        account_id: u32,
+        account: &AccountConfig,
+    ) -> (Vec<WorkerEvent>, u32) {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        for req in requests {
+            tx.send(req).expect("admitted request");
+        }
+        drop(tx);
+        let events = std::cell::RefCell::new(Vec::new());
+        let attempts = std::cell::Cell::new(0);
+        let mut session = None;
+        while let Some(req) = rx.recv().await {
+            let pending = prepare_imap_request(
+                req,
+                &mut session,
+                cache,
+                account_id,
+                account,
+                &|event| events.borrow_mut().push(event),
+                async {
+                    attempts.set(attempts.get() + 1);
+                    None
+                },
+            )
+            .await;
+            assert!(pending.is_none(), "offline/local request must be settled");
+        }
+        (events.into_inner(), attempts.get())
+    }
+
+    fn assert_offline_completion(events: &[WorkerEvent], request_id: u64, outcome: SendOutcome) {
+        let completions: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                WorkerEvent::SendFinished {
+                    request_id,
+                    outcome,
+                } => Some((*request_id, *outcome)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(completions, vec![(request_id, outcome)], "{events:?}");
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, WorkerEvent::Sent)),
+            "{events:?}"
+        );
+    }
+
+    struct OfflineAttachment(std::path::PathBuf);
+
+    impl OfflineAttachment {
+        fn new(bytes: &[u8]) -> Self {
+            use std::io::Write;
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "megamail-offline-imap-{}-{}.bin",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            ));
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .expect("unique synthetic attachment");
+            let fixture = Self(path);
+            file.write_all(bytes).expect("write attachment");
+            fixture
+        }
+    }
+
+    impl Drop for OfflineAttachment {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn offline_imap_send_completes_once_with_durable_mime_and_envelope() {
+        let cache = Cache::in_memory().expect("isolated cache");
+        let bytes = [0, 0x80, 0xff, b'\r', b'\n', 0x42];
+        let attachment = OfflineAttachment::new(&bytes);
+        let account = AccountConfig {
+            aliases: vec![crate::config::AliasConfig {
+                identity: "Alias <alias@example.invalid>".into(),
+                smtp_host: "smtp.alias.invalid".into(),
+                smtp_port: 465,
+                ..Default::default()
+            }],
+            ..sample_account()
+        };
+        let msg = OutgoingMessage {
+            from_account_id: 7,
+            from_alias: Some("Alias <alias@example.invalid>".into()),
+            to: "to@example.invalid".into(),
+            cc: "cc@example.invalid".into(),
+            bcc: "hidden@example.invalid".into(),
+            reply_to: "reply@example.invalid".into(),
+            in_reply_to: "parent@example.invalid".into(),
+            references: "root@example.invalid parent@example.invalid".into(),
+            attachments: vec![attachment.0.to_string_lossy().into_owned()],
+            ..sample_outgoing()
+        };
+        let (events, attempts) = offline_imap_requests(
+            vec![MailRequest::Send {
+                message: Box::new(msg.clone()),
+                sent_path: Some("Sent".into()),
+                request_id: Some(901),
+            }],
+            Some(&cache),
+            7,
+            &account,
+        )
+        .await;
+        assert_eq!(attempts, 1);
+        assert_offline_completion(&events, 901, SendOutcome::Queued);
+        assert!(!events.iter().any(|e| matches!(e, WorkerEvent::Unsent(_))));
+        assert!(
+            cache.outbox_items(1).is_empty(),
+            "queue belongs to the worker account"
+        );
+        let items = cache.outbox_items(7);
+        assert_eq!(items.len(), 1);
+        let item = &items[0];
+        assert_eq!(item.account_id, 7);
+        assert_eq!(item.from_addr, "alias@example.invalid");
+        assert_eq!(
+            item.rcpts,
+            vec![
+                "to@example.invalid",
+                "cc@example.invalid",
+                "hidden@example.invalid"
+            ]
+        );
+        assert_eq!(item.sent_path.as_deref(), Some("Sent"));
+        assert_eq!(item.send_at, None);
+        let parsed = mail_parser::MessageParser::default()
+            .parse(item.raw.as_slice())
+            .expect("queued MIME");
+        assert!(parsed.bcc().is_none(), "Bcc is envelope-only");
+        assert_eq!(parsed.attachment(0).expect("binary part").contents(), bytes);
+        let editable = editable_from_raw(&item.raw, &item.rcpts);
+        assert_eq!(editable.bcc, msg.bcc);
+        assert_eq!(editable.reply_to, msg.reply_to);
+        assert_eq!(editable.in_reply_to, msg.in_reply_to);
+        assert_eq!(editable.references, msg.references);
+        assert_eq!(editable.attachments[0].data, bytes);
+        assert_eq!(
+            alias_with_own_smtp(&account, &item.from_addr)
+                .expect("alias transport")
+                .smtp_host,
+            "smtp.alias.invalid"
+        );
+        // Reopening the stored MIME still works after the source file is gone.
+        drop(attachment);
+        assert_eq!(
+            editable_from_raw(&cache.outbox_items(7)[0].raw, &item.rcpts).attachments[0].data,
+            bytes
+        );
+    }
+
+    #[tokio::test]
+    async fn offline_imap_send_without_cache_fails_and_returns_the_composition() {
+        let msg = OutgoingMessage {
+            to: "to@example.invalid".into(),
+            ..sample_outgoing()
+        };
+        let (events, attempts) = offline_imap_requests(
+            vec![MailRequest::Send {
+                message: Box::new(msg.clone()),
+                sent_path: None,
+                request_id: Some(902),
+            }],
+            None,
+            1,
+            &sample_account(),
+        )
+        .await;
+        assert_eq!(attempts, 1);
+        assert_offline_completion(&events, 902, SendOutcome::Failed);
+        let unsent: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                WorkerEvent::Unsent(msg) => Some(msg),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(unsent.len(), 1);
+        assert_eq!(format!("{:?}", unsent[0]), format!("{msg:?}"));
+    }
+
+    #[tokio::test]
+    async fn offline_imap_send_sql_insert_failure_is_not_reported_as_queued() {
+        // An in-memory Cache's path is empty. Its read connection is a new,
+        // isolated temporary SQLite DB, with no Outbox schema: insertion fails.
+        // This exercises a real SQL failure, not an injected queue result.
+        let cache = Cache::in_memory().expect("isolated cache");
+        let unavailable = cache.read_connection().expect("isolated read connection");
+        let msg = OutgoingMessage {
+            to: "to@example.invalid".into(),
+            ..sample_outgoing()
+        };
+        assert!(
+            build_email(&sample_account(), &msg).is_ok(),
+            "MIME itself is valid"
+        );
+        let (events, attempts) = offline_imap_requests(
+            vec![MailRequest::Send {
+                message: Box::new(msg.clone()),
+                sent_path: None,
+                request_id: Some(903),
+            }],
+            Some(&unavailable),
+            1,
+            &sample_account(),
+        )
+        .await;
+        assert_eq!(attempts, 1);
+        assert_offline_completion(&events, 903, SendOutcome::Failed);
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::Unsent(m) if m.body == msg.body)));
+        assert!(cache.outbox_items(1).is_empty());
+    }
+
+    #[tokio::test]
+    async fn offline_imap_failed_replacement_keeps_old_outbox_and_draft() {
+        let cache = Cache::in_memory().expect("isolated cache");
+        let account = sample_account();
+        let msg = OutgoingMessage {
+            to: "to@example.invalid".into(),
+            ..sample_outgoing()
+        };
+        assert!(queue_outbox_message(
+            Some(&cache),
+            1,
+            &account,
+            &msg,
+            None,
+            "offline",
+            None
+        ));
+        let old = cache.outbox_items(1).remove(0);
+        cache.save_body(1, "Drafts", 4, "original draft");
+        let file = OfflineAttachment::new(b"temporary");
+        let path = file.0.to_string_lossy().into_owned();
+        drop(file); // The attachment disappeared after composition.
+        let replacement = OutgoingMessage {
+            outbox_origin: Some(old.id),
+            draft_origin: Some(crate::models::DraftOrigin {
+                account_id: 1,
+                folder_id: 3,
+                path: "Drafts".into(),
+                uid: 4,
+            }),
+            attachments: vec![path],
+            ..msg
+        };
+        for send_at in [None, Some(crate::datefmt::now() + 3600)] {
+            let msg = OutgoingMessage {
+                send_at,
+                ..replacement.clone()
+            };
+            let (events, _) = offline_imap_requests(
+                vec![MailRequest::Send {
+                    message: Box::new(msg.clone()),
+                    sent_path: None,
+                    request_id: Some(904),
+                }],
+                Some(&cache),
+                1,
+                &account,
+            )
+            .await;
+            assert_offline_completion(&events, 904, SendOutcome::Failed);
+            assert!(events.iter().any(|e| matches!(e, WorkerEvent::Unsent(m)
+                if format!("{m:?}") == format!("{msg:?}"))));
+            assert_eq!(cache.outbox_items(1)[0].raw, old.raw);
+            assert_eq!(
+                cache.load_body(1, "Drafts", 4).as_deref(),
+                Some("original draft")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn offline_imap_scheduled_replacement_is_durable_without_retiring_draft() {
+        let cache = Cache::in_memory().expect("isolated cache");
+        let account = sample_account();
+        let msg = OutgoingMessage {
+            to: "to@example.invalid".into(),
+            ..sample_outgoing()
+        };
+        assert!(queue_outbox_message(
+            Some(&cache),
+            1,
+            &account,
+            &msg,
+            None,
+            "offline",
+            None
+        ));
+        let old = cache.outbox_items(1).remove(0).id;
+        let at = crate::datefmt::now() + 3600;
+        cache.save_body(1, "Drafts", 4, "original draft");
+        let (events, attempts) = offline_imap_requests(
+            vec![MailRequest::Send {
+                message: Box::new(OutgoingMessage {
+                    outbox_origin: Some(old),
+                    send_at: Some(at),
+                    subject: "Edited".into(),
+                    draft_origin: Some(crate::models::DraftOrigin {
+                        account_id: 1,
+                        folder_id: 3,
+                        path: "Drafts".into(),
+                        uid: 4,
+                    }),
+                    ..msg
+                }),
+                sent_path: None,
+                request_id: Some(905),
+            }],
+            Some(&cache),
+            1,
+            &account,
+        )
+        .await;
+        assert_eq!(attempts, 1);
+        assert_offline_completion(&events, 905, SendOutcome::Queued);
+        let items = cache.outbox_items(1);
+        assert_eq!(items.len(), 1);
+        assert_ne!(items[0].id, old);
+        assert_eq!(items[0].subject, "Edited");
+        assert_eq!(items[0].send_at, Some(at));
+        assert_eq!(
+            cache.load_body(1, "Drafts", 4).as_deref(),
+            Some("original draft")
+        );
+    }
+
+    #[tokio::test]
+    async fn offline_imap_outbox_list_and_discard_are_local_and_account_scoped() {
+        let cache = Cache::in_memory().expect("isolated cache");
+        let account = sample_account();
+        let msg = OutgoingMessage {
+            to: "to@example.invalid".into(),
+            ..sample_outgoing()
+        };
+        for id in [1, 2] {
+            assert!(queue_outbox_message(
+                Some(&cache),
+                id,
+                &account,
+                &msg,
+                None,
+                "offline",
+                None
+            ));
+        }
+        let own = cache.outbox_items(1).remove(0).id;
+        let other = cache.outbox_items(2).remove(0).id;
+        let (events, attempts) = offline_imap_requests(
+            vec![
+                MailRequest::LoadOutbox,
+                MailRequest::DeleteOutbox { id: other },
+                MailRequest::DeleteOutbox { id: own },
+            ],
+            Some(&cache),
+            1,
+            &account,
+        )
+        .await;
+        assert_eq!(attempts, 0, "local requests never poll reconnect");
+        let lists: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                WorkerEvent::Outbox { items } => {
+                    Some(items.iter().map(|i| i.id).collect::<Vec<_>>())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(lists, vec![vec![own], vec![own], vec![]]);
+        assert!(cache.outbox_items(1).is_empty());
+        assert_eq!(cache.outbox_items(2)[0].id, other);
+    }
+
+    #[tokio::test]
+    async fn offline_imap_gtk_send_keeps_legacy_events_without_correlated_completion() {
+        let cache = Cache::in_memory().expect("isolated cache");
+        let (events, _) = offline_imap_requests(
+            vec![MailRequest::Send {
+                message: Box::new(OutgoingMessage {
+                    to: "to@example.invalid".into(),
+                    ..sample_outgoing()
+                }),
+                sent_path: None,
+                request_id: None,
+            }],
+            Some(&cache),
+            1,
+            &sample_account(),
+        )
+        .await;
+        assert_eq!(cache.outbox_items(1).len(), 1);
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::Error { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::Outbox { .. })));
+        assert!(!events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::SendFinished { .. } | WorkerEvent::Sent)));
+    }
     #[test]
     fn send_completion_is_tagged_and_opt_in() {
         let events = std::cell::RefCell::new(Vec::new());
@@ -11863,6 +14454,7 @@ NIL NIL NIL NIL NIL NIL NIL))\r\n";
             attempts: 1,
             last_error: String::new(),
             send_at: None,
+            phase: crate::models::OutboxPhase::Ready,
         }
     }
 
@@ -13479,6 +16071,78 @@ NIL NIL NIL NIL NIL NIL NIL))\r\n";
         );
         assert!(text.contains("METHOD:REPLY"), "{text}");
         assert!(text.contains("Jason has accepted this invitation."), "{text}");
+    }
+
+    #[test]
+    fn unsupported_backend_epoch_read_finishes_with_exact_correlation_without_authority() {
+        use std::cell::RefCell;
+        for generation in [0, 7, u64::MAX] {
+            let events = RefCell::new(Vec::new());
+            reject_unsupported_epoch_body(
+                &MailRequest::LoadBodyAtEpoch {
+                    message_id: 314,
+                    path: "Fictional mailbox".into(),
+                    uid: 42,
+                    expected_generation: generation,
+                },
+                &|event| events.borrow_mut().push(event),
+            );
+            let events = events.borrow();
+            assert!(matches!(events.as_slice(), [WorkerEvent::BodyEpochStale {
+                message_id: 314, path, uid: 42, expected_generation,
+                actual_generation: None, reason,
+            }] if path == "Fictional mailbox" && *expected_generation == generation && reason.contains("unavailable")));
+        }
+    }
+
+    #[test]
+    fn unsupported_backend_epoch_guard_does_not_consume_ordinary_body_requests() {
+        use std::cell::RefCell;
+        let events = RefCell::new(Vec::new());
+        reject_unsupported_epoch_body(
+            &MailRequest::LoadBody { message_id: 314, path: "INBOX".into(), uid: 42 },
+            &|event| events.borrow_mut().push(event),
+        );
+        assert!(events.borrow().is_empty());
+    }
+
+    #[test]
+    fn calendar_send_refuses_crypto_intent_before_plaintext_mime_can_escape() {
+        let account = sample_account();
+        for (sign, encrypt) in [(true, false), (false, true), (true, true)] {
+            let msg = OutgoingMessage {
+                to: "chair@example.org".into(),
+                body: "Fictional confidential invitation body".into(),
+                calendar: Some(CalendarPart {
+                    ics: "BEGIN:VCALENDAR\r\nMETHOD:REPLY\r\nEND:VCALENDAR\r\n".into(),
+                    method: "REPLY".into(),
+                }),
+                sign,
+                encrypt,
+                ..sample_outgoing()
+            };
+            let error = build_email(&account, &msg).expect_err("unsupported protection must not build plaintext");
+            assert!(error.to_string().contains("cannot be signed or encrypted"));
+        }
+    }
+
+    #[test]
+    fn calendar_send_and_draft_refuse_extra_files_instead_of_silently_dropping_them() {
+        let account = sample_account();
+        let msg = OutgoingMessage {
+            to: "chair@example.org".into(),
+            calendar: Some(CalendarPart {
+                ics: "BEGIN:VCALENDAR\r\nMETHOD:REPLY\r\nEND:VCALENDAR\r\n".into(),
+                method: "REPLY".into(),
+            }),
+            attachments: vec!["never-opened-fictional-calendar-attachment.bin".into()],
+            ..sample_outgoing()
+        };
+        for result in [build_email(&account, &msg), build_draft(&account, &msg)] {
+            let error = result.expect_err("calendar branch must not discard attachments");
+            assert!(error.to_string().contains("extra attachments"));
+        }
+        assert_eq!(msg.attachments.len(), 1, "original composition remains intact");
     }
 
     #[test]

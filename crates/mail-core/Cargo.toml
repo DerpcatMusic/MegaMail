@@ -20,7 +20,7 @@ mail-parser = "0.9"
 lettre = { version = "0.11", default-features = false, features = ["tokio1-native-tls", "smtp-transport", "builder"] }
 rfc2047-decoder = "1"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled", "functions"] }
 siphasher = "1"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"

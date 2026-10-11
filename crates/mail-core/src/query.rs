@@ -10,14 +10,14 @@ use std::io;
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::thread;
 
-use crate::cache::{Cache, MessageCursor, MESSAGE_PAGE_LIMIT_MAX};
+use crate::cache::{Cache, MESSAGE_PAGE_LIMIT_MAX, MessageCursor};
 use crate::models::Message;
 
 const REQUEST_QUEUE_CAPACITY: usize = 32;
 
 /// A page request. `generation` belongs to the caller and should increase when
-/// the folder or search changes; it lets the UI ignore results that have
-/// already gone stale.
+/// the folder, search, or observed mailbox epoch changes; it lets the UI ignore
+/// results that have already gone stale. It is not itself a UIDVALIDITY value.
 #[derive(Debug, Clone)]
 pub struct PageRequest {
     pub account_id: u32,
@@ -36,7 +36,7 @@ pub enum PageStatus {
     /// The requested page was read successfully.
     Ready,
     /// A queued first-page request was replaced by a newer request for the
-    /// same account and folder, or its query generation was already obsolete.
+    /// same account and folder, or its query/cache generation was obsolete.
     Superseded,
     /// The cache could not be opened or the page query failed.
     Failed(String),
@@ -68,6 +68,9 @@ type Completion = Box<dyn FnOnce(PageResult) + Send + 'static>;
 
 struct PendingPage {
     request: PageRequest,
+    /// Optional remote namespace supplied by the caller, separate from its
+    /// search generation. Legacy requests track the first observed namespace.
+    expected_epoch: Option<u64>,
     complete: Completion,
 }
 
@@ -101,9 +104,34 @@ impl QueryService {
     where
         F: FnOnce(PageResult) + Send + 'static,
     {
+        self.submit_page(request, None, Box::new(callback))
+    }
+
+    /// Submit with the persisted mailbox generation observed by the worker.
+    /// Mismatched epochs receive Superseded, never rows from a reused UID
+    /// namespace. Existing PageRequest/PageResult fields stay compatible.
+    pub fn request_page_at_epoch<F>(
+        &self,
+        request: PageRequest,
+        expected_epoch: u64,
+        callback: F,
+    ) -> Result<(), SubmitError>
+    where
+        F: FnOnce(PageResult) + Send + 'static,
+    {
+        self.submit_page(request, Some(expected_epoch), Box::new(callback))
+    }
+
+    fn submit_page(
+        &self,
+        request: PageRequest,
+        expected_epoch: Option<u64>,
+        complete: Completion,
+    ) -> Result<(), SubmitError> {
         let pending = PendingPage {
             request,
-            complete: Box::new(callback),
+            expected_epoch,
+            complete,
         };
         self.sender.try_send(pending).map_err(|error| match error {
             TrySendError::Full(_) => SubmitError::Full,
@@ -115,15 +143,23 @@ impl QueryService {
 fn query_loop(receiver: Receiver<PendingPage>) {
     // `Cache::open` resolves config/data paths from this isolated mail-core
     // crate's MegaMail config module, and is deliberately called on this thread.
-    // After its one-time schema setup, keep only a separate read-only WAL handle.
-    let cache = Cache::open()
-        .and_then(|cache| {
-            let reader = cache.read_connection()?;
-            drop(cache);
-            Ok(reader)
-        })
-        .map_err(|error| error.to_string());
+    // After its one-time schema setup, run_queries keeps a separately configured
+    // read-only WAL handle. Registration and all reads stay on this thread.
+    run_queries(receiver, Cache::open().map_err(|error| error.to_string()));
+}
+
+fn run_queries(receiver: Receiver<PendingPage>, cache: Result<Cache, String>) {
+    // This common production/test seam registers on every reader connection.
+    // A registration failure is a failed page, never empty successful results.
+    let cache = cache.and_then(|cache| {
+        cache
+            .read_connection_with(crate::search::register_sql_functions)
+            .map_err(|error| error.to_string())
+    });
     let mut current_generation = HashMap::<(u32, String), u64>::new();
+    // Caller search generation and persisted UID namespace form the effective
+    // generation. A cursor cannot silently cross either half.
+    let mut epochs = HashMap::<(u32, String), (u64, u64)>::new();
 
     while let Ok(first) = receiver.recv() {
         let mut batch = vec![first];
@@ -133,29 +169,80 @@ fn query_loop(receiver: Receiver<PendingPage>) {
         for pending in coalesce(batch, &mut current_generation) {
             let result = match &cache {
                 Err(error) => failed_result(&pending, error.clone()),
-                Ok(cache) => match cache.message_page(
-                    pending.request.account_id,
-                    &pending.request.folder_path,
-                    pending.request.folder_id,
-                    &pending.request.query,
-                    pending.request.cursor,
-                    pending.request.limit.min(MESSAGE_PAGE_LIMIT_MAX),
-                ) {
-                    Ok(page) => PageResult {
-                        account_id: pending.request.account_id,
-                        folder_path: pending.request.folder_path.clone(),
-                        folder_id: pending.request.folder_id,
-                        generation: pending.request.generation,
-                        rows: page.rows,
-                        next_cursor: page.next_cursor,
-                        status: PageStatus::Ready,
-                    },
-                    Err(error) => failed_result(&pending, error.to_string()),
-                },
+                Ok(cache) => read_page(cache, &pending, &mut epochs),
             };
             (pending.complete)(result);
         }
     }
+}
+
+fn read_page(
+    cache: &Cache,
+    pending: &PendingPage,
+    epochs: &mut HashMap<(u32, String), (u64, u64)>,
+) -> PageResult {
+    let request = &pending.request;
+    let scope = (request.account_id, request.folder_path.clone());
+    let predicate = match crate::search::SearchQuery::parse(&request.query)
+        .and_then(|query| query.sql_predicate(true))
+    {
+        Ok(predicate) => predicate,
+        Err(error) => return failed_result(pending, error.to_string()),
+    };
+    let run = || -> rusqlite::Result<Option<(u64, crate::cache::MessagePage)>> {
+        let before = cache
+            .mailbox_epoch(request.account_id, &request.folder_path)?
+            .generation;
+        if pending
+            .expected_epoch
+            .is_some_and(|expected| expected != before)
+            || epochs
+                .get(&scope)
+                .is_some_and(|(caller, epoch)| *caller == request.generation && *epoch != before)
+        {
+            return Ok(None);
+        }
+        let page = cache.message_page_predicate(
+            request.account_id,
+            &request.folder_path,
+            request.folder_id,
+            &predicate.clause,
+            &predicate.values,
+            request.cursor,
+            request.limit.min(MESSAGE_PAGE_LIMIT_MAX),
+        )?;
+        let after = cache
+            .mailbox_epoch(request.account_id, &request.folder_path)?
+            .generation;
+        if before != after {
+            return Ok(None);
+        }
+        Ok(Some((before, page)))
+    };
+    match run() {
+        Ok(Some((epoch, page))) => {
+            // A reset after the final check still requires caller-side event
+            // invalidation; no database read can make UI delivery atomic.
+            epochs.insert(scope, (request.generation, epoch));
+            PageResult {
+                account_id: request.account_id,
+                folder_path: request.folder_path.clone(),
+                folder_id: request.folder_id,
+                generation: request.generation,
+                rows: page.rows,
+                next_cursor: page.next_cursor,
+                status: PageStatus::Ready,
+            }
+        }
+        Ok(None) => stale_result(pending),
+        Err(error) => failed_result(pending, error.to_string()),
+    }
+}
+
+fn stale_result(pending: &PendingPage) -> PageResult {
+    let mut result = failed_result(pending, String::new());
+    result.status = PageStatus::Superseded;
+    result
 }
 
 fn failed_result(pending: &PendingPage, message: String) -> PageResult {
@@ -255,6 +342,7 @@ mod tests {
             let completed_tx = completed_tx.clone();
             PendingPage {
                 request,
+                expected_epoch: None,
                 complete: Box::new(move |result| {
                     completed_tx.send((tag, result.status)).unwrap();
                 }),
@@ -284,9 +372,10 @@ mod tests {
         );
 
         assert_eq!(kept.len(), 4);
-        assert!(kept
-            .iter()
-            .any(|item| item.request.folder_path == "Archive"));
+        assert!(
+            kept.iter()
+                .any(|item| item.request.folder_path == "Archive")
+        );
         assert!(kept.iter().any(|item| {
             item.request.folder_path == "INBOX"
                 && item.request.generation == 2
@@ -297,9 +386,10 @@ mod tests {
                 && item.request.generation == 2
                 && item.request.cursor.is_some()
         }));
-        assert!(kept
-            .iter()
-            .any(|item| { item.request.account_id == 2 && item.request.cursor.is_some() }));
+        assert!(
+            kept.iter()
+                .any(|item| { item.request.account_id == 2 && item.request.cursor.is_some() })
+        );
 
         let late = coalesce(
             vec![pending(
@@ -315,9 +405,11 @@ mod tests {
 
         let completed: Vec<_> = completed_rx.try_iter().collect();
         assert_eq!(completed.len(), 3);
-        assert!(completed
-            .iter()
-            .all(|(_, status)| status == &PageStatus::Superseded));
+        assert!(
+            completed
+                .iter()
+                .all(|(_, status)| status == &PageStatus::Superseded)
+        );
         for expected in ["first query", "late old page", "old page"] {
             assert!(completed.iter().any(|(tag, _)| *tag == expected));
         }
@@ -354,6 +446,338 @@ mod tests {
             importance: crate::models::Importance::Normal,
             due: 0,
         }
+    }
+
+    fn synthetic_query_path(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "megamail-query-{tag}-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    fn remove_query_fixture(path: &std::path::Path) {
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+    }
+
+    #[test]
+    fn native_parsed_search_uses_real_sql_paging_and_private_body_exclusion() {
+        let path = synthetic_query_path("parsed-search");
+        let writer = Cache::open_at(&path).unwrap();
+        let mut first = synthetic_message(7, 17, 41, "Alice".into(), "Launch review".into());
+        first.unread = true;
+        let mut second = first.clone();
+        second.id = 40;
+        second.uid = 40;
+        let mut other = first.clone();
+        other.account_id = 8;
+        writer.upsert_messages(7, "INBOX", &[first.clone(), second]);
+        writer.upsert_messages(8, "INBOX", &[other]);
+        writer.upsert_messages(7, "Archive", &[first]);
+        writer.save_body(7, "INBOX", 41, "Fictional body needle");
+        let reader = writer
+            .read_connection_with(crate::search::register_sql_functions)
+            .unwrap();
+        let mut epochs = HashMap::new();
+        let lookup = |query: &str, cursor, limit, epochs: &mut HashMap<_, _>| {
+            let mut r = request(7, "INBOX", 1, cursor);
+            r.query = query.into();
+            r.limit = limit;
+            read_page(
+                &reader,
+                &PendingPage {
+                    request: r,
+                    expected_epoch: None,
+                    complete: Box::new(|_| {}),
+                },
+                epochs,
+            )
+        };
+        let first = lookup("from:alice subject:review is:unread", None, 1, &mut epochs);
+        assert_eq!(first.status, PageStatus::Ready);
+        assert_eq!(first.rows.iter().map(|m| m.uid).collect::<Vec<_>>(), [41]);
+        let second = lookup(
+            "from:alice subject:review is:unread",
+            first.next_cursor,
+            1,
+            &mut epochs,
+        );
+        assert_eq!(second.rows.iter().map(|m| m.uid).collect::<Vec<_>>(), [40]);
+        assert!(second.next_cursor.is_none());
+        assert_eq!(lookup("body:needle", None, 100, &mut epochs).rows.len(), 1);
+        assert!(
+            lookup("-body:needle", None, 100, &mut epochs)
+                .rows
+                .is_empty()
+        );
+        assert!(
+            lookup(r#"subject:"' OR 1=1 --""#, None, 100, &mut epochs)
+                .rows
+                .is_empty()
+        );
+        assert!(matches!(
+            lookup("unknown:value", None, 100, &mut epochs).status,
+            PageStatus::Failed(_)
+        ));
+        let raw = rusqlite::Connection::open(&path).unwrap();
+        raw.execute("INSERT INTO sender_checks(account_id,folder_path,uid,trust,summary,findings,pgp) VALUES(7,'INBOX',41,'','','','encrypted')", []).unwrap();
+        assert!(
+            lookup("body:needle", None, 100, &mut epochs)
+                .rows
+                .is_empty()
+        );
+        assert!(
+            lookup("-body:needle", None, 100, &mut epochs)
+                .rows
+                .is_empty()
+        );
+        drop(raw);
+        drop(reader);
+        drop(writer);
+        remove_query_fixture(&path);
+    }
+
+    #[test]
+    fn configured_reader_registers_real_predicates_and_keeps_writes_forbidden() {
+        let path = synthetic_query_path("registered-functions");
+        let writer = Cache::open_at(&path).unwrap();
+        writer.upsert_messages(
+            7,
+            "INBOX",
+            &[synthetic_message(
+                7,
+                17,
+                41,
+                "Synthetic sender".into(),
+                "Legacy".into(),
+            )],
+        );
+        let raw = rusqlite::Connection::open(&path).unwrap();
+        raw.execute(
+            "UPDATE messages SET subject = ?1 WHERE account_id = 7 AND folder_path = 'INBOX' AND uid = 41",
+            ["before\0secret"],
+        )
+        .unwrap();
+        drop(raw);
+        assert_eq!(
+            writer.load_messages(7, "INBOX", 17)[0].subject,
+            "before secret"
+        );
+        let reader = writer
+            .read_connection_with(|connection| {
+                crate::search::register_sql_functions(connection)?;
+                assert!(connection.is_readonly(rusqlite::DatabaseName::Main)?);
+                let result: (Option<bool>, Option<bool>, Option<bool>) = connection.query_row(
+                    "SELECT megamail_search_header_contains(subject, ?1), megamail_search_header_contains(subject, ?2), megamail_search_body_contains(NULL, ?3) FROM messages WHERE account_id = 7 AND folder_path = 'INBOX' AND uid = 41",
+                    rusqlite::params!["secret", "before secret", "body"],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
+                assert_eq!(result, (Some(true), Some(true), None));
+                assert!(connection.execute("DELETE FROM messages", []).is_err());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(reader.load_messages(7, "INBOX", 17).len(), 1);
+        drop(reader);
+        drop(writer);
+        remove_query_fixture(&path);
+    }
+
+    #[test]
+    fn reader_registration_failure_retains_rows_and_completes_as_failed_page() {
+        let path = synthetic_query_path("registration-failure");
+        let writer = Cache::open_at(&path).unwrap();
+        writer.upsert_messages(
+            7,
+            "INBOX",
+            &[synthetic_message(
+                7,
+                17,
+                41,
+                "Synthetic sender".into(),
+                "Retain this row".into(),
+            )],
+        );
+        let cache = writer
+            .read_connection_with(|connection| {
+                assert!(connection.is_readonly(rusqlite::DatabaseName::Main)?);
+                Err(rusqlite::Error::InvalidParameterName(
+                    "synthetic registration failed".into(),
+                ))
+            })
+            .map_err(|error| error.to_string());
+        assert!(cache.is_err());
+        let (sender, receiver) = mpsc::sync_channel(REQUEST_QUEUE_CAPACITY);
+        let join = thread::spawn(move || run_queries(receiver, cache));
+        let service = QueryService { sender };
+        let (tx, rx) = mpsc::channel();
+        service
+            .request_page(request(7, "INBOX", 1, None), move |result| {
+                tx.send(result).unwrap()
+            })
+            .unwrap();
+        let result = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert!(
+            matches!(result.status, PageStatus::Failed(ref reason) if reason.contains("synthetic registration failed"))
+        );
+        assert!(result.rows.is_empty());
+        assert_eq!(
+            writer.load_messages(7, "INBOX", 17)[0].subject,
+            "Retain this row"
+        );
+        drop(service);
+        join.join().unwrap();
+        assert!(rx.try_recv().is_err());
+        drop(writer);
+        remove_query_fixture(&path);
+    }
+
+    #[test]
+    fn query_lane_supersedes_search_and_cursor_after_uid_namespace_reset() {
+        let path = std::env::temp_dir().join(format!(
+            "megamail-query-epoch-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        let writer = Cache::open_at(&path).unwrap();
+        let old = writer.observe_uid_validity(1, "INBOX", 100).unwrap();
+        writer.upsert_messages(
+            1,
+            "INBOX",
+            &(1..=6)
+                .map(|uid| synthetic_message(1, 1, uid, "Sender".into(), "Old namespace".into()))
+                .collect::<Vec<_>>(),
+        );
+        writer.upsert_messages(
+            2,
+            "INBOX",
+            &[synthetic_message(
+                2,
+                1,
+                6,
+                "Sibling".into(),
+                "Keep sibling".into(),
+            )],
+        );
+        let (sender, receiver) = mpsc::sync_channel(REQUEST_QUEUE_CAPACITY);
+        let query_path = path.clone();
+        let join = thread::spawn(move || {
+            let cache = Cache::open_at(&query_path)
+                .and_then(|cache| cache.read_connection())
+                .map_err(|e| e.to_string());
+            run_queries(receiver, cache);
+        });
+        let service = QueryService { sender };
+        let (tx, rx) = mpsc::channel();
+        let mut first = request(1, "INBOX", 1, None);
+        first.limit = 2;
+        service
+            .request_page_at_epoch(first, old.generation, move |result| {
+                tx.send(result).unwrap()
+            })
+            .unwrap();
+        let page = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert_eq!(page.status, PageStatus::Ready);
+        assert_eq!(page.rows.len(), 2);
+        let cursor = page.next_cursor.unwrap();
+        let new = writer.observe_uid_validity(1, "INBOX", 200).unwrap();
+        writer.upsert_messages(
+            1,
+            "INBOX",
+            &[synthetic_message(
+                1,
+                1,
+                6,
+                "Sender".into(),
+                "New namespace".into(),
+            )],
+        );
+        let (tx, rx) = mpsc::channel();
+        service
+            .request_page(request(1, "INBOX", 1, Some(cursor)), move |result| {
+                tx.send(result).unwrap()
+            })
+            .unwrap();
+        let stale_cursor = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert_eq!(stale_cursor.status, PageStatus::Superseded);
+        assert!(stale_cursor.rows.is_empty());
+        let (tx, rx) = mpsc::channel();
+        service
+            .request_page_at_epoch(
+                request(1, "INBOX", 2, None),
+                old.generation,
+                move |result| tx.send(result).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .status,
+            PageStatus::Superseded
+        );
+        let (tx, rx) = mpsc::channel();
+        service
+            .request_page_at_epoch(
+                request(1, "INBOX", 3, None),
+                new.generation,
+                move |result| tx.send(result).unwrap(),
+            )
+            .unwrap();
+        let fresh = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert_eq!(fresh.status, PageStatus::Ready);
+        assert_eq!(fresh.rows[0].subject, "New namespace");
+        let (tx, rx) = mpsc::channel();
+        service
+            .request_page(request(2, "INBOX", 1, None), move |result| {
+                tx.send(result).unwrap()
+            })
+            .unwrap();
+        let sibling = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert_eq!(sibling.status, PageStatus::Ready);
+        assert_eq!(sibling.rows[0].subject, "Keep sibling");
+        drop(service);
+        join.join().unwrap();
+        drop(writer);
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+    }
+
+    #[test]
+    fn failed_cache_open_completes_each_accepted_query_without_fake_empty_success() {
+        let (sender, receiver) = mpsc::sync_channel(REQUEST_QUEUE_CAPACITY);
+        let join = thread::spawn(move || {
+            run_queries(
+                receiver,
+                Err("synthetic migration failure; database retained".into()),
+            )
+        });
+        let service = QueryService { sender };
+        let (tx, rx) = mpsc::channel();
+        service
+            .request_page(request(1, "INBOX", 1, None), move |result| {
+                tx.send(result).unwrap()
+            })
+            .unwrap();
+        let failed = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert!(matches!(failed.status, PageStatus::Failed(_)));
+        assert!(failed.rows.is_empty());
+        drop(service);
+        join.join().unwrap();
+        assert!(rx.try_recv().is_err());
     }
 
     fn count_cached_pages(cache: &Cache, account_id: u32, path: &str, folder_id: u32) -> usize {
@@ -473,10 +897,12 @@ mod tests {
         assert_eq!(frequent.rows.len(), 500);
         assert_eq!(frequent.rows[0].uid, MAIN_ROWS);
         assert_eq!(frequent.rows[1].account_id, 1);
-        assert!(frequent
-            .rows
-            .iter()
-            .all(|row| row.subject.contains("Frequent campaign")));
+        assert!(
+            frequent
+                .rows
+                .iter()
+                .all(|row| row.subject.contains("Frequent campaign"))
+        );
         assert!(frequent.next_cursor.is_some());
 
         let at = Instant::now();

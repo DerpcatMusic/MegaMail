@@ -8,7 +8,9 @@ pub mod discovery;
 pub mod mail_text;
 pub mod oauth;
 pub mod onboarding;
+pub mod provider_auth;
 pub mod query;
+pub mod search;
 pub mod thunderbird;
 pub mod thunderbird_bridge;
 
