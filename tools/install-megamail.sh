@@ -151,18 +151,29 @@ import sys
 source = Path(sys.argv[1])
 destination = Path(sys.argv[2])
 executable = sys.argv[3]
-if "\n" in executable or "\r" in executable:
-    raise SystemExit("the executable path cannot contain a newline")
-
+# BEGIN PURE_DESKTOP_EXEC_GENERATION (extracted by packaging tests)
 def quote_exec_argument(value):
+    # Exec paths cannot contain '=' per the desktop-entry specification. Reject
+    # controls instead of emitting a second line/key or ambiguous escape.
+    if not value.startswith("/") or "=" in value or any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise ValueError("the executable must be an absolute path without controls or '='")
+    # Two distinct layers: Exec argument quoting, then Desktop Entry string
+    # escaping. A literal backslash needs FOUR backslashes in the stored value.
+    # Literal % is doubled; the separately appended %u must remain a field code.
     escaped = "".join("\\" + char if char in '\\`"$' else char for char in value)
-    return '"' + escaped.replace("%", "%%") + '"'
+    return '"' + escaped.replace("%", "%%").replace("\\", "\\\\") + '"'
+# END PURE_DESKTOP_EXEC_GENERATION
 
 lines = source.read_text(encoding="utf-8").splitlines()
 exec_lines = [index for index, line in enumerate(lines) if line.startswith("Exec=")]
 if len(exec_lines) != 1:
     raise SystemExit("the desktop entry must contain exactly one Exec key")
-lines[exec_lines[0]] = "Exec=" + quote_exec_argument(executable)
+try:
+    lines[exec_lines[0]] = "Exec=" + quote_exec_argument(executable) + " %u"
+except ValueError as error:
+    raise SystemExit(str(error))
+if [line for line in lines if line.startswith("MimeType=")] != ["MimeType=x-scheme-handler/mailto;"]:
+    raise SystemExit("the desktop entry must advertise only the mailto URI handler")
 destination.write_text("\n".join(lines) + "\n", encoding="utf-8")
 destination.chmod(0o644)
 PY

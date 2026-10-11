@@ -630,11 +630,16 @@ async function messageBody(params) {
   if (!Number.isSafeInteger(advertisedSize) || advertisedSize <= 0 || advertisedSize > MAX_BODY_SOURCE_BYTES) {
     throw new Error("This message is too large to display safely in the reader. Download the raw message or its attachments instead.");
   }
-  const [full, headers, attachments] = await Promise.all([
-    messenger.messages.getFull(messageId, { decodeContent: true }),
-    messenger.messages.getHeaders(messageId, { decodeHeaders: true }),
+  const [full, attachments] = await Promise.all([
+    messenger.messages.getFull(messageId, { decodeContent: true, decodeHeaders: true }),
     messenger.messages.listAttachments(messageId)
   ]);
+  // TB 153+ puts decoded message headers on the virtual message/rfc822 root.
+  // Never substitute child-part/raw headers or silently lose reply metadata.
+  const headers = full && full.headers;
+  if (!headers || typeof headers !== "object" || Array.isArray(headers)) {
+    throw new Error("Thunderbird did not return decoded message headers. This runtime cannot safely provide reply metadata for the reader.");
+  }
   const output = { plainText: null, html: null };
   collectBody(full.parts || [full], output);
   if (output.plainText === null && output.html === null) {
@@ -850,6 +855,45 @@ async function dispatch(method, params) {
       if (!messenger.megamailSync || !messenger.megamailSync.shutdown) throw new Error("Thunderbird shutdown API is unavailable.");
       setTimeout(() => messenger.megamailSync.shutdown().catch(() => {}), 0);
       return { stopping: true };
+    case "native_mutation": {
+      const messageId = Number(params.messageId);
+      const sourceId = String(params.sourceFolderId || "");
+      const accountId = String(params.accountId || "");
+      const moving = typeof params.destinationFolderId === "string";
+      const flagCount = Number(typeof params.read === "boolean") + Number(typeof params.flagged === "boolean");
+      if (!Number.isSafeInteger(messageId) || messageId <= 0 || !sourceId || !accountId ||
+          (moving ? flagCount !== 0 : flagCount !== 1)) return { status: "rejected" };
+      let source, destination;
+      try {
+        source = await findFolder(sourceId);
+        const header = await messenger.messages.get(messageId);
+        if (!header.folder || String(header.folder.id) !== sourceId || String(header.folder.accountId) !== accountId || String(source.accountId) !== accountId)
+          return { status: "rejected" };
+        if (params.requiredCurrentFlag !== undefined) {
+          if (moving || typeof params.requiredCurrentFlag !== "boolean") return { status: "rejected" };
+          const flag = typeof params.read === "boolean" ? "read" : "flagged";
+          if (header[flag] !== params.requiredCurrentFlag) return { status: "rejected" };
+          // shortcut: Thunderbird has no atomic conditional update; preflight rejects observed changes.
+        }
+        if (moving) {
+          destination = await findFolder(params.destinationFolderId);
+          if (String(destination.accountId) !== accountId || String(destination.id) === sourceId || source.canDeleteMessages === false)
+            return { status: "rejected" };
+        }
+      } catch (_) { return { status: "rejected" }; }
+      try {
+        if (moving) {
+          await messenger.messages.move([messageId], destination);
+        } else {
+          const update = typeof params.read === "boolean" ? { read: params.read } : { flagged: params.flagged };
+          await messenger.messages.update(messageId, update);
+          const after = await messenger.messages.get(messageId);
+          if (!after.folder || String(after.folder.id) !== sourceId || String(after.folder.accountId) !== accountId ||
+              Object.keys(update).some(key => after[key] !== update[key])) return { status: "uncertain" };
+        }
+        return { status: "succeeded" };
+      } catch (_) { return { status: "uncertain" }; }
+    }
     case "update": {
       const update = {};
       if (typeof params.read === "boolean") update.read = params.read;

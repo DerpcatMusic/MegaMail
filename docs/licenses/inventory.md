@@ -6,7 +6,7 @@ copyright, and notice files when present. A declaration is not a substitute for 
 missing license text; missing or skipped files are listed explicitly below. GPUI Kit's
 crates.io archive omits its Apache file, so its exact tagged upstream copy is included.
 
-Lockfile SHA-256: `79608a42d35e143bcf5c1c4fefc26123c47add0fa6767466d47df35aa0ceddbc`
+Lockfile SHA-256: `f51837f5c1a5ddf634d338a20e00753f7b8f5769f35983d999ee12ad3b50550c`
 
 Resolved remote package graph SHA-256: `9db40d791f9dcf257c262d648464ad613ec68f71e3d667e30ef270aeddf9aec9`
 

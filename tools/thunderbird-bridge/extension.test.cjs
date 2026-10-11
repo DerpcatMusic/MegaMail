@@ -11,6 +11,7 @@ class TestFile {
   async arrayBuffer() { return Uint8Array.from(this.bytes).buffer; }
 }
 const frames = [];
+let hostListener;
 let rawReads = 0;
 const context = vm.createContext({
   File: TestFile, TextEncoder, TextDecoder, Uint8Array, Date, console,
@@ -21,7 +22,7 @@ const context = vm.createContext({
     runtime: {
       getManifest: () => ({ version: 'test' }),
       connectNative: () => ({
-        onMessage: { addListener() {} }, onDisconnect: { addListener() {} },
+        onMessage: { addListener(listener) { hostListener = listener; } }, onDisconnect: { addListener() {} },
         postMessage: frame => frames.push(frame),
       }),
     },
@@ -86,6 +87,139 @@ const call = (method, params = {}) => { context.request = { method, params }; re
   context.messenger.messages.get = async () => ({ size: 100 * 1024 * 1024 + 1 });
   await assert.rejects(call('raw_start', { messageId: 9 }), /limit/);
   assert.equal(rawReads, readsBefore, 'Reject oversized raw messages before fetching their content');
+
+  // Body regressions use the shipped host listener, not a copied implementation.
+  let nextBodyRequest = 1000;
+  const bodyReply = async () => {
+    const id = nextBodyRequest++;
+    await hostListener({ id, method: 'body', params: { messageId: 42 } });
+    const reply = frames.find(frame => frame.id === id);
+    assert.ok(reply, 'The production listener replies to the selected request');
+    return reply;
+  };
+  const bodyCalls = [];
+  let bodySize = 1024;
+  let bodyAttachments = [];
+  const plain = 'Exact selected plain body';
+  const html = '<html><head><style>.mail{color:#203050}</style></head><body><table role="presentation"><tr><td>Exact selected HTML<img src="cid:logo" alt="Logo"><a href="https://example.invalid/article">Read</a></td></tr></table></body></html>';
+  const decodedHeaders = {
+    'Reply-To': ['"Hörst, Kenny" <kenny@example.invalid>', 'Other <other@example.invalid>'],
+    'In-Reply-To': ['<parent@example.invalid>'],
+    References: ['<root@example.invalid> <parent@example.invalid>', '<other@example.invalid>'],
+  };
+  const root = headers => ({
+    contentType: 'message/rfc822', partName: '', decryptionStatus: 'none', headers,
+    // Raw values must not replace Thunderbird's address-aware decoded values.
+    rawHeaders: { 'reply-to': ['=?UTF-8?Q?H=C3=B6rst=2C_Kenny?= <kenny@example.invalid>'] },
+    parts: [{ contentType: 'multipart/alternative', headers: {
+      'reply-to': ['wrong-child@example.invalid'], references: ['<wrong-child@example.invalid>'],
+    }, parts: [
+      { contentType: 'text/plain', body: plain },
+      { contentType: 'text/html', body: html },
+    ] }],
+  });
+  let fullBody = root(decodedHeaders);
+  context.messenger.messages.get = async id => {
+    bodyCalls.push('get'); assert.equal(id, 42); return { size: bodySize, hasAttachments: false };
+  };
+  context.messenger.messages.getFull = async (id, options) => {
+    bodyCalls.push('getFull'); assert.equal(id, 42);
+    assert.equal(options.decodeContent, true);
+    assert.equal(options.decodeHeaders, true);
+    assert.equal('decrypt' in options, false, 'Preserve the existing default decryption policy');
+    return fullBody;
+  };
+  context.messenger.messages.getHeaders = async () => {
+    bodyCalls.push('getHeaders'); throw new Error('Body must not request duplicate headers');
+  };
+  context.messenger.messages.listAttachments = async id => {
+    bodyCalls.push('listAttachments'); assert.equal(id, 42); return bodyAttachments;
+  };
+  let reply = await bodyReply();
+  assert.equal(reply.error, undefined);
+  assert.deepEqual(JSON.parse(JSON.stringify(reply.result)), {
+    plainText: plain, html, preview: plain, hasAttachment: false,
+    replyTo: '"Hörst, Kenny" <kenny@example.invalid> Other <other@example.invalid>',
+    inReplyTo: '<parent@example.invalid>',
+    references: '<root@example.invalid> <parent@example.invalid> <other@example.invalid>', truncated: false,
+  });
+  assert.deepEqual(bodyCalls, ['get', 'getFull', 'listAttachments']);
+  // Equivalence is for the three consumed fields, not MIME content-* headers.
+  context.bodyHeaders = decodedHeaders;
+  for (const [name, field] of [['reply-to', 'replyTo'], ['in-reply-to', 'inReplyTo'], ['references', 'references']]) {
+    context.bodyHeaderName = name;
+    assert.equal(reply.result[field], vm.runInContext('headerValue(bodyHeaders, bodyHeaderName)', context),
+      'Keep the previous getHeaders projection of decoded arrays');
+  }
+  fullBody = root({
+    'reply-to': ['"Renée, Smith" <renee@example.invalid>'],
+    references: ['<root@example.invalid>\r\n\t<parent@example.invalid>', '<last@example.invalid>'],
+    'in-reply-to': ['<parent@example.invalid>', '', null, 7],
+  });
+  reply = await bodyReply();
+  assert.equal(reply.result.replyTo, '"Renée, Smith" <renee@example.invalid>');
+  assert.equal(reply.result.references, '<root@example.invalid>\r\n\t<parent@example.invalid> <last@example.invalid>');
+  assert.equal(reply.result.inReplyTo, '<parent@example.invalid>', 'Retain safe string filtering');
+  fullBody = root({ references: ['x'.repeat(9000)] });
+  reply = await bodyReply();
+  assert.equal(reply.result.references.length, 8192, 'Keep the header size cap');
+  assert.equal(reply.result.replyTo, '');
+  assert.equal(reply.result.inReplyTo, '');
+  assert.equal(reply.result.truncated, false, 'Body truncation flag keeps its existing meaning');
+  fullBody = root({});
+  bodyAttachments = [{ name: 'real.bin', partName: '1.2', contentType: 'application/octet-stream', size: 12 }];
+  reply = await bodyReply();
+  assert.equal(reply.result.hasAttachment, true, 'Enumerated attachments override stale message metadata');
+  assert.equal(reply.result.replyTo, '', 'Absent fields in a valid root dictionary remain empty');
+  assert.equal(reply.result.references, '', 'Do not fall back to nested MIME or raw headers');
+  bodyAttachments = [];
+  fullBody.parts.push({ name: 'not-listed.bin', partName: '1.3', contentType: 'application/octet-stream' });
+  assert.equal((await bodyReply()).result.hasAttachment, false, 'MIME guesses do not replace listAttachments');
+  context.messenger.messages.listAttachments = async () => { throw new Error('Synthetic attachment listing failure'); };
+  await assert.rejects(call('body', { messageId: 42 }), /attachment listing failure/,
+    'Do not turn failed attachment enumeration into false no-attachment metadata');
+  context.messenger.messages.listAttachments = async id => {
+    bodyCalls.push('listAttachments'); assert.equal(id, 42); return bodyAttachments;
+  };
+  for (const headers of [undefined, null, [], 'not a dictionary']) {
+    fullBody = root(headers);
+    reply = await bodyReply();
+    assert.match(reply.error, /decoded message headers/);
+    assert.equal(reply.result, undefined, 'Missing root headers must not silently lose reply metadata');
+  }
+  fullBody = { contentType: 'text/plain', headers: {}, body: plain };
+  reply = await bodyReply();
+  assert.equal(reply.result.plainText, plain);
+  assert.equal(reply.result.html, null);
+  fullBody = { contentType: 'text/html', headers: {}, body: html };
+  reply = await bodyReply();
+  assert.equal(reply.result.plainText, null);
+  assert.equal(reply.result.html, html, 'Preserve sender HTML without changing privileges or loading resources');
+  fullBody = root({}); fullBody.parts = [];
+  assert.match((await bodyReply()).error, /no readable body/);
+  const bodyBudget = 2 * 1024 * 1024;
+  fullBody = { headers: {}, parts: [{ contentType: 'text/plain', body: 'a'.repeat(bodyBudget - 16) },
+    { contentType: 'text/html', body: 'b'.repeat(32) }] };
+  // dispatch exposes the body budget; the host independently caps the JSON envelope.
+  let limited = await call('body', { messageId: 42 });
+  assert.equal(Buffer.byteLength(limited.plainText) + Buffer.byteLength(limited.html), bodyBudget);
+  assert.equal(limited.html, 'b'.repeat(16));
+  assert.equal(limited.truncated, true);
+  assert.match((await bodyReply()).error, /safe transfer limit/);
+  fullBody = { headers: {}, contentType: 'text/plain', body: 'c'.repeat(bodyBudget + 1) };
+  limited = await call('body', { messageId: 42 });
+  assert.equal(limited.plainText.length, bodyBudget);
+  assert.equal(limited.truncated, true);
+  for (const size of [0, -1, NaN, 1.5, 20 * 1024 * 1024 + 1]) {
+    bodySize = size;
+    const callsBefore = bodyCalls.length;
+    assert.match((await bodyReply()).error, /too large to display safely/);
+    assert.deepEqual(bodyCalls.slice(callsBefore), ['get'], 'Reject unsafe size before body or attachment reads');
+  }
+  bodySize = 20 * 1024 * 1024;
+  fullBody = root({});
+  assert.equal((await bodyReply()).result.plainText, plain, 'Accept the existing inclusive source-size cap');
+  assert.equal(bodyCalls.includes('getHeaders'), false, 'All selected bodies stay independent of getHeaders');
 
   const folders = new Map([
     ['archive-id', { id: 'archive-id', accountId: 'synthetic-account', type: 'archive' }],
@@ -375,5 +509,34 @@ const call = (method, params = {}) => { context.request = { method, params }; re
   assert.equal((await syncApi.discoverFolders('account5')).cached, false,
     'Failed discovery is not remembered and can be retried');
   assert.equal(folderDiscoveryRuns, 5);
+  let flagWrites = 0, moveWrites = 0;
+  let header = { id: 71, folder: { id: 'source', accountId: 'owner' }, read: false, flagged: false };
+  context.messenger.accounts = { get: async id => ({ id, type: 'imap' }) };
+  context.messenger.folders = { get: async id => ({ id, accountId: id === 'foreign' ? 'other' : 'owner', canDeleteMessages: true }) };
+  context.messenger.messages.get = async () => ({ ...header });
+  context.messenger.messages.update = async (_id, update) => { flagWrites++; header = { ...header, ...update }; };
+  context.messenger.messages.move = async () => { moveWrites++; };
+  const mutation = { messageId: 71, sourceFolderId: 'source', accountId: 'owner', read: true };
+  assert.equal((await call('native_mutation', mutation)).status, 'succeeded');
+  assert.equal(flagWrites, 1);
+  assert.equal((await call('native_mutation', { ...mutation, accountId: 'other' })).status, 'rejected');
+  assert.equal((await call('native_mutation', { ...mutation, sourceFolderId: 'wrong' })).status, 'rejected');
+  assert.equal((await call('native_mutation', { ...mutation, flagged: true })).status, 'rejected');
+  assert.equal(flagWrites, 1, 'Wrong scope or multiple actions cannot submit a flag write');
+  assert.equal((await call('native_mutation', { ...mutation, read: false, requiredCurrentFlag: false })).status, 'rejected', 'Undo must reject a changed current flag');
+  assert.equal(flagWrites, 1, 'Conflicting undo cannot submit a write');
+  assert.equal((await call('native_mutation', { ...mutation, read: false, requiredCurrentFlag: true })).status, 'succeeded');
+  assert.equal(flagWrites, 2);
+  header.read = true;
+  context.messenger.messages.update = async () => { flagWrites++; };
+  assert.equal((await call('native_mutation', { ...mutation, read: false })).status, 'uncertain', 'Ignored flags must not be reported as success');
+  const moveMutation = { messageId: 71, sourceFolderId: 'source', accountId: 'owner', destinationFolderId: 'archive' };
+  assert.equal((await call('native_mutation', { ...moveMutation, destinationFolderId: 'foreign' })).status, 'rejected');
+  assert.equal((await call('native_mutation', { ...moveMutation, destinationFolderId: 'source' })).status, 'rejected');
+  assert.equal(moveWrites, 0);
+  assert.equal((await call('native_mutation', moveMutation)).status, 'succeeded');
+  context.messenger.messages.move = async () => { moveWrites++; throw new Error('fictional acknowledgment lost'); };
+  assert.equal((await call('native_mutation', moveMutation)).status, 'uncertain');
+  assert.equal(moveWrites, 2, 'A lost acknowledgment must not trigger a retry');
   console.log('Thunderbird bridge protocol checks passed');
 })().catch(error => { console.error(error.stack || error.message); process.exitCode = 1; });

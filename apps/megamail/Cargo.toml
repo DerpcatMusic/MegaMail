@@ -14,6 +14,7 @@ megamail-core = { path = "../../crates/mail-core" }
 zeron-theme = { path = "../../crates/zeron-theme" }
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
 futures = "0.3"
+libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"

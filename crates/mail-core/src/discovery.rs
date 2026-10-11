@@ -24,21 +24,24 @@ pub struct DiscoveryReport {
     /// only the validated domain.
     pub email: String,
     /// Known presets come first, followed by valid provider/ISPDB candidates.
+    /// Authentication alternatives are distinct choices, not retry fallbacks.
     pub candidates: Vec<ServerConfigCandidate>,
     /// Network/configuration misses are retained so the UI can explain why
     /// manual setup is the next option without exposing raw response bodies.
     pub attempts: Vec<DiscoveryAttempt>,
 }
 
-/// One server pair proposed by a known-provider preset or an autoconfig file.
+/// One server pair and explicit authentication choice proposed by discovery.
+/// Multiple candidates can use the same endpoints with different auth methods.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServerConfigCandidate {
     pub provider_name: String,
     pub source: DiscoverySource,
     pub incoming: MailServer,
     pub outgoing: MailServer,
-    /// True only when this candidate's settings advertise OAuth2, or the
-    /// provider is known to support it. It does not mean MegaMail is registered.
+    /// True when the selected endpoints advertise OAuth2 (even if this choice
+    /// uses password auth), or the provider is known to support it.
+    /// Discovery does not establish MegaMail registration or authorization.
     pub oauth_advertised: bool,
     pub warnings: Vec<CandidateWarning>,
     /// Present for Gmail, where a Google app password may be used when the
@@ -239,10 +242,12 @@ pub fn discover(email: &str) -> Result<DiscoveryReport, DiscoveryError> {
 
     for (source, url) in sources {
         let fetched = match fetch_limited(&agent, &url) {
-            FetchResult::Found(bytes) => match parse_autoconfig(&bytes, email) {
-                Ok(mut candidate) => {
-                    candidate.source = source;
-                    push_if_new(&mut report.candidates, candidate);
+            FetchResult::Found(bytes) => match parse_autoconfig_candidates(&bytes, email) {
+                Ok(candidates) => {
+                    for mut candidate in candidates {
+                        candidate.source = source;
+                        push_if_new(&mut report.candidates, candidate);
+                    }
                     AttemptOutcome::Found
                 }
                 Err(DiscoveryError::ConfigurationTooLarge) => AttemptOutcome::TooLarge,
@@ -259,12 +264,34 @@ pub fn discover(email: &str) -> Result<DiscoveryReport, DiscoveryError> {
     Ok(report)
 }
 
-/// Parse Thunderbird ISPDB/provider autoconfig XML without DTDs or external
-/// entities. Input is byte-bounded even for local fixtures.
+/// Return the preferred explicit authentication choice from autoconfig XML.
+/// OAuth is preferred when advertised by the selected encrypted endpoints;
+/// this function never silently substitutes password auth for OAuth.
+/// Use [`parse_autoconfig_candidates`] to offer all choices to the user.
 pub fn parse_autoconfig(
     bytes: &[u8],
     email: &str,
 ) -> Result<ServerConfigCandidate, DiscoveryError> {
+    parse_autoconfig_candidates(bytes, email)?
+        .into_iter()
+        .next()
+        .ok_or(DiscoveryError::NoUsableImapSmtpPair)
+}
+
+/// Parse bounded Thunderbird XML without DTDs or external entities.
+/// Select endpoints by transport, then preserve every distinct auth method as
+/// a separate candidate, independent of XML auth order. OAuth choices precede
+/// password-capable choices, even if only one endpoint advertises OAuth.
+/// The user must select and review a choice before credentials can be used.
+/// At most 16 choices are returned (four typed methods per endpoint).
+///
+/// # Errors
+/// Rejects oversized/invalid XML, domain mismatches, and invalid/missing pairs.
+/// Plaintext and unsupported auth remain visible but unusable after review.
+pub fn parse_autoconfig_candidates(
+    bytes: &[u8],
+    email: &str,
+) -> Result<Vec<ServerConfigCandidate>, DiscoveryError> {
     if bytes.len() as u64 > MAX_CONFIG_BYTES {
         return Err(DiscoveryError::ConfigurationTooLarge);
     }
@@ -328,8 +355,44 @@ pub fn parse_autoconfig(
     )
     .ok_or(DiscoveryError::NoUsableImapSmtpPair)?;
 
-    let oauth_advertised =
-        incoming.auth == AuthMethod::OAuth2 || outgoing.auth == AuthMethod::OAuth2;
+    let oauth_advertised = incoming.auth_methods.contains(&AuthMethod::OAuth2)
+        || outgoing.auth_methods.contains(&AuthMethod::OAuth2);
+    let mut candidates = Vec::new();
+    for &incoming_auth in &incoming.auth_methods {
+        for &outgoing_auth in &outgoing.auth_methods {
+            let mut incoming = incoming.endpoint.clone();
+            let mut outgoing = outgoing.endpoint.clone();
+            incoming.auth = incoming_auth;
+            outgoing.auth = outgoing_auth;
+            candidates.push(candidate_from_servers(
+                &provider_name,
+                incoming,
+                outgoing,
+                oauth_advertised,
+            ));
+        }
+    }
+    candidates.sort_by_key(|candidate| {
+        let pair_rank = match (candidate.incoming.auth, candidate.outgoing.auth) {
+            (AuthMethod::OAuth2, _) | (_, AuthMethod::OAuth2) => 0,
+            (AuthMethod::Password, AuthMethod::Password | AuthMethod::None) => 1,
+            _ => 2,
+        };
+        (
+            pair_rank,
+            auth_rank(candidate.incoming.auth),
+            auth_rank(candidate.outgoing.auth),
+        )
+    });
+    Ok(candidates)
+}
+
+fn candidate_from_servers(
+    provider_name: &str,
+    incoming: MailServer,
+    outgoing: MailServer,
+    oauth_advertised: bool,
+) -> ServerConfigCandidate {
     let mut warnings = Vec::new();
     if incoming.tls == TlsMode::Plaintext {
         warnings.push(CandidateWarning::IncomingTransportIsNotEncrypted);
@@ -356,15 +419,15 @@ pub fn parse_autoconfig(
             "smtp.gmail.com" | "smtp.googlemail.com"
         ))
     .then_some(APP_PASSWORD_HELP);
-    Ok(ServerConfigCandidate {
-        provider_name,
+    ServerConfigCandidate {
+        provider_name: provider_name.to_string(),
         source: DiscoverySource::ThunderbirdIspdb,
         incoming,
         outgoing,
         oauth_advertised,
         warnings,
         app_password_help,
-    })
+    }
 }
 
 /// Validate an email address for discovery/onboarding without making a network
@@ -373,7 +436,12 @@ pub fn validate_email_address(email: &str) -> Result<(), DiscoveryError> {
     email_domain(email.trim()).map(|_| ())
 }
 
-fn parse_server(node: roxmltree::Node<'_, '_>) -> Option<MailServer> {
+struct ParsedServer {
+    endpoint: MailServer,
+    auth_methods: Vec<AuthMethod>,
+}
+
+fn parse_server(node: roxmltree::Node<'_, '_>) -> Option<ParsedServer> {
     let host = normalize_server_host(child_text(node, "hostname")?)?;
     let port = child_text(node, "port")?.trim().parse::<u16>().ok()?;
     if port == 0 {
@@ -389,16 +457,31 @@ fn parse_server(node: roxmltree::Node<'_, '_>) -> Option<MailServer> {
         "PLAIN" | "NONE" => TlsMode::Plaintext,
         _ => return None,
     };
-    let auth = match child_text(node, "authentication")?
-        .trim()
-        .to_ascii_lowercase()
-        .as_str()
+    // Deduplicate while reading so repeated untrusted elements cannot grow
+    // the alternative set beyond the four supported typed outcomes.
+    let mut auth_methods = Vec::new();
+    for child in node
+        .children()
+        .filter(|child| child.has_tag_name("authentication"))
     {
-        "plain" | "password-cleartext" | "password" => AuthMethod::Password,
-        "oauth2" => AuthMethod::OAuth2,
-        "none" => AuthMethod::None,
-        _ => AuthMethod::Unsupported,
-    };
+        let auth = match child
+            .text()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "plain" | "password-cleartext" | "password" => AuthMethod::Password,
+            "oauth2" => AuthMethod::OAuth2,
+            "none" => AuthMethod::None,
+            _ => AuthMethod::Unsupported,
+        };
+        if !auth_methods.contains(&auth) {
+            auth_methods.push(auth);
+        }
+    }
+    auth_methods.sort_by_key(|auth| auth_rank(*auth));
+    let auth = *auth_methods.first()?;
     let username = match child_text(node, "username")
         .unwrap_or("%EMAILADDRESS%")
         .trim()
@@ -426,32 +509,58 @@ fn parse_server(node: roxmltree::Node<'_, '_>) -> Option<MailServer> {
         _ => return None,
     };
 
-    Some(MailServer {
-        host,
-        port,
-        tls,
-        auth,
-        username,
+    Some(ParsedServer {
+        endpoint: MailServer {
+            host,
+            port,
+            tls,
+            auth,
+            username,
+        },
+        auth_methods,
     })
+}
+
+fn auth_rank(auth: AuthMethod) -> u8 {
+    match auth {
+        AuthMethod::OAuth2 => 0,
+        AuthMethod::Password => 1,
+        AuthMethod::None => 2,
+        AuthMethod::Unsupported => 3,
+    }
 }
 
 fn select_server<'a, 'input: 'a>(
     servers: impl Iterator<Item = roxmltree::Node<'a, 'input>>,
-) -> Option<MailServer> {
-    servers.filter_map(parse_server).min_by_key(|server| {
-        let transport_rank = match server.tls {
-            TlsMode::ImplicitTls => 0,
-            TlsMode::StartTls => 1,
-            TlsMode::Plaintext => 8,
-        };
-        let auth_rank = match server.auth {
-            AuthMethod::Password => 0,
-            AuthMethod::OAuth2 => 2,
-            AuthMethod::None => 4,
-            AuthMethod::Unsupported => 6,
-        };
-        transport_rank + auth_rank
-    })
+) -> Option<ParsedServer> {
+    // Endpoint selection must not discard auth alternatives or change TLS
+    // merely because the password builder cannot handle OAuth.
+    let transport_rank = |server: &ParsedServer| match server.endpoint.tls {
+        TlsMode::ImplicitTls => 0,
+        TlsMode::StartTls => 1,
+        TlsMode::Plaintext => 8,
+    };
+    let mut selected: Option<ParsedServer> = None;
+    for server in servers.filter_map(parse_server) {
+        match selected.as_mut() {
+            Some(old)
+                if old.endpoint.host == server.endpoint.host
+                    && old.endpoint.port == server.endpoint.port
+                    && old.endpoint.tls == server.endpoint.tls
+                    && old.endpoint.username == server.endpoint.username =>
+            {
+                for auth in server.auth_methods {
+                    if !old.auth_methods.contains(&auth) {
+                        old.auth_methods.push(auth);
+                    }
+                }
+                old.auth_methods.sort_by_key(|auth| auth_rank(*auth));
+            }
+            Some(old) if transport_rank(old) <= transport_rank(&server) => {}
+            _ => selected = Some(server),
+        }
+    }
+    selected
 }
 
 fn child_text<'a, 'input: 'a>(node: roxmltree::Node<'a, 'input>, name: &str) -> Option<&'a str> {
@@ -701,15 +810,19 @@ fn has_controls(value: &str) -> bool {
 }
 
 fn push_if_new(candidates: &mut Vec<ServerConfigCandidate>, candidate: ServerConfigCandidate) {
-    let duplicate = candidates.iter().any(|old| {
-        old.incoming.host == candidate.incoming.host
-            && old.incoming.port == candidate.incoming.port
-            && old.incoming.tls == candidate.incoming.tls
-            && old.outgoing.host == candidate.outgoing.host
-            && old.outgoing.port == candidate.outgoing.port
-            && old.outgoing.tls == candidate.outgoing.tls
-    });
-    if !duplicate {
+    if let Some(old) = candidates
+        .iter_mut()
+        .find(|old| old.incoming == candidate.incoming && old.outgoing == candidate.outgoing)
+    {
+        // Keep first-source provenance, but never erase OAuth metadata learned
+        // from a later source advertising the same explicit auth choice.
+        old.oauth_advertised |= candidate.oauth_advertised;
+        for warning in candidate.warnings {
+            if !old.warnings.contains(&warning) {
+                old.warnings.push(warning);
+            }
+        }
+    } else {
         candidates.push(candidate);
     }
 }
@@ -780,6 +893,218 @@ mod tests {
           </emailProvider>
         </clientConfig>
     "#;
+
+    const YAHOO: &[u8] = include_bytes!("../tests/fixtures/discovery/yahoo-oauth-password.xml");
+    const YAHOO_REVERSED: &[u8] =
+        include_bytes!("../tests/fixtures/discovery/yahoo-password-oauth.xml");
+
+    #[test]
+    fn yahoo_auth_alternatives_are_explicit_and_order_independent() {
+        let candidates = parse_autoconfig_candidates(YAHOO, "person@yahoo.com").unwrap();
+        assert_eq!(
+            candidates,
+            parse_autoconfig_candidates(YAHOO_REVERSED, "person@yahoo.com").unwrap(),
+        );
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| (candidate.incoming.auth, candidate.outgoing.auth))
+                .collect::<Vec<_>>(),
+            vec![
+                (AuthMethod::OAuth2, AuthMethod::OAuth2),
+                (AuthMethod::OAuth2, AuthMethod::Password),
+                (AuthMethod::Password, AuthMethod::OAuth2),
+                (AuthMethod::Password, AuthMethod::Password),
+            ],
+        );
+        assert_eq!(
+            parse_autoconfig(YAHOO, "person@yahoo.com").unwrap(),
+            candidates[0]
+        );
+        assert!(!candidates[0].credentials_may_be_used_after_review(true));
+        let password = candidates
+            .iter()
+            .find(|candidate| {
+                candidate.incoming.auth == AuthMethod::Password
+                    && candidate.outgoing.auth == AuthMethod::Password
+            })
+            .unwrap();
+        assert!(password.credentials_may_be_used_after_review(true));
+        assert!(!password.credentials_may_be_used_after_review(false));
+        for candidate in &candidates {
+            assert_eq!(candidate.incoming.host, "imap.mail.yahoo.com");
+            assert_eq!(candidate.incoming.port, 993);
+            assert_eq!(candidate.outgoing.host, "smtp.mail.yahoo.com");
+            assert_eq!(candidate.outgoing.port, 465);
+            assert_eq!(candidate.incoming.tls, TlsMode::ImplicitTls);
+            assert_eq!(candidate.outgoing.tls, TlsMode::ImplicitTls);
+            assert!(candidate.oauth_advertised);
+            assert!(candidate.requires_review());
+            assert!(candidate
+                .warnings
+                .contains(&CandidateWarning::OAuth2NeedsMegaMailProviderRegistration));
+        }
+    }
+
+    #[test]
+    fn repeated_endpoint_nodes_merge_auth_without_changing_transport() {
+        let duplicate_incoming = r#"</incomingServer>
+            <incomingServer type="imap">
+              <hostname>imap.mail.yahoo.com</hostname><port>993</port><socketType>SSL</socketType>
+              <authentication>OAuth2</authentication><username>%EMAILADDRESS%</username>
+            </incomingServer>"#;
+        let xml = String::from_utf8(YAHOO.to_vec())
+            .unwrap()
+            .replacen("<authentication>OAuth2</authentication>", "", 1)
+            .replace("</incomingServer>", duplicate_incoming);
+        assert_eq!(
+            parse_autoconfig_candidates(xml.as_bytes(), "person@yahoo.com").unwrap(),
+            parse_autoconfig_candidates(YAHOO, "person@yahoo.com").unwrap(),
+        );
+    }
+
+    #[test]
+    fn one_sided_oauth_advertisement_is_not_silently_downgraded() {
+        let xml = String::from_utf8(YAHOO.to_vec()).unwrap().replace(
+            "<hostname>smtp.mail.yahoo.com</hostname><port>465</port><socketType>SSL</socketType>\n      <authentication>OAuth2</authentication>",
+            "<hostname>smtp.mail.yahoo.com</hostname><port>465</port><socketType>SSL</socketType>",
+        );
+        let candidates = parse_autoconfig_candidates(xml.as_bytes(), "person@yahoo.com").unwrap();
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].incoming.auth, AuthMethod::OAuth2);
+        assert_eq!(candidates[1].incoming.auth, AuthMethod::Password);
+        assert!(candidates[1].oauth_advertised);
+    }
+
+    #[test]
+    fn discovery_dedup_preserves_auth_choices_usernames_and_oauth_metadata() {
+        let candidates = parse_autoconfig_candidates(YAHOO, "person@yahoo.com").unwrap();
+        let mut report_candidates = Vec::new();
+        for candidate in candidates.iter().chain(candidates.iter()) {
+            push_if_new(&mut report_candidates, candidate.clone());
+        }
+        assert_eq!(report_candidates, candidates);
+        let mut alternate_username = candidates.last().unwrap().clone();
+        alternate_username.outgoing.username = UsernameTemplate::LocalPart;
+        push_if_new(&mut report_candidates, alternate_username);
+        assert_eq!(report_candidates.len(), candidates.len() + 1);
+
+        let mut password_only = candidates.last().unwrap().clone();
+        password_only.oauth_advertised = false;
+        password_only.warnings.clear();
+        password_only.source = DiscoverySource::ProviderAutoconfigSubdomain;
+        let mut merged = vec![password_only];
+        push_if_new(&mut merged, candidates.last().unwrap().clone());
+        assert_eq!(merged.len(), 1);
+        assert!(merged[0].oauth_advertised);
+        assert!(merged[0].requires_review());
+        assert_eq!(
+            merged[0].source,
+            DiscoverySource::ProviderAutoconfigSubdomain
+        );
+    }
+
+    #[test]
+    fn unsupported_only_auth_remains_visible_but_blocked() {
+        let xml = include_bytes!("../tests/fixtures/discovery/unsupported-only.xml");
+        let candidates = parse_autoconfig_candidates(xml, "person@yahoo.com").unwrap();
+        assert_eq!(candidates.len(), 1);
+        let candidate = &candidates[0];
+        assert_eq!(candidate.incoming.auth, AuthMethod::Unsupported);
+        assert_eq!(candidate.outgoing.auth, AuthMethod::Unsupported);
+        assert!(!candidate.oauth_advertised);
+        assert!(candidate.requires_review());
+        assert!(!candidate.credentials_may_be_used_after_review(true));
+        assert!(candidate
+            .warnings
+            .contains(&CandidateWarning::AuthenticationMethodUnsupported));
+    }
+
+    #[test]
+    fn smtp_no_auth_is_preserved_without_weakening_imap() {
+        let xml = include_bytes!("../tests/fixtures/discovery/smtp-no-auth.xml");
+        let candidates = parse_autoconfig_candidates(xml, "person@yahoo.com").unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].incoming.auth, AuthMethod::Password);
+        assert_eq!(candidates[0].outgoing.auth, AuthMethod::None);
+        assert!(!candidates[0].credentials_may_be_used_after_review(false));
+        assert!(candidates[0].credentials_may_be_used_after_review(true));
+        let xml = String::from_utf8(xml.to_vec())
+            .unwrap()
+            .replace("password-cleartext", "none");
+        let candidate = parse_autoconfig(xml.as_bytes(), "person@yahoo.com").unwrap();
+        assert!(!candidate.credentials_may_be_used_after_review(true));
+    }
+
+    #[test]
+    fn auth_alternatives_never_override_invalid_or_plaintext_tls() {
+        let xml = include_bytes!("../tests/fixtures/discovery/invalid-tls.xml");
+        assert_eq!(
+            parse_autoconfig_candidates(xml, "person@yahoo.com"),
+            Err(DiscoveryError::NoUsableImapSmtpPair)
+        );
+        let xml = String::from_utf8(YAHOO.to_vec()).unwrap().replace(
+            "<socketType>SSL</socketType>",
+            "<socketType>plain</socketType>",
+        );
+        for candidate in parse_autoconfig_candidates(xml.as_bytes(), "person@yahoo.com").unwrap() {
+            assert!(candidate.requires_review());
+            assert!(!candidate.credentials_may_be_used_after_review(true));
+            assert!(candidate
+                .warnings
+                .contains(&CandidateWarning::IncomingTransportIsNotEncrypted));
+            assert!(candidate
+                .warnings
+                .contains(&CandidateWarning::OutgoingTransportIsNotEncrypted));
+        }
+    }
+
+    #[test]
+    fn repeated_auth_input_is_bounded_and_xml_entities_are_rejected() {
+        let external = include_bytes!("../tests/fixtures/discovery/external-entity.xml");
+        assert_eq!(
+            parse_autoconfig_candidates(external, "person@yahoo.com"),
+            Err(DiscoveryError::InvalidXml)
+        );
+        assert_eq!(
+            parse_autoconfig_candidates(&[0xff], "person@yahoo.com"),
+            Err(DiscoveryError::InvalidXml)
+        );
+        let oversized = vec![b' '; (MAX_CONFIG_BYTES + 1) as usize];
+        assert_eq!(
+            parse_autoconfig_candidates(&oversized, "person@yahoo.com"),
+            Err(DiscoveryError::ConfigurationTooLarge)
+        );
+        let repeated = String::from_utf8(YAHOO.to_vec()).unwrap().replace(
+            "<authentication>OAuth2</authentication>",
+            &"<authentication>OAuth2</authentication>".repeat(1_000),
+        );
+        assert_eq!(
+            parse_autoconfig_candidates(repeated.as_bytes(), "person@yahoo.com")
+                .unwrap()
+                .len(),
+            4
+        );
+        let all_methods = String::from_utf8(YAHOO.to_vec()).unwrap().replace(
+            "<authentication>OAuth2</authentication>",
+            "<authentication>OAuth2</authentication><authentication>none</authentication><authentication>unknown</authentication>",
+        );
+        assert_eq!(
+            parse_autoconfig_candidates(all_methods.as_bytes(), "person@yahoo.com")
+                .unwrap()
+                .len(),
+            16
+        );
+        let too_many_nodes = format!(
+            "<clientConfig>{}</clientConfig>",
+            "<x/>".repeat(MAX_XML_NODES as usize)
+        );
+        assert!((too_many_nodes.len() as u64) < MAX_CONFIG_BYTES);
+        assert_eq!(
+            parse_autoconfig_candidates(too_many_nodes.as_bytes(), "person@yahoo.com"),
+            Err(DiscoveryError::InvalidXml)
+        );
+    }
 
     #[test]
     fn parses_secure_imap_and_starttls_smtp() {

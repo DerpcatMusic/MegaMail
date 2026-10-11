@@ -10,7 +10,8 @@
 //! directory. The source tree deliberately contains no provider client IDs.
 
 use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
@@ -40,6 +41,19 @@ fn validate_https_endpoint(url: &str, label: &str) -> Result<(), String> {
 fn validate_oauth_endpoints(settings: &OAuthSettings) -> Result<(), String> {
     validate_https_endpoint(&settings.auth_url, "authorization endpoint")?;
     validate_https_endpoint(&settings.token_url, "token endpoint")
+}
+
+// Provider-specific redirect/consent behavior must not be selected by a
+// hostname lookalike or by text in a custom endpoint's path/query.
+fn token_endpoint_has_host(url: &str, expected_host: &str) -> bool {
+    glib::Uri::parse(url, glib::UriFlags::NONE).is_ok_and(|uri| {
+        uri.scheme().as_str().eq_ignore_ascii_case("https")
+            && uri
+                .host()
+                .is_some_and(|host| host.as_str().eq_ignore_ascii_case(expected_host))
+            && uri.userinfo().is_none()
+            && uri.fragment().is_none()
+    })
 }
 
 fn validate_client_id(settings: &OAuthSettings) -> Result<(), String> {
@@ -96,83 +110,17 @@ const DROPBOX_CLIENT_ID: &str = match option_env!("MEGAMAIL_DROPBOX_CLIENT_ID") 
 /// redirect URI is `http://localhost:41597/`.
 pub const DROPBOX_REDIRECT_PORT: u16 = 41597;
 
-/// Branded sign-in success page. Self-contained (inline CSS/SVG, system fonts)
-/// so it renders offline and adapts to light/dark.
-const SUCCESS_TEMPLATE: &str = r##"<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MegaMail — Signed in</title>
-<style>
-  :root { color-scheme: light dark; --bg1:#0b1220; --bg2:#0e1526; --glow:rgba(53,132,228,.28);
-          --card:rgba(255,255,255,.045); --stroke:rgba(255,255,255,.09); --shadow:rgba(0,0,0,.5);
-          --fg:#eef2f8; --muted:#9fb0cc; --faint:#7688a6; }
-  @media (prefers-color-scheme: light) {
-    :root { --bg1:#f4f7fc; --bg2:#e9eef7; --glow:rgba(53,132,228,.16);
-            --card:rgba(255,255,255,.82); --stroke:rgba(24,38,64,.08); --shadow:rgba(40,66,110,.16);
-            --fg:#182338; --muted:#546482; --faint:#7a89a6; }
-  }
-  * { box-sizing:border-box; margin:0; padding:0; }
-  html,body { height:100%; }
-  body {
-    display:grid; place-items:center; padding:24px;
-    font-family:"Cantarell","Inter",-apple-system,system-ui,"Segoe UI",sans-serif;
-    color:var(--fg);
-    background:
-      radial-gradient(1000px 560px at 50% -12%, var(--glow), transparent 70%),
-      linear-gradient(155deg, var(--bg1), var(--bg2));
-  }
-  .card {
-    width:min(440px, 92vw); text-align:center;
-    padding:44px 38px 34px; border-radius:24px;
-    background:var(--card); border:1px solid var(--stroke);
-    box-shadow:0 30px 80px var(--shadow);
-    -webkit-backdrop-filter:blur(22px); backdrop-filter:blur(22px);
-    animation:rise .5s cubic-bezier(.2,.8,.2,1) both;
-  }
-  @keyframes rise { from { opacity:0; transform:translateY(14px) scale(.98); } }
-  .hero { position:relative; width:92px; height:92px; margin:0 auto 22px;
-          animation:pop .5s .12s cubic-bezier(.2,1.4,.4,1) both; }
-  .logo { width:92px; height:92px; display:grid; place-items:center; border-radius:24px;
-          color:white; font-size:48px; font-weight:800; letter-spacing:-.08em;
-          background:linear-gradient(145deg,#55a7ff,#2765d8);
-          box-shadow:0 12px 30px rgba(39,101,216,.3); }
-  @keyframes pop { from { transform:scale(.4); opacity:0; } }
-  .check { position:absolute; right:-5px; bottom:-5px; width:33px; height:33px; border-radius:50%;
-           display:grid; place-items:center;
-           background:linear-gradient(135deg,#34c759,#2ba24b);
-           box-shadow:0 6px 16px rgba(40,167,69,.45), 0 0 0 4px var(--card); }
-  .check svg { width:17px; height:17px; }
-  .check svg path { stroke-dasharray:30; stroke-dashoffset:30; animation:draw .45s .45s ease forwards; }
-  @keyframes draw { to { stroke-dashoffset:0; } }
-  .brand { font-size:19px; font-weight:800; letter-spacing:-.005em;
-           color:#4f9bff; margin-bottom:6px; }
-  h1 { font-size:25px; font-weight:800; letter-spacing:-.01em; margin-bottom:10px; }
-  p  { color:var(--muted); font-size:15px; line-height:1.6; }
-  .hint { margin-top:26px; font-size:12.5px; color:var(--faint); }
-</style>
-</head>
-<body>
-  <main class="card">
-    <div class="hero">
-      <div class="logo" aria-hidden="true">M</div>
-      <span class="check">
-        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.2"
-             stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.2 4.3L19 6.8"/></svg>
-      </span>
-    </div>
-    <div class="brand">MegaMail</div>
-    <h1>You&rsquo;re signed in</h1>
-    <p>Your account is connected. You can close this tab and head back to MegaMail.</p>
-    <div class="hint">It&rsquo;s safe to close this window.</div>
-  </main>
-</body>
-</html>"##;
-
-fn success_page() -> String {
-    SUCCESS_TEMPLATE.to_string()
-}
+// A callback confirms neither token exchange nor durable account setup.
+const CALLBACK_RECEIVED_PAGE: &str = "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\">\
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
+    <title>MegaMail — Finishing sign-in</title><h1>Authorization received</h1>\
+    <p>Return to MegaMail while it finishes sign-in. Your account is not connected yet.</p></html>";
+const CALLBACK_REFUSED_PAGE: &str = "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\">\
+    <title>MegaMail</title><p>The sign-in did not finish.\
+    You can close this tab and return to MegaMail.</p></html>";
+const CALLBACK_INVALID_PAGE: &str = "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\">\
+    <title>MegaMail</title><p>This request is not a valid sign-in callback.\
+    MegaMail is still waiting for authorization.</p></html>";
 
 /// Standard base64, for inline `data:` URIs.
 pub fn base64_encode(data: &[u8]) -> String {
@@ -319,53 +267,61 @@ pub fn microsoft_advanced_of(settings: &OAuthSettings) -> (String, String, Strin
 /// or `[dropbox]` entries in MegaMail's `oauth.toml`; compile-time MegaMail
 /// credentials are the final fallback. Empty defaults keep sign-in unavailable
 /// until MegaMail has an app-owned registration or the user supplies their own.
+/// Google Desktop registrations may supply a client ID alone. A configured
+/// secret is retained and sent, but is not proof of client confidentiality.
+/// See https://developers.google.com/identity/protocols/oauth2/native-app.
 pub fn provider_credentials(provider: &str) -> (String, String) {
-    // `secret_required`: Google desktop clients always have a secret and its token
-    // endpoint demands it, so the override only counts as complete with both. Azure
-    // desktop apps are public clients (PKCE, no secret), so a client_id alone is a
-    // valid override there.
-    let (env_id, env_secret, default_id, default_secret, secret_required) = match provider {
+    let (env_id, env_secret, default_id, default_secret) = match provider {
         "google" => (
             "MEGAMAIL_GOOGLE_CLIENT_ID",
             "MEGAMAIL_GOOGLE_CLIENT_SECRET",
             GOOGLE_CLIENT_ID,
             GOOGLE_CLIENT_SECRET,
-            true,
         ),
         "microsoft" => (
             "MEGAMAIL_MICROSOFT_CLIENT_ID",
             "MEGAMAIL_MICROSOFT_CLIENT_SECRET",
             MICROSOFT_CLIENT_ID,
             MICROSOFT_CLIENT_SECRET,
-            false,
         ),
         "dropbox" => (
             "MEGAMAIL_DROPBOX_CLIENT_ID",
             "MEGAMAIL_DROPBOX_CLIENT_SECRET",
             DROPBOX_CLIENT_ID,
             "",
-            false,
         ),
-        _ => ("", "", "", "", true),
+        _ => return (String::new(), String::new()),
     };
+    resolve_provider_credentials(
+        provider,
+        (
+            std::env::var(env_id).unwrap_or_default(),
+            std::env::var(env_secret).unwrap_or_default(),
+        ),
+        || creds_from_file(provider),
+        (default_id, default_secret),
+    )
+}
 
-    let usable = |id: String, secret: String| -> Option<(String, String)> {
-        let ok = !id.trim().is_empty() && (!secret_required || !secret.trim().is_empty());
-        ok.then_some((id, secret))
-    };
-
-    if let Some(c) = usable(
-        std::env::var(env_id).unwrap_or_default(),
-        std::env::var(env_secret).unwrap_or_default(),
-    ) {
-        return c;
+// The production resolver's source seam keeps tests away from process-wide
+// environment changes and private credential files. The file stays lazy:
+// a usable higher-priority registration must not read oauth.toml at all.
+fn resolve_provider_credentials(
+    provider: &str,
+    environment: (String, String),
+    file: impl FnOnce() -> Option<(String, String)>,
+    defaults: (&str, &str),
+) -> (String, String) {
+    if !matches!(provider, "google" | "microsoft" | "dropbox") {
+        return (String::new(), String::new());
     }
-    if let Some((id, secret)) = creds_from_file(provider) {
-        if let Some(c) = usable(id, secret) {
-            return c;
-        }
+    if !environment.0.trim().is_empty() {
+        return environment;
     }
-    (default_id.to_string(), default_secret.to_string())
+    if let Some(credentials) = file().filter(|credentials| !credentials.0.trim().is_empty()) {
+        return credentials;
+    }
+    (defaults.0.to_string(), defaults.1.to_string())
 }
 
 #[derive(Deserialize, Default)]
@@ -433,9 +389,20 @@ pub struct FlowResult {
 /// flow opens the browser from a worker thread). Falls back to `xdg-open` if the
 /// portal isn't available.
 pub fn open_uri(uri: &str) {
-    if open_uri_portal(uri).is_err() {
-        let _ = std::process::Command::new("xdg-open").arg(uri).spawn();
+    let _ = try_open_uri(uri);
+}
+
+/// Launch the system browser, reporting launch failure without reflecting its
+/// authorization URL. A successful launch does not establish authorization.
+pub fn try_open_uri(uri: &str) -> Result<(), String> {
+    if open_uri_portal(uri).is_ok() {
+        return Ok(());
     }
+    std::process::Command::new("xdg-open")
+        .arg(uri)
+        .spawn()
+        .map(|_| ())
+        .map_err(|_| "Could not open the system browser.".into())
 }
 
 fn open_uri_portal(uri: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -454,14 +421,28 @@ fn open_uri_portal(uri: &str) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Run the interactive authorization-code + PKCE flow (blocking — call off the
-/// UI thread). Opens the browser and waits for the loopback redirect.
+/// UI thread). Opens the browser and waits at most five minutes for the loopback
+/// callback, including reads and writes to local peers.
 pub fn run_flow(settings: &OAuthSettings) -> Result<FlowResult, String> {
+    run_flow_with_cancel(settings, &AtomicBool::new(false))
+}
+
+/// Like [`run_flow`], with cooperative cancellation of the callback wait.
+/// Set `cancelled` to true from another thread; do not reset it during a flow.
+/// Cancellation is checked before browser launch and before code exchange.
+/// It does not interrupt the system-browser portal or an in-flight HTTPS
+/// token request. This function does not persist credentials or accounts.
+pub fn run_flow_with_cancel(
+    settings: &OAuthSettings,
+    cancelled: &AtomicBool,
+) -> Result<FlowResult, String> {
+    check_cancelled(cancelled)?;
     validate_oauth_endpoints(settings)?;
     validate_client_id(settings)?;
     // Dropbox matches the redirect URI exactly, port and all, so its
     // listener sits on a fixed port the app registers; the others accept
     // any loopback port.
-    let dropbox = settings.token_url.contains("dropboxapi.com");
+    let dropbox = token_endpoint_has_host(&settings.token_url, "api.dropboxapi.com");
     let listener = if dropbox {
         bind_fixed_port(DROPBOX_REDIRECT_PORT)?
     } else {
@@ -472,7 +453,7 @@ pub fn run_flow(settings: &OAuthSettings) -> Result<FlowResult, String> {
     // redirects — a random-port 127.0.0.1 URI would need the exact port registered,
     // which we can't do. Google (and others) accept the 127.0.0.1 literal. The
     // listener is on 127.0.0.1 either way; browsers resolve localhost to it.
-    let microsoft = settings.token_url.contains("microsoftonline");
+    let microsoft = token_endpoint_has_host(&settings.token_url, "login.microsoftonline.com");
     let host = if microsoft || dropbox {
         "localhost"
     } else {
@@ -501,16 +482,17 @@ pub fn run_flow(settings: &OAuthSettings) -> Result<FlowResult, String> {
     let request = Authorization::new(settings, &redirect, offline)?;
 
     // Open the system browser (via the OpenURI portal, so it works in a Flatpak).
+    check_cancelled(cancelled)?;
     open_uri(&request.url);
 
-    // Wait for the redirect (with a timeout so a cancelled sign-in doesn't hang).
-    let code = wait_for_code(&listener, &request.state).map_err(|e| {
+    let code = wait_for_code(&listener, &request.state, cancelled).map_err(|e| {
         if microsoft {
             explain_microsoft_refusal(settings, e)
         } else {
             e
         }
     })?;
+    check_cancelled(cancelled)?;
     exchange_code(settings, &request, &code)
 }
 
@@ -555,29 +537,50 @@ impl Authorization {
         })
     }
 
-    /// For a sign-in in MegaMail's own window: the code a navigation
-    /// to `uri` carries, `None` while it is not the redirect, or the
-    /// provider's refusal.
+    /// Borrowed token-exchange fields for the provider transaction. Keep these
+    /// worker-local: the verifier and code must not enter UI snapshots or logs.
+    pub(crate) fn code_form<'a>(
+        &'a self,
+        settings: &'a OAuthSettings,
+        code: &'a str,
+    ) -> Vec<(&'static str, &'a str)> {
+        let mut form = vec![
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("redirect_uri", self.redirect.as_str()),
+            ("client_id", settings.client_id.as_str()),
+            ("code_verifier", self.verifier.as_str()),
+        ];
+        if !settings.client_secret.is_empty() {
+            form.push(("client_secret", settings.client_secret.as_str()));
+        }
+        form
+    }
+
+    /// For a sign-in in MegaMail's own window: a validated code or correlated
+    /// provider refusal. Unrelated, malformed and wrong-state navigations return
+    /// `None` so they cannot end the pending transaction. The caller consumes
+    /// this request after an accepted answer; this borrowed method is not a
+    /// single-use token or an identity verifier.
     pub fn answer(&self, uri: &str, settings: &OAuthSettings) -> Option<Result<String, String>> {
-        let rest = uri.strip_prefix(self.redirect.as_str())?;
-        if !(rest.is_empty() || rest.starts_with('?') || rest.starts_with('#')) {
+        if uri.len() > MAX_CALLBACK_REQUEST_BYTES {
             return None;
         }
-        let line = format!("GET /{rest} HTTP/1.1");
-        let (code, state) = parse_redirect(&line);
-        Some(match code {
-            Some(code) if state.as_deref() == Some(self.state.as_str()) => Ok(code),
-            Some(_) => Err("sign-in state mismatch (possible CSRF)".into()),
-            None => Err(match redirect_error(&line) {
-                Some((error, description)) => {
-                    let first = description.lines().next().unwrap_or("").trim().to_string();
-                    explain_microsoft_refusal(
-                        settings,
-                        if first.is_empty() { error } else { first },
-                    )
-                }
-                None => "no authorization code returned".into(),
-            }),
+        // The exact registered origin/path must precede the query; accepting
+        // fragments or a prefix path would allow unrelated navigations.
+        let query = uri
+            .strip_prefix(self.redirect.as_str())?
+            .strip_prefix('?')?;
+        let answer = validate_callback_query(query, &self.state).ok()?;
+        Some(match answer {
+            CallbackAnswer::Code(code) => Ok(code),
+            CallbackAnswer::Refused(reason) => Err(
+                if token_endpoint_has_host(&settings.token_url, "login.microsoftonline.com") {
+                    explain_microsoft_refusal(settings, reason)
+                } else {
+                    reason
+                },
+            ),
         })
     }
 }
@@ -693,129 +696,347 @@ pub fn refresh_access_token_as(
     })
 }
 
-/// Listen on a fixed loopback port. An earlier sign-in of ours still
-/// waiting there (the wait lasts five minutes, and its dialog may be long
-/// gone) is told to stop with a `cancel` request, and the bind is tried
-/// again.
+/// Fixed-port providers must not let an unauthenticated local HTTP request
+/// cancel another transaction. A conflicting listener is now an explicit error;
+/// callers using cooperative cancellation can close their own earlier wait.
 fn bind_fixed_port(port: u16) -> Result<TcpListener, String> {
-    let mut last = None;
-    for _ in 0..8 {
-        match TcpListener::bind(("127.0.0.1", port)) {
-            Ok(l) => return Ok(l),
-            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-                let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-                if let Ok(mut s) =
-                    std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2))
-                {
-                    let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
-                    let _ = s.write_all(
-                        b"GET /?cancel=1 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
-                    );
-                    let mut sink = [0u8; 512];
-                    let _ = s.read(&mut sink);
-                }
-                last = Some(e);
-                std::thread::sleep(Duration::from_millis(250));
-            }
-            Err(e) => {
-                return Err(format!(
-                    "could not listen on localhost port {port} for the sign-in redirect: {e}"
-                ))
-            }
+    TcpListener::bind(("127.0.0.1", port)).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::AddrInUse {
+            format!("could not listen on localhost port {port} for the sign-in redirect. Another sign-in or program is using it; finish or cancel it first.")
+        } else {
+            format!("could not listen on localhost port {port} for the sign-in redirect: {error}")
         }
-    }
-    Err(format!(
-        "could not listen on localhost port {port} for the sign-in redirect: {}. Another program is using it.",
-        last.map(|e| e.to_string()).unwrap_or_default()
-    ))
+    })
 }
 
-/// Accept the browser redirect and return the authorization code, validating the
-/// anti-CSRF state. Times out after 5 minutes.
-fn wait_for_code(listener: &TcpListener, expected_state: &str) -> Result<String, String> {
-    listener.set_nonblocking(true).map_err(|e| e.to_string())?;
-    let deadline = Instant::now() + Duration::from_secs(300);
+const MAX_CALLBACK_REQUEST_BYTES: usize = 8192;
+const CALLBACK_POLL_INTERVAL: Duration = Duration::from_millis(20);
+
+#[derive(Clone, Copy)]
+struct CallbackLimits {
+    total_wait: Duration,
+    peer_io: Duration,
+}
+
+const CALLBACK_LIMITS: CallbackLimits = CallbackLimits {
+    total_wait: Duration::from_secs(300),
+    peer_io: Duration::from_secs(2),
+};
+
+struct CallbackBudget<'a> {
+    deadline: Instant,
+    cancelled: &'a AtomicBool,
+}
+
+fn check_cancelled(cancelled: &AtomicBool) -> Result<(), String> {
+    if cancelled.load(Ordering::Relaxed) {
+        Err("sign-in cancelled".into())
+    } else {
+        Ok(())
+    }
+}
+
+impl CallbackBudget<'_> {
+    fn check(&self) -> Result<(), String> {
+        check_cancelled(self.cancelled)?;
+        if Instant::now() >= self.deadline {
+            return Err("sign-in timed out".into());
+        }
+        Ok(())
+    }
+
+    fn pause(&self, peer_deadline: Instant) {
+        std::thread::sleep(
+            CALLBACK_POLL_INTERVAL
+                .min(self.deadline.saturating_duration_since(Instant::now()))
+                .min(peer_deadline.saturating_duration_since(Instant::now())),
+        );
+    }
+}
+
+/// Accept only complete, bounded request headers. Nonblocking IO plus an
+/// absolute peer deadline prevents slow trickles from extending their slot.
+/// All peer deadlines are subordinate to the one transaction deadline.
+fn read_callback_request(
+    stream: &mut TcpStream,
+    budget: &CallbackBudget<'_>,
+    peer_deadline: Instant,
+) -> Option<String> {
+    let mut bytes = [0u8; MAX_CALLBACK_REQUEST_BYTES];
+    let mut filled = 0;
     loop {
+        budget.check().ok()?;
+        if Instant::now() >= peer_deadline || filled == bytes.len() {
+            return None;
+        }
+        match stream.read(&mut bytes[filled..]) {
+            Ok(0) => return None,
+            Ok(count) => {
+                filled += count;
+                if let Some(end) = bytes[..filled]
+                    .windows(4)
+                    .position(|part| part == b"\r\n\r\n")
+                {
+                    return String::from_utf8(bytes[..end + 4].to_vec()).ok();
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                budget.pause(peer_deadline);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return None,
+        }
+    }
+}
+
+/// Responses never include codes, state or provider-supplied text, and may not
+/// keep a transaction alive when a browser stops reading.
+fn write_callback_response(
+    stream: &mut TcpStream,
+    status: &str,
+    body: &str,
+    budget: &CallbackBudget<'_>,
+    peer_deadline: Instant,
+) {
+    let response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\n\
+         Content-Length: {}\r\nCache-Control: no-store\r\n\
+         X-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n{body}",
+        body.len(),
+    );
+    let mut remaining = response.as_bytes();
+    while !remaining.is_empty() {
+        if budget.check().is_err() || Instant::now() >= peer_deadline {
+            return;
+        }
+        match stream.write(remaining) {
+            Ok(0) => return,
+            Ok(count) => remaining = &remaining[count..],
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                budget.pause(peer_deadline);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return,
+        }
+    }
+}
+
+fn wait_for_code(
+    listener: &TcpListener,
+    expected_state: &str,
+    cancelled: &AtomicBool,
+) -> Result<String, String> {
+    wait_for_code_with_limits(listener, expected_state, cancelled, CALLBACK_LIMITS)
+}
+
+/// Worker-local wait for a provider transaction with its remaining total
+/// budget. This delegates to the unchanged strict callback validator.
+pub(crate) fn wait_for_provider_code(
+    listener: &TcpListener,
+    expected_state: &str,
+    cancelled: &AtomicBool,
+    remaining: Duration,
+) -> Result<String, String> {
+    wait_for_code_with_limits(
+        listener,
+        expected_state,
+        cancelled,
+        CallbackLimits {
+            total_wait: remaining.min(CALLBACK_LIMITS.total_wait),
+            peer_io: CALLBACK_LIMITS.peer_io,
+        },
+    )
+}
+
+// A private limits seam allows synthetic sockets to exercise the same wait
+// loop used by run_flow without waiting five minutes or opening a browser.
+fn wait_for_code_with_limits(
+    listener: &TcpListener,
+    expected_state: &str,
+    cancelled: &AtomicBool,
+    limits: CallbackLimits,
+) -> Result<String, String> {
+    let budget = CallbackBudget {
+        deadline: Instant::now() + limits.total_wait,
+        cancelled,
+    };
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| error.to_string())?;
+    loop {
+        budget.check()?;
         match listener.accept() {
             Ok((mut stream, _)) => {
-                stream.set_nonblocking(false).ok();
-                let mut buf = [0u8; 8192];
-                let n = stream.read(&mut buf).map_err(|e| e.to_string())?;
-                let req = String::from_utf8_lossy(&buf[..n]);
-                let line = req.lines().next().unwrap_or("");
-                // A newer sign-in of ours taking the port over.
-                if line.starts_with("GET /?cancel=1 ") {
-                    let _ = stream.write_all(
-                        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                    );
-                    return Err("this sign-in was replaced by a newer one".into());
+                if stream.set_nonblocking(true).is_err() {
+                    continue;
                 }
-                let (code, state) = parse_redirect(line);
-                // The provider came back with an error instead of a code: the
-                // user declined, or the account's organisation does not let
-                // them approve the app (#329). Say so, in the browser too.
-                if code.is_none() {
-                    if let Some((error, description)) = redirect_error(line) {
-                        let body = "<!doctype html><meta charset=utf-8><title>MegaMail</title>\
-                                    <p style=\"font:16px system-ui;margin:3em\">The sign-in did not finish. \
-                                    You can close this tab and return to MegaMail.</p>";
-                        let _ = stream.write_all(
-                            format!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\
-                                 Content-Length: {}\r\nConnection: close\r\n\r\n{}",
-                                body.len(),
-                                body
-                            )
-                            .as_bytes(),
+                // Read and write share one fixed peer slot, not a fresh timeout
+                // per packet. Closing an invalid peer does not consume the flow.
+                let peer_deadline = (Instant::now() + limits.peer_io).min(budget.deadline);
+                let request = read_callback_request(&mut stream, &budget, peer_deadline);
+                budget.check()?;
+                let answer = request
+                    .as_deref()
+                    .and_then(|request| validate_callback_request(request, expected_state).ok());
+                match answer {
+                    Some(CallbackAnswer::Code(code)) => {
+                        write_callback_response(
+                            &mut stream,
+                            "200 OK",
+                            CALLBACK_RECEIVED_PAGE,
+                            &budget,
+                            peer_deadline,
                         );
-                        let first = description.lines().next().unwrap_or("").trim().to_string();
-                        return Err(if first.is_empty() { error } else { first });
+                        budget.check()?;
+                        return Ok(code);
+                    }
+                    Some(CallbackAnswer::Refused(reason)) => {
+                        write_callback_response(
+                            &mut stream,
+                            "200 OK",
+                            CALLBACK_REFUSED_PAGE,
+                            &budget,
+                            peer_deadline,
+                        );
+                        budget.check()?;
+                        return Err(reason);
+                    }
+                    None => {
+                        write_callback_response(
+                            &mut stream,
+                            "400 Bad Request",
+                            CALLBACK_INVALID_PAGE,
+                            &budget,
+                            peer_deadline,
+                        );
                     }
                 }
-
-                let body = success_page();
-                let _ = stream.write_all(
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\
-                         Content-Length: {}\r\nConnection: close\r\n\r\n{}",
-                        body.len(),
-                        body
-                    )
-                    .as_bytes(),
-                );
-
-                if state.as_deref() != Some(expected_state) {
-                    return Err("sign-in state mismatch (possible CSRF)".into());
-                }
-                return code.ok_or_else(|| "no authorization code returned".to_string());
             }
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                if Instant::now() > deadline {
-                    return Err("sign-in timed out".into());
-                }
-                std::thread::sleep(Duration::from_millis(150));
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                budget.pause(budget.deadline);
             }
-            Err(e) => return Err(e.to_string()),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error.to_string()),
         }
     }
 }
 
-/// `error` and `error_description` from a redirect that carries no code.
-fn redirect_error(request_line: &str) -> Option<(String, String)> {
-    let target = request_line.split_whitespace().nth(1).unwrap_or("");
-    let query = target.split_once('?').map(|(_, q)| q).unwrap_or("");
+// Do not derive Debug: this enum can contain an authorization code.
+enum CallbackAnswer {
+    Code(String),
+    Refused(String),
+}
+
+fn validate_callback_request(request: &str, expected_state: &str) -> Result<CallbackAnswer, ()> {
+    let (line, _) = request.split_once("\r\n").ok_or(())?;
+    let mut parts = line.split(' ');
+    let method = parts.next().ok_or(())?;
+    let target = parts.next().ok_or(())?;
+    let version = parts.next().ok_or(())?;
+    if method != "GET" || !matches!(version, "HTTP/1.0" | "HTTP/1.1") || parts.next().is_some() {
+        return Err(());
+    }
+    // run_flow binds only a root loopback redirect (including Microsoft's
+    // registered no-trailing-slash URI, whose HTTP request path is still "/").
+    let (path, query) = target.split_once('?').ok_or(())?;
+    if path != "/" {
+        return Err(());
+    }
+    validate_callback_query(query, expected_state)
+}
+
+fn validate_callback_query(query: &str, expected_state: &str) -> Result<CallbackAnswer, ()> {
+    if query.len() > MAX_CALLBACK_REQUEST_BYTES || query.contains('#') {
+        return Err(());
+    }
+    let mut names = std::collections::HashSet::new();
+    let mut code = None;
+    let mut state = None;
     let mut error = None;
-    let mut description = String::new();
+    let mut description = None;
     for pair in query.split('&') {
-        if let Some((k, v)) = pair.split_once('=') {
-            match k {
-                "error" => error = Some(crate::percent::decode(v, true)),
-                "error_description" => description = crate::percent::decode(v, true),
-                _ => {}
-            }
+        let (name, value) = pair.split_once('=').ok_or(())?;
+        let name = decode_callback_parameter(name)?;
+        let value = decode_callback_parameter(value)?;
+        if name.trim().is_empty()
+            || value.trim().is_empty()
+            || name.chars().any(char::is_control)
+            || !names.insert(name.clone())
+            || (name != "error_description" && value.chars().any(char::is_control))
+        {
+            return Err(());
+        }
+        match name.as_str() {
+            "code" => code = Some(value),
+            "state" => state = Some(value),
+            "error" => error = Some(value),
+            "error_description" => description = Some(value),
+            _ => {}
         }
     }
-    error.map(|e| (e, description))
+    // Correlate both outcomes before attributing any refusal to a provider.
+    if expected_state.is_empty() || state.as_deref() != Some(expected_state) {
+        return Err(());
+    }
+    match (code, error, description) {
+        (Some(code), None, None) => Ok(CallbackAnswer::Code(code)),
+        (None, Some(error), description) => Ok(CallbackAnswer::Refused(sanitized_refusal(
+            &error,
+            description.as_deref(),
+        ))),
+        _ => Err(()),
+    }
+}
+
+// OAuth input must not inherit the mail-body decoder's forgiving malformed
+// percent escapes and lossy UTF-8. Decode keys too, so encoded duplicate keys
+// cannot bypass the uniqueness check.
+fn decode_callback_parameter(input: &str) -> Result<String, ()> {
+    let mut decoded = Vec::with_capacity(input.len());
+    let mut bytes = input.bytes();
+    while let Some(byte) = bytes.next() {
+        match byte {
+            b'%' => {
+                let high = bytes
+                    .next()
+                    .and_then(|b| (b as char).to_digit(16))
+                    .ok_or(())?;
+                let low = bytes
+                    .next()
+                    .and_then(|b| (b as char).to_digit(16))
+                    .ok_or(())?;
+                decoded.push((high * 16 + low) as u8);
+            }
+            b'+' => decoded.push(b' '),
+            byte => decoded.push(byte),
+        }
+    }
+    String::from_utf8(decoded).map_err(|_| ())
+}
+
+// Even a correctly correlated error description can echo tokens, addresses or
+// provider diagnostics. Expose only a small fixed vocabulary, never raw text.
+fn sanitized_refusal(error: &str, description: Option<&str>) -> String {
+    let consent_code = ["AADSTS65001", "AADSTS65004", "AADSTS90094", "AADSTS90095"]
+        .into_iter()
+        .find(|code| description.is_some_and(|text| text.contains(code)));
+    if let Some(code) = consent_code {
+        return format!("{code}: The provider requires administrator consent.");
+    }
+    match error {
+        "access_denied" => "access_denied: Sign-in was denied.",
+        "consent_required" => "consent_required: The provider requires consent.",
+        "login_required" => "login_required: Sign in to the provider and try again.",
+        "interaction_required" => {
+            "interaction_required: The provider requires interactive sign-in."
+        }
+        "temporarily_unavailable" => {
+            "temporarily_unavailable: The provider is temporarily unavailable."
+        }
+        "server_error" => "server_error: The provider could not finish sign-in.",
+        _ => "The provider refused sign-in.",
+    }
+    .into()
 }
 
 /// A Microsoft sign-in that failed for want of consent, with where an
@@ -846,25 +1067,6 @@ fn explain_microsoft_refusal(settings: &OAuthSettings, reason: String) -> String
     )
 }
 
-/// Pull `code` and `state` out of an HTTP request line ("GET /?code=…&state=… HTTP/1.1").
-fn parse_redirect(request_line: &str) -> (Option<String>, Option<String>) {
-    let target = request_line.split_whitespace().nth(1).unwrap_or("");
-    let query = target.split_once('?').map(|(_, q)| q).unwrap_or("");
-    let mut code = None;
-    let mut state = None;
-    for pair in query.split('&') {
-        if let Some((k, v)) = pair.split_once('=') {
-            let value = crate::percent::decode(v, true);
-            match k {
-                "code" => code = Some(value),
-                "state" => state = Some(value),
-                _ => {}
-            }
-        }
-    }
-    (code, state)
-}
-
 /// The PKCE S256 code challenge for a verifier: base64url(SHA-256(verifier)),
 /// without padding (RFC 7636 §4.2).
 fn pkce_challenge(verifier: &str) -> String {
@@ -878,6 +1080,395 @@ fn pkce_challenge(verifier: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TEST_LIMITS: CallbackLimits = CallbackLimits {
+        total_wait: Duration::from_secs(5),
+        peer_io: Duration::from_millis(150),
+    };
+
+    fn loopback_request(address: std::net::SocketAddr, line: &str) -> String {
+        let mut peer = std::net::TcpStream::connect(address).unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        peer.set_write_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        peer.write_all(format!("{line}\r\nHost: localhost\r\n\r\n").as_bytes())
+            .unwrap();
+        let mut response = String::new();
+        peer.read_to_string(&mut response).unwrap();
+        response
+    }
+
+    fn assert_invalid_callbacks_stay_pending(lines: &[&str]) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let waiter = std::thread::spawn(move || {
+            wait_for_code_with_limits(
+                &listener,
+                "synthetic-state",
+                &AtomicBool::new(false),
+                TEST_LIMITS,
+            )
+        });
+        for line in lines {
+            let response = loopback_request(address, line);
+            assert!(response.starts_with("HTTP/1.1 400 "), "{response}");
+            assert!(!response.contains("Authorization received"));
+            assert!(!response.contains("UNTRUSTED"));
+        }
+        let response = loopback_request(
+            address,
+            "GET /?code=synthetic-code&state=synthetic-state HTTP/1.1",
+        );
+        assert!(response.starts_with("HTTP/1.1 200 "), "{response}");
+        assert!(response.contains("Authorization received"));
+        assert!(response.contains("not connected yet"));
+        assert!(!response.contains("Signed in"));
+        assert_eq!(waiter.join().unwrap(), Ok("synthetic-code".into()));
+    }
+
+    #[test]
+    fn loopback_wrong_state_success_and_denial_stay_pending() {
+        assert_invalid_callbacks_stay_pending(&[
+            "GET /?code=UNTRUSTED_CODE&state=wrong HTTP/1.1",
+            "GET /?error=access_denied&error_description=UNTRUSTED_REFUSAL&state=wrong HTTP/1.1",
+            "GET /?error=access_denied&error_description=UNTRUSTED_REFUSAL HTTP/1.1",
+        ]);
+    }
+
+    #[test]
+    fn loopback_duplicate_missing_and_empty_parameters_stay_pending() {
+        assert_invalid_callbacks_stay_pending(&[
+            "GET /?code=one&code=two&state=synthetic-state HTTP/1.1",
+            "GET /?code=one&state=wrong&state=synthetic-state HTTP/1.1",
+            "GET /?code=one&state=synthetic-state&state=wrong HTTP/1.1",
+            "GET /?code=one&st%61te=synthetic-state&state=synthetic-state HTTP/1.1",
+            "GET /?error=access_denied&error=server_error&state=synthetic-state HTTP/1.1",
+            "GET /?error=access_denied&error_description=one&error_description=two&state=synthetic-state HTTP/1.1",
+            "GET /?code=one&error=access_denied&state=synthetic-state HTTP/1.1",
+            "GET /?code=one HTTP/1.1",
+            "GET /?state=synthetic-state HTTP/1.1",
+            "GET /?code=&state=synthetic-state HTTP/1.1",
+            "GET /?code=one&state= HTTP/1.1",
+            "GET /?error=&state=synthetic-state HTTP/1.1",
+            "GET /?error=access_denied&state=synthetic-state&error_description= HTTP/1.1",
+            "GET /?code=%ZZ&state=synthetic-state HTTP/1.1",
+            "GET /?code=%FF&state=synthetic-state HTTP/1.1",
+        ]);
+    }
+
+    #[test]
+    fn loopback_exact_method_path_and_request_line_are_required() {
+        assert_invalid_callbacks_stay_pending(&[
+            "GET /favicon.ico HTTP/1.1",
+            "GET /other?code=one&state=synthetic-state HTTP/1.1",
+            "GET //?code=one&state=synthetic-state HTTP/1.1",
+            "POST /?code=one&state=synthetic-state HTTP/1.1",
+            "HEAD /?code=one&state=synthetic-state HTTP/1.1",
+            "GET http://localhost/?code=one&state=synthetic-state HTTP/1.1",
+            "GET /?code=one&state=synthetic-state#fragment HTTP/1.1",
+            "GET /?code=one&state=synthetic-state HTTP/1.1 extra",
+            "GET /?cancel=1 HTTP/1.1",
+        ]);
+    }
+
+    #[test]
+    fn loopback_valid_error_is_correlated_and_redacted() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let waiter = std::thread::spawn(move || {
+            wait_for_code_with_limits(
+                &listener,
+                "synthetic-state",
+                &AtomicBool::new(false),
+                TEST_LIMITS,
+            )
+        });
+        let response = loopback_request(
+            address,
+            "GET /?error=access_denied&error_description=UNTRUSTED_TOKEN&state=synthetic-state HTTP/1.1",
+        );
+        assert!(response.contains("The sign-in did not finish"));
+        assert!(!response.contains("UNTRUSTED_TOKEN"));
+        let reason = waiter.join().unwrap().unwrap_err();
+        assert!(reason.contains("access_denied"));
+        assert!(!reason.contains("UNTRUSTED_TOKEN"));
+    }
+
+    #[test]
+    fn loopback_partial_headers_are_read_before_validation() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let waiter = std::thread::spawn(move || {
+            wait_for_code_with_limits(
+                &listener,
+                "synthetic-state",
+                &AtomicBool::new(false),
+                TEST_LIMITS,
+            )
+        });
+        let mut peer = std::net::TcpStream::connect(address).unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        peer.write_all(b"GET /?code=synthetic-").unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        peer.write_all(b"code&state=synthetic-state HTTP/1.1\r\nHost: localhost\r\n")
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        peer.write_all(b"\r\n").unwrap();
+        let mut response = String::new();
+        peer.read_to_string(&mut response).unwrap();
+        assert!(response.contains("Authorization received"));
+        assert_eq!(waiter.join().unwrap(), Ok("synthetic-code".into()));
+    }
+
+    #[test]
+    fn loopback_oversized_headers_do_not_complete_transaction() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let waiter = std::thread::spawn(move || {
+            wait_for_code_with_limits(
+                &listener,
+                "synthetic-state",
+                &AtomicBool::new(false),
+                TEST_LIMITS,
+            )
+        });
+        let mut peer = std::net::TcpStream::connect(address).unwrap();
+        peer.set_write_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let oversized = format!(
+            "GET /?code=UNTRUSTED_CODE&state=synthetic-state HTTP/1.1\r\nX-Padding: {}\r\n\r\n",
+            "x".repeat(MAX_CALLBACK_REQUEST_BYTES),
+        );
+        // A reset is also an acceptable rejection of an oversized request.
+        let _ = peer.write_all(oversized.as_bytes());
+        drop(peer);
+        loopback_request(
+            address,
+            "GET /?code=synthetic-code&state=synthetic-state HTTP/1.1",
+        );
+        assert_eq!(waiter.join().unwrap(), Ok("synthetic-code".into()));
+    }
+
+    #[test]
+    fn loopback_stalled_peer_is_evicted_and_valid_callback_can_follow() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let stalled = std::net::TcpStream::connect(address).unwrap();
+        let waiter = std::thread::spawn(move || {
+            wait_for_code_with_limits(
+                &listener,
+                "synthetic-state",
+                &AtomicBool::new(false),
+                TEST_LIMITS,
+            )
+        });
+        loopback_request(
+            address,
+            "GET /?code=synthetic-code&state=synthetic-state HTTP/1.1",
+        );
+        drop(stalled);
+        assert_eq!(waiter.join().unwrap(), Ok("synthetic-code".into()));
+    }
+
+    #[test]
+    fn loopback_total_deadline_caps_a_single_stalled_read() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let stalled = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let start = Instant::now();
+        let result = wait_for_code_with_limits(
+            &listener,
+            "synthetic-state",
+            &AtomicBool::new(false),
+            CallbackLimits {
+                total_wait: Duration::from_millis(100),
+                peer_io: Duration::from_secs(10),
+            },
+        );
+        drop(stalled);
+        assert_eq!(result, Err("sign-in timed out".into()));
+        assert!(start.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn loopback_total_deadline_is_not_reset_by_invalid_requests() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let wait = Duration::from_millis(250);
+        let waiter = std::thread::spawn(move || {
+            let start = Instant::now();
+            let result = wait_for_code_with_limits(
+                &listener,
+                "synthetic-state",
+                &AtomicBool::new(false),
+                CallbackLimits {
+                    total_wait: wait,
+                    peer_io: Duration::from_secs(10),
+                },
+            );
+            (result, start.elapsed())
+        });
+        loopback_request(address, "GET /favicon.ico HTTP/1.1");
+        let stalled = std::net::TcpStream::connect(address).unwrap();
+        let (result, elapsed) = waiter.join().unwrap();
+        drop(stalled);
+        assert_eq!(result, Err("sign-in timed out".into()));
+        assert!(elapsed < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn loopback_cancellation_interrupts_a_stalled_peer() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let stalled = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        let signal = std::sync::Arc::clone(&cancelled);
+        let setter = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            signal.store(true, Ordering::Relaxed);
+        });
+        let start = Instant::now();
+        let result = wait_for_code_with_limits(
+            &listener,
+            "synthetic-state",
+            &cancelled,
+            CallbackLimits {
+                total_wait: Duration::from_secs(5),
+                peer_io: Duration::from_secs(10),
+            },
+        );
+        setter.join().unwrap();
+        drop(stalled);
+        assert_eq!(result, Err("sign-in cancelled".into()));
+        assert!(start.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn authorization_answer_ignores_invalid_callbacks_and_redacts_errors() {
+        let settings = OAuthSettings {
+            client_id: "synthetic-client".into(),
+            auth_url: "https://login.example.test/authorize".into(),
+            token_url: "https://login.example.test/token".into(),
+            ..Default::default()
+        };
+        let request =
+            Authorization::new(&settings, "https://login.example.test/callback", "").unwrap();
+        for suffix in [
+            "?error=access_denied&state=wrong",
+            "?error=access_denied",
+            "?code=one",
+            "?code=&state=",
+            "?code=one&code=two",
+            "/extra?code=one",
+            "#code=one",
+        ] {
+            assert!(request
+                .answer(&format!("{}{suffix}", request.redirect), &settings)
+                .is_none());
+        }
+        let wrong_origin = format!(
+            "https://other.example.test/callback?code=one&state={}",
+            request.state
+        );
+        assert!(request.answer(&wrong_origin, &settings).is_none());
+        let denied = format!(
+            "{}?error=UNTRUSTED_ERROR&error_description=UNTRUSTED_DESCRIPTION&state={}",
+            request.redirect, request.state
+        );
+        let reason = request.answer(&denied, &settings).unwrap().unwrap_err();
+        assert_eq!(reason, "The provider refused sign-in.");
+    }
+
+    #[test]
+    fn provider_registration_resolution_accepts_google_id_without_secret() {
+        // Exercise the production resolver's internal source seam without
+        // changing environment variables or reading a real oauth.toml.
+        let mut file_read = false;
+        let resolved = resolve_provider_credentials(
+            "google",
+            ("synthetic-desktop-client".into(), String::new()),
+            || {
+                file_read = true;
+                Some(("lower-priority-client".into(), "unused-secret".into()))
+            },
+            ("default-client", "default-secret"),
+        );
+        assert_eq!(resolved, ("synthetic-desktop-client".into(), String::new()));
+        assert!(
+            !file_read,
+            "a usable environment override must not read a credential file"
+        );
+    }
+
+    #[test]
+    fn provider_registration_resolution_preserves_file_secret_and_default_priority() {
+        assert_eq!(
+            resolve_provider_credentials(
+                "google",
+                (String::new(), String::new()),
+                || Some((
+                    "synthetic-file-client".into(),
+                    "synthetic-file-secret".into()
+                )),
+                ("default-client", "default-secret")
+            ),
+            (
+                "synthetic-file-client".into(),
+                "synthetic-file-secret".into()
+            ),
+        );
+        assert_eq!(
+            resolve_provider_credentials(
+                "google",
+                (String::new(), String::new()),
+                || Some(("synthetic-file-client".into(), String::new())),
+                ("default-client", "default-secret")
+            ),
+            ("synthetic-file-client".into(), String::new()),
+        );
+        assert_eq!(
+            resolve_provider_credentials(
+                "google",
+                (String::new(), String::new()),
+                || None,
+                ("default-client", "default-secret")
+            ),
+            ("default-client".into(), "default-secret".into()),
+        );
+        assert_eq!(
+            resolve_provider_credentials(
+                "unknown",
+                ("synthetic-id".into(), "synthetic-secret".into()),
+                || Some(("synthetic-id".into(), "synthetic-secret".into())),
+                ("default-client", "default-secret")
+            ),
+            (String::new(), String::new()),
+        );
+    }
+
+    #[test]
+    fn cancellation_before_flow_start_has_no_browser_or_provider_side_effects() {
+        assert!(matches!(
+            run_flow_with_cancel(&OAuthSettings::default(), &AtomicBool::new(true)),
+            Err(reason) if reason == "sign-in cancelled",
+        ));
+    }
+
+    #[test]
+    fn provider_behavior_is_selected_by_exact_token_authority_not_substrings() {
+        let host = "login.microsoftonline.com";
+        assert!(token_endpoint_has_host(
+            "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+            host
+        ));
+        for endpoint in [
+            "https://login.microsoftonline.com.example.test/token",
+            "https://example.test/microsoftonline/token",
+            "https://example.test/token?provider=microsoftonline",
+            "https://login.microsoftonline.com@example.test/token",
+            "http://login.microsoftonline.com/token",
+        ] {
+            assert!(!token_endpoint_has_host(endpoint, host));
+        }
+    }
 
     #[test]
     fn credential_endpoints_must_be_https_without_authority_secrets_or_fragments() {
@@ -966,29 +1557,41 @@ mod tests {
             )
             .is_none());
         let refused = format!(
-            "{}?error=access_denied&error_description=AADSTS65004%3A+declined",
-            s.redirect_uri
+            "{}?error=access_denied&error_description=AADSTS65004%3A+declined&state={}",
+            s.redirect_uri, req.state
         );
         assert!(matches!(req.answer(&refused, &s), Some(Err(_))));
     }
 
     #[test]
-    fn a_refused_redirect_says_why() {
-        let line = "GET /?error=access_denied&error_description=AADSTS65004%3a+User+declined+to+consent.%0d%0aTrace+ID%3a+x&state=s HTTP/1.1";
-        let (error, description) = redirect_error(line).expect("an error");
-        assert_eq!(error, "access_denied");
-        assert!(description.starts_with("AADSTS65004: User declined to consent."));
-        assert_eq!(parse_redirect(line).0, None);
+    fn a_correlated_microsoft_refusal_keeps_only_safe_consent_guidance() {
+        let preset = preset("microsoft").unwrap();
         let settings = OAuthSettings {
-            client_id: "abc".into(),
+            client_id: "synthetic-client".into(),
+            auth_url: preset.auth_url.into(),
+            token_url: preset.token_url.into(),
             ..Default::default()
         };
-        let told =
-            explain_microsoft_refusal(&settings, "AADSTS65004: User declined to consent.".into());
-        assert!(told.contains("adminconsent?client_id=abc"), "{told}");
+        let request = Authorization::new(
+            &settings,
+            "https://login.microsoftonline.com/common/oauth2/nativeclient",
+            "",
+        )
+        .unwrap();
+        let uri = format!(
+            "{}?error=access_denied&error_description=AADSTS65004%3a+UNTRUSTED_TOKEN%0d%0aTrace+ID%3a+UNTRUSTED_ID&state={}",
+            request.redirect, request.state,
+        );
+        let told = request.answer(&uri, &settings).unwrap().unwrap_err();
+        assert!(told.contains("AADSTS65004"), "{told}");
+        assert!(
+            told.contains("adminconsent?client_id=synthetic-client"),
+            "{told}"
+        );
+        assert!(!told.contains("UNTRUSTED"), "{told}");
         assert_eq!(
             explain_microsoft_refusal(&settings, "sign-in timed out".into()),
-            "sign-in timed out"
+            "sign-in timed out",
         );
     }
 
@@ -1012,27 +1615,21 @@ mod tests {
     }
 
     #[test]
-    fn a_stale_waiter_gives_up_the_fixed_port() {
-        // Something of ours on the port, waiting like wait_for_code does:
-        // one request ends it.
+    fn a_fixed_port_conflict_does_not_cancel_another_waiter() {
         let old = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = old.local_addr().unwrap().port();
-        let waiter = std::thread::spawn(move || {
-            let (mut s, _) = old.accept().unwrap();
-            let mut buf = [0u8; 256];
-            let n = s.read(&mut buf).unwrap();
-            let line = String::from_utf8_lossy(&buf[..n])
-                .lines()
-                .next()
-                .unwrap_or("")
-                .to_string();
-            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
-            drop(old);
-            line
-        });
-        let fresh = bind_fixed_port(port).expect("takes the port over");
-        assert_eq!(fresh.local_addr().unwrap().port(), port);
-        assert!(waiter.join().unwrap().starts_with("GET /?cancel=1 "));
+        let error = bind_fixed_port(port).unwrap_err();
+        assert!(error.contains("finish or cancel"));
+        old.set_nonblocking(true).unwrap();
+        assert_eq!(
+            old.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        drop(old);
+        assert_eq!(
+            bind_fixed_port(port).unwrap().local_addr().unwrap().port(),
+            port
+        );
     }
 
     #[test]

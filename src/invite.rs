@@ -42,6 +42,9 @@ use crate::models::{Invite, InvitePerson};
 /// beside every sender check. Anything larger is left to the attachment
 /// list, which is where a file that size belongs.
 const MAX_ICS: usize = 256 * 1024;
+const MAX_CONTENT_LINES: usize = 4096;
+const MAX_CONTENT_LINE: usize = 8192;
+const MAX_COMPONENT_DEPTH: usize = 16;
 
 /// Read the invitation a raw message carries, if it carries one.
 pub fn detect_raw(raw: &[u8]) -> Option<Invite> {
@@ -53,13 +56,13 @@ pub fn detect_raw(raw: &[u8]) -> Option<Invite> {
 pub fn detect(parsed: &mail_parser::Message) -> Option<Invite> {
     use mail_parser::MimeHeaders;
     for part in parsed.parts.iter() {
-        let calendar = part
-            .content_type()
-            .is_some_and(|c| c.ctype().eq_ignore_ascii_case("text")
-                && c.subtype().is_some_and(|s| s.eq_ignore_ascii_case("calendar")))
-            || part
-                .attachment_name()
-                .is_some_and(|n| n.to_ascii_lowercase().ends_with(".ics"));
+        let calendar = part.content_type().is_some_and(|c| {
+            c.ctype().eq_ignore_ascii_case("text")
+                && c.subtype()
+                    .is_some_and(|s| s.eq_ignore_ascii_case("calendar"))
+        }) || part
+            .attachment_name()
+            .is_some_and(|n| n.to_ascii_lowercase().ends_with(".ics"));
         if !calendar || part.contents().len() > MAX_ICS {
             continue;
         }
@@ -68,7 +71,10 @@ pub fn detect(parsed: &mail_parser::Message) -> Option<Invite> {
         // decode, and UTF-8 is what iCalendar is written in.
         let text = match part.text_contents() {
             Some(t) => t.to_string(),
-            None => String::from_utf8_lossy(part.contents()).to_string(),
+            None => match std::str::from_utf8(part.contents()) {
+                Ok(text) => text.to_string(),
+                Err(_) => continue,
+            },
         };
         if let Some(mut invite) = parse(&text) {
             // The method lives on the part's own Content-Type as often as
@@ -91,9 +97,12 @@ pub fn detect(parsed: &mail_parser::Message) -> Option<Invite> {
 ///
 /// A document with no `VEVENT` (a free/busy reply, a bare `VTODO`) is not an
 /// invitation and reads as nothing, so the reader shows the message as it
-/// always did rather than an empty card.
+/// always did rather than an empty card. Malformed dates, numeric overflow, mismatched
+/// components and documents beyond 256 KiB / 4096 content lines / 8192 unfolded
+/// bytes per line are rejected. UTF-8 names, locations, descriptions and TZIDs remain
+/// valid; only the actual numeric/date/weekday grammar is restricted.
 pub fn parse(ics: &str) -> Option<Invite> {
-    let lines = unfold(ics);
+    let lines = unfold(ics)?;
     let mut method = String::new();
     let mut zones: Vec<TimeZoneSpec> = Vec::new();
     let mut event: Option<EventProps> = None;
@@ -102,12 +111,27 @@ pub fn parse(ics: &str) -> Option<Invite> {
     let mut current: Option<EventProps> = None;
     let mut zone: Option<TimeZoneSpec> = None;
     let mut observance: Option<Observance> = None;
+    let mut calendars = 0;
 
     for line in &lines {
         let name = line.name.to_ascii_uppercase();
         match name.as_str() {
             "BEGIN" => {
                 let component = line.value.to_ascii_uppercase();
+                let parent = stack.last().map(String::as_str);
+                let valid_parent = match component.as_str() {
+                    "VCALENDAR" => parent.is_none() && calendars == 0,
+                    "VEVENT" | "VTIMEZONE" => parent == Some("VCALENDAR"),
+                    "STANDARD" | "DAYLIGHT" => parent == Some("VTIMEZONE"),
+                    "VALARM" => parent == Some("VEVENT"),
+                    _ => parent.is_some(),
+                };
+                if !valid_parent || stack.len() >= MAX_COMPONENT_DEPTH {
+                    return None;
+                }
+                if component == "VCALENDAR" {
+                    calendars += 1;
+                }
                 match component.as_str() {
                     "VEVENT" if event.is_none() && !in_timezone(&stack) => {
                         current = Some(EventProps::default());
@@ -121,6 +145,9 @@ pub fn parse(ics: &str) -> Option<Invite> {
             }
             "END" => {
                 let component = line.value.to_ascii_uppercase();
+                if stack.last() != Some(&component) {
+                    return None;
+                }
                 match component.as_str() {
                     "VEVENT" => {
                         if let Some(props) = current.take() {
@@ -154,7 +181,7 @@ pub fn parse(ics: &str) -> Option<Invite> {
             continue;
         }
         if let Some(o) = observance.as_mut() {
-            o.take(line);
+            o.take(line)?;
             continue;
         }
         if let Some(z) = zone.as_mut() {
@@ -163,21 +190,37 @@ pub fn parse(ics: &str) -> Option<Invite> {
             }
             continue;
         }
-        if let Some(props) = current.as_mut() {
-            props.take(line);
+        if stack.last().is_some_and(|component| component == "VEVENT") {
+            if let Some(props) = current.as_mut() {
+                props.take(line)?;
+            }
         }
     }
 
+    if !stack.is_empty() || calendars != 1 {
+        return None;
+    }
     let props = event?;
+    if props.end.is_some() && props.duration.is_some() {
+        return None;
+    }
     let start = props.start.as_ref().and_then(|s| s.resolve(&zones));
+    let duration_end = match (start, props.duration) {
+        (Some(start), Some(duration)) => {
+            let end = start.checked_add(duration)?;
+            // Do not return a timestamp outside GLib's representable year range.
+            glib::DateTime::from_unix_utc(end).ok()?;
+            Some(end)
+        }
+        _ => None,
+    };
     let end = props
         .end
         .as_ref()
         .and_then(|e| e.resolve(&zones))
-        .or_else(|| Some(start? + props.duration?))
-        // An event with a start and no end runs to the end of the day when
-        // it is all-day, and is a point in time otherwise — which is what
-        // iCalendar means by a missing DTEND.
+        .or(duration_end)
+        // Retain the existing point timestamp for missing DTEND. Previews use the
+        // original DATE value for all-day display, not this resolved timestamp.
         .or(start);
     Some(Invite {
         method,
@@ -233,22 +276,32 @@ impl Line {
 /// RFC 5545 folds any line longer than 75 octets by breaking it and starting
 /// the next with a single space or tab, which is *not* part of the value —
 /// a long description or a URL is routinely split mid-word.
-fn unfold(ics: &str) -> Vec<Line> {
+fn unfold(ics: &str) -> Option<Vec<Line>> {
+    if ics.len() > MAX_ICS {
+        return None;
+    }
     let mut joined: Vec<String> = Vec::new();
     for raw in ics.split('\n') {
         let line = raw.strip_suffix('\r').unwrap_or(raw);
+        if line.len() > MAX_CONTENT_LINE || line.chars().any(|c| c.is_control() && c != '\t') {
+            return None;
+        }
         match line.strip_prefix([' ', '\t']) {
             Some(rest) => {
-                if let Some(last) = joined.last_mut() {
-                    last.push_str(rest);
-                    continue;
+                let last = joined.last_mut()?;
+                if last.len() + rest.len() > MAX_CONTENT_LINE {
+                    return None;
                 }
-                joined.push(rest.to_string());
+                last.push_str(rest);
             }
-            None => joined.push(line.to_string()),
+            None if !line.is_empty() => joined.push(line.to_string()),
+            None => {}
+        }
+        if joined.len() > MAX_CONTENT_LINES {
+            return None;
         }
     }
-    joined.iter().filter_map(|l| split_line(l)).collect()
+    joined.iter().map(|line| split_line(line)).collect()
 }
 
 /// Read one content line. The name and its parameters end at the first colon
@@ -272,7 +325,7 @@ fn split_line(line: &str) -> Option<Line> {
     }
     let (head, value) = match colon {
         Some(i) => (&line[..i], &line[i + 1..]),
-        None => (line, ""),
+        None => return None,
     };
     let mut parts = split_unquoted(head, ';');
     let name = parts.next()?.trim().to_string();
@@ -397,18 +450,32 @@ struct EventProps {
 }
 
 impl EventProps {
-    fn take(&mut self, line: &Line) {
+    fn take(&mut self, line: &Line) -> Option<()> {
         match line.name.to_ascii_uppercase().as_str() {
             "UID" => self.uid = line.value.clone(),
-            "SEQUENCE" => self.sequence = line.value.trim().parse().unwrap_or_default(),
+            "SEQUENCE" => {
+                self.sequence = line.value.trim().parse().ok()?;
+                if self.sequence < 0 {
+                    return None;
+                }
+            }
             "SUMMARY" => self.summary = line.value.trim().to_string(),
             "LOCATION" => self.location = line.value.trim().to_string(),
             "STATUS" => self.status = line.value.trim().to_string(),
-            "RECURRENCE-ID" => self.recurrence_id = line.raw.trim().to_string(),
+            "RECURRENCE-ID" => {
+                Stamp::read(line)?;
+                self.recurrence_id = line.raw.trim().to_string();
+            }
             "RRULE" => self.rrule = line.raw.trim().to_ascii_uppercase(),
-            "DTSTART" => self.start = Stamp::read(line),
-            "DTEND" => self.end = Stamp::read(line),
-            "DURATION" => self.duration = duration_seconds(line.raw.trim()),
+            "DTSTART" => self.start = Some(Stamp::read(line)?),
+            "DTEND" => self.end = Some(Stamp::read(line)?),
+            "DURATION" => {
+                let duration = duration_seconds(line.raw.trim())?;
+                if duration < 0 {
+                    return None;
+                }
+                self.duration = Some(duration);
+            }
             "ORGANIZER" => self.organizer = person(line),
             "ATTENDEE" => {
                 if let Some(p) = person(line) {
@@ -417,6 +484,7 @@ impl EventProps {
             }
             _ => {}
         }
+        Some(())
     }
 }
 
@@ -437,12 +505,21 @@ fn person(line: &Line) -> Option<InvitePerson> {
     }
     Some(InvitePerson {
         // A CN that is just the address again adds nothing.
-        name: if name.eq_ignore_ascii_case(&email) { String::new() } else { name },
+        name: if name.eq_ignore_ascii_case(&email) {
+            String::new()
+        } else {
+            name
+        },
         email,
-        status: line.param("PARTSTAT").unwrap_or("NEEDS-ACTION").to_ascii_uppercase(),
+        status: line
+            .param("PARTSTAT")
+            .unwrap_or("NEEDS-ACTION")
+            .to_ascii_uppercase(),
         // RFC 5545 defaults RSVP to FALSE; an organizer who wants an answer
         // says so.
-        rsvp: line.param("RSVP").is_some_and(|v| v.eq_ignore_ascii_case("TRUE")),
+        rsvp: line
+            .param("RSVP")
+            .is_some_and(|v| v.eq_ignore_ascii_case("TRUE")),
         // A resource (a room, a projector) is on the attendee list but is
         // not a person, and listing it as one reads oddly.
         resource: line
@@ -473,16 +550,33 @@ impl Stamp {
     fn read(line: &Line) -> Option<Stamp> {
         let mut stamp = Stamp::parse(line.raw.trim())?;
         stamp.tzid = line.param("TZID").unwrap_or_default().trim().to_string();
-        if line.param("VALUE").is_some_and(|v| v.eq_ignore_ascii_case("DATE")) {
-            stamp.date_only = true;
+        if line.param("VALUE").is_some_and(|v| {
+            !v.eq_ignore_ascii_case(if stamp.date_only { "DATE" } else { "DATE-TIME" })
+        }) || ((!stamp.tzid.is_empty()) && (stamp.date_only || stamp.utc))
+        {
+            return None;
         }
         Some(stamp)
     }
 
     /// `20261102`, `20261102T090000` or `20261102T080000Z`.
     fn parse(text: &str) -> Option<Stamp> {
-        let digits: String = text.chars().filter(|c| c.is_ascii_digit()).collect();
-        if digits.len() < 8 {
+        // Validate grammar before slicing; never extract digits from arbitrary
+        // sender text or split inside a UTF-8 code point.
+        let utc = text.ends_with(['Z', 'z']);
+        let date_only = text.len() == 8;
+        let value = if utc {
+            text.get(..text.len().checked_sub(1)?)?
+        } else {
+            text
+        };
+        if !value.is_ascii()
+            || (!date_only && (value.len() != 15 || value.as_bytes().get(8) != Some(&b'T')))
+        {
+            return None;
+        }
+        let digits: String = value.chars().filter(|c| c.is_ascii_digit()).collect();
+        if digits.len() != if date_only { 8 } else { 14 } {
             return None;
         }
         let num = |a: usize, b: usize| digits.get(a..b)?.parse::<i32>().ok();
@@ -493,15 +587,23 @@ impl Stamp {
             h: 0,
             mi: 0,
             s: 0,
-            utc: text.ends_with('Z') || text.ends_with('z'),
-            date_only: digits.len() == 8,
+            utc,
+            date_only,
             tzid: String::new(),
         };
-        if digits.len() >= 14 {
+        if !date_only {
             stamp.h = num(8, 10)?;
             stamp.mi = num(10, 12)?;
             stamp.s = num(12, 14)?;
         }
+        if !(1..=9999).contains(&stamp.y)
+            || !(0..=23).contains(&stamp.h)
+            || !(0..=59).contains(&stamp.mi)
+            || !(0..=59).contains(&stamp.s)
+        {
+            return None;
+        }
+        chrono::NaiveDate::from_ymd_opt(stamp.y, stamp.mo as u32, stamp.d as u32)?;
         Some(stamp)
     }
 
@@ -528,9 +630,15 @@ impl Stamp {
         if let Some(tz) = glib::TimeZone::from_identifier(Some(&self.tzid)) {
             return Some(tz);
         }
-        let spec = zones.iter().find(|z| z.id.eq_ignore_ascii_case(&self.tzid))?;
+        let spec = zones
+            .iter()
+            .find(|z| z.id.eq_ignore_ascii_case(&self.tzid))?;
         let offset = spec.offset_at(self)?;
-        let (sign, mins) = if offset < 0 { ('-', -offset / 60) } else { ('+', offset / 60) };
+        let (sign, mins) = if offset < 0 {
+            ('-', -offset / 60)
+        } else {
+            ('+', offset / 60)
+        };
         glib::TimeZone::from_identifier(Some(&format!("{sign}{:02}:{:02}", mins / 60, mins % 60)))
     }
 }
@@ -544,25 +652,46 @@ fn duration_seconds(text: &str) -> Option<i64> {
     let rest = rest.strip_prefix('P')?;
     let mut total: i64 = 0;
     let mut number = String::new();
+    let mut in_time = false;
+    let mut last_unit = 0;
+    let mut saw_unit = false;
+    let mut saw_time_unit = false;
+    let mut weeks = false;
     for c in rest.chars() {
-        match c {
-            'T' => continue,
-            c if c.is_ascii_digit() => number.push(c),
-            unit => {
-                let n: i64 = number.parse().ok()?;
-                number.clear();
-                total += n * match unit {
-                    'W' => 604_800,
-                    'D' => 86_400,
-                    'H' => 3_600,
-                    'M' => 60,
-                    'S' => 1,
-                    _ => return None,
-                };
+        if c == 'T' {
+            if in_time || !number.is_empty() || weeks {
+                return None;
             }
+            in_time = true;
+            continue;
         }
+        if c.is_ascii_digit() {
+            number.push(c);
+            continue;
+        }
+        let (rank, multiplier) = match (c, in_time) {
+            ('W', false) => (1, 604_800),
+            ('D', false) => (2, 86_400),
+            ('H', true) => (3, 3_600),
+            ('M', true) => (4, 60),
+            ('S', true) => (5, 1),
+            _ => return None,
+        };
+        if rank <= last_unit || weeks || (c == 'W' && saw_unit) {
+            return None;
+        }
+        let n: i64 = number.parse().ok()?;
+        number.clear();
+        total = total.checked_add(n.checked_mul(multiplier)?)?;
+        last_unit = rank;
+        saw_unit = true;
+        saw_time_unit |= in_time;
+        weeks = c == 'W';
     }
-    Some(sign * total)
+    if !number.is_empty() || !saw_unit || (in_time && !saw_time_unit) {
+        return None;
+    }
+    total.checked_mul(sign)
 }
 
 // ---------------------------------------------------------------------------
@@ -596,26 +725,44 @@ struct Observance {
 }
 
 impl Observance {
-    fn take(&mut self, line: &Line) {
+    fn take(&mut self, line: &Line) -> Option<()> {
         match line.name.to_ascii_uppercase().as_str() {
-            "TZOFFSETTO" => self.offset_to = utc_offset(line.raw.trim()).unwrap_or_default(),
+            "TZOFFSETTO" => self.offset_to = utc_offset(line.raw.trim())?,
+            "TZOFFSETFROM" => {
+                utc_offset(line.raw.trim())?;
+            }
             "DTSTART" => {
-                if let Some(s) = Stamp::parse(line.raw.trim()) {
-                    self.month = s.mo;
-                    self.day = s.d;
-                    self.at = s.h * 3600 + s.mi * 60 + s.s;
-                }
+                let s = Stamp::parse(line.raw.trim())?;
+                self.month = s.mo;
+                self.day = s.d;
+                self.at = s.h * 3600 + s.mi * 60 + s.s;
             }
             "RRULE" => {
                 for part in line.raw.split(';') {
-                    let Some((k, v)) = part.split_once('=') else { continue };
+                    let (k, v) = part.split_once('=')?;
                     match k.to_ascii_uppercase().as_str() {
-                        "BYMONTH" => self.month = v.trim().parse().unwrap_or(self.month),
-                        "BYMONTHDAY" => self.day = v.trim().parse().unwrap_or(self.day),
+                        "BYMONTH" => {
+                            self.month = v.trim().parse().ok()?;
+                            if !(1..=12).contains(&self.month) {
+                                return None;
+                            }
+                        }
+                        "BYMONTHDAY" => {
+                            self.day = v.trim().parse().ok()?;
+                            if !(1..=31).contains(&self.day) {
+                                return None;
+                            }
+                        }
                         "BYDAY" => {
                             let v = v.trim().to_ascii_uppercase();
-                            let (num, day) = v.split_at(v.len().saturating_sub(2));
-                            self.ordinal = num.parse().unwrap_or(1);
+                            let split = v.len().checked_sub(2)?;
+                            // `get` rejects a byte index inside Unicode instead of
+                            // panicking. Names/summary/location still accept UTF-8.
+                            let (num, day) = (v.get(..split)?, v.get(split..)?);
+                            self.ordinal = if num.is_empty() { 1 } else { num.parse().ok()? };
+                            if self.ordinal == 0 || !(-5..=5).contains(&self.ordinal) {
+                                return None;
+                            }
                             self.weekday = match day {
                                 "SU" => 7,
                                 "MO" => 1,
@@ -624,7 +771,7 @@ impl Observance {
                                 "TH" => 4,
                                 "FR" => 5,
                                 "SA" => 6,
-                                _ => 0,
+                                _ => return None,
                             };
                             // A BYDAY rule names a weekday, not a date.
                             self.day = 0;
@@ -635,6 +782,7 @@ impl Observance {
             }
             _ => {}
         }
+        Some(())
     }
 
     /// The day of the month this observance begins in a given year.
@@ -685,7 +833,8 @@ impl TimeZoneSpec {
         if self.observances.len() == 1 {
             return Some(self.observances[0].offset_to);
         }
-        let key = |mo: i32, d: i32, at: i32| (mo as i64) * 100_000_000 + (d as i64) * 100_000 + at as i64;
+        let key =
+            |mo: i32, d: i32, at: i32| (mo as i64) * 100_000_000 + (d as i64) * 100_000 + at as i64;
         let reading = key(when.mo, when.d, when.h * 3600 + when.mi * 60 + when.s);
         // Sort the year's changeovers and take the last one already past.
         // Before the first, the one in force is the year's last — the
@@ -714,21 +863,31 @@ fn utc_offset(text: &str) -> Option<i32> {
     let (sign, rest) = match text.chars().next()? {
         '-' => (-1, &text[1..]),
         '+' => (1, &text[1..]),
-        _ => (1, text),
+        _ => return None,
     };
-    let digits: String = rest.chars().filter(|c| c.is_ascii_digit()).collect();
-    if digits.len() < 4 {
+    if !matches!(rest.len(), 4 | 6) || !rest.bytes().all(|c| c.is_ascii_digit()) {
         return None;
     }
-    let h: i32 = digits.get(0..2)?.parse().ok()?;
-    let m: i32 = digits.get(2..4)?.parse().ok()?;
-    let s: i32 = digits.get(4..6).and_then(|v| v.parse().ok()).unwrap_or(0);
+    let h: i32 = rest.get(0..2)?.parse().ok()?;
+    let m: i32 = rest.get(2..4)?.parse().ok()?;
+    let s: i32 = if rest.len() == 6 {
+        rest.get(4..6)?.parse().ok()?
+    } else {
+        0
+    };
+    if h > 23 || m > 59 || s > 59 {
+        return None;
+    }
     Some(sign * (h * 3600 + m * 60 + s))
 }
 
 fn days_in_month(year: i32, month: i32) -> i32 {
     use chrono::Datelike;
-    let (y, m) = if month >= 12 { (year + 1, 1) } else { (year, month + 1) };
+    let (y, m) = if month >= 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    };
     chrono::NaiveDate::from_ymd_opt(y, m as u32, 1)
         .and_then(|first| first.pred_opt())
         .map_or(30, |last| last.day() as i32)
@@ -858,7 +1017,10 @@ mod tests {
         assert_eq!(inv.start, 1_793_606_400);
         assert_eq!(inv.end, inv.start + 3600);
         assert!(!inv.all_day);
-        assert_eq!(inv.organizer.as_ref().map(|o| o.email.as_str()), Some("chloe@example.org"));
+        assert_eq!(
+            inv.organizer.as_ref().map(|o| o.email.as_str()),
+            Some("chloe@example.org")
+        );
         assert_eq!(inv.attendees.len(), 2);
         assert!(inv.attendees[0].rsvp);
         assert_eq!(inv.attendees[0].status, "NEEDS-ACTION");
@@ -924,7 +1086,10 @@ mod tests {
         let ics = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:u\r\nSUMMARY:A rather lo\r\n ng meeting name\r\nDTSTART:20261102T080000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
         assert_eq!(parse(ics).unwrap().summary, "A rather long meeting name");
         let tabbed = ics.replace("\r\n ng", "\r\n\tng");
-        assert_eq!(parse(&tabbed).unwrap().summary, "A rather long meeting name");
+        assert_eq!(
+            parse(&tabbed).unwrap().summary,
+            "A rather long meeting name"
+        );
     }
 
     #[test]
@@ -1015,13 +1180,147 @@ mod tests {
         assert_eq!(duration_seconds("nonsense"), None);
     }
 
+    fn bounded_event(fields: &str) -> String {
+        format!(
+            "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:synthetic\r\n{fields}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+    }
+
+    fn timezone_event(byday: &str) -> String {
+        format!(
+            "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VTIMEZONE\r\nTZID:Synthetic/東京\r\nBEGIN:STANDARD\r\nDTSTART:16010101T030000\r\nTZOFFSETTO:+0100\r\nRRULE:FREQ=YEARLY;BYMONTH=10;BYDAY={byday}\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\nBEGIN:VEVENT\r\nUID:synthetic\r\nSUMMARY:会議 — Chloé\r\nLOCATION:東京\r\nORGANIZER;CN=Łukasz:mailto:host@example.test\r\nDTSTART;TZID=Synthetic/東京:20261102T090000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+    }
+
+    #[test]
+    fn malformed_multibyte_timezone_byday_is_rejected_without_a_byte_slice_panic() {
+        // Previously Observance::take called split_at(4 - 2) on this four-byte
+        // code point. Exercise parse itself, not an unconnected validator.
+        for day in ["💣", "-1💣", "é", "MO💣", "", "999999999999999999SU"] {
+            let ics = timezone_event(day);
+            assert!(parse(&ics).is_none());
+            let raw = format!(
+                "From: host@example.test\r\nContent-Type: text/calendar; charset=utf-8\r\n\r\n{ics}"
+            );
+            assert!(detect_raw(raw.as_bytes()).is_none());
+        }
+    }
+
+    #[test]
+    fn unicode_calendar_text_and_timezone_names_remain_supported() {
+        let inv = parse(&timezone_event("-1SU")).expect("valid Unicode calendar");
+        assert_eq!(inv.summary, "会議 — Chloé");
+        assert_eq!(inv.location, "東京");
+        assert_eq!(inv.organizer.unwrap().name, "Łukasz");
+        assert_eq!(inv.start, 1_793_606_400);
+    }
+
+    #[test]
+    fn oversized_duration_multiplication_and_accumulation_fail_closed() {
+        for duration in [
+            "P9223372036854775807W",
+            "P106751991167300DT9223372036854775807S",
+        ] {
+            let ics = bounded_event(&format!("DTSTART:20261102T080000Z\r\nDURATION:{duration}"));
+            assert!(parse(&ics).is_none());
+            assert!(duration_seconds(duration).is_none());
+            let raw =
+                format!("From: host@example.test\r\nContent-Type: text/calendar\r\n\r\n{ics}");
+            assert!(detect_raw(raw.as_bytes()).is_none());
+        }
+    }
+
+    #[test]
+    fn resolved_start_plus_duration_overflow_is_rejected() {
+        let ics = bounded_event("DTSTART:20261102T080000Z\r\nDURATION:PT9223372036854775807S");
+        assert_eq!(duration_seconds("PT9223372036854775807S"), Some(i64::MAX));
+        assert!(parse(&ics).is_none());
+    }
+
+    #[test]
+    fn malformed_dates_offsets_and_duration_grammar_are_not_guessed() {
+        for stamp in [
+            "nonsense20261102T080000Z",
+            "20260230T080000Z",
+            "20261102T990000Z",
+            "202611💣",
+            "20261102T080000Zgarbage",
+        ] {
+            assert!(parse(&bounded_event(&format!("DTSTART:{stamp}"))).is_none());
+        }
+        for offset in ["💣", "+9999", "+0160", "0100", "+0100junk"] {
+            assert!(utc_offset(offset).is_none());
+            assert!(parse(&timezone_event("-1SU").replace("+0100", offset)).is_none());
+        }
+        for duration in ["P", "P1", "PT", "P1DT", "PT1H1H", "P1W1D", "P1H", "PT1M1H"] {
+            assert!(duration_seconds(duration).is_none());
+            assert!(
+                parse(&bounded_event(&format!(
+                    "DTSTART:20261102T080000Z\r\nDURATION:{duration}"
+                )))
+                .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn direct_parse_and_actual_attachment_mime_share_bounded_admission() {
+        let ics = bounded_event("DTSTART:20261102T080000Z\r\nSUMMARY:Résumé 会議");
+        for media in [
+            "text/calendar; method=REQUEST; charset=utf-8",
+            "application/octet-stream",
+        ] {
+            let raw = format!(
+                "From: host@example.test\r\nMIME-Version: 1.0\r\nContent-Type: {media}\r\nContent-Disposition: attachment; filename=event.ics\r\n\r\n{ics}"
+            );
+            assert_eq!(detect_raw(raw.as_bytes()).unwrap().summary, "Résumé 会議");
+            let oversized = raw.replace("Résumé 会議", &"x".repeat(MAX_ICS + 1));
+            assert!(detect_raw(oversized.as_bytes()).is_none());
+        }
+        assert!(
+            parse(&bounded_event(&format!(
+                "SUMMARY:{}",
+                "x".repeat(MAX_ICS + 1)
+            )))
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn structural_limits_and_mismatched_components_fail_closed() {
+        let good = bounded_event("DTSTART:20261102T080000Z");
+        assert!(parse(&good.replace("END:VEVENT", "END:VTIMEZONE")).is_none());
+        assert!(parse(&good.replace("END:VCALENDAR", "")).is_none());
+        assert!(parse(&format!(" {good}")).is_none());
+        let many_lines = good.replace(
+            "UID:synthetic",
+            &"X-UNKNOWN:value\r\n".repeat(MAX_CONTENT_LINES + 1),
+        );
+        assert!(parse(&many_lines).is_none());
+        let long_line = good.replace(
+            "UID:synthetic",
+            &format!("UID:{}", "x".repeat(MAX_CONTENT_LINE + 1)),
+        );
+        assert!(parse(&long_line).is_none());
+    }
+
     #[test]
     fn the_last_sunday_of_a_month_is_found() {
         // 25 October 2026 is the last Sunday of that month.
-        let o = Observance { month: 10, ordinal: -1, weekday: 7, ..Observance::default() };
+        let o = Observance {
+            month: 10,
+            ordinal: -1,
+            weekday: 7,
+            ..Observance::default()
+        };
         assert_eq!(o.day_in(2026), Some(25));
         // And the second Sunday of March 2026 is the 8th.
-        let o = Observance { month: 3, ordinal: 2, weekday: 7, ..Observance::default() };
+        let o = Observance {
+            month: 3,
+            ordinal: 2,
+            weekday: 7,
+            ..Observance::default()
+        };
         assert_eq!(o.day_in(2026), Some(8));
     }
 }

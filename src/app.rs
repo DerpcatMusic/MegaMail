@@ -1179,6 +1179,8 @@ impl AttachmentTarget {
 
 #[derive(Debug)]
 pub enum AppMsg {
+    /// Native-only worker receipts do not change legacy GTK status.
+    IgnoreNativeEvent,
     /// A setting changed in Preferences (or its equivalent elsewhere).
     Pref(PrefOutput),
     // User actions
@@ -5289,6 +5291,7 @@ impl SimpleComponent for AppModel {
 
     fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>) {
         match msg {
+            AppMsg::IgnoreNativeEvent => {},
             AppMsg::ShowOutbox => {
                 self.close_sidebar_peek();
                 self.mirror_selection(crate::ui::sidebar::Sel::Outbox);
@@ -21929,6 +21932,8 @@ fn showcase_log_focus(main: &adw::ApplicationWindow) {
 
 fn map_event(account_id: u32, event: WorkerEvent) -> AppMsg {
     match event {
+        WorkerEvent::QueuedCancelFinished { .. } | WorkerEvent::NativeWorkerStopped { .. }
+            | WorkerEvent::NativeWorkerSession { .. } | WorkerEvent::NativeMutationFinished(_) => AppMsg::IgnoreNativeEvent,
         WorkerEvent::AttachmentsScanned { folder_path, added, remaining } => {
             AppMsg::AttachmentsScanned { account_id, folder_path, added, remaining }
         }
@@ -21985,6 +21990,14 @@ fn map_event(account_id: u32, event: WorkerEvent) -> AppMsg {
         WorkerEvent::Body { message_id, path, body } => {
             AppMsg::Body { account_id, message_id, path, body }
         }
+        // Native epoch-aware requests do not originate from the GTK UI. Do
+        // not strip their scope and render an uncorrelated body here.
+        WorkerEvent::BodyAtEpoch { .. } | WorkerEvent::BodyEpochStale { .. } => {
+            AppMsg::Notice(i18n("The message changed. Refresh the folder before opening it again."))
+        }
+        WorkerEvent::MailboxEpochChanged { .. } => {
+            AppMsg::Notice(i18n("The mailbox changed. Cached message identities were invalidated."))
+        }
         WorkerEvent::SenderChecked { path, message_id, check } => {
             AppMsg::SenderChecked { account_id, path, message_id, check: Box::new(check) }
         }
@@ -22007,6 +22020,7 @@ fn map_event(account_id: u32, event: WorkerEvent) -> AppMsg {
             crate::worker::SendOutcome::Queued => i18n("Message queued"),
             crate::worker::SendOutcome::Failed => i18n("Message was not sent"),
         }),
+        WorkerEvent::SendUnknown { reason, .. } => AppMsg::Notice(reason),
         WorkerEvent::Unsent(message) => AppMsg::Unsent { account_id, message },
         WorkerEvent::Outbox { items } => AppMsg::OutboxItems { account_id, items },
         WorkerEvent::Notice(text) => AppMsg::Notice(text),
@@ -23201,6 +23215,12 @@ mod tests {
     }
 
     use super::*;
+    #[test]
+    fn native_lifecycle_does_not_clear_legacy_worker_status() {
+        for event in [WorkerEvent::NativeWorkerSession { session: 7 }, WorkerEvent::NativeWorkerStopped { session: 7 }] {
+            assert!(matches!(map_event(3, event), AppMsg::IgnoreNativeEvent));
+        }
+    }
 
     /// A conversation member as the related-lookup hands it over: what matters
     /// here is which folder it came from and what Message-ID it carries.

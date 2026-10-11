@@ -10,8 +10,8 @@ use std::fs::File;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -773,11 +773,27 @@ fn validate_profile_ids(ids: &std::collections::BTreeMap<String, u32>) -> io::Re
     Ok(maximum)
 }
 
+#[cfg(test)]
 fn assign_profile_ids(
     accounts: Vec<AccountConfig>,
     ids: &mut std::collections::BTreeMap<String, u32>,
 ) -> io::Result<(Vec<(u32, AccountConfig)>, bool)> {
-    let mut next = validate_profile_ids(ids)?;
+    assign_profile_ids_reserved(accounts, ids, &std::collections::HashSet::new())
+}
+
+fn assign_profile_ids_reserved(
+    accounts: Vec<AccountConfig>,
+    ids: &mut std::collections::BTreeMap<String, u32>,
+    reserved: &std::collections::HashSet<u32>,
+) -> io::Result<(Vec<(u32, AccountConfig)>, bool)> {
+    let maximum = validate_profile_ids(ids)?;
+    if ids.values().any(|id| reserved.contains(id)) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "direct and external account inventories have conflicting stable IDs; repair without renumbering",
+        ));
+    }
+    let mut next = maximum.max(reserved.iter().copied().max().unwrap_or(0));
     let mut changed = false;
     let mut profiles = Vec::with_capacity(accounts.len());
     for account in accounts {
@@ -811,17 +827,75 @@ fn write_profile_ids(path: &Path, ids: &std::collections::BTreeMap<String, u32>)
 /// entries outlive account removal, and malformed state is returned as an
 /// error rather than replaced with an empty mapping.
 pub fn load_profiles() -> io::Result<Vec<(u32, AccountConfig)>> {
+    load_profiles_with_reserved(&std::collections::HashSet::new())
+}
+
+/// Native adapters reserve their durable IDs before any missing direct ID is allocated.
+/// Existing direct IDs, including removed-account tombstones, are never renumbered.
+pub fn load_profiles_with_reserved(
+    reserved: &std::collections::HashSet<u32>,
+) -> io::Result<Vec<(u32, AccountConfig)>> {
     let _guard = CREDENTIALS_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let accounts = load_accounts_checked_locked()?.unwrap_or_default();
     let ids_path = profile_ids_path()?;
     let mut ids = read_profile_ids(&ids_path)?.profiles;
-    let (profiles, changed) = assign_profile_ids(accounts, &mut ids)?;
+    let (profiles, changed) = assign_profile_ids_reserved(accounts, &mut ids, reserved)?;
     if changed {
         write_profile_ids(&ids_path, &ids)?;
     }
     Ok(profiles)
+}
+
+/// Restore known direct identities when another backend's inventory is unreadable.
+/// Never allocate or write IDs while cross-backend ownership is unknown.
+pub fn load_profiles_existing() -> io::Result<Vec<(u32, AccountConfig)>> {
+    let _guard = CREDENTIALS_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let ids = read_profile_ids(&profile_ids_path()?)?.profiles;
+    let accounts = load_accounts_checked_locked()?.unwrap_or_default();
+    accounts
+        .into_iter()
+        .map(|account| {
+            let identity = profile_identity(&account)?;
+            let id = ids.get(&identity).copied().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "account has no saved ID; repair the external inventory before allocation",
+                )
+            })?;
+            Ok((id, account))
+        })
+        .collect()
+}
+
+/// Read the complete stable-ID inventory without loading any credentials.
+/// Removed-account mappings remain reserved to protect their cache/outbox identities.
+pub fn profile_id_inventory() -> io::Result<std::collections::HashSet<u32>> {
+    Ok(read_profile_ids(&profile_ids_path()?)?
+        .profiles
+        .into_values()
+        .collect())
+}
+
+/// Reserve IDs before account/credential save. A failed save may leave a harmless
+/// tombstone, but cannot save an account with another adapter's cache identity.
+pub fn reserve_profile_ids(
+    accounts: &[AccountConfig],
+    reserved: &std::collections::HashSet<u32>,
+) -> io::Result<()> {
+    let _guard = CREDENTIALS_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let path = profile_ids_path()?;
+    let mut ids = read_profile_ids(&path)?.profiles;
+    let (_, changed) = assign_profile_ids_reserved(accounts.to_vec(), &mut ids, reserved)?;
+    if changed {
+        write_profile_ids(&path, &ids)?;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -1813,20 +1887,97 @@ pub fn load_filters() -> Vec<FilterRule> {
         .unwrap_or_default()
 }
 
-pub fn save_filters(rules: &[FilterRule]) {
-    let Some(path) = filters_path() else { return };
-    let text = match toml::to_string_pretty(&FiltersFile {
-        rules: rules.to_vec(),
-    }) {
-        Ok(text) => text,
-        Err(err) => {
-            tracing::warn!("could not serialize mail filters: {err}");
-            return;
-        }
+/// Native editing/preview must distinguish an absent rule file from corruption.
+/// Run on a background executor; never replace a rejected file with defaults.
+pub fn load_filters_checked() -> Result<Vec<FilterRule>, String> {
+    let path = filters_path().ok_or("Private rule storage is unavailable.")?;
+    read_filters_checked(&path)
+}
+
+fn read_filters_checked(path: &Path) -> Result<Vec<FilterRule>, String> {
+    use std::io::Read;
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return Err("The rule file could not be read.".into()),
     };
-    if let Err(err) = write_private(&path, &text) {
-        tracing::warn!("could not save mail filters: {err}");
+    if !meta.is_file() || meta.len() > 2 * 1024 * 1024 {
+        return Err("The rule file is unsafe or exceeds 2 MiB.".into());
     }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC);
+    }
+    let file = options
+        .open(path)
+        .map_err(|_| "The rule file could not be opened.")?;
+    if !file
+        .metadata()
+        .map_err(|_| "The rule file could not be inspected.")?
+        .is_file()
+    {
+        return Err("The rule file is not a regular file.".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(2 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "The rule file could not be read.")?;
+    if bytes.len() > 2 * 1024 * 1024 {
+        return Err("The rule file exceeds 2 MiB.".into());
+    }
+    let text = std::str::from_utf8(&bytes).map_err(|_| "The rule file is not UTF-8.")?;
+    let file = toml::from_str::<FiltersFile>(text)
+        .map_err(|_| "The rule file is invalid; it was left unchanged.")?;
+    if file.rules.len() > 256 {
+        return Err("Rule previews support at most 256 rules.".into());
+    }
+    Ok(file.rules)
+}
+
+/// Save a reviewed rule snapshot without replacing a newer or corrupt file.
+/// Call off the UI thread; all native rule editors share this writer lock.
+pub fn save_filters_checked(expected: &[FilterRule], rules: &[FilterRule]) -> Result<(), String> {
+    let path = filters_path().ok_or("Private rule storage is unavailable.")?;
+    replace_filters_checked(&path, expected, rules)
+}
+
+fn replace_filters_checked(path: &Path, expected: &[FilterRule], rules: &[FilterRule]) -> Result<(), String> {
+    if rules.len() > 256 || rules.iter().any(|r| r.name.len() > 256 || r.account_email.len() > 320
+        || r.value.len() > 8192 || r.dest_path.len() > 1024 || r.tag.len() > 1024 || r.more.len() > 32) {
+        return Err("Rules exceed the supported size limits.".into());
+    }
+    let text = toml::to_string_pretty(&FiltersFile { rules: rules.to_vec() })
+        .map_err(|_| "The rules could not be encoded.")?;
+    if text.len() > 2 * 1024 * 1024 { return Err("The rules exceed 2 MiB.".into()); }
+    #[cfg(unix)]
+    let _lock = {
+        use std::os::unix::{fs::{OpenOptionsExt, MetadataExt, PermissionsExt}, io::AsRawFd};
+        let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+            .open(path.with_extension("lock")).map_err(|_| "The rule writer lock could not be opened.")?;
+        let meta = file.metadata().map_err(|_| "The rule writer lock could not be inspected.")?;
+        if !meta.is_file() || meta.uid() != unsafe { libc::geteuid() } || meta.permissions().mode() & 0o077 != 0 {
+            return Err("The rule writer lock is unsafe.".into());
+        }
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return Err("Another rule editor is saving. Reload before trying again.".into());
+        }
+        file
+    };
+    #[cfg(not(unix))]
+    return Err("Checked rule editing is unavailable on this platform.".into());
+    if read_filters_checked(path)? != expected {
+        return Err("The saved rules changed. Reload before editing again.".into());
+    }
+    write_private(path, &text).map_err(|_| "The rules could not be saved.")
+}
+
+pub fn save_filters(rules: &[FilterRule]) {
+    let result = load_filters_checked().and_then(|expected| save_filters_checked(&expected, rules));
+    if let Err(err) = result { tracing::warn!("could not save mail filters: {err}"); }
 }
 
 /// Body search terms needed by this account's rules, freshly read and
@@ -1869,6 +2020,52 @@ pub fn save_language(language: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checked_rules_distinguish_absence_from_corruption_and_never_rewrite() {
+        let root = std::env::temp_dir().join(format!(
+            "megamail-rule-read-{}-{}",
+            std::process::id(),
+            TEMP_FILE_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("filters.toml");
+        assert!(read_filters_checked(&path).unwrap().is_empty());
+        fs::write(&path, b"invalid = [").unwrap();
+        assert!(read_filters_checked(&path).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"invalid = [");
+        fs::write(&path, b"rules = []\n").unwrap();
+        assert!(read_filters_checked(&path).unwrap().is_empty());
+        assert!(read_filters_checked(&root).is_err());
+        #[cfg(unix)]
+        {
+            let link = root.join("link.toml");
+            std::os::unix::fs::symlink(&path, &link).unwrap();
+            assert!(read_filters_checked(&link).is_err());
+        }
+        fs::write(&path, vec![b'x'; 2 * 1024 * 1024 + 1]).unwrap();
+        assert!(read_filters_checked(&path).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn checked_rule_save_rejects_conflicting_and_corrupt_snapshots() {
+        let root = std::env::temp_dir().join(format!("megamail-rule-save-{}-{}", std::process::id(), TEMP_FILE_ID.fetch_add(1, Ordering::Relaxed)));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("filters.toml");
+        let rule = FilterRule { name: "Fixture".into(), account_email: "owner@example.test".into(), field: FilterField::Subject,
+            matcher: FilterMatch::Contains, value: "needle".into(), more: vec![], any: false, dest_path: "Archive".into(), tag: String::new(), count_unread: true };
+        replace_filters_checked(&path, &[], &[rule.clone()]).unwrap();
+        assert_eq!(read_filters_checked(&path).unwrap(), vec![rule.clone()]);
+        let bytes = fs::read(&path).unwrap();
+        assert!(replace_filters_checked(&path, &[], &[]).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        replace_filters_checked(&path, &[rule], &[]).unwrap();
+        fs::write(&path, "invalid = [").unwrap();
+        assert!(replace_filters_checked(&path, &[], &[]).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"invalid = [");
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[derive(Default)]
     struct FakeCredentialBackend {
@@ -1962,12 +2159,14 @@ mod tests {
         assert!(loaded.password.is_empty());
         assert!(loaded.smtp_password.is_empty());
         assert!(loaded.oauth_refresh.is_empty());
-        assert!(loaded
-            .oauth_settings
-            .as_ref()
-            .unwrap()
-            .client_secret
-            .is_empty());
+        assert!(
+            loaded
+                .oauth_settings
+                .as_ref()
+                .unwrap()
+                .client_secret
+                .is_empty()
+        );
         assert!(loaded.aliases[0].smtp_password.is_empty());
     }
 
@@ -2087,6 +2286,50 @@ mod tests {
             port_scoped[0].0, 4,
             "same host on a different port gets a fresh ID"
         );
+    }
+
+    #[test]
+    fn native_allocator_reserves_tb_inventory_before_direct_save() {
+        let mut ids = std::collections::BTreeMap::from([("removed-tombstone".into(), 9)]);
+        let reserved = std::collections::HashSet::from([1, 12]);
+        let first = AccountConfig::new("one@example.test");
+        let (profiles, _) =
+            assign_profile_ids_reserved(vec![first.clone()], &mut ids, &reserved).unwrap();
+        assert_eq!(profiles[0].0, 13);
+        let (same, changed) =
+            assign_profile_ids_reserved(vec![first], &mut ids, &reserved).unwrap();
+        assert_eq!(same[0].0, 13);
+        assert!(!changed);
+        assert_eq!(ids["removed-tombstone"], 9);
+    }
+
+    #[test]
+    fn native_allocator_rejects_conflict_without_silent_renumbering() {
+        let mut ids = std::collections::BTreeMap::from([("existing".into(), 7)]);
+        let before = ids.clone();
+        assert!(
+            assign_profile_ids_reserved(
+                vec![AccountConfig::new("one@example.test")],
+                &mut ids,
+                &std::collections::HashSet::from([7])
+            )
+            .is_err()
+        );
+        assert_eq!(ids, before);
+    }
+
+    #[test]
+    fn native_allocator_rejects_exhausted_space() {
+        let mut ids = std::collections::BTreeMap::new();
+        assert!(
+            assign_profile_ids_reserved(
+                vec![AccountConfig::new("one@example.test")],
+                &mut ids,
+                &std::collections::HashSet::from([u32::MAX])
+            )
+            .is_err()
+        );
+        assert!(ids.is_empty());
     }
 
     #[test]

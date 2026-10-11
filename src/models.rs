@@ -838,6 +838,9 @@ impl Default for SenderCheck {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutboxPhase { Ready, InFlight, Accepted, Refused, Uncertain }
+
 /// A message that could not be sent and is waiting in the Outbox.
 ///
 /// The built MIME bytes are stored rather than the composed fields: a retry has
@@ -867,6 +870,7 @@ pub struct OutboxItem {
     pub last_error: String,
     /// Send Later (#145): unix seconds it is due; `None` goes as soon as it can.
     pub send_at: Option<i64>,
+    pub phase: OutboxPhase,
 }
 
 impl OutboxItem {
@@ -1409,6 +1413,7 @@ mod tests {
             queued_at: 0,
             attempts: 1,
             send_at: None,
+            phase: OutboxPhase::Ready,
             last_error: String::new(),
         }
     }

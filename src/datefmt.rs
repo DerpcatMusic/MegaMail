@@ -427,3 +427,32 @@ mod tests {
         assert_eq!(date_time(i64::MIN), "");
     }
 }
+
+/// Parse an explicit numeric-offset schedule; blank means send immediately.
+pub fn parse_send_time(value: &str, now: i64) -> Result<Option<i64>, &'static str> {
+    let value = value.trim();
+    if value.is_empty() { return Ok(None); }
+    if value.len() > 64 { return Err("Enter a date, time and numeric UTC offset."); }
+    let date = chrono::DateTime::parse_from_str(value, "%Y-%m-%d %H:%M %:z")
+        .map_err(|_| "Use YYYY-MM-DD HH:MM +HH:MM, including the numeric UTC offset.")?;
+    let at = date.timestamp();
+    if at <= now { return Err("Choose a future time. Clear the schedule to send now."); }
+    Ok(Some(at))
+}
+pub fn editable_send_time(at: i64) -> Option<String> {
+    chrono::DateTime::from_timestamp(at, 0).map(|date| date.format("%Y-%m-%d %H:%M %:z").to_string())
+}
+#[cfg(test)]
+mod native_schedule_tests {
+    use super::*;
+    #[test]
+    fn schedule_requires_explicit_offset_and_a_future_time() {
+        let first = parse_send_time("2030-01-02 03:04 +03:00", 0).unwrap().unwrap();
+        assert_eq!(parse_send_time("2030-01-02 00:04 +00:00", 0), Ok(Some(first)));
+        assert_eq!(parse_send_time(&editable_send_time(first).unwrap(), 0), Ok(Some(first)));
+        assert!(parse_send_time("2030-01-02 03:04", 0).is_err());
+        assert!(parse_send_time("2030-02-30 03:04 +03:00", 0).is_err());
+        assert!(parse_send_time("2030-01-02 03:04 +03:00", first).is_err());
+        assert_eq!(parse_send_time(" ", 0), Ok(None));
+    }
+}

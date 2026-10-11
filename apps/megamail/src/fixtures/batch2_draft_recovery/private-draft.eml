@@ -1,0 +1,22 @@
+From: Work <work@example.test>
+To: Ada <ada@example.test>
+Cc: Bob <bob@example.test>
+Bcc: Hidden <hidden@example.test>
+Reply-To: replies@example.test
+Subject: Synthetic recovery fixture
+In-Reply-To: <parent@example.test>
+References: <older@example.test> <parent@example.test>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="f7-boundary"
+
+--f7-boundary
+Content-Type: text/plain; charset=utf-8
+
+Fictional private composition.
+--f7-boundary
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="bytes.bin"
+Content-Transfer-Encoding: base64
+
+YmluYXJ5AP+A
+--f7-boundary--

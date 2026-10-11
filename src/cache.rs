@@ -4,12 +4,13 @@
 //! avoid re-fetching message bodies. Each per-account worker opens its own
 //! connection (so the `!Send` `rusqlite::Connection` never crosses threads);
 //! WAL mode keeps concurrent access from contending. Everything is keyed by
-//! account so two accounts can both have an "INBOX". It is strictly
-//! best-effort: any error is logged and degrades to "no cache".
+//! account so two accounts can both have an "INBOX". Legacy cache reads are
+//! best-effort; schema upgrades, mailbox identity changes and delivery-state
+//! transitions fail closed and return errors rather than losing durable mail.
 
 use std::time::Duration;
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::models::{
     Attachment, Folder, FolderKind, GallerySort, Message, ThreadLatest, ThreadSummary,
@@ -142,9 +143,27 @@ CREATE TABLE IF NOT EXISTS attachment_scan (
 );
 CREATE INDEX IF NOT EXISTS attachment_meta_by_folder
     ON attachment_meta (account_id, folder_path);
+CREATE TABLE IF NOT EXISTS mailbox_epochs (
+    account_id INTEGER NOT NULL,
+    folder_path TEXT NOT NULL,
+    uid_validity INTEGER NOT NULL CHECK (uid_validity > 0),
+    generation INTEGER NOT NULL CHECK (generation > 0),
+    PRIMARY KEY (account_id, folder_path)
+);
+CREATE TABLE IF NOT EXISTS outbox_delivery (
+    account_id INTEGER NOT NULL,
+    outbox_id INTEGER NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('ready', 'in_flight', 'accepted', 'refused', 'uncertain')),
+    PRIMARY KEY (account_id, outbox_id)
+);
+CREATE TRIGGER IF NOT EXISTS outbox_delivery_delete AFTER DELETE ON outbox
+BEGIN
+    DELETE FROM outbox_delivery WHERE account_id = OLD.account_id AND outbox_id = OLD.id;
+END;
 ";
 
-/// Bump when the table layout changes; older rows are dropped on open.
+/// Bump when the table layout changes. Upgrades are atomic; unsupported
+/// layouts fail closed, preserving the database for explicit recovery.
 /// v8: bodies are re-rendered with clickable links, so cached bodies (which
 /// `LoadBody` serves without re-fetching) must be dropped and rebuilt on open.
 /// v9: re-decode subjects cached as raw RFC 2047 encoded-words by builds that
@@ -184,7 +203,8 @@ CREATE INDEX IF NOT EXISTS attachment_meta_by_folder
 /// the server's quoted string, and a name with the header's own quotes
 /// around it (#312). The rows are cleaned in place, see
 /// [`Cache::clean_quoted_names`].
-const SCHEMA_VERSION: i64 = 20;
+// v21: persisted mailbox generations and durable outbox delivery states.
+const SCHEMA_VERSION: i64 = 21;
 
 /// The newest version whose change altered how bodies are *rendered* or how
 /// senders are checked. Opening a database older than this drops `bodies` and
@@ -233,7 +253,11 @@ const TAG_VIEW_LIMIT: i64 = 5000;
 /// Rowids written into a query as a literal list: they are integers, and a
 /// conversation can match more rows than a statement takes bound values.
 fn rowid_list(rowids: &[i64]) -> String {
-    rowids.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
+    rowids
+        .iter()
+        .map(i64::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// Most Message-IDs one cross-folder conversation lookup matches against. A
@@ -273,6 +297,16 @@ pub struct Cache {
     conn: Connection,
 }
 
+/// The validated remote UID namespace for one account/folder. Generation zero
+/// means unknown legacy/offline identity; it is not online validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MailboxEpoch {
+    pub uid_validity: Option<u32>,
+    pub generation: u64,
+    /// True only on the observation which committed scoped invalidation.
+    pub invalidated: bool,
+}
+
 /// A stable continuation point for message summaries ordered by descending UID.
 /// The next page contains UIDs strictly lower than `before_uid`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -303,8 +337,9 @@ pub const MESSAGE_PAGE_LIMIT_MAX: usize = 500;
 /// message about to be sent gets its ids spelt back the way they arrived
 /// ([`Cache::exact_msgids`]). Only ids that actually differ from their
 /// lowercase form are kept.
-static MSGID_CASE_PENDING: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> =
-    std::sync::OnceLock::new();
+static MSGID_CASE_PENDING: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, String>>,
+> = std::sync::OnceLock::new();
 
 fn msgid_case_pending() -> &'static std::sync::Mutex<std::collections::HashMap<String, String>> {
     MSGID_CASE_PENDING.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
@@ -320,11 +355,15 @@ pub fn note_msgid_case(exact: &str) {
     if exact.is_empty() || !exact.bytes().any(|b| b.is_ascii_uppercase()) {
         return;
     }
-    let mut pending = msgid_case_pending().lock().unwrap_or_else(|p| p.into_inner());
+    let mut pending = msgid_case_pending()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     if pending.len() >= MSGID_CASE_PENDING_CAP {
         return;
     }
-    pending.entry(exact.to_ascii_lowercase()).or_insert_with(|| exact.to_string());
+    pending
+        .entry(exact.to_ascii_lowercase())
+        .or_insert_with(|| exact.to_string());
 }
 
 /// Narrow an existing path's permissions to `mode`, if it exists.
@@ -478,9 +517,11 @@ impl Cache {
         ) else {
             return Vec::new();
         };
-        stmt.query_map([message_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-            .map(|rows| rows.flatten().collect())
-            .unwrap_or_default()
+        stmt.query_map([message_id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .map(|rows| rows.flatten().collect())
+        .unwrap_or_default()
     }
 
     /// Open (creating if needed) the cache DB at `~/.local/share/hylki/cache.db`.
@@ -491,19 +532,30 @@ impl Cache {
     /// exercise nothing.
     pub fn in_memory() -> rusqlite::Result<Cache> {
         let conn = Connection::open_in_memory()?;
-        conn.execute_batch(SCHEMA)?;
-        let _ = conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"));
+        Self::initialize(&conn)?;
         Ok(Cache { conn })
     }
 
     /// A separate WAL reader over an already-initialized cache. Background
     /// lookups need another connection, not another migration and cleanup pass.
     pub fn read_connection(&self) -> rusqlite::Result<Cache> {
-        let path = self.conn.path().ok_or_else(|| rusqlite::Error::InvalidPath(
-            std::path::PathBuf::from("cache has no database file")
-        ))?;
+        self.read_connection_with(|_| Ok(()))
+    }
+
+    /// Initialize a separate read-only WAL connection before publishing it.
+    /// The caller can register crate-specific SQLite functions without exposing
+    /// this cache's private connection or importing that caller's query module.
+    /// Setup errors close the new connection; they do not migrate or reset data.
+    pub fn read_connection_with<F>(&self, configure: F) -> rusqlite::Result<Cache>
+    where
+        F: FnOnce(&Connection) -> rusqlite::Result<()>,
+    {
+        let path = self.conn.path().ok_or_else(|| {
+            rusqlite::Error::InvalidPath(std::path::PathBuf::from("cache has no database file"))
+        })?;
         let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         conn.busy_timeout(Duration::from_secs(5))?;
+        configure(&conn)?;
         Ok(Cache { conn })
     }
 
@@ -521,145 +573,23 @@ impl Cache {
             .join("hylki");
         let _ = std::fs::create_dir_all(&path);
         restrict(&path, 0o700);
-        let db = path.join("cache.db");
-        let conn = Connection::open(&db)?;
+        Self::open_at(&path.join("cache.db"))
+    }
+
+    /// Open an explicit cache file through the production upgrade seam. The
+    /// caller owns the directory; synthetic fixtures never resolve profiles.
+    pub fn open_at(db: &std::path::Path) -> rusqlite::Result<Cache> {
+        let conn = Connection::open(db)?;
         // The whole mailbox lives here, so it gets at least the care
         // `accounts.toml` gets.
         restrict(&db, 0o600);
 
-        let version: i64 = conn
-            .query_row("PRAGMA user_version", [], |r| r.get(0))
-            .unwrap_or(0);
-        // Upgrading in place (layout current, message index preserved) rather
-        // than wiping and re-syncing the whole mailbox.
-        let upgrading_index = (LAYOUT_VERSION..SCHEMA_VERSION).contains(&version);
-        if version < LAYOUT_VERSION {
-            let _ = conn.execute_batch(
-                "DROP TABLE IF EXISTS folders;\
-                 DROP TABLE IF EXISTS messages;\
-                 DROP TABLE IF EXISTS bodies;\
-                 DROP TABLE IF EXISTS sender_checks;\
-                 DROP TABLE IF EXISTS attachments;\
-                 DROP TABLE IF EXISTS attachments_checked;",
-            );
-        } else if version < RENDER_VERSION {
-            // The layout is current but `bodies` holds HTML rendered by an older
-            // build. `LoadBody` serves that cache without ever re-fetching, so a
-            // stale entry would survive forever — drop it and let it re-render on
-            // next open. The message index is kept: it's expensive to rebuild.
-            let _ = conn
-                .execute_batch("DROP TABLE IF EXISTS bodies; DROP TABLE IF EXISTS sender_checks;");
-            // Attachment lists cached by builds before v13 are wrong in place
-            // (small declared files missing, blobs duplicated per Gmail label),
-            // and `attachments_checked` would keep them from ever re-fetching.
-            // The re-fetch is bounded: the prefetch re-touches only the newest
-            // messages per folder, the rest heal lazily on open.
-            if version < 13 {
-                let _ = conn.execute_batch(
-                    "DROP TABLE IF EXISTS attachments; DROP TABLE IF EXISTS attachments_checked;",
-                );
-            }
-        }
-        conn.execute_batch(SCHEMA)?;
-        // `messages` predates the preview column, and `CREATE TABLE IF NOT
-        // EXISTS` leaves an existing table alone. Add it in place rather than
-        // dropping the index, which would cost every user a full re-sync; the
-        // error when it is already there is the expected outcome, not a problem.
-        let _ = conn.execute("ALTER TABLE messages ADD COLUMN preview TEXT NOT NULL DEFAULT ''", []);
-        // Send Later (#145): when a queued message is due; NULL sends at once.
-        let _ = conn.execute("ALTER TABLE outbox ADD COLUMN send_at INTEGER", []);
-        // Same in-place treatment for `reply_to` (added later still): existing
-        // rows carry an empty value until their folder's recent window
-        // re-syncs, and Reply falls back to the sender until then.
-        let _ =
-            conn.execute("ALTER TABLE messages ADD COLUMN reply_to TEXT NOT NULL DEFAULT ''", []);
-        // And for `keywords` (tags, #71): existing rows read as untagged until
-        // their folder syncs again and the flags come down with the rest.
-        let _ =
-            conn.execute("ALTER TABLE messages ADD COLUMN keywords TEXT NOT NULL DEFAULT ''", []);
-        // And the list's Importance and Due columns (#334): mail already
-        // cached reads as normal, and undated, until it is fetched again.
-        let _ = conn.execute("ALTER TABLE messages ADD COLUMN importance INTEGER NOT NULL DEFAULT 0", []);
-        let _ = conn.execute("ALTER TABLE messages ADD COLUMN due INTEGER NOT NULL DEFAULT 0", []);
-        // And the OpenPGP verdict (#133) beside the sender check, as JSON;
-        // empty for a message that carried none. Kept as a marker: nothing
-        // OpenPGP is cached, so a body that was (by the first build of the
-        // feature, which cached signed mail) is dropped here, and the
-        // message is fetched and verified afresh at its next open.
-        let _ =
-            conn.execute("ALTER TABLE sender_checks ADD COLUMN pgp TEXT NOT NULL DEFAULT ''", []);
-        // And the meeting invitation (#223) beside it, as JSON; empty for a
-        // message that carries none.
-        let _ = conn
-            .execute("ALTER TABLE sender_checks ADD COLUMN invite TEXT NOT NULL DEFAULT ''", []);
-        for table in ["bodies", "attachments", "attachments_checked"] {
-            let _ = conn.execute(
-                &format!(
-                    "DELETE FROM {table} WHERE EXISTS (SELECT 1 FROM sender_checks s \
-                     WHERE s.account_id = {table}.account_id AND s.folder_path = {table}.folder_path \
-                     AND s.uid = {table}.uid AND s.pgp != '')"
-                ),
-                [],
-            );
-        }
-        // Previews cached by a build that showed MIME machinery or a tracking
-        // link instead of the message: a multipart's boundary ("--b2=_cipk…") or
-        // the rendered link a marketing mail opens with ("( https://…"). Clearing
-        // them shows nothing until the folder syncs again, which beats showing
-        // either.
-        let _ = conn.execute(
-            "UPDATE messages SET preview = ''              WHERE preview LIKE '--%' OR preview LIKE '( http%'",
-            [],
-        );
-        // Previews cached as the PGP/MIME version stub (#133) become the
-        // encrypted-message marker the list draws a lock for.
-        let _ = conn.execute(
-            "UPDATE messages SET preview = ?1 \
-             WHERE preview LIKE 'Version: 1' OR preview = 'Encrypted message'",
-            [crate::models::ENCRYPTED_PREVIEW],
-        );
-        if upgrading_index {
-            Self::redecode_encoded_subjects(&conn);
-        }
-        if upgrading_index && version < 20 {
-            Self::clean_quoted_names(&conn);
-        }
-        // `attachment_meta` is the gallery's record of every attachment that
-        // *exists*; `attachments` holds the few whose bytes were downloaded.
-        // Seed the first from the second so files already in hand keep showing
-        // while the scan works back through the archive.
-        if version < 14 {
-            Self::seed_attachment_meta(&conn);
-        }
-        // Re-queue the messages a batched parse failure wrote off. Messages
-        // that really do hold nothing are simply asked about once more and
-        // marked again, so this costs a rescan and settles.
-        // A message's `text/calendar` part is an attachment from v19 on, so
-        // every list drawn up before that is one part short and every
-        // "nothing to see here" mark was made under the old rule. Forget the
-        // marks rather than the lists: the scan re-describes each message
-        // from its BODYSTRUCTURE (no bytes downloaded) and replaces the list
-        // it finds, so nothing is lost while it works back.
-        if version < 19 {
-            let _ = conn.execute_batch(
-                "DELETE FROM attachment_scan; DELETE FROM attachments_checked;",
-            );
-        }
-        if (14..15).contains(&version) {
-            let _ = conn.execute(
-                "DELETE FROM attachment_scan WHERE NOT EXISTS (\
-                     SELECT 1 FROM attachment_meta am \
-                     WHERE am.account_id = attachment_scan.account_id \
-                       AND am.folder_path = attachment_scan.folder_path \
-                       AND am.uid = attachment_scan.uid)",
-                [],
-            );
-        }
-        let _ = conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"));
+        conn.busy_timeout(Duration::from_secs(5))?;
+        Self::initialize(&conn)?;
 
         // Concurrency: multiple account workers share this file.
-        let _ = conn.pragma_update(None, "journal_mode", "WAL");
-        let _ = conn.busy_timeout(Duration::from_secs(5));
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "synchronous", "FULL")?;
 
         // SQLite creates the WAL sidecars itself, and only once WAL mode is on —
         // hence here rather than beside the `Connection::open` above. They hold
@@ -667,7 +597,7 @@ impl Cache {
         // 0700 on the directory is what actually keeps other users out; this is
         // in case the cache is ever moved somewhere less private.
         for suffix in ["-wal", "-shm", "-journal"] {
-            let mut side = db.clone().into_os_string();
+            let mut side = db.as_os_str().to_os_string();
             side.push(suffix);
             restrict(std::path::Path::new(&side), 0o600);
         }
@@ -675,85 +605,290 @@ impl Cache {
         Ok(Cache { conn })
     }
 
+    /// Initialize or upgrade through the same transaction used by fixture tests.
+    /// Unsupported, unversioned nonempty, and future schemas are preserved and
+    /// rejected, never treated as permission to wipe mail or queued sends.
+    fn initialize(conn: &Connection) -> rusqlite::Result<()> {
+        let tx =
+            rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+        let version: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        let tables: i64 = tx.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+            [],
+            |r| r.get(0),
+        )?;
+        if version > SCHEMA_VERSION || (version < LAYOUT_VERSION && (version != 0 || tables != 0)) {
+            return Err(rusqlite::Error::InvalidParameterName(format!(
+                "cache schema {version} requires explicit recovery; database retained"
+            )));
+        }
+        tx.execute_batch(SCHEMA)?;
+        for (table, column, definition) in [
+            ("messages", "preview", "TEXT NOT NULL DEFAULT ''"),
+            ("messages", "reply_to", "TEXT NOT NULL DEFAULT ''"),
+            ("messages", "keywords", "TEXT NOT NULL DEFAULT ''"),
+            ("messages", "importance", "INTEGER NOT NULL DEFAULT 0"),
+            ("messages", "due", "INTEGER NOT NULL DEFAULT 0"),
+            ("outbox", "send_at", "INTEGER"),
+            ("sender_checks", "pgp", "TEXT NOT NULL DEFAULT ''"),
+            ("sender_checks", "unsubscribe", "TEXT NOT NULL DEFAULT ''"),
+            ("sender_checks", "invite", "TEXT NOT NULL DEFAULT ''"),
+        ] {
+            Self::ensure_column(&tx, table, column, definition)?;
+        }
+        // Validate required durable columns even if CREATE IF NOT EXISTS met
+        // a malformed historical table. Do not stamp a partially usable schema.
+        tx.prepare("SELECT id, account_id, from_addr, rcpts, recipients, subject, preview, raw, sent_path, queued_at, attempts, last_error, send_at FROM outbox LIMIT 0")?;
+        tx.prepare("SELECT account_id, folder_path, uid, from_name, from_addr, recipients, cc, subject, date, ts, unread, starred, has_attachment, message_id, references_, preview, reply_to, keywords, importance, due FROM messages LIMIT 0")?;
+        for sql in [
+            "SELECT account_id, path, name, kind, unread, ord FROM folders LIMIT 0",
+            "SELECT account_id, folder_path, uid, body FROM bodies LIMIT 0",
+            "SELECT account_id, folder_path, uid, trust, summary, findings, pgp, unsubscribe, invite FROM sender_checks LIMIT 0",
+            "SELECT account_id, folder_path, uid, idx, name, data FROM attachments LIMIT 0",
+            "SELECT account_id, folder_path, uid FROM attachments_checked LIMIT 0",
+            "SELECT account_id, folder_path, uid, idx, name, mime, size, section, ext, bucket, keywords FROM attachment_meta LIMIT 0",
+            "SELECT account_id, folder_path, uid FROM attachment_scan LIMIT 0",
+            "SELECT account_id, folder_path, next_uid, done FROM refs_repair LIMIT 0",
+            "SELECT account_id, message_id, keyword FROM local_tags LIMIT 0",
+            "SELECT email, name, count FROM addresses LIMIT 0",
+            "SELECT lower, exact FROM msgid_case LIMIT 0",
+            "SELECT account_id, folder_path, uid_validity, generation FROM mailbox_epochs LIMIT 0",
+            "SELECT account_id, outbox_id, state FROM outbox_delivery LIMIT 0",
+        ] {
+            tx.prepare(sql)?;
+        }
+        // Preserve encrypted-mail exclusions BEFORE removing old verdicts;
+        // otherwise their PGP marker would disappear before blob cleanup.
+        for table in ["bodies", "attachments", "attachments_checked"] {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE EXISTS (SELECT 1 FROM sender_checks s WHERE s.account_id = {table}.account_id AND s.folder_path = {table}.folder_path AND s.uid = {table}.uid AND s.pgp != '')"),
+                [],
+            )?;
+        }
+        if version > 0 && version < RENDER_VERSION {
+            // These are reconstructible remote render products, not mail
+            // headers, local drafts, tags or durable delivery intents.
+            tx.execute_batch(
+                "DELETE FROM bodies WHERE uid > 0; DELETE FROM sender_checks WHERE uid > 0;",
+            )?;
+            if version < 13 {
+                tx.execute_batch("DELETE FROM attachments WHERE uid > 0; DELETE FROM attachments_checked WHERE uid > 0;")?;
+            }
+        }
+        if version < SCHEMA_VERSION {
+            tx.execute("UPDATE messages SET preview = '' WHERE preview LIKE '--%' OR preview LIKE '( http%'", [])?;
+            tx.execute(
+                "UPDATE messages SET preview = ?1 WHERE preview LIKE 'Version: 1' OR preview = 'Encrypted message'",
+                [crate::models::ENCRYPTED_PREVIEW],
+            )?;
+            if version >= LAYOUT_VERSION {
+                Self::redecode_encoded_subjects(&tx)?;
+                if version < 20 {
+                    Self::clean_quoted_names(&tx)?;
+                }
+            }
+            if version > 0 && version < 14 {
+                Self::seed_attachment_meta(&tx)?;
+            }
+            if version > 0 && version < 19 {
+                tx.execute_batch("DELETE FROM attachment_scan; DELETE FROM attachments_checked;")?;
+            }
+            if (14..15).contains(&version) {
+                tx.execute("DELETE FROM attachment_scan WHERE NOT EXISTS (SELECT 1 FROM attachment_meta am WHERE am.account_id = attachment_scan.account_id AND am.folder_path = attachment_scan.folder_path AND am.uid = attachment_scan.uid)", [])?;
+            }
+            // Historical rows have no reliable submission-phase evidence.
+            // Conservatively hold them for review, including scheduled rows.
+            tx.execute(
+                "INSERT OR IGNORE INTO outbox_delivery(account_id, outbox_id, state) SELECT account_id, id, 'uncertain' FROM outbox",
+                [],
+            )?;
+        }
+        tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        tx.commit()
+    }
+
+    fn ensure_column(
+        conn: &Connection,
+        table: &str,
+        column: &str,
+        definition: &str,
+    ) -> rusqlite::Result<()> {
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if !columns.iter().any(|name| name == column) {
+            conn.execute(
+                &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+                [],
+            )?;
+        }
+        Ok(())
+    }
+
     /// One-time upgrade fix: earlier builds cached a message's subject verbatim
     /// when the RFC 2047 decoder aborted on an over-long encoded-word (a single
     /// `=?utf-8?Q?…?=` far past the 75-char limit, as Mailchimp emits). Now that
     /// [`crate::worker::decode_header`] decodes those, re-decode any subject
     /// still stored as a raw encoded-word — in place, so no re-sync is needed.
-    fn redecode_encoded_subjects(conn: &Connection) {
+    fn redecode_encoded_subjects(conn: &Connection) -> rusqlite::Result<()> {
         let rows: Vec<(u32, String, u32, String)> = {
-            let Ok(mut stmt) = conn.prepare(
+            let mut stmt = conn.prepare(
                 "SELECT account_id, folder_path, uid, subject FROM messages \
                  WHERE subject LIKE '%=?%?=%'",
-            ) else {
-                return;
-            };
-            let Ok(mapped) = stmt.query_map([], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-            }) else {
-                return;
-            };
-            mapped.flatten().collect()
+            )?;
+            let mapped =
+                stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+            mapped.collect::<rusqlite::Result<Vec<_>>>()?
         };
         for (account_id, folder_path, uid, subject) in rows {
             let decoded = crate::worker::decode_header(subject.as_bytes());
             if decoded != subject {
-                let _ = conn.execute(
+                conn.execute(
                     "UPDATE messages SET subject = ?1 \
                      WHERE account_id = ?2 AND folder_path = ?3 AND uid = ?4",
                     params![decoded, account_id, folder_path, uid],
-                );
+                )?;
             }
         }
+        Ok(())
     }
 
     /// Clean the names and subjects an earlier build stored as the server
     /// quoted them (#312). Only rows holding a backslash or a leading quote
     /// are read, which is a handful in a large mailbox.
-    fn clean_quoted_names(conn: &Connection) {
+    fn clean_quoted_names(conn: &Connection) -> rusqlite::Result<()> {
         let rows: Vec<(i64, String, String)> = {
-            let Ok(mut stmt) = conn.prepare(
+            let mut stmt = conn.prepare(
                 "SELECT rowid, from_name, subject FROM messages \
                  WHERE from_name LIKE '%\\%' OR from_name LIKE '\"%' OR subject LIKE '%\\%'",
-            ) else {
-                return;
-            };
-            let Ok(mapped) = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))) else {
-                return;
-            };
-            mapped.flatten().collect()
+            )?;
+            let mapped = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+            mapped.collect::<rusqlite::Result<Vec<_>>>()?
         };
         for (rowid, name, subject) in rows {
             let clean_name = crate::worker::clean_display_name(&name);
             let clean_subject = crate::worker::unescape_quoted_str(&subject);
             if clean_name != name || clean_subject != subject {
-                let _ = conn.execute(
+                conn.execute(
                     "UPDATE messages SET from_name = ?1, subject = ?2 WHERE rowid = ?3",
                     params![clean_name, clean_subject, rowid],
-                );
+                )?;
             }
         }
         // A reply to such a sender recorded the name as it was shown.
         let names: Vec<(String, String)> = {
-            let Ok(mut stmt) =
-                conn.prepare("SELECT email, name FROM addresses WHERE name LIKE '%\\%' OR name LIKE '\"%'")
-            else {
-                return;
-            };
-            let Ok(mapped) = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))) else {
-                return;
-            };
-            mapped.flatten().collect()
+            let mut stmt = conn.prepare(
+                "SELECT email, name FROM addresses WHERE name LIKE '%\\%' OR name LIKE '\"%'",
+            )?;
+            let mapped = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            mapped.collect::<rusqlite::Result<Vec<_>>>()?
         };
         for (email, name) in names {
             let clean = crate::worker::clean_display_name(&name);
             if clean != name {
-                let _ = conn.execute(
+                conn.execute(
                     "UPDATE addresses SET name = ?1 WHERE email = ?2",
                     params![clean, email],
-                );
+                )?;
             }
         }
+        Ok(())
+    }
+
+    /// Read the persisted namespace. Unknown (generation zero) is suitable
+    /// only for labeled offline reading, never online UID mutation.
+    pub fn mailbox_epoch(
+        &self,
+        account_id: u32,
+        folder_path: &str,
+    ) -> rusqlite::Result<MailboxEpoch> {
+        Self::read_epoch(&self.conn, account_id, folder_path)
+    }
+
+    fn read_epoch(
+        conn: &Connection,
+        account_id: u32,
+        folder_path: &str,
+    ) -> rusqlite::Result<MailboxEpoch> {
+        let epoch = conn.query_row(
+            "SELECT uid_validity, generation FROM mailbox_epochs WHERE account_id = ?1 AND folder_path = ?2",
+            params![account_id, folder_path],
+            |r| Ok(MailboxEpoch { uid_validity: Some(r.get(0)?), generation: r.get(1)?, invalidated: false }),
+        ).optional()?;
+        Ok(epoch.unwrap_or(MailboxEpoch {
+            uid_validity: None,
+            generation: 0,
+            invalidated: false,
+        }))
+    }
+
+    /// Observe SELECT/EXAMINE UIDVALIDITY and atomically invalidate only the
+    /// remote UID copies in that account/folder when changed or previously
+    /// unknown. No outbox, local tags, address history, or sibling scope is lost.
+    /// Callers must retire stale selections and prevent old-generation writes.
+    /// Returns an error without publishing a new epoch if invalidation fails.
+    pub fn observe_uid_validity(
+        &self,
+        account_id: u32,
+        folder_path: &str,
+        uid_validity: u32,
+    ) -> rusqlite::Result<MailboxEpoch> {
+        if uid_validity == 0 || folder_path.is_empty() {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "nonzero UIDVALIDITY and a remote folder are required".into(),
+            ));
+        }
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let old = Self::read_epoch(&tx, account_id, folder_path)?;
+        if old.uid_validity == Some(uid_validity) {
+            tx.commit()?;
+            return Ok(old);
+        }
+        let generation = old
+            .generation
+            .checked_add(1)
+            .filter(|g| *g <= i64::MAX as u64)
+            .ok_or_else(|| {
+                rusqlite::Error::InvalidParameterName("mailbox generation exhausted".into())
+            })?;
+        for table in [
+            "messages",
+            "bodies",
+            "sender_checks",
+            "attachments",
+            "attachments_checked",
+            "attachment_meta",
+            "attachment_scan",
+        ] {
+            tx.execute(
+                &format!(
+                    "DELETE FROM {table} WHERE account_id = ?1 AND folder_path = ?2 AND uid > 0"
+                ),
+                params![account_id, folder_path],
+            )?;
+        }
+        tx.execute(
+            "DELETE FROM refs_repair WHERE account_id = ?1 AND folder_path = ?2",
+            params![account_id, folder_path],
+        )?;
+        tx.execute(
+            "UPDATE folders SET unread = 0 WHERE account_id = ?1 AND path = ?2",
+            params![account_id, folder_path],
+        )?;
+        tx.execute(
+            "INSERT INTO mailbox_epochs(account_id, folder_path, uid_validity, generation) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(account_id, folder_path) DO UPDATE SET uid_validity = excluded.uid_validity, generation = excluded.generation",
+            params![account_id, folder_path, uid_validity, generation as i64],
+        )?;
+        tx.commit()?;
+        Ok(MailboxEpoch {
+            uid_validity: Some(uid_validity),
+            generation,
+            invalidated: true,
+        })
     }
 
     pub fn load_folders(&self, account_id: u32) -> Vec<Folder> {
@@ -797,7 +932,14 @@ impl Cache {
                 tx.execute(
                     "INSERT INTO folders (account_id, path, name, kind, unread, ord)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![account_id, f.path, f.name, kind_to_i64(f.kind), f.unread, i as i64],
+                    params![
+                        account_id,
+                        f.path,
+                        f.name,
+                        kind_to_i64(f.kind),
+                        f.unread,
+                        i as i64
+                    ],
                 )?;
             }
             tx.commit()
@@ -807,7 +949,12 @@ impl Cache {
         }
     }
 
-    pub fn load_messages(&self, account_id: u32, folder_path: &str, folder_id: u32) -> Vec<Message> {
+    pub fn load_messages(
+        &self,
+        account_id: u32,
+        folder_path: &str,
+        folder_id: u32,
+    ) -> Vec<Message> {
         let run = || -> rusqlite::Result<Vec<Message>> {
             let mut stmt = self.conn.prepare(&format!(
                 "SELECT uid, from_name, from_addr, subject, date, ts, unread, starred, has_attachment, recipients, cc, message_id, references_, preview, reply_to, {KEYWORDS_COL}, importance, due
@@ -884,88 +1031,96 @@ impl Cache {
         cursor: Option<MessageCursor>,
         limit: usize,
     ) -> rusqlite::Result<MessagePage> {
-        let limit = limit.clamp(1, MESSAGE_PAGE_LIMIT_MAX);
         let pattern = if query.trim().is_empty() {
             String::new()
         } else {
             like_literal_pattern(query.trim())
         };
-        let before_uid = cursor.map(|cursor| cursor.before_uid);
+        let values = vec![rusqlite::types::Value::Text(pattern); 5];
+        self.message_page_predicate(account_id, folder_path, folder_id,
+            "(? = '' OR m.from_name LIKE ? ESCAPE '!' OR m.from_addr LIKE ? ESCAPE '!' OR m.subject LIKE ? ESCAPE '!' OR m.preview LIKE ? ESCAPE '!')",
+            &values, cursor, limit)
+    }
+
+    /// Background-only parsed search. The predicate is generated by trusted code;
+    /// all user text must remain in bindings, never in the SQL fragment.
+    pub fn message_page_predicate(
+        &self,
+        account_id: u32,
+        folder_path: &str,
+        folder_id: u32,
+        predicate: &str,
+        values: &[rusqlite::types::Value],
+        cursor: Option<MessageCursor>,
+        limit: usize,
+    ) -> rusqlite::Result<MessagePage> {
+        use rusqlite::types::Value;
+        let limit = limit.clamp(1, MESSAGE_PAGE_LIMIT_MAX);
+        let before = cursor.map_or(Value::Null, |c| Value::Integer(c.before_uid.into()));
+        let mut bindings = vec![
+            Value::Integer(account_id.into()),
+            Value::Text(folder_path.into()),
+            before.clone(),
+            before,
+        ];
+        bindings.extend_from_slice(values);
+        bindings.push(Value::Integer((limit + 1) as i64));
+        let keywords = KEYWORDS_COL.replace("messages.", "m.");
+        let attachment_flag = "CASE WHEN m.has_attachment != 0
+                         AND EXISTS (SELECT 1 FROM attachments_checked ac WHERE ac.account_id = m.account_id AND ac.folder_path = m.folder_path AND ac.uid = m.uid)
+                         AND NOT EXISTS (SELECT 1 FROM attachments a WHERE a.account_id = m.account_id AND a.folder_path = m.folder_path AND a.uid = m.uid)
+                    THEN 0 ELSE m.has_attachment END";
+        // Generated predicates and displayed rows must use the same corrected flag.
+        let predicate = predicate.replace("m.has_attachment", &format!("({attachment_flag})"));
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT uid, from_name, from_addr, subject, date, ts, unread, starred,
-                    CASE WHEN has_attachment != 0
-                              AND EXISTS (
-                                  SELECT 1 FROM attachments_checked ac
-                                  WHERE ac.account_id = messages.account_id
-                                    AND ac.folder_path = messages.folder_path
-                                    AND ac.uid = messages.uid
-                              )
-                              AND NOT EXISTS (
-                                  SELECT 1 FROM attachments a
-                                  WHERE a.account_id = messages.account_id
-                                    AND a.folder_path = messages.folder_path
-                                    AND a.uid = messages.uid
-                              )
-                         THEN 0 ELSE has_attachment END,
-                    recipients, cc, message_id, references_, preview, reply_to,
-                    {KEYWORDS_COL}, importance, due
-             FROM messages
-             WHERE account_id = ?1 AND folder_path = ?2
-               AND (?3 = '' OR from_name LIKE ?3 ESCAPE '!'
-                           OR from_addr LIKE ?3 ESCAPE '!'
-                           OR subject LIKE ?3 ESCAPE '!'
-                           OR preview LIKE ?3 ESCAPE '!')
-               AND (?4 IS NULL OR uid < ?4)
-             ORDER BY uid DESC LIMIT ?5"
+            "SELECT m.uid, m.from_name, m.from_addr, m.subject, m.date, m.ts,
+                    m.unread, m.starred,
+                    {attachment_flag}, m.recipients, m.cc,
+                    m.message_id, m.references_, m.preview, m.reply_to,
+                    {keywords}, m.importance, m.due
+             FROM messages m LEFT JOIN bodies b
+               ON b.account_id = m.account_id AND b.folder_path = m.folder_path AND b.uid = m.uid
+              AND NOT EXISTS (SELECT 1 FROM sender_checks s WHERE s.account_id = m.account_id
+                  AND s.folder_path = m.folder_path AND s.uid = m.uid AND s.pgp != '')
+             WHERE m.account_id = ? AND m.folder_path = ?
+               AND (? IS NULL OR m.uid < ?) AND ({predicate})
+             ORDER BY m.uid DESC LIMIT ?"
         ))?;
         let mut rows = stmt
-            .query_map(
-                params![
+            .query_map(rusqlite::params_from_iter(bindings), |row| {
+                let uid = row.get(0)?;
+                let mut message = Message {
+                    id: uid,
                     account_id,
-                    folder_path,
-                    pattern,
-                    before_uid,
-                    (limit + 1) as i64
-                ],
-                |row| {
-                    let uid: u32 = row.get(0)?;
-                    let mut message = Message {
-                        id: uid,
-                        account_id,
-                        folder_id,
-                        uid,
-                        from_name: row.get(1)?,
-                        from_addr: row.get(2)?,
-                        reply_to: row.get(14)?,
-                        to: row.get(9)?,
-                        cc: row.get(10)?,
-                        subject: row.get(3)?,
-                        preview: row.get(13)?,
-                        body: String::new(),
-                        date: row.get(4)?,
-                        timestamp: row.get(5)?,
-                        unread: row.get(6)?,
-                        starred: row.get(7)?,
-                        keywords: split_keywords(row.get(15)?),
-                        has_attachment: row.get(8)?,
-                        message_id: row.get(11)?,
-                        references: row.get(12)?,
-                        importance: crate::models::Importance::from_i64(row.get(16)?),
-                        due: row.get(17)?,
-                    };
-                    message.scrub_nuls();
-                    Ok(message)
-                },
-            )?
+                    folder_id,
+                    uid,
+                    from_name: row.get(1)?,
+                    from_addr: row.get(2)?,
+                    subject: row.get(3)?,
+                    date: row.get(4)?,
+                    timestamp: row.get(5)?,
+                    unread: row.get(6)?,
+                    starred: row.get(7)?,
+                    has_attachment: row.get(8)?,
+                    to: row.get(9)?,
+                    cc: row.get(10)?,
+                    message_id: row.get(11)?,
+                    references: row.get(12)?,
+                    preview: row.get(13)?,
+                    reply_to: row.get(14)?,
+                    keywords: split_keywords(row.get(15)?),
+                    importance: crate::models::Importance::from_i64(row.get(16)?),
+                    due: row.get(17)?,
+                    body: String::new(),
+                };
+                message.scrub_nuls();
+                Ok(message)
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-
         let has_more = rows.len() > limit;
         rows.truncate(limit);
         let next_cursor = has_more.then(|| MessageCursor {
-            before_uid: rows
-                .last()
-                .expect("a page with an extra row is nonempty")
-                .uid,
+            before_uid: rows.last().unwrap().uid,
         });
         Ok(MessagePage { rows, next_cursor })
     }
@@ -989,7 +1144,8 @@ impl Cache {
                          AND a.uid = ac.uid
                    )",
             )?;
-            let rows = stmt.query_map(params![account_id, folder_path], |row| row.get::<_, u32>(0))?;
+            let rows =
+                stmt.query_map(params![account_id, folder_path], |row| row.get::<_, u32>(0))?;
             rows.collect()
         };
         run().unwrap_or_default()
@@ -1031,7 +1187,9 @@ impl Cache {
             // The exact spellings noted while these (and any earlier) headers
             // were parsed ride along in the same transaction.
             let noted: Vec<(String, String)> = {
-                let mut pending = msgid_case_pending().lock().unwrap_or_else(|p| p.into_inner());
+                let mut pending = msgid_case_pending()
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
                 pending.drain().collect()
             };
             for (lower, exact) in &noted {
@@ -1094,9 +1252,11 @@ impl Cache {
             return Some(hit.clone());
         }
         self.conn
-            .query_row("SELECT exact FROM msgid_case WHERE lower = ?1", params![lower], |r| {
-                r.get::<_, String>(0)
-            })
+            .query_row(
+                "SELECT exact FROM msgid_case WHERE lower = ?1",
+                params![lower],
+                |r| r.get::<_, String>(0),
+            )
             .ok()
     }
 
@@ -1111,12 +1271,17 @@ impl Cache {
     }
 
     /// The set of message UIDs already cached for a folder (for backfill diffing).
-    pub fn cached_uids(&self, account_id: u32, folder_path: &str) -> std::collections::HashSet<u32> {
+    pub fn cached_uids(
+        &self,
+        account_id: u32,
+        folder_path: &str,
+    ) -> std::collections::HashSet<u32> {
         let run = || -> rusqlite::Result<std::collections::HashSet<u32>> {
-            let mut stmt = self.conn.prepare(
-                "SELECT uid FROM messages WHERE account_id = ?1 AND folder_path = ?2",
-            )?;
-            let rows = stmt.query_map(params![account_id, folder_path], |row| row.get::<_, u32>(0))?;
+            let mut stmt = self
+                .conn
+                .prepare("SELECT uid FROM messages WHERE account_id = ?1 AND folder_path = ?2")?;
+            let rows =
+                stmt.query_map(params![account_id, folder_path], |row| row.get::<_, u32>(0))?;
             rows.collect()
         };
         run().unwrap_or_default()
@@ -1134,7 +1299,10 @@ impl Cache {
     fn thread_member_rowids(&self, account_id: u32, ids: &[&String]) -> rusqlite::Result<Vec<i64>> {
         let wanted: std::collections::HashSet<&str> = ids.iter().map(|i| i.as_str()).collect();
         let mut rowids: Vec<i64> = Vec::new();
-        let slots = (0..ids.len()).map(|i| format!("?{}", i + 2)).collect::<Vec<_>>().join(", ");
+        let slots = (0..ids.len())
+            .map(|i| format!("?{}", i + 2))
+            .collect::<Vec<_>>()
+            .join(", ");
         let mut stmt = self.conn.prepare(&format!(
             "SELECT rowid FROM messages WHERE account_id = ?1 AND message_id IN ({slots})"
         ))?;
@@ -1178,7 +1346,11 @@ impl Cache {
         account_id: u32,
         ids: &[String],
     ) -> Vec<(String, Message)> {
-        let ids: Vec<&String> = ids.iter().filter(|i| !i.is_empty()).take(THREAD_ID_LIMIT).collect();
+        let ids: Vec<&String> = ids
+            .iter()
+            .filter(|i| !i.is_empty())
+            .take(THREAD_ID_LIMIT)
+            .collect();
         if ids.is_empty() {
             return Vec::new();
         }
@@ -1198,28 +1370,28 @@ impl Cache {
             let rows = stmt.query_map([THREAD_MEMBER_LIMIT as i64], |row| {
                 let uid: u32 = row.get(1)?;
                 let mut m = Message {
-                        id: uid,
-                        account_id,
-                        folder_id: 0, // filled in by the caller, which knows the ids
-                        uid,
-                        from_name: row.get(2)?,
-                        from_addr: row.get(3)?,
-                        reply_to: row.get(15)?,
-                        to: row.get(10)?,
-                        cc: row.get(11)?,
-                        subject: row.get(4)?,
-                        preview: row.get(14)?,
-                        body: String::new(),
-                        date: row.get(5)?,
-                        timestamp: row.get(6)?,
-                        unread: row.get(7)?,
-                        starred: row.get(8)?,
-                        keywords: split_keywords(row.get(16)?),
-                        has_attachment: row.get(9)?,
-                        message_id: row.get(12)?,
-                        references: row.get(13)?,
-                        importance: crate::models::Importance::from_i64(row.get(17)?),
-                        due: row.get(18)?,
+                    id: uid,
+                    account_id,
+                    folder_id: 0, // filled in by the caller, which knows the ids
+                    uid,
+                    from_name: row.get(2)?,
+                    from_addr: row.get(3)?,
+                    reply_to: row.get(15)?,
+                    to: row.get(10)?,
+                    cc: row.get(11)?,
+                    subject: row.get(4)?,
+                    preview: row.get(14)?,
+                    body: String::new(),
+                    date: row.get(5)?,
+                    timestamp: row.get(6)?,
+                    unread: row.get(7)?,
+                    starred: row.get(8)?,
+                    keywords: split_keywords(row.get(16)?),
+                    has_attachment: row.get(9)?,
+                    message_id: row.get(12)?,
+                    references: row.get(13)?,
+                    importance: crate::models::Importance::from_i64(row.get(17)?),
+                    due: row.get(18)?,
                 };
                 m.scrub_nuls();
                 Ok((row.get::<_, String>(0)?, m))
@@ -1339,7 +1511,12 @@ impl Cache {
         let folders = self.load_folders(account_id);
         let hidden: HashSet<String> = folders
             .iter()
-            .filter(|f| matches!(f.kind, FolderKind::Trash | FolderKind::Junk | FolderKind::Templates))
+            .filter(|f| {
+                matches!(
+                    f.kind,
+                    FolderKind::Trash | FolderKind::Junk | FolderKind::Templates
+                )
+            })
             .map(|f| f.path.clone())
             .collect();
         // Counted, but never the message a row is shown as: a draft is a
@@ -1369,7 +1546,12 @@ impl Cache {
         // display is its newest message and later ones are ignored.
         let mut latest: Vec<Option<&ThreadLatest>> = vec![None; groups.len()];
         for row in &rows {
-            let Row { folder_path, message_id, references, latest: this } = row;
+            let Row {
+                folder_path,
+                message_id,
+                references,
+                latest: this,
+            } = row;
             if hidden.contains(folder_path) {
                 continue;
             }
@@ -1405,7 +1587,14 @@ impl Cache {
             .filter_map(|(gi, (tag, _))| {
                 let n = named[gi].len() + anonymous[gi];
                 (n > 0).then(|| {
-                    (tag.clone(), ThreadSummary { count: n, latest: latest[gi].cloned(), members: Vec::new() })
+                    (
+                        tag.clone(),
+                        ThreadSummary {
+                            count: n,
+                            latest: latest[gi].cloned(),
+                            members: Vec::new(),
+                        },
+                    )
                 })
             })
             .collect()
@@ -1573,11 +1762,12 @@ impl Cache {
         folder_path: &str,
         uid: u32,
     ) -> Option<crate::models::SenderCheck> {
-        self.sender_check_of(account_id, folder_path, uid).or_else(|| {
-            self.sibling_copies(account_id, folder_path, uid)
-                .into_iter()
-                .find_map(|(p, u)| self.sender_check_of(account_id, &p, u))
-        })
+        self.sender_check_of(account_id, folder_path, uid)
+            .or_else(|| {
+                self.sibling_copies(account_id, folder_path, uid)
+                    .into_iter()
+                    .find_map(|(p, u)| self.sender_check_of(account_id, &p, u))
+            })
     }
 
     fn sender_check_of(
@@ -1654,22 +1844,25 @@ impl Cache {
     /// Give every already-downloaded attachment a `attachment_meta` row, and
     /// mark its message scanned: the bytes are in hand, so there is nothing the
     /// server could tell us about it. Runs once, on the upgrade to schema v14.
-    fn seed_attachment_meta(conn: &Connection) {
+    fn seed_attachment_meta(conn: &Connection) -> rusqlite::Result<()> {
         let rows: Vec<(u32, String, u32, u32, String, i64)> = {
-            let Ok(mut stmt) = conn.prepare(
+            let mut stmt = conn.prepare(
                 "SELECT account_id, folder_path, uid, idx, name, LENGTH(data) FROM attachments",
-            ) else {
-                return;
-            };
-            let Ok(mapped) = stmt.query_map([], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
-            }) else {
-                return;
-            };
-            mapped.filter_map(|r| r.ok()).collect()
+            )?;
+            let mapped = stmt.query_map([], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            })?;
+            mapped.collect::<rusqlite::Result<Vec<_>>>()?
         };
         for (account_id, folder_path, uid, idx, name, size) in rows {
-            let _ = conn.execute(
+            conn.execute(
                 "INSERT OR IGNORE INTO attachment_meta                  (account_id, folder_path, uid, idx, name, mime, size, section, bucket, keywords)                  VALUES (?1, ?2, ?3, ?4, ?5, '', ?6, '', ?7, ?8)",
                 params![
                     account_id,
@@ -1681,12 +1874,13 @@ impl Cache {
                     crate::models::type_bucket(&name),
                     crate::models::type_keywords(&name),
                 ],
-            );
-            let _ = conn.execute(
+            )?;
+            conn.execute(
                 "INSERT OR IGNORE INTO attachment_scan (account_id, folder_path, uid)                  VALUES (?1, ?2, ?3)",
                 params![account_id, &folder_path, uid],
-            );
+            )?;
         }
+        Ok(())
     }
 
     /// One page of the attachments gallery, filtered and ordered by the
@@ -1847,7 +2041,12 @@ impl Cache {
             .unwrap_or(0) as u32
     }
 
-    pub fn load_attachments(&self, account_id: u32, folder_path: &str, uid: u32) -> Vec<Attachment> {
+    pub fn load_attachments(
+        &self,
+        account_id: u32,
+        folder_path: &str,
+        uid: u32,
+    ) -> Vec<Attachment> {
         let own = self.attachments_of(account_id, folder_path, uid);
         if !own.is_empty() {
             return own;
@@ -1992,52 +2191,118 @@ impl Cache {
         error: &str,
         send_at: Option<i64>,
     ) -> Option<u32> {
+        self.queue_outbox_replacing(
+            account_id, from_addr, rcpts, recipients, subject, preview, raw, sent_path, error,
+            send_at, None,
+        )
+    }
+
+    /// Atomically queue and retire a superseded ready intent owned by this
+    /// account. Held refused/uncertain/in-flight/accepted rows cannot be replaced:
+    /// editing them must not bypass their duplicate-send review requirement.
+    /// A failure preserves the old bytes and creates no new ready intent.
+    #[allow(clippy::too_many_arguments)]
+    pub fn queue_outbox_replacing(
+        &self,
+        account_id: u32,
+        from_addr: &str,
+        rcpts: &[String],
+        recipients: &str,
+        subject: &str,
+        preview: &str,
+        raw: &[u8],
+        sent_path: Option<&str>,
+        error: &str,
+        send_at: Option<i64>,
+        replaces: Option<u32>,
+    ) -> Option<u32> {
         let queued_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
-        self.conn
-            .execute(
-                "INSERT INTO outbox(account_id, from_addr, rcpts, recipients, subject, \
-                 preview, raw, sent_path, queued_at, attempts, last_error, send_at) \
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, ?10, ?11)",
-                params![
-                    account_id,
-                    from_addr,
-                    rcpts.join("\n"),
-                    recipients,
-                    subject,
-                    preview,
-                    raw,
-                    sent_path,
-                    queued_at,
-                    error,
-                    send_at,
-                ],
-            )
+        let run = || -> rusqlite::Result<u32> {
+            let tx = rusqlite::Transaction::new_unchecked(
+                &self.conn,
+                rusqlite::TransactionBehavior::Immediate,
+            )?;
+            if let Some(old) = replaces {
+                let replaceable: bool = tx.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM outbox o JOIN outbox_delivery d ON d.account_id = o.account_id AND d.outbox_id = o.id WHERE o.account_id = ?1 AND o.id = ?2 AND d.state = 'ready')",
+                    params![account_id, old], |r| r.get(0),
+                )?;
+                if !replaceable {
+                    return Err(rusqlite::Error::InvalidParameterName(
+                        "superseded outbox item is not replaceable in this account".into(),
+                    ));
+                }
+            }
+            tx.execute(
+                "INSERT INTO outbox(account_id, from_addr, rcpts, recipients, subject, preview, raw, sent_path, queued_at, attempts, last_error, send_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, ?10, ?11)",
+                params![account_id, from_addr, rcpts.join("\n"), recipients, subject, preview, raw, sent_path, queued_at, error, send_at],
+            )?;
+            let id = u32::try_from(tx.last_insert_rowid())
+                .map_err(|_| rusqlite::Error::InvalidParameterName("outbox ID exhausted".into()))?;
+            tx.execute(
+                "INSERT INTO outbox_delivery(account_id, outbox_id, state) VALUES (?1, ?2, 'ready')",
+                params![account_id, id],
+            )?;
+            if let Some(old) = replaces {
+                tx.execute(
+                    "DELETE FROM outbox WHERE account_id = ?1 AND id = ?2",
+                    params![account_id, old],
+                )?;
+            }
+            tx.commit()?;
+            Ok(id)
+        };
+        run()
             .map_err(|e| tracing::warn!("could not queue the message: {e}"))
-            .ok()?;
-        Some(self.conn.last_insert_rowid() as u32)
+            .ok()
     }
 
-    /// Everything waiting for this account, oldest first (the order it is sent in).
+    /// All durable items, including held uncertain/accepted sends. This is a
+    /// UI view, NOT permission to transmit. Existing GTK shape is preserved.
     pub fn outbox_items(&self, account_id: u32) -> Vec<crate::models::OutboxItem> {
-        let mut stmt = match self.conn.prepare(
-            "SELECT id, account_id, from_addr, rcpts, recipients, subject, preview, raw, \
-             sent_path, queued_at, attempts, last_error, send_at FROM outbox \
-             WHERE account_id = ?1 ORDER BY queued_at, id",
-        ) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!("could not read the outbox: {e}");
-                return Vec::new();
-            }
-        };
-        let rows = stmt.query_map(params![account_id], |r| {
+        self.read_outbox(account_id, false).unwrap_or_else(|e| {
+            tracing::warn!("could not read the outbox: {e}");
+            Vec::new()
+        })
+    }
+
+    /// Eligible delivery intents only; missing state, in-flight, uncertain,
+    /// refused and accepted rows are never implicitly retried. The worker
+    /// still owns scheduling and must claim each intent before SMTP.
+    pub fn outbox_ready_items(
+        &self,
+        account_id: u32,
+    ) -> rusqlite::Result<Vec<crate::models::OutboxItem>> {
+        self.read_outbox(account_id, true)
+    }
+
+    fn read_outbox(
+        &self,
+        account_id: u32,
+        ready_only: bool,
+    ) -> rusqlite::Result<Vec<crate::models::OutboxItem>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT o.id, o.account_id, o.from_addr, o.rcpts, o.recipients, o.subject, o.preview, o.raw,
+             o.sent_path, o.queued_at, o.attempts, o.last_error, o.send_at, COALESCE(d.state, 'uncertain')
+             FROM outbox o LEFT JOIN outbox_delivery d ON d.account_id = o.account_id AND d.outbox_id = o.id
+             WHERE o.account_id = ?1 AND (?2 = 0 OR d.state = 'ready') ORDER BY o.queued_at, o.id",
+        )?;
+        let rows = stmt.query_map(params![account_id, ready_only], |r| {
             let rcpts: String = r.get(3)?;
+            let error: String = r.get(11)?;
+            let state: String = r.get(13)?;
+            let notice = match state.as_str() {
+                "ready" => "",
+                "accepted" => "SMTP accepted; retained local copy. Do not resend.",
+                "refused" => "Delivery refused; review required before retry.",
+                _ => "Delivery uncertain; may already have been accepted. Review required before retry.",
+            };
             Ok(crate::models::OutboxItem {
-                id: r.get::<_, i64>(0)? as u32,
-                account_id: r.get::<_, i64>(1)? as u32,
+                id: r.get(0)?,
+                account_id: r.get(1)?,
                 from_addr: r.get(2)?,
                 rcpts: rcpts.lines().map(str::to_string).collect(),
                 recipients: r.get(4)?,
@@ -2046,18 +2311,156 @@ impl Cache {
                 raw: r.get(7)?,
                 sent_path: r.get(8)?,
                 queued_at: r.get(9)?,
-                attempts: r.get::<_, i64>(10)? as u32,
-                last_error: r.get(11)?,
+                attempts: r.get(10)?,
+                last_error: if notice.is_empty() { error } else if error.is_empty() {
+                    notice.to_string()
+                } else { format!("{notice} {error}") },
                 send_at: r.get(12)?,
+                phase: match state.as_str() {
+                    "ready" => crate::models::OutboxPhase::Ready,
+                    "in_flight" => crate::models::OutboxPhase::InFlight,
+                    "accepted" => crate::models::OutboxPhase::Accepted,
+                    "refused" => crate::models::OutboxPhase::Refused,
+                    _ => crate::models::OutboxPhase::Uncertain,
+                },
             })
-        });
-        match rows {
-            Ok(rows) => rows.filter_map(Result::ok).collect(),
-            Err(e) => {
-                tracing::warn!("could not read the outbox: {e}");
-                Vec::new()
-            }
+        })?;
+        rows.collect()
+    }
+
+    /// Cancel only the exact ready intent while it is still unclaimed.
+    pub fn cancel_queued_outbox(&self, account: u32, id: u32, at: Option<i64>, now: i64) -> rusqlite::Result<bool> {
+        let tx = rusqlite::Transaction::new_unchecked(&self.conn, rusqlite::TransactionBehavior::Immediate)?;
+        let canceled = tx.execute("DELETE FROM outbox WHERE account_id = ?1 AND id = ?2 AND ((?3 IS NULL AND send_at IS NULL) OR (send_at = ?3 AND send_at > ?4)) AND EXISTS (SELECT 1 FROM outbox_delivery d WHERE d.account_id = outbox.account_id AND d.outbox_id = outbox.id AND d.state = 'ready')",
+            params![account, id, at, now])? == 1;
+        tx.commit()?;
+        Ok(canceled)
+    }
+
+    /// Persisted delivery phase; absent rows return None, absent side-state is
+    /// conservatively uncertain. In-flight is held uncertainty after a crash.
+    pub fn outbox_delivery_state(
+        &self,
+        account_id: u32,
+        id: u32,
+    ) -> rusqlite::Result<Option<String>> {
+        self.conn.query_row(
+            "SELECT COALESCE(d.state, 'uncertain') FROM outbox o LEFT JOIN outbox_delivery d ON d.account_id = o.account_id AND d.outbox_id = o.id WHERE o.account_id = ?1 AND o.id = ?2",
+            params![account_id, id], |r| r.get(0),
+        ).optional()
+    }
+
+    /// Atomic ready -> in-flight durable claim. Only true permits SMTP.
+    /// Errors or false require the caller to stop before transmission.
+    pub fn mark_outbox_before_transmission(
+        &self,
+        account_id: u32,
+        id: u32,
+    ) -> rusqlite::Result<bool> {
+        self.transition_outbox(account_id, id, "ready", "in_flight", "", true)
+    }
+
+    /// SMTP accepted (not proof of delivery). Persist before Sent append or
+    /// deletion; retain raw if saving the Sent copy fails.
+    pub fn mark_outbox_accepted(&self, account_id: u32, id: u32) -> rusqlite::Result<bool> {
+        self.transition_outbox(account_id, id, "in_flight", "accepted", "", false)
+    }
+
+    /// Permanent explicit refusal; held until user review.
+    pub fn mark_outbox_refused(
+        &self,
+        account_id: u32,
+        id: u32,
+        error: &str,
+    ) -> rusqlite::Result<bool> {
+        self.transition_outbox(account_id, id, "in_flight", "refused", error, false)
+    }
+
+    /// Unknown submission outcome. Never release this via ordinary Retry.
+    pub fn mark_outbox_uncertain(
+        &self,
+        account_id: u32,
+        id: u32,
+        error: &str,
+    ) -> rusqlite::Result<bool> {
+        self.transition_outbox(account_id, id, "in_flight", "uncertain", error, false)
+    }
+
+    /// Only a definite pre-acceptance transient failure may return to ready.
+    /// Do not call for an IO/timeout whose SMTP phase is unknown.
+    pub fn mark_outbox_retryable(
+        &self,
+        account_id: u32,
+        id: u32,
+        error: &str,
+    ) -> rusqlite::Result<bool> {
+        self.transition_outbox(account_id, id, "in_flight", "ready", error, false)
+    }
+
+    fn transition_outbox(
+        &self,
+        account_id: u32,
+        id: u32,
+        from: &str,
+        to: &str,
+        error: &str,
+        attempt: bool,
+    ) -> rusqlite::Result<bool> {
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let changed = tx.execute(
+            "UPDATE outbox_delivery SET state = ?4 WHERE account_id = ?1 AND outbox_id = ?2 AND state = ?3 AND EXISTS (SELECT 1 FROM outbox WHERE account_id = ?1 AND id = ?2)",
+            params![account_id, id, from, to],
+        )? == 1;
+        if changed {
+            tx.execute(
+                "UPDATE outbox SET last_error = ?3, attempts = attempts + ?4 WHERE account_id = ?1 AND id = ?2",
+                params![account_id, id, error, i64::from(attempt)],
+            )?;
         }
+        tx.commit()?;
+        Ok(changed)
+    }
+
+    /// Release a held intent ONLY after informed user review acknowledging
+    /// duplicate-send risk. Ordinary Retry must NOT call this. Accepted rows
+    /// cannot be released. The account's send lane MUST be quiescent before
+    /// review releases an in-flight item; these compatibility APIs do not carry
+    /// attempt tokens. There is no timer or restart reset.
+    pub fn retry_outbox_after_review(&self, account_id: u32, id: u32) -> rusqlite::Result<bool> {
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        // Side-state missing on a retained row is uncertainty, not readiness.
+        tx.execute(
+            "INSERT OR IGNORE INTO outbox_delivery(account_id, outbox_id, state) SELECT account_id, id, 'uncertain' FROM outbox WHERE account_id = ?1 AND id = ?2",
+            params![account_id, id],
+        )?;
+        let changed = tx.execute(
+            "UPDATE outbox_delivery SET state = 'ready' WHERE account_id = ?1 AND outbox_id = ?2 AND state IN ('in_flight', 'uncertain', 'refused') AND EXISTS (SELECT 1 FROM outbox WHERE account_id = ?1 AND id = ?2)",
+            params![account_id, id],
+        )? == 1;
+        if changed {
+            tx.execute(
+                "UPDATE outbox SET last_error = '' WHERE account_id = ?1 AND id = ?2",
+                params![account_id, id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(changed)
+    }
+
+    /// Account-scoped discard/retirement; deletion trigger removes side-state
+    /// in the same SQL transaction. Active in-flight intents cannot be deleted,
+    /// even by another writer. Worker acceptance must be persisted first.
+    pub fn delete_outbox_scoped(&self, account_id: u32, id: u32) -> rusqlite::Result<bool> {
+        Ok(self.conn.execute(
+            "DELETE FROM outbox WHERE account_id = ?1 AND id = ?2 AND NOT EXISTS (SELECT 1 FROM outbox_delivery d WHERE d.account_id = outbox.account_id AND d.outbox_id = outbox.id AND d.state = 'in_flight')",
+            params![account_id, id],
+        )? == 1)
     }
 
     /// Correct a message's attachment flag once its body has proved the answer,
@@ -2072,7 +2475,9 @@ impl Cache {
 
     /// Drop a queued message — it went out, or the user discarded it.
     pub fn delete_outbox(&self, id: u32) {
-        let _ = self.conn.execute("DELETE FROM outbox WHERE id = ?1", params![id]);
+        let _ = self
+            .conn
+            .execute("DELETE FROM outbox WHERE id = ?1", params![id]);
     }
 
     /// Record another failed attempt, so the list can say what went wrong.
@@ -2128,7 +2533,10 @@ impl Cache {
             }
         }
 
-        if let Ok(mut stmt) = self.conn.prepare("SELECT name, email, count FROM addresses") {
+        if let Ok(mut stmt) = self
+            .conn
+            .prepare("SELECT name, email, count FROM addresses")
+        {
             let rows = stmt.query_map([], |r| {
                 Ok((
                     r.get::<_, String>(0).unwrap_or_default(),
@@ -2166,7 +2574,14 @@ impl Cache {
     }
 
     /// Add or drop a keyword on a cached row (the server copy just changed).
-    pub fn set_keyword(&self, account_id: u32, folder_path: &str, uid: u32, keyword: &str, add: bool) -> bool {
+    pub fn set_keyword(
+        &self,
+        account_id: u32,
+        folder_path: &str,
+        uid: u32,
+        keyword: &str,
+        add: bool,
+    ) -> bool {
         let mut current = self.keywords_of(account_id, folder_path, uid);
         current.retain(|k| !k.eq_ignore_ascii_case(keyword));
         if add {
@@ -2263,7 +2678,9 @@ impl Cache {
              WHERE account_id = ?1 AND instr(' ' || lower({KEYWORDS_COL}) || ' ', ?2) > 0"
         );
         self.conn
-            .query_row(&sql, params![account_id, needle], |row| row.get::<_, i64>(0))
+            .query_row(&sql, params![account_id, needle], |row| {
+                row.get::<_, i64>(0)
+            })
             .map(|n| n.max(0) as usize)
             .unwrap_or(0)
     }
@@ -2346,7 +2763,9 @@ impl Cache {
                     |row| row.get(0),
                 )
                 .ok();
-            let Some(msgid) = msgid.filter(|m| !m.is_empty()) else { continue };
+            let Some(msgid) = msgid.filter(|m| !m.is_empty()) else {
+                continue;
+            };
             let Ok(mut stmt) = self.conn.prepare(
                 "SELECT folder_path, uid FROM messages \
                  WHERE account_id = ?1 AND message_id = ?2 AND folder_path <> ?3 AND folder_path <> ?4",
@@ -2427,6 +2846,552 @@ fn kind_from_i64(v: i64) -> FolderKind {
 }
 
 #[cfg(test)]
+mod integrity_tests {
+    use super::*;
+
+    struct Fixture(std::path::PathBuf);
+    impl Fixture {
+        fn new() -> Self {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "megamail-integrity-{}-{}-{}.db",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .unwrap();
+            Self(path)
+        }
+        fn open(&self) -> Cache {
+            Cache::open_at(&self.0).unwrap()
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            for suffix in ["", "-wal", "-shm", "-journal"] {
+                let _ = std::fs::remove_file(format!("{}{suffix}", self.0.display()));
+            }
+        }
+    }
+
+    fn queued(c: &Cache, account: u32) -> u32 {
+        c.queue_outbox(
+            account,
+            "sender@example.test",
+            &["recipient@example.test".into()],
+            "Recipient",
+            "Synthetic",
+            "Preview",
+            b"synthetic raw",
+            Some("Sent"),
+            "",
+            None,
+        )
+        .unwrap()
+    }
+
+    fn seed_copy(c: &Cache, account: u32, folder: &str, uid: u32) {
+        c.conn.execute("INSERT INTO messages(account_id, folder_path, uid, from_name, from_addr, subject, date, ts, unread, starred, has_attachment) VALUES (?1, ?2, ?3, 'Sender', 'sender@example.test', 'Synthetic', '', 1, 1, 0, 1)", params![account, folder, uid]).unwrap();
+        c.save_body(account, folder, uid, "synthetic cached body");
+        c.conn.execute("INSERT INTO sender_checks(account_id, folder_path, uid, trust, summary, findings) VALUES (?1, ?2, ?3, 'unknown', '', '')", params![account, folder, uid]).unwrap();
+        c.conn.execute("INSERT INTO attachments(account_id, folder_path, uid, idx, name, data) VALUES (?1, ?2, ?3, 0, 'fixture.txt', X'00')", params![account, folder, uid]).unwrap();
+        c.conn.execute("INSERT INTO attachment_meta(account_id, folder_path, uid, idx, name) VALUES (?1, ?2, ?3, 0, 'fixture.txt')", params![account, folder, uid]).unwrap();
+        for table in ["attachments_checked", "attachment_scan"] {
+            c.conn
+                .execute(
+                    &format!(
+                        "INSERT INTO {table}(account_id, folder_path, uid) VALUES (?1, ?2, ?3)"
+                    ),
+                    params![account, folder, uid],
+                )
+                .unwrap();
+        }
+    }
+
+    fn copy_count(c: &Cache, table: &str, account: u32, folder: &str) -> i64 {
+        c.conn
+            .query_row(
+                &format!("SELECT count(*) FROM {table} WHERE account_id = ?1 AND folder_path = ?2"),
+                params![account, folder],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn uid_validity_invalidates_remote_copies_not_siblings_outbox_or_local_drafts() {
+        let c = Cache::in_memory().unwrap();
+        for (account, folder, uid) in [
+            (1, "INBOX", 7),
+            (1, "Archive", 7),
+            (2, "INBOX", 7),
+            (1, "local://Drafts", 7),
+            (1, "INBOX", 0),
+        ] {
+            seed_copy(&c, account, folder, uid);
+        }
+        let id = queued(&c, 1);
+        c.conn
+            .execute(
+                "INSERT INTO local_tags VALUES (1, 'synthetic@id', 'keep')",
+                [],
+            )
+            .unwrap();
+        c.conn
+            .execute("INSERT INTO refs_repair VALUES (1, 'INBOX', 8, 0)", [])
+            .unwrap();
+        let first = c.observe_uid_validity(1, "INBOX", 100).unwrap();
+        assert!(first.invalidated);
+        assert_eq!(first.generation, 1);
+        for table in [
+            "messages",
+            "bodies",
+            "sender_checks",
+            "attachments",
+            "attachments_checked",
+            "attachment_meta",
+            "attachment_scan",
+        ] {
+            assert_eq!(
+                copy_count(&c, table, 1, "INBOX"),
+                1,
+                "UID zero local sentinel survives in {table}"
+            );
+            assert_eq!(copy_count(&c, table, 1, "Archive"), 1);
+            assert_eq!(copy_count(&c, table, 2, "INBOX"), 1);
+            assert_eq!(copy_count(&c, table, 1, "local://Drafts"), 1);
+        }
+        seed_copy(&c, 1, "INBOX", 7);
+        assert!(!c.observe_uid_validity(1, "INBOX", 100).unwrap().invalidated);
+        assert_eq!(copy_count(&c, "messages", 1, "INBOX"), 2);
+        assert_eq!(
+            c.observe_uid_validity(1, "INBOX", 200).unwrap().generation,
+            2
+        );
+        assert_eq!(copy_count(&c, "messages", 1, "INBOX"), 1);
+        assert_eq!(c.outbox_items(1)[0].id, id);
+        assert_eq!(
+            c.conn
+                .query_row("SELECT count(*) FROM local_tags", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            c.conn
+                .query_row("SELECT count(*) FROM refs_repair", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert!(c.observe_uid_validity(1, "INBOX", 0).is_err());
+        assert_eq!(c.mailbox_epoch(1, "INBOX").unwrap().uid_validity, Some(200));
+    }
+
+    #[test]
+    fn failed_invalidation_rolls_back_every_copy_and_epoch_then_recovers() {
+        let c = Cache::in_memory().unwrap();
+        c.observe_uid_validity(1, "INBOX", 100).unwrap();
+        seed_copy(&c, 1, "INBOX", 7);
+        c.conn.execute_batch("CREATE TRIGGER fail_invalidation BEFORE DELETE ON attachment_meta BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END;").unwrap();
+        assert!(c.observe_uid_validity(1, "INBOX", 200).is_err());
+        assert_eq!(c.mailbox_epoch(1, "INBOX").unwrap().uid_validity, Some(100));
+        for table in [
+            "messages",
+            "bodies",
+            "sender_checks",
+            "attachments",
+            "attachments_checked",
+            "attachment_meta",
+            "attachment_scan",
+        ] {
+            assert_eq!(
+                copy_count(&c, table, 1, "INBOX"),
+                1,
+                "rollback preserved {table}"
+            );
+        }
+        c.conn
+            .execute_batch("DROP TRIGGER fail_invalidation;")
+            .unwrap();
+        assert_eq!(
+            c.observe_uid_validity(1, "INBOX", 200).unwrap().generation,
+            2
+        );
+    }
+
+    #[test]
+    fn durable_claim_is_scoped_and_held_after_restart_until_informed_review() {
+        let fixture = Fixture::new();
+        let c = fixture.open();
+        let id = queued(&c, 1);
+        let sibling = queued(&c, 2);
+        assert!(!c.mark_outbox_before_transmission(2, id).unwrap());
+        assert!(c.mark_outbox_before_transmission(1, id).unwrap());
+        assert!(!c.mark_outbox_before_transmission(1, id).unwrap());
+        c.observe_uid_validity(1, "INBOX", 300).unwrap();
+        drop(c);
+        let c = fixture.open();
+        assert_eq!(c.mailbox_epoch(1, "INBOX").unwrap().generation, 1);
+        assert!(c.outbox_ready_items(1).unwrap().is_empty());
+        assert!(
+            c.outbox_items(1)[0]
+                .last_error
+                .contains("Delivery uncertain")
+        );
+        assert_eq!(c.outbox_ready_items(2).unwrap()[0].id, sibling);
+        assert!(
+            c.mark_outbox_uncertain(1, id, "acknowledgment lost")
+                .unwrap()
+        );
+        assert!(!c.mark_outbox_retryable(1, id, "ordinary retry").unwrap());
+        assert!(!c.retry_outbox_after_review(2, id).unwrap());
+        assert!(c.retry_outbox_after_review(1, id).unwrap());
+        assert!(c.mark_outbox_before_transmission(1, id).unwrap());
+        assert!(c.mark_outbox_accepted(1, id).unwrap());
+        drop(c);
+        let c = fixture.open();
+        assert_eq!(
+            c.outbox_delivery_state(1, id).unwrap().as_deref(),
+            Some("accepted")
+        );
+        assert!(!c.retry_outbox_after_review(1, id).unwrap());
+        assert!(c.outbox_ready_items(1).unwrap().is_empty());
+        assert_eq!(c.outbox_items(1)[0].raw, b"synthetic raw");
+        assert!(!c.delete_outbox_scoped(2, id).unwrap());
+        assert!(c.delete_outbox_scoped(1, id).unwrap());
+        assert_eq!(c.outbox_delivery_state(1, id).unwrap(), None);
+    }
+
+    #[test]
+    fn second_connection_cannot_claim_or_reset_an_active_durable_attempt() {
+        let fixture = Fixture::new();
+        let first = fixture.open();
+        let id = queued(&first, 1);
+        assert!(first.mark_outbox_before_transmission(1, id).unwrap());
+        let second = fixture.open();
+        assert!(!second.mark_outbox_before_transmission(1, id).unwrap());
+        assert_eq!(
+            second.outbox_delivery_state(1, id).unwrap().as_deref(),
+            Some("in_flight")
+        );
+        assert!(second.outbox_ready_items(1).unwrap().is_empty());
+        assert!(!second.delete_outbox_scoped(1, id).unwrap());
+        assert_eq!(first.outbox_items(1)[0].raw, b"synthetic raw");
+        assert_eq!(
+            first.outbox_delivery_state(1, id).unwrap().as_deref(),
+            Some("in_flight")
+        );
+        assert!(
+            first
+                .mark_outbox_uncertain(1, id, "transport ended without acknowledgment")
+                .unwrap()
+        );
+        assert!(second.delete_outbox_scoped(1, id).unwrap());
+        assert!(first.outbox_items(1).is_empty());
+        assert_eq!(first.outbox_delivery_state(1, id).unwrap(), None);
+    }
+
+    #[test]
+    fn disk_full_outcome_write_keeps_in_flight_held_and_raw_recoverable() {
+        let c = Cache::in_memory().unwrap();
+        let id = queued(&c, 1);
+        c.mark_outbox_before_transmission(1, id).unwrap();
+        let pages: i64 = c
+            .conn
+            .query_row("PRAGMA page_count", [], |r| r.get(0))
+            .unwrap();
+        c.conn.pragma_update(None, "max_page_count", pages).unwrap();
+        let error = c
+            .mark_outbox_uncertain(1, id, &"x".repeat(1024 * 1024))
+            .unwrap_err();
+        assert_eq!(
+            error.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::DiskFull)
+        );
+        assert_eq!(
+            c.outbox_delivery_state(1, id).unwrap().as_deref(),
+            Some("in_flight")
+        );
+        assert!(c.outbox_ready_items(1).unwrap().is_empty());
+        assert_eq!(c.outbox_items(1)[0].raw, b"synthetic raw");
+        assert!(
+            c.outbox_items(1)[0]
+                .last_error
+                .contains("Delivery uncertain")
+        );
+    }
+
+    #[test]
+    fn definite_failure_can_retry_but_permanent_refusal_stays_held() {
+        let c = Cache::in_memory().unwrap();
+        let id = queued(&c, 1);
+        c.mark_outbox_before_transmission(1, id).unwrap();
+        assert!(
+            c.mark_outbox_retryable(1, id, "explicit pre-acceptance 4xx")
+                .unwrap()
+        );
+        assert_eq!(c.outbox_ready_items(1).unwrap().len(), 1);
+        c.mark_outbox_before_transmission(1, id).unwrap();
+        assert!(c.mark_outbox_refused(1, id, "explicit 5xx").unwrap());
+        assert!(c.outbox_ready_items(1).unwrap().is_empty());
+        assert!(!c.mark_outbox_retryable(1, id, "ordinary retry").unwrap());
+        assert!(c.outbox_items(1)[0].last_error.contains("Delivery refused"));
+    }
+
+    #[test]
+    fn failed_delivery_state_transaction_preserves_ready_intent() {
+        let c = Cache::in_memory().unwrap();
+        let id = queued(&c, 1);
+        c.conn.execute_batch("CREATE TRIGGER fail_attempt BEFORE UPDATE ON outbox BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END;").unwrap();
+        assert!(c.mark_outbox_before_transmission(1, id).is_err());
+        assert_eq!(
+            c.outbox_delivery_state(1, id).unwrap().as_deref(),
+            Some("ready")
+        );
+        assert_eq!(c.outbox_ready_items(1).unwrap().len(), 1);
+        c.conn.execute_batch("DROP TRIGGER fail_attempt;").unwrap();
+        assert!(c.mark_outbox_before_transmission(1, id).unwrap());
+    }
+
+    #[test]
+    fn replacement_is_atomic_and_cannot_bypass_unknown_or_other_account() {
+        let c = Cache::in_memory().unwrap();
+        let old = queued(&c, 1);
+        let replace = |account| {
+            c.queue_outbox_replacing(
+                account,
+                "sender@example.test",
+                &["recipient@example.test".into()],
+                "Recipient",
+                "Replacement",
+                "",
+                b"new raw",
+                None,
+                "",
+                None,
+                Some(old),
+            )
+        };
+        assert!(replace(2).is_none());
+        c.conn.execute_batch("CREATE TRIGGER fail_replacement BEFORE DELETE ON outbox BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END;").unwrap();
+        assert!(replace(1).is_none());
+        assert_eq!(c.outbox_ready_items(1).unwrap()[0].id, old);
+        assert_eq!(c.outbox_items(1).len(), 1);
+        c.conn
+            .execute_batch("DROP TRIGGER fail_replacement;")
+            .unwrap();
+        c.mark_outbox_before_transmission(1, old).unwrap();
+        c.mark_outbox_refused(1, old, "permanent refusal").unwrap();
+        assert!(replace(1).is_none());
+        c.retry_outbox_after_review(1, old).unwrap();
+        c.mark_outbox_before_transmission(1, old).unwrap();
+        assert!(replace(1).is_none());
+        c.mark_outbox_uncertain(1, old, "lost ack").unwrap();
+        assert!(replace(1).is_none());
+        c.retry_outbox_after_review(1, old).unwrap();
+        let new = replace(1).unwrap();
+        assert_ne!(new, old);
+        assert_eq!(c.outbox_items(1).len(), 1);
+        assert_eq!(c.outbox_ready_items(1).unwrap()[0].raw, b"new raw");
+        assert_eq!(c.outbox_delivery_state(1, old).unwrap(), None);
+    }
+
+    #[test]
+    fn disk_full_queue_creates_no_partial_delivery_intent() {
+        let c = Cache::in_memory().unwrap();
+        let existing = queued(&c, 1);
+        let pages: i64 = c
+            .conn
+            .query_row("PRAGMA page_count", [], |r| r.get(0))
+            .unwrap();
+        c.conn.pragma_update(None, "max_page_count", pages).unwrap();
+        assert!(
+            c.queue_outbox(
+                1,
+                "sender@example.test",
+                &["recipient@example.test".into()],
+                "Recipient",
+                "Full",
+                "",
+                &vec![0; 1024 * 1024],
+                None,
+                "",
+                None
+            )
+            .is_none()
+        );
+        assert!(
+            c.queue_outbox_replacing(
+                1,
+                "sender@example.test",
+                &["recipient@example.test".into()],
+                "Recipient",
+                "Full replacement",
+                "",
+                &vec![0; 1024 * 1024],
+                None,
+                "",
+                None,
+                Some(existing)
+            )
+            .is_none()
+        );
+        assert_eq!(c.outbox_items(1).len(), 1);
+        assert_eq!(c.outbox_ready_items(1).unwrap()[0].id, existing);
+        assert_eq!(c.outbox_items(1)[0].raw, b"synthetic raw");
+        assert_eq!(
+            c.conn
+                .query_row("SELECT count(*) FROM outbox_delivery", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn legacy_upgrade_preserves_headers_and_holds_ambiguous_outbox() {
+        let fixture = Fixture::new();
+        let c = fixture.open();
+        seed_copy(&c, 1, "INBOX", 7);
+        let id = queued(&c, 1);
+        c.conn
+            .execute_batch("DELETE FROM outbox_delivery; PRAGMA user_version = 20;")
+            .unwrap();
+        drop(c);
+        let c = fixture.open();
+        assert_eq!(
+            c.conn
+                .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
+        assert_eq!(copy_count(&c, "messages", 1, "INBOX"), 1);
+        assert_eq!(copy_count(&c, "bodies", 1, "INBOX"), 1);
+        assert_eq!(c.mailbox_epoch(1, "INBOX").unwrap().generation, 0);
+        assert!(c.outbox_ready_items(1).unwrap().is_empty());
+        assert_eq!(c.outbox_items(1)[0].id, id);
+        assert!(
+            c.outbox_items(1)[0]
+                .last_error
+                .contains("Delivery uncertain")
+        );
+    }
+
+    #[test]
+    fn failed_upgrade_rolls_back_schema_and_version_then_recovers() {
+        let c = Cache::in_memory().unwrap();
+        seed_copy(&c, 1, "INBOX", 7);
+        let id = queued(&c, 1);
+        c.conn.execute_batch("DELETE FROM outbox_delivery; ALTER TABLE outbox DROP COLUMN send_at; PRAGMA user_version = 20; CREATE TRIGGER fail_upgrade BEFORE INSERT ON outbox_delivery BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END;").unwrap();
+        assert!(Cache::initialize(&c.conn).is_err());
+        assert_eq!(
+            c.conn
+                .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            20
+        );
+        assert_eq!(copy_count(&c, "messages", 1, "INBOX"), 1);
+        assert_eq!(
+            c.conn
+                .query_row("SELECT id FROM outbox", [], |r| r.get::<_, u32>(0))
+                .unwrap(),
+            id
+        );
+        assert!(c.conn.prepare("SELECT send_at FROM outbox").is_err());
+        c.conn.execute_batch("DROP TRIGGER fail_upgrade;").unwrap();
+        Cache::initialize(&c.conn).unwrap();
+        assert!(c.outbox_ready_items(1).unwrap().is_empty());
+        assert_eq!(c.outbox_items(1)[0].raw, b"synthetic raw");
+    }
+
+    #[test]
+    fn disk_full_upgrade_preserves_version_and_mail_then_recovers() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Construct actual previous schema, not a separate migration model.
+        conn.execute_batch(
+            SCHEMA
+                .split("CREATE TABLE IF NOT EXISTS mailbox_epochs")
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+        conn.execute_batch("INSERT INTO outbox(account_id, from_addr, rcpts, recipients, subject, raw, queued_at) VALUES (1, 'sender@example.test', 'recipient@example.test', 'Recipient', 'Synthetic', X'0102', 1); PRAGMA user_version = 20;").unwrap();
+        let pages: i64 = conn
+            .query_row("PRAGMA page_count", [], |r| r.get(0))
+            .unwrap();
+        conn.pragma_update(None, "max_page_count", pages).unwrap();
+        let error = Cache::initialize(&conn).unwrap_err();
+        assert_eq!(
+            error.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::DiskFull)
+        );
+        assert_eq!(
+            conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            20
+        );
+        assert_eq!(
+            conn.query_row("SELECT raw FROM outbox", [], |r| r.get::<_, Vec<u8>>(0))
+                .unwrap(),
+            vec![1, 2]
+        );
+        assert!(conn.prepare("SELECT * FROM mailbox_epochs").is_err());
+        conn.pragma_update(None, "max_page_count", pages + 100)
+            .unwrap();
+        Cache::initialize(&conn).unwrap();
+        let c = Cache { conn };
+        assert!(c.outbox_ready_items(1).unwrap().is_empty());
+        assert!(
+            c.outbox_items(1)[0]
+                .last_error
+                .contains("Delivery uncertain")
+        );
+    }
+
+    #[test]
+    fn unsupported_or_future_schema_is_not_destructively_reset() {
+        let c = Cache::in_memory().unwrap();
+        seed_copy(&c, 1, "local://Drafts", 7);
+        queued(&c, 1);
+        for version in [0, 5, SCHEMA_VERSION + 1] {
+            c.conn.pragma_update(None, "user_version", version).unwrap();
+            assert!(Cache::initialize(&c.conn).is_err());
+            assert_eq!(copy_count(&c, "bodies", 1, "local://Drafts"), 1);
+            assert_eq!(c.outbox_items(1).len(), 1);
+            assert_eq!(
+                c.conn
+                    .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                version
+            );
+        }
+    }
+
+    #[test]
+    fn encrypted_blob_cleanup_precedes_old_verdict_removal() {
+        let c = Cache::in_memory().unwrap();
+        seed_copy(&c, 1, "INBOX", 7);
+        c.conn
+            .execute_batch(
+                "UPDATE sender_checks SET pgp = 'synthetic marker'; PRAGMA user_version = 18;",
+            )
+            .unwrap();
+        Cache::initialize(&c.conn).unwrap();
+        assert_eq!(copy_count(&c, "attachments", 1, "INBOX"), 0);
+        assert_eq!(copy_count(&c, "bodies", 1, "INBOX"), 0);
+        assert_eq!(copy_count(&c, "messages", 1, "INBOX"), 1);
+    }
+}
+
+#[cfg(test)]
 mod tests {
 
     /// How long the conversation lookups take on a real cache (#259):
@@ -2437,8 +3402,12 @@ mod tests {
     #[test]
     #[ignore]
     fn thread_lookup_timing() {
-        let Ok(path) = std::env::var("HYLKI_CACHE_TIMING") else { return };
-        let c = Cache { conn: Connection::open(path).unwrap() };
+        let Ok(path) = std::env::var("HYLKI_CACHE_TIMING") else {
+            return;
+        };
+        let c = Cache {
+            conn: Connection::open(path).unwrap(),
+        };
         let accounts: Vec<u32> = c
             .conn
             .prepare("SELECT DISTINCT account_id FROM messages")
@@ -2475,20 +3444,37 @@ mod tests {
 
     #[test]
     fn background_reader_sees_wal_updates_without_writing() {
-        let path = std::env::temp_dir().join(format!("hylki-cache-reader-{}-{}.db",
-            std::process::id(), std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        std::fs::OpenOptions::new().write(true).create_new(true).open(&path).unwrap();
-        let cache = Cache { conn: Connection::open(&path).unwrap() };
+        let path = std::env::temp_dir().join(format!(
+            "hylki-cache-reader-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        let cache = Cache {
+            conn: Connection::open(&path).unwrap(),
+        };
         cache.conn.execute_batch(SCHEMA).unwrap();
-        cache.conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+        cache
+            .conn
+            .pragma_update(None, "journal_mode", "WAL")
+            .unwrap();
         cache.save_body(1, "INBOX", 42, "first");
         let reader = cache.read_connection().unwrap();
         assert_eq!(reader.load_body(1, "INBOX", 42).as_deref(), Some("first"));
         cache.save_body(1, "INBOX", 42, "updated");
         assert_eq!(reader.load_body(1, "INBOX", 42).as_deref(), Some("updated"));
         let error = reader.conn.execute("DELETE FROM bodies", []).unwrap_err();
-        assert_eq!(error.sqlite_error_code(), Some(rusqlite::ErrorCode::ReadOnly));
+        assert_eq!(
+            error.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::ReadOnly)
+        );
         drop(reader);
         drop(cache);
         std::fs::remove_file(path).unwrap();
@@ -2540,6 +3526,14 @@ mod tests {
         c.mark_attachments_checked(1, "INBOX", 6);
         let corrected = c.message_page(1, "INBOX", 7, "", None, 1).unwrap();
         assert!(!corrected.rows[0].has_attachment);
+        let attached = c
+            .message_page_predicate(1, "INBOX", 7, "m.has_attachment != 0", &[], None, 20)
+            .unwrap();
+        assert!(!attached.rows.iter().any(|m| m.uid == 6));
+        let absent = c
+            .message_page_predicate(1, "INBOX", 7, "m.has_attachment = 0", &[], None, 20)
+            .unwrap();
+        assert_eq!(absent.rows.iter().map(|m| m.uid).collect::<Vec<_>>(), [6]);
     }
 
     #[test]
@@ -2647,9 +3641,7 @@ mod tests {
         let cache = Cache::open().expect("cache opens");
         drop(cache);
 
-        let mode = |p: &std::path::Path| {
-            std::fs::metadata(p).unwrap().permissions().mode() & 0o777
-        };
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&dir), 0o700, "cache directory");
         assert_eq!(mode(&dir.join("cache.db")), 0o600, "cache.db");
         for side in ["cache.db-wal", "cache.db-shm"] {
@@ -2696,7 +3688,10 @@ mod tests {
         );
         // The next batch of messages writes it down; then it is on disk.
         c.upsert_messages(1, "INBOX", &[]);
-        assert!(msgid_case_pending().lock().unwrap().is_empty(), "drained by the batch");
+        assert!(
+            msgid_case_pending().lock().unwrap().is_empty(),
+            "drained by the batch"
+        );
         assert_eq!(
             c.exact_msgids("vireo-12tpxijkt7phqvbiio@gmail.com"),
             "vireo-12tPxIJKt7PhQVbIiO@gmail.com"
@@ -2756,20 +3751,70 @@ mod tests {
     /// Send Later (#145): the scheduled time survives the round trip, and a
     /// message queued to go now has none.
     #[test]
+    fn scheduled_cancel_requires_exact_account_time_and_unclaimed_future_intent() {
+        let c = Cache::in_memory().unwrap();
+        let queued = || c.queue_outbox(7, "owner@example.test", &["recipient@example.test".into()], "recipient", "Fixture", "", b"private raw", None, "", Some(2000)).unwrap();
+        let id = queued();
+        assert_eq!(c.outbox_items(7)[0].phase, crate::models::OutboxPhase::Ready);
+        assert!(!c.cancel_queued_outbox(8, id, Some(2000), 1000).unwrap());
+        assert!(!c.cancel_queued_outbox(7, id, Some(2001), 1000).unwrap());
+        assert!(!c.cancel_queued_outbox(7, id, Some(2000), 2000).unwrap());
+        assert_eq!(c.outbox_items(7)[0].raw, b"private raw");
+        assert!(c.cancel_queued_outbox(7, id, Some(2000), 1000).unwrap());
+        assert!(!c.cancel_queued_outbox(7, id, Some(2000), 1000).unwrap());
+        assert!(c.outbox_items(7).is_empty());
+        assert!(!c.mark_outbox_before_transmission(7, id).unwrap());
+        let next = queued();
+        assert!(next > id);
+        assert!(c.mark_outbox_before_transmission(7, next).unwrap());
+        assert_eq!(c.outbox_items(7)[0].phase, crate::models::OutboxPhase::InFlight);
+        assert!(!c.cancel_queued_outbox(7, next, Some(2000), 1000).unwrap());
+        assert!(c.mark_outbox_accepted(7, next).unwrap());
+        assert!(!c.cancel_queued_outbox(7, next, Some(2000), 1000).unwrap());
+        assert_eq!(c.outbox_items(7)[0].raw, b"private raw");
+    }
+
+    #[test]
     fn outbox_keeps_a_scheduled_time() {
         let c = Cache::in_memory().unwrap();
         let rcpts = vec!["ada@example.com".to_string()];
         let later = c
-            .queue_outbox(1, "me@example.com", &rcpts, "ada", "Later", "", b"raw", None, "", Some(1_900_000_000))
+            .queue_outbox(
+                1,
+                "me@example.com",
+                &rcpts,
+                "ada",
+                "Later",
+                "",
+                b"raw",
+                None,
+                "",
+                Some(1_900_000_000),
+            )
             .expect("queued");
         let now = c
-            .queue_outbox(1, "me@example.com", &rcpts, "ada", "Now", "", b"raw", None, "", None)
+            .queue_outbox(
+                1,
+                "me@example.com",
+                &rcpts,
+                "ada",
+                "Now",
+                "",
+                b"raw",
+                None,
+                "",
+                None,
+            )
             .expect("queued");
         let items = c.outbox_items(1);
         let by = |id: u32| items.iter().find(|i| i.id == id).expect("listed");
         assert_eq!(by(later).send_at, Some(1_900_000_000));
         assert_eq!(by(now).send_at, None);
-        assert!(by(later).as_message().preview.starts_with("Scheduled for "), "{}", by(later).as_message().preview);
+        assert!(
+            by(later).as_message().preview.starts_with("Scheduled for "),
+            "{}",
+            by(later).as_message().preview
+        );
     }
 
     #[test]
@@ -2893,7 +3938,10 @@ mod tests {
         assert_eq!(items[0].name, "old.pdf");
         assert!(!items[0].downloaded, "never fetched");
         assert!(items[0].data.is_none());
-        assert_eq!(items[0].size, 900_000, "size comes from the scan, not the blob");
+        assert_eq!(
+            items[0].size, 900_000,
+            "size comes from the scan, not the blob"
+        );
         assert_eq!(items[1].name, "a.png");
         assert!(items[1].downloaded);
         assert_eq!(items[1].data.as_deref(), Some(&[0u8; 4][..]));
@@ -2953,7 +4001,10 @@ mod tests {
         add_meta(&c, "Sent", 2, 0, "out.png", 2);
 
         let inbox_only = [(1u32, "INBOX".to_string())];
-        let q = GalleryQuery { folders: &inbox_only, ..all(GallerySort::Newest, 50, 0) };
+        let q = GalleryQuery {
+            folders: &inbox_only,
+            ..all(GallerySort::Newest, 50, 0)
+        };
         let items = c.gallery_page(&q);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].name, "in.png");
@@ -2972,7 +4023,11 @@ mod tests {
         add_meta(&c, "INBOX", 2, 0, "beach.png", 2);
 
         let hit = |tokens: &[String]| {
-            c.gallery_page(&GalleryQuery { tokens, ..all(GallerySort::Newest, 50, 0) }).len()
+            c.gallery_page(&GalleryQuery {
+                tokens,
+                ..all(GallerySort::Newest, 50, 0)
+            })
+            .len()
         };
         assert_eq!(hit(&["budget".to_string()]), 1, "filename");
         assert_eq!(hit(&["whitfield".to_string()]), 1, "sender");
@@ -2997,8 +4052,15 @@ mod tests {
         add_meta(&c, "INBOX", 1, 0, "report.pdf", 2);
 
         let wild = ["%".to_string()];
-        let q = GalleryQuery { tokens: &wild, ..all(GallerySort::Newest, 50, 0) };
-        assert_eq!(c.gallery_page(&q).len(), 0, "% matches a literal percent sign");
+        let q = GalleryQuery {
+            tokens: &wild,
+            ..all(GallerySort::Newest, 50, 0)
+        };
+        assert_eq!(
+            c.gallery_page(&q).len(),
+            0,
+            "% matches a literal percent sign"
+        );
     }
 
     /// The type filter and the type sort both read the bucket stored with the
@@ -3012,7 +4074,10 @@ mod tests {
         add_msg(&c, "INBOX", 2, "B", "T", 200);
         add_meta(&c, "INBOX", 2, 0, "doc.pdf", 2);
 
-        let images = GalleryQuery { bucket: 1, ..all(GallerySort::Newest, 50, 0) };
+        let images = GalleryQuery {
+            bucket: 1,
+            ..all(GallerySort::Newest, 50, 0)
+        };
         let items = c.gallery_page(&images);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].name, "shot.png");
@@ -3081,7 +4146,11 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(c.unscanned_attachment_uids(1, "INBOX", 10), vec![2], "only the empty one");
+        assert_eq!(
+            c.unscanned_attachment_uids(1, "INBOX", 10),
+            vec![2],
+            "only the empty one"
+        );
         assert_eq!(
             c.gallery_page(&all(GallerySort::Newest, 50, 0)).len(),
             1,
@@ -3109,7 +4178,11 @@ mod tests {
             .unwrap();
 
         assert_eq!(c.unscanned_attachment_count(1, "INBOX"), 2);
-        assert_eq!(c.unscanned_attachment_uids(1, "INBOX", 10), vec![2, 1], "newest first");
+        assert_eq!(
+            c.unscanned_attachment_uids(1, "INBOX", 10),
+            vec![2, 1],
+            "newest first"
+        );
 
         c.save_attachment_meta(1, "INBOX", 2, &[]); // described, holds nothing
         assert_eq!(c.unscanned_attachment_count(1, "INBOX"), 1);
@@ -3127,20 +4200,20 @@ mod tests {
         add_msg(&c, "INBOX", 1, "Popova", raw, 100);
         add_msg(&c, "INBOX", 2, "Plain", "Already fine", 200);
 
-        Cache::redecode_encoded_subjects(&c.conn);
+        Cache::redecode_encoded_subjects(&c.conn).expect("subject migration");
 
         let subj: String = c
             .conn
-            .query_row(
-                "SELECT subject FROM messages WHERE uid = 1",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT subject FROM messages WHERE uid = 1", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(subj, "92-year-old artist Sheila Hicks");
         let plain: String = c
             .conn
-            .query_row("SELECT subject FROM messages WHERE uid = 2", [], |r| r.get(0))
+            .query_row("SELECT subject FROM messages WHERE uid = 2", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(plain, "Already fine");
     }
@@ -3149,10 +4222,17 @@ mod tests {
     fn clean_quoted_names_strips_the_escapes_in_place() {
         let c = Cache::in_memory().unwrap();
         add_folder(&c, "INBOX", FolderKind::Inbox);
-        add_msg(&c, "INBOX", 1, r#"\"Sender Name\""#, r#"Re: \"Plans\""#, 100);
+        add_msg(
+            &c,
+            "INBOX",
+            1,
+            r#"\"Sender Name\""#,
+            r#"Re: \"Plans\""#,
+            100,
+        );
         add_msg(&c, "INBOX", 2, "Plain Name", "Already fine", 200);
 
-        Cache::clean_quoted_names(&c.conn);
+        Cache::clean_quoted_names(&c.conn).expect("name migration");
 
         let row = |uid: u32| -> (String, String) {
             c.conn
@@ -3163,8 +4243,14 @@ mod tests {
                 )
                 .unwrap()
         };
-        assert_eq!(row(1), ("Sender Name".to_string(), r#"Re: "Plans""#.to_string()));
-        assert_eq!(row(2), ("Plain Name".to_string(), "Already fine".to_string()));
+        assert_eq!(
+            row(1),
+            ("Sender Name".to_string(), r#"Re: "Plans""#.to_string())
+        );
+        assert_eq!(
+            row(2),
+            ("Plain Name".to_string(), "Already fine".to_string())
+        );
     }
 
     /// Insert a message carrying threading headers.
@@ -3183,7 +4269,10 @@ mod tests {
     /// Just the sizes, for the tests that predate the newest-message half of
     /// the answer.
     fn counts(c: &Cache, groups: &[(String, Vec<String>)]) -> Vec<(String, usize)> {
-        c.thread_summaries(1, groups).into_iter().map(|(tag, s)| (tag, s.count)).collect()
+        c.thread_summaries(1, groups)
+            .into_iter()
+            .map(|(tag, s)| (tag, s.count))
+            .collect()
     }
 
     /// As [`add_threaded`], with the sender and preview a row would show.
@@ -3267,13 +4356,25 @@ mod tests {
                 params![uid],
             ).unwrap();
         }
-        assert_eq!(c.refs_repair_state(1, "INBOX"), (u32::MAX, false), "starts at the top");
+        assert_eq!(
+            c.refs_repair_state(1, "INBOX"),
+            (u32::MAX, false),
+            "starts at the top"
+        );
         let first = c.uids_needing_references(1, "INBOX", u32::MAX, 2);
-        assert_eq!(first.iter().map(|(u, _)| *u).collect::<Vec<_>>(), vec![30, 20], "newest first");
+        assert_eq!(
+            first.iter().map(|(u, _)| *u).collect::<Vec<_>>(),
+            vec![30, 20],
+            "newest first"
+        );
 
         c.set_refs_repair_state(1, "INBOX", 20, false);
         let next = c.uids_needing_references(1, "INBOX", 20, 2);
-        assert_eq!(next.iter().map(|(u, _)| *u).collect::<Vec<_>>(), vec![10], "strictly below");
+        assert_eq!(
+            next.iter().map(|(u, _)| *u).collect::<Vec<_>>(),
+            vec![10],
+            "strictly below"
+        );
 
         c.set_refs_repair_state(1, "INBOX", 0, true);
         assert!(c.refs_repair_state(1, "INBOX").1, "and it finishes");
@@ -3381,7 +4482,10 @@ mod tests {
         let left = c.locate_by_message_id("root@x");
         assert_eq!(left.len(), 2);
         assert!(left.iter().any(|(_, p, u)| p == "INBOX" && *u == 1));
-        assert!(left.iter().any(|(_, p, u)| p == "[Gmail]/Trash" && *u == 30));
+        assert!(
+            left.iter()
+                .any(|(_, p, u)| p == "[Gmail]/Trash" && *u == 30)
+        );
         assert_eq!(c.locate_by_message_id("other@x").len(), 2);
     }
 
@@ -3404,8 +4508,26 @@ mod tests {
         let c = Cache::in_memory().unwrap();
         add_folder(&c, "INBOX", FolderKind::Inbox);
         add_folder(&c, "Sent", FolderKind::Sent);
-        add_shown(&c, "INBOX", 1, 500, "root@x", "", "Ada", "Can you take a look?");
-        add_shown(&c, "Sent", 2, 600, "mine@x", "root@x", "Me", "Looked, all good");
+        add_shown(
+            &c,
+            "INBOX",
+            1,
+            500,
+            "root@x",
+            "",
+            "Ada",
+            "Can you take a look?",
+        );
+        add_shown(
+            &c,
+            "Sent",
+            2,
+            600,
+            "mine@x",
+            "root@x",
+            "Me",
+            "Looked, all good",
+        );
 
         let groups = vec![("t".to_string(), vec!["root@x".to_string()])];
         let got = c.thread_summaries(1, &groups);
@@ -3422,8 +4544,26 @@ mod tests {
         let c = Cache::in_memory().unwrap();
         add_folder(&c, "INBOX", FolderKind::Inbox);
         add_folder(&c, "Drafts", FolderKind::Drafts);
-        add_shown(&c, "INBOX", 1, 500, "root@x", "", "Ada", "Can you take a look?");
-        add_shown(&c, "Drafts", 2, 900, "draft@x", "root@x", "Me", "Half an answ");
+        add_shown(
+            &c,
+            "INBOX",
+            1,
+            500,
+            "root@x",
+            "",
+            "Ada",
+            "Can you take a look?",
+        );
+        add_shown(
+            &c,
+            "Drafts",
+            2,
+            900,
+            "draft@x",
+            "root@x",
+            "Me",
+            "Half an answ",
+        );
 
         let groups = vec![("t".to_string(), vec!["root@x".to_string()])];
         let got = c.thread_summaries(1, &groups);
@@ -3438,8 +4578,26 @@ mod tests {
         let c = Cache::in_memory().unwrap();
         add_folder(&c, "INBOX", FolderKind::Inbox);
         add_folder(&c, "Trash", FolderKind::Trash);
-        add_shown(&c, "INBOX", 1, 500, "root@x", "", "Ada", "Can you take a look?");
-        add_shown(&c, "Trash", 2, 900, "binned@x", "root@x", "Ada", "Never mind");
+        add_shown(
+            &c,
+            "INBOX",
+            1,
+            500,
+            "root@x",
+            "",
+            "Ada",
+            "Can you take a look?",
+        );
+        add_shown(
+            &c,
+            "Trash",
+            2,
+            900,
+            "binned@x",
+            "root@x",
+            "Ada",
+            "Never mind",
+        );
 
         let groups = vec![("t".to_string(), vec!["root@x".to_string()])];
         let got = c.thread_summaries(1, &groups);
@@ -3474,7 +4632,10 @@ mod tests {
         add_threaded(&c, "[Gmail]/All Mail", 900, 500, "same@x", "");
         c.save_body(1, "[Gmail]/All Mail", 900, "the real body");
 
-        assert_eq!(c.load_body(1, "INBOX", 42).as_deref(), Some("the real body"));
+        assert_eq!(
+            c.load_body(1, "INBOX", 42).as_deref(),
+            Some("the real body")
+        );
         // The copy that actually holds it still answers directly.
         assert_eq!(
             c.load_body(1, "[Gmail]/All Mail", 900).as_deref(),
@@ -3491,7 +4652,10 @@ mod tests {
             1,
             "Paratype",
             7,
-            &[Attachment { name: "spec.pdf".into(), data: vec![1, 2, 3] }],
+            &[Attachment {
+                name: "spec.pdf".into(),
+                data: vec![1, 2, 3],
+            }],
         );
 
         let found = c.load_attachments(1, "INBOX", 42);
@@ -3575,6 +4739,10 @@ mod tests {
         let found = c.messages_by_thread_ids(1, &["root@x".to_string()]);
         let mut ids: Vec<&str> = found.iter().map(|(_, m)| m.message_id.as_str()).collect();
         ids.sort_unstable();
-        assert_eq!(ids, vec!["new-reply@x", "old-reply@x", "root@x"], "all three, any age");
+        assert_eq!(
+            ids,
+            vec!["new-reply@x", "old-reply@x", "root@x"],
+            "all three, any age"
+        );
     }
 }

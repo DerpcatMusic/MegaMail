@@ -1,0 +1,24 @@
+<!doctype html><html><head>
+<base href="http://127.0.0.1:48191/">
+<meta http-equiv="refresh" content="0;url=http://127.0.0.1:48191/refresh">
+<link rel="stylesheet" href="http://127.0.0.1:48191/stylesheet">
+<link rel="dns-prefetch" href="//probe.invalid"><link rel="preload" href="http://127.0.0.1:48191/preload" as="image">
+<style>
+@import url("http://127.0.0.1:48191/import");
+@font-face { font-family:Tracker; src:url("http://127.0.0.1:48191/font") }
+body { background-image:url("http://127.0.0.1:48191/css-background"); font-family:Tracker }
+p { cursor:url("file:///etc/passwd"), auto; list-style-image:u\72l("http://127.0.0.1:48191/escaped") }
+span { background-image:image-set(url("http://127.0.0.1:48191/image-set") 1x) }
+</style><script>fetch('http://127.0.0.1:48191/js');navigator.serviceWorker.register('/worker.js');window.open('http://127.0.0.1:48191/popup')</script>
+</head><body onload="alert('forbidden')">
+<p>Hostile synthetic fixture. No real mail or external destination.</p>
+<img src="http://127.0.0.1:48191/img" srcset="http://127.0.0.1:48191/srcset 2x" onerror="fetch('/error')">
+<picture><source srcset="http://127.0.0.1:48191/picture"><img src="file:///etc/passwd"></picture>
+<svg><image href="http://127.0.0.1:48191/svg"/><foreignObject><iframe src="http://127.0.0.1:48191/foreign"></iframe></foreignObject></svg>
+<iframe srcdoc="<img src='http://127.0.0.1:48191/srcdoc'>" src="http://127.0.0.1:48191/frame"></iframe>
+<object data="http://127.0.0.1:48191/object"></object>
+<form action="http://127.0.0.1:48191/form"><input name="secret" value="fictional"><button>Submit</button></form>
+<a href="http://127.0.0.1:48191/click" ping="http://127.0.0.1:48191/ping" download="tracking">User click only</a>
+<a href="javascript:alert(1)">Forbidden JS destination</a><a href="file:///etc/passwd">Forbidden file destination</a>
+<a href="https://user:secret@example.invalid/">Forbidden credentials</a>
+</body></html>

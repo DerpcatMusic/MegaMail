@@ -1761,6 +1761,11 @@ pub(super) async fn run_jmap(
             }
         };
         match req {
+            MailRequest::CancelQueued(request) => emit(WorkerEvent::QueuedCancelFinished { request, canceled: false }),
+            MailRequest::NativeMutation(request) => native_mutation::reject(request, &emit, "This backend does not support qualified native mutations."),
+            request @ MailRequest::LoadBodyAtEpoch { .. } => {
+                reject_unsupported_epoch_body(&request, &emit);
+            }
             MailRequest::Locate { message_id } => {
                 // The cache first, as on IMAP: every folder listing went
                 // through it. Then a header filter on the server, which finds

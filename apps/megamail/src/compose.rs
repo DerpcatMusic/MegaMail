@@ -12,6 +12,10 @@ use megamail_core::{
     worker::{self, OutgoingMessage},
 };
 
+use crate::draft_recovery::{
+    AttachmentLease, DraftKey, DraftUpdate, RecoveredCompose, RecoveryStore, Retention,
+};
+
 const DRAFT_ATTACHMENT_COUNT_LIMIT: usize = 20;
 const DRAFT_ATTACHMENT_FILE_LIMIT: usize = 25 * 1024 * 1024;
 const DRAFT_ATTACHMENT_TOTAL_LIMIT: usize = 50 * 1024 * 1024;
@@ -20,7 +24,103 @@ const DRAFT_RAW_LIMIT: usize = 100 * 1024 * 1024;
 pub struct PreparedDraft {
     pub message: OutgoingMessage,
     pub temporary_attachment_paths: Vec<PathBuf>,
+    /// Restored attachment ownership must survive composer and worker consumption.
+    pub attachment_lease: Option<AttachmentLease>,
     pub notice: Option<String>,
+}
+
+/// Prepare the actual outgoing composer model for the background recovery lane.
+/// This performs no I/O. The caller supplies explicit decrypted-source policy,
+/// and keeps picker/MIME staging paths alive until capture is acknowledged.
+/// Account identity is checked rather than silently falling back to another From.
+pub fn prepare_recovery_update(
+    message: &OutgoingMessage,
+    key: &DraftKey,
+    generation: u64,
+    account: &AccountConfig,
+    retention: Retention,
+    attachment_lease: Option<AttachmentLease>,
+) -> Result<DraftUpdate, String> {
+    if message.from_account_id != key.account_id() || generation == 0 {
+        return Err(
+            "This recovery snapshot does not belong to the selected composer account.".into(),
+        );
+    }
+    let source_address = selected_source_address(message, account)?;
+    Ok(DraftUpdate {
+        key: key.clone(),
+        generation,
+        message: message.clone(),
+        source_address,
+        retention,
+        attachment_lease,
+    })
+}
+
+/// Background-only restore into the same OutgoingMessage used by the real send
+/// path. Keep the returned attachment lease with the composer and in-flight send.
+/// UI must not replace restored Bcc/Reply-To/headers with blank input defaults.
+pub fn prepare_local_recovery(
+    store: &RecoveryStore,
+    key: &DraftKey,
+    account: &AccountConfig,
+    allow_sensitive: bool,
+) -> Result<Option<RecoveredCompose>, String> {
+    let recovered = store
+        .restore(key, allow_sensitive)
+        .map_err(|e| e.to_string())?;
+    if let Some(recovered) = &recovered {
+        let current = selected_source_address(&recovered.message, account)?;
+        if !current.eq_ignore_ascii_case(&recovered.source_address) {
+            return Err("The saved From address differs from this account's current address. Recovery was retained; choose an identity explicitly before sending.".into());
+        }
+    }
+    Ok(recovered)
+}
+
+fn selected_source_address(
+    message: &OutgoingMessage,
+    account: &AccountConfig,
+) -> Result<String, String> {
+    match &message.from_alias {
+        None => unambiguous_source_address(&account.email),
+        Some(identity) => {
+            let address = unambiguous_source_address(identity)?;
+            if !account
+                .aliases
+                .iter()
+                .any(|alias| alias.address().eq_ignore_ascii_case(&address))
+            {
+                return Err("The draft's From alias is no longer configured. Recovery was retained; choose an identity explicitly before sending.".into());
+            }
+            Ok(address)
+        }
+    }
+}
+
+fn unambiguous_source_address(identity: &str) -> Result<String, String> {
+    let recipients = worker::parse_recipients(identity);
+    if recipients.len() != 1 || identity.chars().any(char::is_control) {
+        return Err("The draft's From identity is ambiguous; choose an address explicitly.".into());
+    }
+    let (_, address) = &recipients[0];
+    if !address.contains('@') {
+        return Err("The account's From address is not usable for draft recovery.".into());
+    }
+    Ok(address.clone())
+}
+
+/// Forward preparation with an explicit original-file loss warning. The caller
+/// can fetch/stage original MIME attachments off UI before clearing this notice.
+/// A text-only forward is not represented as an attachment-preserving forward.
+pub fn prepare_forward(account_id: u32, message: &Message) -> PreparedDraft {
+    PreparedDraft {
+        message: forward(account_id, message),
+        temporary_attachment_paths: Vec::new(),
+        attachment_lease: None,
+        notice: message.has_attachment.then(||
+            "This text-only forward does not include the original attachments. Download and attach them before sending if they are needed.".into()),
+    }
 }
 
 /// Rebuild a draft from its original MIME bytes. The visible list row omits
@@ -65,7 +165,12 @@ fn prepare_draft_from_raw_impl(
         stage_draft_attachments(editable.attachments, staging_dir)?
     };
 
-    let from_address = address_from_identity(&editable.from);
+    let from_recipients = worker::parse_recipients(&editable.from);
+    let from_address = if from_recipients.len() == 1 {
+        Some(from_recipients[0].1.as_str())
+    } else {
+        None
+    };
     let from_is_account =
         from_address.is_some_and(|address| address.eq_ignore_ascii_case(&account.email));
     let from_alias = from_address.and_then(|address| {
@@ -92,6 +197,12 @@ fn prepare_draft_from_raw_impl(
     message.draft_origin = Some(origin);
 
     let mut notices = Vec::new();
+    if editable.from.trim().is_empty() {
+        notices.push(format!(
+            "The original draft has no From identity. This draft will use {}.",
+            account.email
+        ));
+    }
     if unsupported_from {
         notices.push(format!(
             "The original From address is not configured as a send-as alias. This draft will use {}.",
@@ -108,17 +219,20 @@ fn prepare_draft_from_raw_impl(
     Ok(PreparedDraft {
         message,
         temporary_attachment_paths,
+        attachment_lease: None,
         notice,
     })
 }
 
-#[cfg(test)]
-fn prepare_draft_from_raw_in(
+/// Explicit staging-directory injection for background compose preparation and
+/// synthetic tests. The supplied directory must be private and caller-owned.
+pub fn prepare_draft_from_raw_in(
     raw: &[u8],
     account: &AccountConfig,
     origin: DraftOrigin,
     staging_dir: &Path,
 ) -> Result<PreparedDraft, String> {
+    ensure_private_directory(staging_dir)?;
     prepare_draft_from_raw_impl(raw, account, origin, Some(staging_dir))
 }
 
@@ -359,14 +473,6 @@ fn safe_attachment_filename(name: &str) -> String {
     }
 }
 
-fn address_from_identity(identity: &str) -> Option<&str> {
-    let address = identity
-        .rsplit_once('<')
-        .map(|(_, address)| address.trim_end_matches('>').trim())
-        .unwrap_or(identity.trim());
-    (!address.is_empty() && address.contains('@')).then_some(address)
-}
-
 /// The first composer keeps email bodies as plain text. The worker can still
 /// generate the MIME alternative and add reply threading headers.
 pub fn new_message(account_id: u32) -> OutgoingMessage {
@@ -580,6 +686,51 @@ mod tests {
         assert_eq!(
             worker::parse_recipients(&reply.cc),
             vec![("Bob".into(), "bob@example.test".into())]
+        );
+    }
+
+    #[test]
+    fn forward_preparation_does_not_silently_claim_original_attachments() {
+        let mut original = sample();
+        original.has_attachment = true;
+        let prepared = super::prepare_forward(7, &original);
+        assert!(prepared.message.attachments.is_empty());
+        assert!(
+            prepared
+                .notice
+                .unwrap()
+                .contains("does not include the original attachments")
+        );
+    }
+
+    #[test]
+    fn recovery_preparation_accepts_incomplete_bcc_only_drafts_but_rejects_ambiguous_from() {
+        let account = AccountConfig::new("me@example.test");
+        let key = crate::draft_recovery::DraftKey::new(7).unwrap();
+        let mut message = new_message(7);
+        message.bcc = "hidden@example.test".into();
+        let prepared = super::prepare_recovery_update(
+            &message,
+            &key,
+            1,
+            &account,
+            crate::draft_recovery::Retention::Ordinary,
+            None,
+        )
+        .unwrap();
+        assert!(prepared.message.to.is_empty());
+        assert_eq!(prepared.message.bcc, message.bcc);
+        message.from_alias = Some("a@example.test, b@example.test".into());
+        assert!(
+            super::prepare_recovery_update(
+                &message,
+                &key,
+                2,
+                &account,
+                crate::draft_recovery::Retention::Ordinary,
+                None
+            )
+            .is_err()
         );
     }
 

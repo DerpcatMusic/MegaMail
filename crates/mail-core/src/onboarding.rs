@@ -54,7 +54,7 @@ impl fmt::Display for OAuthSetupError {
         f.write_str(match self {
             Self::UnsupportedProvider => "This OAuth provider is not supported by MegaMail.",
             Self::MegaMailRegistrationRequired => {
-                "OAuth is not configured for MegaMail. Use a supported system account or provider-approved sign-in method."
+                "Browser sign-in requires a MegaMail-owned registered desktop client ID; no registration is bundled. Use an approved app-password/manual path where permitted, or the separate Thunderbird runtime."
             }
         })
     }
@@ -66,15 +66,41 @@ impl std::error::Error for OAuthSetupError {}
 /// Google/Microsoft endpoints and scopes come from the core provider catalogue;
 /// client IDs/secrets come only from MegaMail config or MEGAMAIL_* settings.
 pub fn oauth_settings(provider: OAuthProvider) -> Result<OAuthSettings, OAuthSetupError> {
-    let name = match provider {
+    let (client_id, client_secret) = crate::oauth::provider_credentials(provider_name(provider));
+    oauth_settings_from_credentials(provider, client_id, client_secret)
+}
+
+/// Native provider entry point. Run on a blocking worker, then call authorize
+/// with HTTP/browser/probe adapters. This is NOT oauth_settings + run_flow:
+/// the transaction checks authenticated identity, granted scopes and the
+/// selected protocol before readiness. Parent declares provider_auth in lib.rs.
+/// Microsoft is explicitly Graph; do not pass its scopes to IMAP discovery.
+pub fn provider_authorization(
+    provider: crate::provider_auth::Provider,
+    email: &str,
+    attempt: crate::provider_auth::Attempt,
+) -> Result<crate::provider_auth::Transaction, crate::provider_auth::AuthError> {
+    let registration = crate::provider_auth::Registration::configured(provider)?;
+    crate::provider_auth::Transaction::new(registration, email, attempt)
+}
+
+fn provider_name(provider: OAuthProvider) -> &'static str {
+    match provider {
         OAuthProvider::Google => "google",
         OAuthProvider::Microsoft => "microsoft",
-    };
-    let preset = crate::oauth::preset(name).ok_or(OAuthSetupError::UnsupportedProvider)?;
-    let (client_id, client_secret) = crate::oauth::provider_credentials(name);
-    if client_id.trim().is_empty()
-        || (provider == OAuthProvider::Google && client_secret.trim().is_empty())
-    {
+    }
+}
+
+fn oauth_settings_from_credentials(
+    provider: OAuthProvider,
+    client_id: String,
+    client_secret: String,
+) -> Result<OAuthSettings, OAuthSetupError> {
+    let preset = crate::oauth::preset(provider_name(provider))
+        .ok_or(OAuthSetupError::UnsupportedProvider)?;
+    // Google native exchange/refresh accepts an optional secret. Registration
+    // readiness is not proof of a completed flow, consent, or provider access.
+    if client_id.trim().is_empty() {
         return Err(OAuthSetupError::MegaMailRegistrationRequired);
     }
 
@@ -354,6 +380,120 @@ mod tests {
     }
 
     #[test]
+    fn yahoo_password_choice_requires_selection_and_review_without_enabling_oauth_builder() {
+        let candidates = crate::discovery::parse_autoconfig_candidates(
+            include_bytes!("../tests/fixtures/discovery/yahoo-oauth-password.xml"),
+            "person@yahoo.com",
+        )
+        .unwrap();
+        assert_eq!(
+            account_from_candidate("person@yahoo.com", None, None, &candidates[0], true)
+                .unwrap_err(),
+            AccountSetupError::UnsupportedIncomingAuthentication,
+        );
+        let password = candidates
+            .iter()
+            .find(|candidate| {
+                candidate.incoming.auth == AuthMethod::Password
+                    && candidate.outgoing.auth == AuthMethod::Password
+            })
+            .unwrap();
+        assert!(password.oauth_advertised);
+        assert_eq!(
+            account_from_candidate("person@yahoo.com", None, None, password, false).unwrap_err(),
+            AccountSetupError::ServerSettingsNeedExplicitReview,
+        );
+        let account =
+            account_from_candidate("person@yahoo.com", None, None, password, true).unwrap();
+        assert_eq!(account.protocol, Protocol::Imap);
+        assert!(!account.oauth);
+        assert!(account.oauth_settings.is_none());
+        assert!(account.password.is_empty());
+        assert!(account.smtp_password.is_empty());
+        let security = account.security.unwrap();
+        assert!(!security.imap_accept_invalid_certs);
+        assert!(!security.smtp_accept_invalid_certs);
+        assert!(!security.smtp_no_auth);
+        let smtp_oauth = candidates
+            .iter()
+            .find(|candidate| {
+                candidate.incoming.auth == AuthMethod::Password
+                    && candidate.outgoing.auth == AuthMethod::OAuth2
+            })
+            .unwrap();
+        assert_eq!(
+            account_from_candidate("person@yahoo.com", None, None, smtp_oauth, true).unwrap_err(),
+            AccountSetupError::UnsupportedOutgoingAuthentication,
+        );
+    }
+
+    #[test]
+    fn discovered_private_hosts_need_review_and_never_disable_certificate_validation() {
+        let candidates = crate::discovery::parse_autoconfig_candidates(
+            include_bytes!("../tests/fixtures/discovery/private-host.xml"),
+            "person@yahoo.com",
+        )
+        .unwrap();
+        let password = candidates
+            .iter()
+            .find(|candidate| {
+                candidate.incoming.auth == AuthMethod::Password
+                    && candidate.outgoing.auth == AuthMethod::Password
+            })
+            .unwrap();
+        assert!(password.requires_review());
+        assert!(password.incoming.is_suspicious_host());
+        assert!(password.outgoing.is_suspicious_host());
+        assert_eq!(
+            account_from_candidate("person@yahoo.com", None, None, password, false).unwrap_err(),
+            AccountSetupError::ServerSettingsNeedExplicitReview,
+        );
+        let account =
+            account_from_candidate("person@yahoo.com", None, None, password, true).unwrap();
+        let security = account.security.unwrap();
+        assert!(!security.imap_accept_invalid_certs);
+        assert!(!security.smtp_accept_invalid_certs);
+    }
+
+    #[test]
+    fn discovery_no_auth_smtp_builds_only_after_review_and_unsupported_auth_stays_blocked() {
+        let smtp_none = crate::discovery::parse_autoconfig(
+            include_bytes!("../tests/fixtures/discovery/smtp-no-auth.xml"),
+            "person@yahoo.com",
+        )
+        .unwrap();
+        assert_eq!(
+            account_from_candidate("person@yahoo.com", None, None, &smtp_none, false).unwrap_err(),
+            AccountSetupError::ServerSettingsNeedExplicitReview,
+        );
+        let account =
+            account_from_candidate("person@yahoo.com", None, None, &smtp_none, true).unwrap();
+        assert!(account.security.unwrap().smtp_no_auth);
+        assert!(account.password.is_empty());
+        let unsupported = crate::discovery::parse_autoconfig(
+            include_bytes!("../tests/fixtures/discovery/unsupported-only.xml"),
+            "person@yahoo.com",
+        )
+        .unwrap();
+        assert_eq!(
+            account_from_candidate("person@yahoo.com", None, None, &unsupported, true).unwrap_err(),
+            AccountSetupError::UnsupportedIncomingAuthentication,
+        );
+    }
+
+    #[test]
+    fn microsoft_oauth_discovery_is_not_a_password_or_graph_account_builder() {
+        let report = crate::discovery::discover("person@outlook.com").unwrap();
+        let candidate = &report.candidates[0];
+        assert!(candidate.oauth_advertised);
+        assert_eq!(candidate.incoming.auth, AuthMethod::OAuth2);
+        assert_eq!(
+            account_from_candidate("person@outlook.com", None, None, candidate, true).unwrap_err(),
+            AccountSetupError::UnsupportedIncomingAuthentication,
+        );
+    }
+
+    #[test]
     fn account_uses_discovered_tls_and_username_without_credentials() {
         let candidate = ServerConfigCandidate {
             provider_name: "Example".into(),
@@ -528,16 +668,65 @@ mod tests {
     }
 
     #[test]
+    fn google_registration_accepts_client_id_without_secret() {
+        let settings = oauth_settings_from_credentials(
+            OAuthProvider::Google,
+            "synthetic-desktop-client-id".into(),
+            String::new(),
+        )
+        .unwrap();
+        assert_eq!(settings.client_id, "synthetic-desktop-client-id");
+        assert!(settings.client_secret.is_empty());
+        assert_eq!(
+            settings.auth_url,
+            "https://accounts.google.com/o/oauth2/v2/auth"
+        );
+        assert!(settings
+            .scopes
+            .split_whitespace()
+            .any(|scope| scope == "https://mail.google.com/"));
+    }
+
+    #[test]
+    fn configured_google_secret_is_preserved_when_supplied() {
+        let settings = oauth_settings_from_credentials(
+            OAuthProvider::Google,
+            "synthetic-desktop-client-id".into(),
+            "synthetic-optional-secret".into(),
+        )
+        .unwrap();
+        assert_eq!(settings.client_secret, "synthetic-optional-secret");
+    }
+
+    #[test]
     fn oauth_is_refused_without_a_megamail_client_registration() {
-        // Production provider credentials may be supplied by environment or
-        // MegaMail's oauth.toml, so assert the invariant rather than a fixed result.
+        // Exercise the production gate without reading oauth.toml or ambient
+        // credentials and without mutating process environment in parallel tests.
         for provider in [OAuthProvider::Google, OAuthProvider::Microsoft] {
-            if let Ok(settings) = oauth_settings(provider) {
-                assert!(!settings.client_id.trim().is_empty());
-                if provider == OAuthProvider::Google {
-                    assert!(!settings.client_secret.trim().is_empty());
-                }
+            for id in ["", "  "] {
+                assert_eq!(
+                    oauth_settings_from_credentials(provider, id.into(), "synthetic-secret".into())
+                        .unwrap_err(),
+                    OAuthSetupError::MegaMailRegistrationRequired,
+                );
             }
         }
+    }
+
+    #[test]
+    fn microsoft_registration_keeps_graph_resource_semantics() {
+        let settings = oauth_settings_from_credentials(
+            OAuthProvider::Microsoft,
+            "synthetic-public-client-id".into(),
+            String::new(),
+        )
+        .unwrap();
+        assert!(settings.client_secret.is_empty());
+        assert!(settings
+            .scopes
+            .split_whitespace()
+            .any(|scope| scope == "https://graph.microsoft.com/Mail.ReadWrite"));
+        assert!(!settings.scopes.contains("IMAP.AccessAsUser.All"));
+        assert!(!settings.scopes.contains("SMTP.Send"));
     }
 }
