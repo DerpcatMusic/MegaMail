@@ -28,7 +28,7 @@ def source_audit():
     doc = (REPO / "apps/megamail/src/reader_document.rs").read_text()
     checks = [
         ("pre-dispatch shared request policy", 'return !mm_request_allowed(' in extension),
-        ("hook precedes acknowledgement", extension.index('"send-request"') < extension.index('webkit_web_page_send_message_to_view')),
+        ("hook precedes acknowledgement", extension.index('"send-request"') < extension.index('webkit_web_page_send_message_to_view', extension.index('static void page_created'))),
         ("untrusted load guarded by acknowledgement", 'r->acknowledged && !r->loading' in main),
         ("ephemeral and sandbox readback", 'webkit_web_context_get_sandbox_enabled' in main and 'webkit_web_context_is_ephemeral' in main),
         ("JS and JS markup disabled", 'webkit_settings_set_enable_javascript(settings, FALSE)' in main and 'webkit_settings_set_enable_javascript_markup(settings, FALSE)' in main),

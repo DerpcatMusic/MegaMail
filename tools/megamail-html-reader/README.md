@@ -1,11 +1,31 @@
-# MegaMail original-formatting helper (candidate, not shipped inline)
+# MegaMail isolated HTML renderer
 
 AGPL-3.0-or-later, like the parent project. Uses dynamically linked GTK3,
 WebKitGTK 4.1, GLib/GIO, libsoup3, GdkPixbuf, json-glib and libxml2; packaging must
 retain their notices and support security updates. No Rust/GTK ABI is linked
 into GPUI. No new mail engine, account/profile access, browser opener or JS bridge.
 
-**Patch phase: do not run make/cc here. Parent owns the one batch build window.**
+Build and engine checks use the machine's single admitted build slot.
+
+The installer ships this package under `$XDG_DATA_HOME/megamail/html-reader`.
+The native reader invokes `--snapshot`: a private Xvfb display inside the verified
+renderer namespace produces one bounded PNG plus validated link rectangles.
+No host display, profile, credential store or DBus socket is granted. Authored CSS
+and tables appear inline in GPUI. JavaScript stays disabled; remote requests are
+blocked by the policy extension, CSP and the private network namespace.
+
+The Rust owner checks message/account/folder/generation, source identity and width
+before displaying a frame; only one physical renderer runs, and retiring the
+selection cancels that renderer. Pixels live in memory, not a persistent cache.
+The message menu exposes selectable text, find and export. This is a static frame,
+not an interactive browser document; text selection uses the native text view.
+Frames stop at 8192 pixels high and report clipping. Production MIME CID resource
+delivery is not wired into this snapshot path; remote images remain blocked.
+Missing or failed helper policy leaves the native semantic fallback visible.
+
+`snapshot_tests.py --helper <built-helper>` runs actual fictional WebKit fixtures
+for colors, responsive columns, hidden preheaders, safe link rectangles, height
+limits, hostile/parser-confusion input and missing-extension failure.
 
 ## Source and protocol
 
@@ -23,7 +43,8 @@ into GPUI. No new mail engine, account/profile access, browser opener or JS brid
   extension prevents untrusted load; only trusted about:blank bootstraps it.
 - `sandbox.c`: re-exec fixed `/usr/bin/bwrap` arguments before GTK/WebKit/input
   parsing. No shell. Private network/user/PID/IPC/UTS namespaces, read-only system
-  runtime + helper package, ephemeral home/tmp/run, one display socket. Namespace
+  runtime + helper package, ephemeral home/tmp/run; snapshot uses its own display,
+  while the developer window mode receives one limited display socket. Namespace
   identity is verified via inherited fd 3, then fd 3 is closed before GTK.
   No DBus/Secret Service/home/profile mounts or sandbox-disable workaround.
 - `policy_tests.c`, `tests.py`: real compiled policy-seam tests, plus explicitly

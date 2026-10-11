@@ -278,9 +278,12 @@ MmDocument *mm_document_parse(const char *wire, gsize length, const char *token,
     const char *html = string_member(obj, "html", MM_SOURCE_MAX);
     const char *plain = string_member(obj, "plainText", MM_SOURCE_MAX);
     const char *title = string_member(obj, "title", 512);
+    JsonNode *viewport = json_object_get_member(obj, "viewportWidth");
     if (!version || !JSON_NODE_HOLDS_VALUE(version) || json_node_get_value_type(version) != G_TYPE_INT64 ||
         json_node_get_int(version) != 1 || !html || !plain || !title ||
-        !only_members(obj, "|version|html|plainText|title|resources|")) {
+        !only_members(obj, "|version|html|plainText|title|resources|viewportWidth|") ||
+        (viewport && (!JSON_NODE_HOLDS_VALUE(viewport) || json_node_get_value_type(viewport)!=G_TYPE_INT64 ||
+         json_node_get_int(viewport)<320 || json_node_get_int(viewport)>1280))) {
         g_object_unref(parser); fail(error, "request-schema"); return NULL;
     }
     MmDocument *d = g_new0(MmDocument, 1);

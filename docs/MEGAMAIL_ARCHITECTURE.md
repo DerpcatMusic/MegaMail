@@ -191,32 +191,35 @@ Real-provider sending and delivery remain unverified.
 
 ## Reader, links, and attachments
 
-Incoming message bodies use selectable native GPUI Kit semantic formatting.
-A bounded allowlist keeps headings, paragraphs, line breaks, emphasis, lists,
-quotes, code, tables, safe links, and text direction. It removes sender CSS,
-fixed dimensions, active content, forms, and resources; image alt text remains
-without fetching the image. Presentation tables become flowing blocks, while
-data tables use a local horizontal scroll viewport when needed. Sanitization
-and quote extraction run on the worker path before the UI receives the body.
-A per-message plain-text view remains available. The reader does not run a
-browser engine or automatically fetch remote images or other resources. Native
-wrapping shapes each visual row while preserving logical UTF-8 source positions
-for selection, copying, and link hit testing. When quote hiding is
-enabled, it collapses only a conservative trailing quoted block and preserves
-the full body so the user can restore it without flattening the remaining
-formatted message. Reply All uses the active account
-and excludes the user's own account addresses and aliases. The core can extract
-a separate, bounded list of links from HTML anchors; only validated `http` and
-`https` destinations without embedded user information are offered, and the
-user explicitly opens one in the browser.
+Incoming HTML bodies retain authored CSS and tables through an isolated WebKit
+snapshot displayed inside the native GPUI reader. The renderer receives a bounded
+source document on a background executor, returns ephemeral pixels and validated
+link rectangles, and has no account, profile, credential or host display access.
+JavaScript and remote resources stay disabled. Message identity, generation,
+source allocation and viewport width gate each result; canceled selections keep
+physical admission until their renderer drains. The helper and its policy
+extension are installed together by `tools/install-megamail.sh`.
+
+Native semantic formatting remains the fallback and the selectable text view,
+available through the message menu. Find, text export, printable export and rule
+preview also live in that menu. Mailbox selection and rules are available through
+the mailbox options menu. Routine query supersession does not create an account
+connection error. Native quote hiding retains the full text; styled quote hiding
+covers blockquote and common Gmail/Yahoo quote containers. Styled frames clip at
+8192 pixels with a visible text-view recovery option. Inline MIME CID resources
+are not yet supplied by the production snapshot owner; remote images stay blocked.
+
+Reply All uses the active account and excludes its own addresses and aliases.
+Safe HTTP(S) message links open only after an explicit native click and renewed
+selection validation. The styled frame does not provide browser text selection;
+use Read as text for selection, copying and the complete long-message body.
 
 Attachments are listed separately from the body. The app first shows cached
 attachments and requires an explicit **Download attachments** action when a
 network fetch is needed. Each available file has an explicit **Save** action
 using the native save dialog. The composer supports file-picker attachments,
 with a limit of 20 files, 25 MiB per file, and 50 MiB total. These paths do
-not imply browser-style email CSS, inline attachment preview, or automatic
-remote content loading. Rich HTML composition, inline reply, all-folder/body search,
+not imply automatic remote content loading. Rich HTML composition, inline reply, all-folder/body search,
 and bulk triage are not ported.
 
 ## Appearance and Zeron material adaptation
