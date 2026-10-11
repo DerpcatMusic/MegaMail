@@ -45,6 +45,7 @@ mod account_registry;
 mod account_session;
 mod appearance;
 mod appearance_view;
+mod attachment_preview;
 mod compose;
 mod compose_productivity;
 mod compose_session;
@@ -56,21 +57,20 @@ mod feature_integration;
 mod instance;
 mod invitation;
 mod live;
+mod newsletter_actions;
 mod onboarding;
+mod outbox_review;
 mod preferences;
 mod provider_setup;
 mod reader_actions;
-mod reader_find;
-mod attachment_preview;
 mod reader_document;
+mod reader_find;
 mod reader_host;
 mod reader_session;
+mod rules_editor;
 mod rules_preview;
 mod rules_ui;
-mod rules_editor;
 mod scheduling;
-mod outbox_review;
-mod newsletter_actions;
 mod theme;
 mod thunderbird_adapter;
 mod triage;
@@ -79,8 +79,8 @@ mod zeron_background;
 mod zeron_style;
 
 use action::{
-    ComposeMessage, FindInMessage, FocusMessages, FocusReader, FocusSearch, NextMessage, PreviousMessage,
-    RefreshMail, ReplyAll, ReplyMessage, UnifiedInbox,
+    ComposeMessage, FindInMessage, FocusMessages, FocusReader, FocusSearch, NextMessage,
+    PreviousMessage, RefreshMail, ReplyAll, ReplyMessage, UnifiedInbox,
 };
 
 fn packed_rgb(color: gpui_kit::Hsla) -> u32 {
@@ -466,7 +466,15 @@ impl Composer {
             subject: new_input_value(window, cx, "Subject", message.subject.clone()),
             body: cx.new(|cx| TextareaState::new(window, cx).default_value(message.body.clone())),
             tools: compose_tools_ui::Tools::new(window, cx),
-            schedule: new_input_value(window, cx, "YYYY-MM-DD HH:MM +HH:MM", message.send_at.and_then(megamail_core::datefmt::editable_send_time).unwrap_or_default()),
+            schedule: new_input_value(
+                window,
+                cx,
+                "YYYY-MM-DD HH:MM +HH:MM",
+                message
+                    .send_at
+                    .and_then(megamail_core::datefmt::editable_send_time)
+                    .unwrap_or_default(),
+            ),
             message,
             error: None,
             send_request_id: None,
@@ -4120,19 +4128,21 @@ impl MailApp {
                         conversation,
                         child,
                     } = rows[index].clone();
-                    let mut display_message = if bulk_open { row.message.clone() } else {
+                    let mut display_message = if bulk_open {
+                        row.message.clone()
+                    } else {
                         conversation
-                        .as_ref()
-                        .and_then(|thread| thread.latest_sent.as_ref())
-                        .filter(|sent| sent.message.timestamp > row.message.timestamp)
-                        .map_or_else(
-                            || row.message.clone(),
-                            |sent| {
-                                let mut message = sent.message.clone();
-                                message.from_name = "You".to_owned();
-                                message
-                            },
-                        )
+                            .as_ref()
+                            .and_then(|thread| thread.latest_sent.as_ref())
+                            .filter(|sent| sent.message.timestamp > row.message.timestamp)
+                            .map_or_else(
+                                || row.message.clone(),
+                                |sent| {
+                                    let mut message = sent.message.clone();
+                                    message.from_name = "You".to_owned();
+                                    message
+                                },
+                            )
                     };
                     if let Some(thread) = conversation.as_ref().filter(|_| !bulk_open) {
                         display_message.starred =
@@ -4153,8 +4163,13 @@ impl MailApp {
                     };
                     let owner_select = owner.clone();
                     let key = row.key.clone();
-                    let unread = if bulk_open { row.message.unread } else { conversation
-                        .as_ref().map_or(row.message.unread, |thread| thread.unread > 0) };
+                    let unread = if bulk_open {
+                        row.message.unread
+                    } else {
+                        conversation
+                            .as_ref()
+                            .map_or(row.message.unread, |thread| thread.unread > 0)
+                    };
                     let mut element = h_flex()
                         .w_full()
                         .h(px(row_height))
@@ -4203,7 +4218,11 @@ impl MailApp {
                         let bulk_key = row.key.clone();
                         let selected = bulk_selected.contains(&bulk_key);
                         let available = bulk_available.contains(&bulk_key);
-                        debug_assert!(!available || (display_message.uid == bulk_key.uid && display_message.account_id == bulk_key.account_id));
+                        debug_assert!(
+                            !available
+                                || (display_message.uid == bulk_key.uid
+                                    && display_message.account_id == bulk_key.account_id)
+                        );
                         let owner_bulk = owner.clone();
                         element = element.child(
                             Button::new(SharedString::from(format!(
@@ -4910,7 +4929,13 @@ impl MailApp {
                                         .child(format!("{} bytes", content.len())),
                                 ),
                         )
-                        .child(attachment_preview::preview_button(name.clone(), content.clone(), index, self.attachment_preview.busy(), cx))
+                        .child(attachment_preview::preview_button(
+                            name.clone(),
+                            content.clone(),
+                            index,
+                            self.attachment_preview.busy(),
+                            cx,
+                        ))
                         .child(
                             Button::new(SharedString::from(format!(
                                 "save-message-attachment-{index}"
@@ -6932,14 +6957,35 @@ impl MailApp {
             cx.notify();
             return;
         }
-        let desired_schedule = megamail_core::datefmt::parse_send_time(&composer.schedule.read(cx).value(), megamail_core::datefmt::now());
+        let desired_schedule = megamail_core::datefmt::parse_send_time(
+            &composer.schedule.read(cx).value(),
+            megamail_core::datefmt::now(),
+        );
         match desired_schedule {
-            Err(error) => { composer.error = Some(error.into()); cx.notify(); return; },
-            Ok(at) if at != composer.message.send_at => { composer.error = Some("Use Set time to review this schedule, or Send now instead to clear it.".into()); cx.notify(); return; },
-            _ => {},
+            Err(error) => {
+                composer.error = Some(error.into());
+                cx.notify();
+                return;
+            }
+            Ok(at) if at != composer.message.send_at => {
+                composer.error = Some(
+                    "Use Set time to review this schedule, or Send now instead to clear it.".into(),
+                );
+                cx.notify();
+                return;
+            }
+            _ => {}
         }
-        if composer.message.send_at.is_some() && self.live.read(cx).schedule_session(composer.message.from_account_id).is_none() {
-            composer.error = Some("This account cannot schedule mail in MegaMail. Clear the schedule or choose a direct IMAP account.".into()); cx.notify(); return;
+        if composer.message.send_at.is_some()
+            && self
+                .live
+                .read(cx)
+                .schedule_session(composer.message.from_account_id)
+                .is_none()
+        {
+            composer.error = Some("This account cannot schedule mail in MegaMail. Clear the schedule or choose a direct IMAP account.".into());
+            cx.notify();
+            return;
         }
         let message = composer.outgoing(cx);
         if message.to.trim().is_empty() {
@@ -7507,7 +7553,9 @@ impl Render for MailApp {
                         }
                     }
                 }))
-                .on_action(cx.listener(|this, _: &FindInMessage, window, cx| this.focus_reader_find(window, cx)))
+                .on_action(cx.listener(|this, _: &FindInMessage, window, cx| {
+                    this.focus_reader_find(window, cx)
+                }))
                 .on_action(cx.listener(|this, _: &FocusSearch, window, cx| {
                     if this
                         .action_state(cx)

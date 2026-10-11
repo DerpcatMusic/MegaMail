@@ -184,3 +184,18 @@ Rust type checks. No new Cargo process or build waiter was started.
 The final staged-source pass parsed all 53 changed Rust files using their owning
 edition and passed staged whitespace checks. New module formatting and the
 Impeccable source detector passed. Parsing is not type checking or test execution.
+
+## Authorized build and delivery — 2026-10-11
+
+The user authorized merge, push and binary replacement. KURV's
+`FINAL-WINDOW-RETURN.json` explicitly returned its reservation. Fresh global
+admission checked the Hive/KONTRA quiet markers and heavy-process census inside
+`flock --close /tmp/mui-cargo.lock`; a competing lock acquisition was rejected
+before MegaMail started any Cargo work.
+
+Compilation found and fixed the shared worker module's explicit path, the rule
+writer's owned error string and the triage UI's missing MailRequest import.
+The app formatter passed. Core: 581 library + 4 OAuth + 21 provider-auth checks
+passed, with 20 explicitly ignored. Native: all 308 tests passed. These replace
+the previous source-only status for these checks; real-provider/runtime feature
+acceptance and the remaining matrix gaps are still not established.

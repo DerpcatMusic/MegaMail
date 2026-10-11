@@ -251,7 +251,10 @@ pub(super) enum WorkerMailboxEvent {
         session: u64,
     },
     NativeMutationFinished(worker::NativeMutationReceipt),
-    QueuedCancelFinished { request: worker::QueuedCancelRequest, canceled: bool },
+    QueuedCancelFinished {
+        request: worker::QueuedCancelRequest,
+        canceled: bool,
+    },
     Account(Account),
     Folders(Vec<Folder>),
     FolderChanged {
@@ -1005,7 +1008,8 @@ impl LiveMailbox {
             changed = true;
         }
         let before = self.pending_queue_cancels.len();
-        self.pending_queue_cancels.retain(|(account, _), request| *account != account_id || request.session != session);
+        self.pending_queue_cancels
+            .retain(|(account, _), request| *account != account_id || request.session != session);
         if self.pending_queue_cancels.len() != before {
             self.status = "The worker stopped before cancellation was confirmed. Refresh Outbox and review the schedule.".into();
             changed = true;
@@ -1869,8 +1873,15 @@ impl LiveMailbox {
         sent
     }
 
-    fn record_queued_cancel(&mut self, account: u32, request: worker::QueuedCancelRequest, canceled: bool) -> bool {
-        if self.pending_queue_cancels.get(&(account, request.id)) != Some(&request) { return false; }
+    fn record_queued_cancel(
+        &mut self,
+        account: u32,
+        request: worker::QueuedCancelRequest,
+        canceled: bool,
+    ) -> bool {
+        if self.pending_queue_cancels.get(&(account, request.id)) != Some(&request) {
+            return false;
+        }
         self.pending_queue_cancels.remove(&(account, request.id));
         self.status = if canceled { "Queued message canceled before submission." } else {
             "Cancellation was not confirmed. Refresh Outbox and check whether the message is due, held or already submitted."
@@ -1879,20 +1890,47 @@ impl LiveMailbox {
     }
 
     pub(crate) fn schedule_session(&self, account: u32) -> Option<u64> {
-        if self.demo_mode || !self.direct_imap_accounts.contains(&account) || !self.can_use_account(account) { return None; }
-        self.adapter_sessions.get(&account).copied().filter(|n| *n != 0)
-    }
-    pub(crate) fn cancel_queued(&mut self, account: u32, request: worker::QueuedCancelRequest, cx: &mut Context<Self>) -> bool {
-        if !self.pending_queue_cancels.is_empty() || self.schedule_session(account) != Some(request.session)
-            || !self.outbox_by_account.get(&account).is_some_and(|items| items.iter().any(|item|
-                item.id == request.id && item.send_at == request.send_at && item.phase == megamail_core::models::OutboxPhase::Ready
-                && request.send_at.is_none_or(|at| at > megamail_core::datefmt::now()))) {
-            self.set_action_error("The queued message or account changed. Refresh Outbox and review it; no cancellation was dispatched.");
-            cx.notify(); return false;
+        if self.demo_mode
+            || !self.direct_imap_accounts.contains(&account)
+            || !self.can_use_account(account)
+        {
+            return None;
         }
-        if !self.send_request(account, MailRequest::CancelQueued(request), cx) { return false; }
-        self.pending_queue_cancels.insert((account, request.id), request);
-        cx.notify(); true
+        self.adapter_sessions
+            .get(&account)
+            .copied()
+            .filter(|n| *n != 0)
+    }
+    pub(crate) fn cancel_queued(
+        &mut self,
+        account: u32,
+        request: worker::QueuedCancelRequest,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.pending_queue_cancels.is_empty()
+            || self.schedule_session(account) != Some(request.session)
+            || !self.outbox_by_account.get(&account).is_some_and(|items| {
+                items.iter().any(|item| {
+                    item.id == request.id
+                        && item.send_at == request.send_at
+                        && item.phase == megamail_core::models::OutboxPhase::Ready
+                        && request
+                            .send_at
+                            .is_none_or(|at| at > megamail_core::datefmt::now())
+                })
+            })
+        {
+            self.set_action_error("The queued message or account changed. Refresh Outbox and review it; no cancellation was dispatched.");
+            cx.notify();
+            return false;
+        }
+        if !self.send_request(account, MailRequest::CancelQueued(request), cx) {
+            return false;
+        }
+        self.pending_queue_cancels
+            .insert((account, request.id), request);
+        cx.notify();
+        true
     }
 
     pub fn flush_outbox(&mut self, id: Option<u32>, cx: &mut Context<Self>) -> bool {
@@ -5218,7 +5256,9 @@ pub(super) fn compact_worker_event(
         WorkerEvent::NativeWorkerSession { session } => {
             WorkerMailboxEvent::AdapterSession { session }
         }
-        WorkerEvent::QueuedCancelFinished { request, canceled } => WorkerMailboxEvent::QueuedCancelFinished { request, canceled },
+        WorkerEvent::QueuedCancelFinished { request, canceled } => {
+            WorkerMailboxEvent::QueuedCancelFinished { request, canceled }
+        }
         WorkerEvent::NativeMutationFinished(receipt) => {
             WorkerMailboxEvent::NativeMutationFinished(receipt)
         }
@@ -5964,27 +6004,51 @@ mod epoch_integration_tests {
     }
     fn mutation_fixture() -> (LiveMailbox, worker::NativeMutationRequest) {
         let mut live = mailbox();
-        live.accounts.push(Account { id: 7, name: "Fixture".into(), email: "owner@example.test".into(), label: "Fixture".into(), accent: "#888888".into() });
+        live.accounts.push(Account {
+            id: 7,
+            name: "Fixture".into(),
+            email: "owner@example.test".into(),
+            label: "Fixture".into(),
+            accent: "#888888".into(),
+        });
         live.request_senders.insert(7, Arc::new(|_| true));
         live.adapter_sessions.insert(7, 9);
-        live.mailbox_epochs.insert((7, "INBOX".into()), NativeMailboxEpoch { uid_validity: 12, generation: 3 });
+        live.mailbox_epochs.insert(
+            (7, "INBOX".into()),
+            NativeMailboxEpoch {
+                uid_validity: 12,
+                generation: 3,
+            },
+        );
         header(&mut live, 7, 1, 42);
         live.messages[0].unread = true;
         let request = worker::NativeMutationRequest {
-            token: worker::NativeMutationToken { batch_id: 1, item_index: 0 },
-            path: "INBOX".into(), uid: 42,
-            scope: worker::NativeMutationScope::Imap { uid_validity: 12, generation: 3, session: 9 },
+            token: worker::NativeMutationToken {
+                batch_id: 1,
+                item_index: 0,
+            },
+            path: "INBOX".into(),
+            uid: 42,
+            scope: worker::NativeMutationScope::Imap {
+                uid_validity: 12,
+                generation: 3,
+                session: 9,
+            },
             action: worker::NativeMutationAction::SetSeen(true),
             required_current_flag: None,
         };
-        live.pending_native_mutations.insert((7, request.token), request.clone());
+        live.pending_native_mutations
+            .insert((7, request.token), request.clone());
         (live, request)
     }
 
     #[test]
     fn native_receipts_require_the_complete_admitted_envelope() {
         let (mut live, request) = mutation_fixture();
-        let receipt = worker::NativeMutationReceipt { request: request.clone(), outcome: worker::NativeMutationOutcome::Succeeded };
+        let receipt = worker::NativeMutationReceipt {
+            request: request.clone(),
+            outcome: worker::NativeMutationOutcome::Succeeded,
+        };
         assert!(!live.record_native_receipt(8, receipt.clone()));
         let mut wrong = receipt.clone();
         wrong.request.action = worker::NativeMutationAction::SetFlagged(true);
@@ -6001,8 +6065,17 @@ mod epoch_integration_tests {
     #[test]
     fn retired_epoch_receipt_cannot_change_reused_uid() {
         let (mut live, request) = mutation_fixture();
-        live.mailbox_epochs.insert((7, "INBOX".into()), NativeMailboxEpoch { uid_validity: 13, generation: 4 });
-        let receipt = worker::NativeMutationReceipt { request, outcome: worker::NativeMutationOutcome::Succeeded };
+        live.mailbox_epochs.insert(
+            (7, "INBOX".into()),
+            NativeMailboxEpoch {
+                uid_validity: 13,
+                generation: 4,
+            },
+        );
+        let receipt = worker::NativeMutationReceipt {
+            request,
+            outcome: worker::NativeMutationOutcome::Succeeded,
+        };
         assert!(live.record_native_receipt(7, receipt.clone()));
         assert!(live.messages[0].unread);
         assert!(live.pending_native_mutations.is_empty());
@@ -6012,11 +6085,29 @@ mod epoch_integration_tests {
     #[test]
     fn queue_cancellation_receipts_require_the_exact_admitted_intent() {
         let (mut live, _) = mutation_fixture();
-        let request = worker::QueuedCancelRequest { id: 42, send_at: Some(2000), session: 9 };
+        let request = worker::QueuedCancelRequest {
+            id: 42,
+            send_at: Some(2000),
+            session: 9,
+        };
         live.pending_queue_cancels.insert((7, 42), request);
         assert!(!live.record_queued_cancel(8, request, true));
-        assert!(!live.record_queued_cancel(7, worker::QueuedCancelRequest { session: 10, ..request }, true));
-        assert!(!live.record_queued_cancel(7, worker::QueuedCancelRequest { send_at: None, ..request }, true));
+        assert!(!live.record_queued_cancel(
+            7,
+            worker::QueuedCancelRequest {
+                session: 10,
+                ..request
+            },
+            true
+        ));
+        assert!(!live.record_queued_cancel(
+            7,
+            worker::QueuedCancelRequest {
+                send_at: None,
+                ..request
+            },
+            true
+        ));
         assert_eq!(live.pending_queue_cancels.get(&(7, 42)), Some(&request));
         assert!(live.record_queued_cancel(7, request, true));
         assert!(live.pending_queue_cancels.is_empty());
@@ -6026,7 +6117,11 @@ mod epoch_integration_tests {
     #[test]
     fn stopped_session_does_not_clear_a_newer_schedule_cancellation() {
         let (mut live, _) = mutation_fixture();
-        let request = worker::QueuedCancelRequest { id: 42, send_at: Some(2000), session: 10 };
+        let request = worker::QueuedCancelRequest {
+            id: 42,
+            send_at: Some(2000),
+            session: 10,
+        };
         live.pending_queue_cancels.insert((7, 42), request);
         live.retire_native_session(7, 9);
         assert_eq!(live.pending_queue_cancels.get(&(7, 42)), Some(&request));
@@ -6046,7 +6141,10 @@ mod epoch_integration_tests {
         let receipts = live.take_mutation_receipts();
         assert_eq!(receipts.len(), 1);
         assert_eq!(receipts[0].1.request, request);
-        assert!(matches!(receipts[0].1.outcome, worker::NativeMutationOutcome::Uncertain(_)));
+        assert!(matches!(
+            receipts[0].1.outcome,
+            worker::NativeMutationOutcome::Uncertain(_)
+        ));
         assert!(!live.retire_native_session(7, 9));
     }
 

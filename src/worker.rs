@@ -381,6 +381,7 @@ pub struct NativeMutationReceipt {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueuedCancelRequest { pub id: u32, pub send_at: Option<i64>, pub session: u64 }
 
+#[path = "worker/native_mutation.rs"]
 mod native_mutation;
 
 /// A request from the UI to the worker.

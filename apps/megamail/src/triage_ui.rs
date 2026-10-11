@@ -10,8 +10,8 @@ use gpui_kit::{
     AppContext as _, IntoElement as _, ParentElement as _, Styled as _, prelude::FluentBuilder as _,
 };
 use megamail_core::worker::{
-    NativeMutationAction, NativeMutationOutcome, NativeMutationRequest, NativeMutationScope,
-    NativeMutationToken,
+    MailRequest, NativeMutationAction, NativeMutationOutcome, NativeMutationRequest,
+    NativeMutationScope, NativeMutationToken,
 };
 use std::collections::{HashMap, HashSet};
 

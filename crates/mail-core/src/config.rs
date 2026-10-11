@@ -1972,7 +1972,7 @@ fn replace_filters_checked(path: &Path, expected: &[FilterRule], rules: &[Filter
     if read_filters_checked(path)? != expected {
         return Err("The saved rules changed. Reload before editing again.".into());
     }
-    write_private(path, &text).map_err(|_| "The rules could not be saved.")
+    write_private(path, &text).map_err(|_| "The rules could not be saved.".to_owned())
 }
 
 pub fn save_filters(rules: &[FilterRule]) {
