@@ -14,6 +14,8 @@ on:
       - 'tools/install-megamail.sh'
       - 'tools/license-inventory.py'
       - 'tools/thunderbird-bridge/**'
+      - 'tools/megamail-html-reader/**'
+      - 'docs/fixtures/html-reader/**'
       - 'data/megamail.*'
       - '.github/workflows/megamail-native.yml'
   pull_request:
@@ -29,6 +31,8 @@ on:
       - 'tools/install-megamail.sh'
       - 'tools/license-inventory.py'
       - 'tools/thunderbird-bridge/**'
+      - 'tools/megamail-html-reader/**'
+      - 'docs/fixtures/html-reader/**'
       - 'data/megamail.*'
       - '.github/workflows/megamail-native.yml'
   workflow_dispatch:
@@ -50,7 +54,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang pkg-config libfontconfig-dev libwayland-dev \
             libxkbcommon-x11-dev libx11-xcb-dev libssl-dev libzstd-dev \
-            libglib2.0-dev libdbus-1-dev gettext
+            libglib2.0-dev libdbus-1-dev gettext libgtk-3-dev \
+            libwebkit2gtk-4.1-dev libjson-glib-dev libxml2-dev
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
@@ -63,6 +68,10 @@ jobs:
         run: bash -n tools/install-megamail.sh
       - name: Check Thunderbird extension contract
         run: node tools/thunderbird-bridge/extension.test.cjs
+      - name: Build isolated HTML reader
+        run: make -j1 -C tools/megamail-html-reader all
+      - name: Test HTML reader policy
+        run: python3 tools/megamail-html-reader/tests.py --helper tools/megamail-html-reader/build/megamail-html-reader
       - name: Test portable mail core
         run: cargo test --manifest-path crates/mail-core/Cargo.toml --locked -j 2
       - name: Test Zeron theme model and importer
@@ -76,6 +85,6 @@ jobs:
       - name: Test native reader foundation
         run: cargo test --manifest-path vendor/gpui-base/Cargo.toml --lib --locked -j 2
       - name: Test native mailbox and composer
-        run: cargo test --manifest-path apps/megamail/Cargo.toml --locked -j 2
+        run: cargo test --manifest-path apps/megamail/Cargo.toml --locked -j 2 -- --test-threads=1
       - name: Check native executable
         run: cargo check --manifest-path apps/megamail/Cargo.toml --locked --bin megamail -j 2
