@@ -298,6 +298,7 @@ pub(super) enum WorkerMailboxEvent {
         links_by_uid: HashMap<u32, Vec<MailLink>>,
         html_by_uid: HashMap<u32, String>,
         html_without_quote_by_uid: HashMap<u32, String>,
+        original_by_uid: HashMap<u32, Arc<crate::reader_session::OriginalBody>>,
     },
     Related {
         message_id: u32,
@@ -463,6 +464,7 @@ pub struct LiveMailbox {
     links: Vec<MailLink>,
     demo_links_by_key: HashMap<MessageKey, Vec<MailLink>>,
     demo_html_by_key: HashMap<MessageKey, String>,
+    demo_original_by_key: HashMap<MessageKey, Arc<crate::reader_session::OriginalBody>>,
     demo_html_without_quote_by_key: HashMap<MessageKey, String>,
     attachment_state: AttachmentState,
     pending_attachment: Option<PendingAttachment>,
@@ -640,6 +642,7 @@ impl LiveMailbox {
             links: Vec::new(),
             demo_links_by_key: HashMap::new(),
             demo_html_by_key: HashMap::new(),
+            demo_original_by_key: HashMap::new(),
             demo_html_without_quote_by_key: HashMap::new(),
             attachment_state: AttachmentState::NotLoaded,
             pending_attachment: None,
@@ -1527,6 +1530,9 @@ impl LiveMailbox {
             .is_some_and(|row| row.key == key && !row.message.body.is_empty())
             || (self.demo_mode
                 && (self.page_keys.contains(&key) || self.demo_html_by_key.contains_key(&key)));
+        if self.demo_mode {
+            self.selected_original = self.demo_original_by_key.get(&key).cloned();
+        }
         if !self.selected_body_loaded {
             self.request_selected_body(cx);
         }
@@ -2867,6 +2873,7 @@ impl LiveMailbox {
                 links_by_uid,
                 html_by_uid,
                 html_without_quote_by_uid,
+                original_by_uid,
             } => {
                 if self.demo_mode {
                     let Some(path) = self.path_for_folder(account_id, folder_id) else {
@@ -2882,6 +2889,13 @@ impl LiveMailbox {
                     if !active_page && !sent_headers && !message_refresh {
                         return;
                     }
+                    self.demo_original_by_key
+                        .retain(|key, _| key.account_id != account_id || key.folder_path != path);
+                    self.demo_original_by_key.extend(
+                        original_by_uid
+                            .into_iter()
+                            .map(|(uid, source)| (message_key(account_id, &path, uid), source)),
+                    );
                     self.demo_links_by_key
                         .retain(|key, _| key.account_id != account_id || key.folder_path != path);
                     self.demo_links_by_key.extend(
@@ -3002,6 +3016,11 @@ impl LiveMailbox {
                             .and_then(|key| self.demo_html_without_quote_by_key.get(key))
                             .cloned()
                             .map(SharedString::from);
+                        self.selected_original = self
+                            .selected_key
+                            .as_ref()
+                            .and_then(|key| self.demo_original_by_key.get(key))
+                            .cloned();
                         self.selected_body_loaded = self.messages.iter().any(|message| {
                             self.key_for(message).as_ref() == self.selected_key.as_ref()
                         });
@@ -3636,10 +3655,7 @@ impl LiveMailbox {
                 if let Some(state) = self.page_states.get_mut(&key) {
                     finish_superseded_page(state, append);
                 }
-                self.query_errors.insert(
-                    result.account_id,
-                    "The mailbox request was superseded. Refresh to try again.".into(),
-                );
+                // Supersession is routine cancellation. Preserve real account errors.
                 self.update_loading_state();
                 cx.notify();
                 return;
@@ -4119,7 +4135,10 @@ impl LiveMailbox {
                     .map(SharedString::from);
                 self.selected_body_loaded = false;
             }
-            self.selected_original = None;
+            self.selected_original = next_key
+                .as_ref()
+                .and_then(|key| self.demo_original_by_key.get(key))
+                .cloned();
             self.selected_sender_check = None;
             self.selected_body_version = None;
             self.selected_key = next_key;
@@ -4704,6 +4723,7 @@ impl LiveMailbox {
         self.loading_more = false;
         self.demo_links_by_key.clear();
         self.demo_html_by_key.clear();
+        self.demo_original_by_key.clear();
         self.demo_html_without_quote_by_key.clear();
         self.clear_selection();
     }
@@ -5035,12 +5055,17 @@ fn remap_demo_event(account_id: u32, mut event: WorkerMailboxEvent) -> WorkerMai
             links_by_uid,
             html_by_uid,
             html_without_quote_by_uid,
+            original_by_uid,
             ..
         } = &mut event
         {
             for message in messages.iter_mut() {
                 message.uid = message.uid.saturating_sub(29);
             }
+            *original_by_uid = std::mem::take(original_by_uid)
+                .into_iter()
+                .map(|(uid, original)| (uid.saturating_sub(29), original))
+                .collect();
             let links = std::mem::take(links_by_uid);
             *links_by_uid = links
                 .into_iter()
@@ -5113,6 +5138,25 @@ fn demo_long_thread_reply() -> Message {
         importance: megamail_core::models::Importance::Normal,
         due: 0,
     }
+}
+
+fn demo_styled_message() -> (Message, String) {
+    let mut message = demo_long_thread_reply();
+    message.id = 1_093;
+    message.uid = 1_093;
+    message.timestamp = 1_760_010_220;
+    message.date = "Today, 11:20 AM".into();
+    message.from_name = "Meridian Studio".into();
+    message.from_addr = "notes@example.test".into();
+    message.subject = "Field notes — October edition".into();
+    message.preview = "Fictional newsletter with authored colors and responsive columns.".into();
+    message.message_id = "<demo-reader-1093@megamail.local>".into();
+    message.references.clear();
+    let source = include_str!("../../../docs/fixtures/html-reader/batch2/authored.html").replace(
+        "<body>",
+        "<body><div style=\"display:none\">Hidden duplicate preheader</div>",
+    );
+    (message, source)
 }
 
 fn demo_reader_thread_messages() -> [(Message, String); 2] {
@@ -5271,9 +5315,18 @@ pub(super) fn compact_worker_event(
             let mut links_by_uid = HashMap::new();
             let mut html_by_uid = HashMap::new();
             let mut html_without_quote_by_uid = HashMap::new();
+            let mut original_by_uid = HashMap::new();
             let mut messages = messages
                 .into_iter()
                 .map(|mut message| {
+                    original_by_uid.insert(
+                        message.uid,
+                        Arc::new(crate::reader_session::OriginalBody::capture(
+                            &message.body,
+                            Some(true),
+                            None,
+                        )),
+                    );
                     let (body, html, html_without_quote, links) =
                         body_content_and_links(&message.body);
                     message.body = body;
@@ -5290,7 +5343,18 @@ pub(super) fn compact_worker_event(
                 })
                 .collect::<Vec<_>>();
             if folder_id == 1 && messages.iter().any(|message| message.account_id == 1) {
-                for (mut message, source_html) in demo_reader_thread_messages() {
+                for (mut message, source_html) in demo_reader_thread_messages()
+                    .into_iter()
+                    .chain([demo_styled_message()])
+                {
+                    original_by_uid.insert(
+                        message.uid,
+                        Arc::new(crate::reader_session::OriginalBody::capture(
+                            &source_html,
+                            Some(true),
+                            None,
+                        )),
+                    );
                     let (body, html, html_without_quote, links) =
                         body_content_and_links(&source_html);
                     message.body = body;
@@ -5312,6 +5376,7 @@ pub(super) fn compact_worker_event(
                 links_by_uid,
                 html_by_uid,
                 html_without_quote_by_uid,
+                original_by_uid,
             }
         }
         WorkerEvent::Messages { folder_id, .. } => WorkerMailboxEvent::FolderChanged { folder_id },

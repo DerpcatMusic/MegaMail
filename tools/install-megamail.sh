@@ -10,7 +10,7 @@ die() {
 [[ "${EUID:-$(id -u)}" -ne 0 ]] || die "run this as your desktop user, without sudo."
 [[ -n "${HOME:-}" && -d "$HOME" ]] || die "HOME must name an existing user directory."
 
-for command_name in cargo python3 install mktemp mv rm cp chmod rmdir; do
+for command_name in cargo python3 install mktemp mv rm cp chmod rmdir make pkg-config Xvfb bwrap; do
     command -v "$command_name" >/dev/null 2>&1 || die "required command not found: $command_name"
 done
 
@@ -96,6 +96,9 @@ binary_name="${metadata_summary#*$'\n'}"
 printf 'Building MegaMail (locked release build, two jobs)…\n'
 cargo build --release --locked -j 2 --manifest-path "$manifest" --bin "$binary_name"
 
+# Build the isolated HTML package in the same admitted serial installation slot.
+make -j1 -C "$repo_root/tools/megamail-html-reader" all
+
 built_binary="$target_directory/release/$binary_name"
 [[ -x "$built_binary" ]] || die "Cargo succeeded but the expected executable is missing: $built_binary"
 
@@ -118,11 +121,21 @@ temporary_icon=""
 temporary_desktop=""
 temporary_licenses=""
 backup_licenses=""
+temporary_html=""
+backup_html=""
 cleanup() {
     [[ -z "$temporary_binary" ]] || rm -f -- "$temporary_binary"
     [[ -z "$temporary_icon" ]] || rm -f -- "$temporary_icon"
     [[ -z "$temporary_desktop" ]] || rm -f -- "$temporary_desktop"
     [[ -z "$temporary_licenses" ]] || rm -rf -- "$temporary_licenses"
+    [[ -z "$temporary_html" ]] || rm -rf -- "$temporary_html"
+    if [[ -n "$backup_html" && -d "$backup_html" ]]; then
+        if [[ -e "$html_directory" ]]; then
+            rm -rf -- "$backup_html"
+        else
+            mv -- "$backup_html" "$html_directory" || true
+        fi
+    fi
     if [[ -n "$backup_licenses" && -d "$backup_licenses" ]]; then
         if [[ -e "$installed_licenses" ]]; then
             rm -rf -- "$backup_licenses"
@@ -132,6 +145,26 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
+
+html_directory="$app_data_directory/html-reader"
+[[ ! -L "$html_directory" ]] || die "refusing a symlink at the HTML reader destination"
+temporary_html="$(mktemp -d "$app_data_directory/.html-reader.XXXXXX")"
+mkdir -- "$temporary_html/extensions"
+chmod 0755 "$temporary_html" "$temporary_html/extensions"
+install -m 0755 -- "$repo_root/tools/megamail-html-reader/build/megamail-html-reader" "$temporary_html/megamail-html-reader"
+install -m 0644 -- "$repo_root/tools/megamail-html-reader/build/extensions/libmegamail-reader-policy.so" "$temporary_html/extensions/libmegamail-reader-policy.so"
+if [[ -e "$html_directory" ]]; then
+    [[ -d "$html_directory" ]] || die "HTML reader destination is not a directory"
+    backup_html="$(mktemp -d "$app_data_directory/.html-reader-backup.XXXXXX")"
+    rmdir -- "$backup_html"
+    mv -- "$html_directory" "$backup_html"
+fi
+mv -- "$temporary_html" "$html_directory"
+temporary_html=""
+if [[ -n "$backup_html" ]]; then
+    rm -rf -- "$backup_html"
+    backup_html=""
+fi
 
 temporary_binary="$(mktemp "$bin_directory/.megamail.XXXXXX")"
 install -m 0755 -- "$built_binary" "$temporary_binary"

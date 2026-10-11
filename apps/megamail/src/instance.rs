@@ -110,6 +110,9 @@ mod activation {
     }
 
     impl ActivationInbox {
+        pub fn pending_count(&self) -> usize {
+            self.queue.lock().map_or(0, |queue| queue.len())
+        }
         /// Non-I/O UI seam. Leave `ready` false during setup, account selection,
         /// any existing composer/modal, or send/save uncertainty. Choose a usable
         /// explicit account BEFORE taking; the URI never selects a sender.
@@ -704,6 +707,7 @@ mod activation {
         fn cold_and_running_links_use_one_parser_and_one_profile_lock() {
             let profile = Profile::new();
             let inbox = profile.primary(Some("mailto:cold@example.test?body=%2520+literal"));
+            assert_eq!(inbox.pending_count(), 1);
             assert!(inbox.take_if_ready(false).is_none());
             assert_eq!(
                 acquire(&profile.0.join("instance.lock"))
@@ -726,6 +730,7 @@ mod activation {
             assert_eq!(running.bcc, ["private@example.test"]);
             assert_eq!(running.body, "%2B");
             assert!(inbox.take_if_ready(true).is_none());
+            assert_eq!(inbox.pending_count(), 0);
             drop(inbox);
             assert!(!profile.socket().exists());
             drop(acquire(&profile.0.join("instance.lock")).unwrap());

@@ -81,7 +81,7 @@ fn updated_rule(
     })
 }
 impl MailApp {
-    fn load_rule_editor(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn load_rule_editor(&mut self, cx: &mut Context<Self>) {
         if self.demo || self.rule_editor.busy {
             return;
         }
@@ -236,6 +236,9 @@ impl MailApp {
     }
     pub(crate) fn rule_editor_panel(&self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
         let state = &self.rule_editor;
+        if !state.open {
+            return div().into_any_element();
+        }
         let enabled = !self.demo && !state.busy && self.composer.is_none();
         let count = state.rules.as_ref().map_or(0, Vec::len);
         v_flex().w_full().gap_2()

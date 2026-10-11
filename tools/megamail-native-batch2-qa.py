@@ -33,7 +33,7 @@ CHECKS = {
     "invitation": "Demo metadata is not causally correlated direct BodyAtEpoch evidence.",
     "mailto_ipc": "Demo bypasses activation and rejects --demo plus URI; never launch normal mode.",
     "account_provider_recovery": "Real roster/provider/TB/keyring operations prohibited; separate fixtures required.",
-    "helper": "Release gate retained; only --developer-helper-preview runs a separate fictional helper probe.",
+    "helper": "With --helper, fictional mail renders inline; manually inspect captured pixels. The separate developer window remains gated.",
     "physical_performance_accessibility": "Xvfb/software captures prove neither FPS nor accessibility.",
 }
 
@@ -58,7 +58,8 @@ def trusted_file(value: str, executable: bool = True) -> Path:
 def source_digest() -> str:
     # A freeze/review receipt, NOT a Rust parser or proof of control flow.
     paths = {ROOT / "Cargo.toml", ROOT / "Cargo.lock", ROOT / "apps/megamail/Cargo.toml",
-             ROOT / "apps/megamail/Cargo.lock", ROOT / "crates/mail-core/Cargo.toml"}
+             ROOT / "apps/megamail/Cargo.lock", ROOT / "crates/mail-core/Cargo.toml",
+             ROOT / "docs/fixtures/html-reader/batch2/authored.html"}
     for directory in ("apps/megamail/src", "crates/mail-core/src", "src"):
         paths.update((ROOT / directory).rglob("*.rs"))
     for pattern in ("*.c", "*.h", "Makefile"):
@@ -128,8 +129,15 @@ def sandbox_command(root: Path, binary: Path, args: argparse.Namespace) -> list[
                 "--setenv", "XDG_DATA_HOME", "/qa/data", "--setenv", "XDG_CACHE_HOME", "/qa/cache",
                 "--setenv", "XDG_STATE_HOME", "/qa/state", "--setenv", "XDG_RUNTIME_DIR", "/qa/run",
                 "--setenv", "TMPDIR", "/tmp", "--setenv", "LIBGL_ALWAYS_SOFTWARE", "1",
-                "--setenv", "GSETTINGS_BACKEND", "memory", "--setenv", "GTK_A11Y", "none",
-                "--", "/usr/bin/python3", "/qa-run.py", "--inside", "--execute",
+                "--setenv", "GSETTINGS_BACKEND", "memory", "--setenv", "GTK_A11Y", "none"]
+    if args.helper:
+        helper = trusted_file(args.helper)
+        extension = trusted_file(str(helper.parent / "extensions/libmegamail-reader-policy.so"), executable=False)
+        command += ["--dir", "/qa/data/megamail", "--dir", "/qa/data/megamail/html-reader",
+                    "--dir", "/qa/data/megamail/html-reader/extensions",
+                    "--ro-bind", str(helper), "/qa/data/megamail/html-reader/megamail-html-reader",
+                    "--ro-bind", str(extension), "/qa/data/megamail/html-reader/extensions/libmegamail-reader-policy.so"]
+    command += ["--", "/usr/bin/python3", "/qa-run.py", "--inside", "--execute",
                 "--timeout", str(args.timeout), "--settle", str(args.settle)]
     if args.developer_helper_preview:
         command += ["--developer-helper-preview"]
@@ -307,7 +315,7 @@ def inside(args: argparse.Namespace) -> int:
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--binary", help="Absolute canonical parent-built executable; no PATH lookup")
-    p.add_argument("--helper", help="Optional absolute trusted compiled helper; alone this does not launch it")
+    p.add_argument("--helper", help="Optional trusted compiled helper for isolated fictional inline rendering")
     p.add_argument("--developer-helper-preview", action="store_true",
                    help="Separate synthetic helper probe only; never enables native original-formatting release gate")
     p.add_argument("--dry-run", action="store_true", help="Plan only, even if --execute was supplied")

@@ -71,6 +71,7 @@ mod rules_editor;
 mod rules_preview;
 mod rules_ui;
 mod scheduling;
+mod styled_reader;
 mod theme;
 mod thunderbird_adapter;
 mod triage;
@@ -797,6 +798,7 @@ struct MailApp {
     rule_editor: rules_editor::State,
     reader_export_busy: bool,
     reader_find: reader_find::State,
+    styled_reader: styled_reader::State,
     attachment_preview: attachment_preview::State,
     reader_export_status: Option<String>,
     triage: triage_ui::State,
@@ -804,6 +806,7 @@ struct MailApp {
     outbox_review: Option<(u32, u32)>,
     activation: Option<std::sync::Arc<instance::ActivationInbox>>,
     activation_confirmed_account: Option<u32>,
+    activation_pending: usize,
     auth_controller: megamail_core::provider_auth::AuthController,
     auth_cancel: Arc<std::sync::Mutex<Option<megamail_core::provider_auth::Attempt>>>,
     auth_availability: Option<provider_setup::Availability>,
@@ -945,6 +948,7 @@ impl MailApp {
             rule_editor: rules_editor::State::new(window, cx),
             reader_export_busy: false,
             reader_find: reader_find::State::new(window, cx),
+            styled_reader: Default::default(),
             attachment_preview: Default::default(),
             reader_export_status: None,
             triage: triage_ui::State::new(window, cx),
@@ -952,6 +956,7 @@ impl MailApp {
             outbox_review: None,
             activation,
             activation_confirmed_account: None,
+            activation_pending: 0,
             auth_controller: Default::default(),
             auth_cancel: Default::default(),
             auth_availability: None,
@@ -1128,6 +1133,11 @@ impl MailApp {
                     .await;
                 if this
                     .update_in(cx, |this, window, cx| {
+                        let pending = this.activation.as_ref().map_or(0, |inbox| inbox.pending_count());
+                        if pending != this.activation_pending {
+                            this.activation_pending = pending;
+                            cx.notify();
+                        }
                         this.pump_triage(cx);
                         let previous_recovery_status =
                             this.composer.as_ref().map(|c| c.recovery.status.clone());
@@ -1325,19 +1335,74 @@ impl MailApp {
     }
 
     fn recovery_panel(&self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
-        v_flex().gap_1()
-            .child(Button::new("confirm-external-compose-account").ghost().small().label("Open queued email link")
-                .disabled(self.activation.is_none() || !self.action_state(cx).allows(desktop_actions::MailboxAction::ComposeMessage))
-                .on_click(cx.listener(|this, _, _, cx| { this.activation_confirmed_account = this.live.read(cx).snapshot().current_account_id; cx.notify(); })))
-            .child(div().text_size(px(11.)).text_color(palette.muted).child("Queued email links wait here. Choose a usable account in the rail, then explicitly open one link. This never sends."))
-            .child(Button::new("list-local-recovery").ghost().small().label(if self.recovery_listing { "Reading local recovery…" } else { "Recover local drafts" })
-                .disabled(self.demo || self.recovery.is_none() || self.composer.is_some() || self.recovery_listing || self.view != View::Mailbox)
-                .on_click(cx.listener(|this, _, _, cx| this.list_local_recovery(cx))))
-            .when_some(self.recovery_error.clone(), |el, error| el.child(div().text_size(px(11.)).text_color(palette.muted).child(error)))
-            .children(self.recovery_keys.iter().enumerate().filter(|(_, key)| Some(key.account_id()) == self.live.read(cx).snapshot().current_account_id).map(|(index, key)| {
-                let key = key.clone(); Button::new(SharedString::from(format!("restore-local-{index}"))).ghost().small().label(format!("Open local recovery {}", index + 1))
-                    .disabled(self.recovery_listing || self.composer.is_some()).on_click(cx.listener(move |this, _, _, cx| this.restore_local_recovery(key.clone(), cx)))
-            })).into_any_element()
+        if self.activation_pending == 0
+            && !self.recovery_listing
+            && self.recovery_error.is_none()
+            && self.recovery_keys.is_empty()
+        {
+            return div().into_any_element();
+        }
+        v_flex()
+            .gap_1()
+            .when(self.activation_pending > 0, |el| {
+                el.child(
+                    Button::new("confirm-external-compose-account")
+                        .ghost()
+                        .small()
+                        .label("Open queued email link")
+                        .disabled(
+                            self.activation.is_none()
+                                || !self
+                                    .action_state(cx)
+                                    .allows(desktop_actions::MailboxAction::ComposeMessage),
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.activation_confirmed_account =
+                                this.live.read(cx).snapshot().current_account_id;
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(palette.muted)
+                        .child(format!(
+                            "{} queued email links. Choose an account to open a draft.",
+                            self.activation_pending
+                        )),
+                )
+            })
+            .when(self.recovery_listing, |el| {
+                el.child(div().text_size(px(11.)).child("Reading recovered drafts…"))
+            })
+            .when_some(self.recovery_error.clone(), |el, error| {
+                el.child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(palette.muted)
+                        .child(error),
+                )
+            })
+            .children(
+                self.recovery_keys
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, key)| {
+                        Some(key.account_id()) == self.live.read(cx).snapshot().current_account_id
+                    })
+                    .map(|(index, key)| {
+                        let key = key.clone();
+                        Button::new(SharedString::from(format!("restore-local-{index}")))
+                            .ghost()
+                            .small()
+                            .label(format!("Open local recovery {}", index + 1))
+                            .disabled(self.recovery_listing || self.composer.is_some())
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.restore_local_recovery(key.clone(), cx)
+                            }))
+                    }),
+            )
+            .into_any_element()
     }
 
     fn retry_native_recovery(&mut self, cx: &mut Context<Self>) {
@@ -1725,6 +1790,10 @@ impl MailApp {
 
     /// Keep the actual selected TextView consumer outside the render path.
     fn refresh_reader_text(&mut self, snapshot: &MailboxSnapshot, cx: &mut Context<Self>) {
+        self.refresh_semantic_reader_text(snapshot, cx);
+        self.sync_styled_reader(snapshot, cx);
+    }
+    fn refresh_semantic_reader_text(&mut self, snapshot: &MailboxSnapshot, cx: &mut Context<Self>) {
         let Some(identity) = self.reader_text_identity(snapshot) else {
             self.reader_text = None;
             self.reader_find.clear();
@@ -1827,8 +1896,6 @@ impl MailApp {
                     });
                 })
                 .detach();
-            } else if snapshot.body_loaded {
-                self.invitation_error = Some("Calendar metadata is unknown for this body/adapter; no invitation is inferred from HTML.".into());
             }
         }
         if !retired.is_empty() {
@@ -4328,8 +4395,8 @@ impl MailApp {
             .custom(floating_button_variant(cx, palette, self.dark))
             .small()
             .icon(Icon::new(IconName::ListFilter).size(px(15.)))
-            .tooltip(format!("Filter loaded mail: {}", selected.label()))
-            .accessibility_label("Filter loaded mail")
+            .tooltip(format!("Mailbox options · {}", selected.label()))
+            .accessibility_label("Mailbox filters and options")
             .dropdown_menu(move |mut menu, _, _| {
                 menu = menu.label("Loaded messages");
                 for filter in MessageFilter::ALL {
@@ -4346,7 +4413,35 @@ impl MailApp {
                             }),
                     );
                 }
-                menu
+                let bulk_owner = owner.clone();
+                let rules_owner = owner.clone();
+                let recovery_owner = owner.clone();
+                menu.separator()
+                    .item(
+                        PopupMenuItem::element(|_, _| div().child("Select messages")).on_click(
+                            move |_, _, cx| {
+                                let _ = bulk_owner.update(cx, |this, cx| {
+                                    this.triage.open = !this.triage.open;
+                                    cx.notify();
+                                });
+                            },
+                        ),
+                    )
+                    .item(
+                        PopupMenuItem::element(|_, _| div().child("Mail rules…")).on_click(
+                            move |_, _, cx| {
+                                let _ =
+                                    rules_owner.update(cx, |this, cx| this.load_rule_editor(cx));
+                            },
+                        ),
+                    )
+                    .item(
+                        PopupMenuItem::element(|_, _| div().child("Recover local drafts…"))
+                            .on_click(move |_, _, cx| {
+                                let _ = recovery_owner
+                                    .update(cx, |this, cx| this.list_local_recovery(cx));
+                            }),
+                    )
             })
             .into_any_element()
     }
@@ -4480,9 +4575,6 @@ impl MailApp {
                             )
                             .child(self.filter_menu(snapshot, palette, cx)),
                     )
-                    .child(div().text_size(px(10.)).text_color(palette.muted).child(
-                        "Direct: cached folder headers and bodies. Thunderbird: loaded headers. Use from:, to:, subject:, body:, is:unread, has:attachment, before: or -term."
-                    ))
                     .when_some(snapshot.search_error.clone(), |row, error| {
                         row.child(error_banner("Search", &error, cx, palette))
                     })
@@ -4538,7 +4630,9 @@ impl MailApp {
                     .when_some(snapshot.action_error.clone(), |row, error| {
                         row.child(error_banner("Mail action failed", &error, cx, palette))
                     })
-                    .child(self.triage_panel(palette, cx))
+                    .when(self.triage.open, |el| {
+                        el.child(self.triage_panel(palette, cx))
+                    })
                     .child(self.rule_editor_panel(palette, cx)),
             )
             .child(
@@ -4986,6 +5080,13 @@ impl MailApp {
         let owner = cx.entity().downgrade();
         let selected = snapshot.selected_message.clone();
         let demo = snapshot.is_demo;
+        let plain = snapshot
+            .selected_key
+            .as_ref()
+            .is_some_and(|key| self.plain_messages.contains(key));
+        let body_loaded = snapshot.body_loaded;
+        let export_busy = self.reader_export_busy;
+        let rules_busy = self.rule_preview_busy;
         Button::new("message-actions")
             .custom(floating_button_variant(cx, palette, self.dark))
             .small()
@@ -5013,6 +5114,15 @@ impl MailApp {
                     },
                     "Move to Trash",
                     "Copy message text",
+                    "Find in message",
+                    if plain {
+                        "Show styled message"
+                    } else {
+                        "Read as text"
+                    },
+                    "Save message text…",
+                    "Save for printing…",
+                    "Preview mail rules",
                 ]
                 .into_iter()
                 .enumerate()
@@ -5021,8 +5131,14 @@ impl MailApp {
                     let body = body.clone();
                     menu = menu.item(
                         PopupMenuItem::element(move |_, _| div().child(label))
-                            .disabled(demo && index < 3 || index == 3 && body.is_empty())
-                            .on_click(move |_, _, cx| {
+                            .disabled(match index {
+                                0..=2 => demo,
+                                3 => body.is_empty(),
+                                4..=5 => !body_loaded,
+                                6..=7 => !body_loaded || export_busy,
+                                _ => demo || !body_loaded || rules_busy,
+                            })
+                            .on_click(move |_, window, cx| {
                                 let _ = owner.update(cx, |this, cx| match index {
                                     0 => {
                                         this.live.update(cx, |live, cx| {
@@ -5037,9 +5153,25 @@ impl MailApp {
                                     2 => {
                                         this.live.update(cx, |live, cx| live.trash_selected(cx));
                                     }
-                                    _ => cx.write_to_clipboard(ClipboardItem::new_string(
+                                    3 => cx.write_to_clipboard(ClipboardItem::new_string(
                                         body.clone(),
                                     )),
+                                    4 => this.focus_reader_find(window, cx),
+                                    5 => {
+                                        if let Some(key) =
+                                            this.live.read(cx).snapshot().selected_key
+                                        {
+                                            if !this.plain_messages.remove(&key) {
+                                                this.plain_messages.insert(key);
+                                            }
+                                            let snapshot = this.live.read(cx).snapshot();
+                                            this.refresh_reader_text(&snapshot, cx);
+                                            cx.notify();
+                                        }
+                                    }
+                                    6 => this.save_readable_text(cx),
+                                    7 => this.save_printable_html(cx),
+                                    _ => this.preview_saved_rules(cx),
                                 });
                             }),
                     );
@@ -5297,9 +5429,6 @@ impl MailApp {
                             .min_w_0()
                             .max_w(px(680.))
                             .gap_4()
-                            .child(Button::new("open-original-formatting").ghost().small().label("Original formatting — temporary window")
-                                .disabled(snapshot.body_loading || snapshot.selected_original.is_none())
-                                .on_click(cx.listener(|this, _, _, cx| this.open_original_formatting(cx))))
                             .when_some(self.reader_session.notice.clone(), |el, notice| el.child(div().text_size(px(11.)).text_color(palette.muted).child(notice)))
                             .when_some(self.invitation_error.clone(), |el, error| el.child(div().text_size(px(11.)).text_color(palette.muted).child(error)))
                             .when_some(self.invitation_preview.clone(), |el, invitation| {
@@ -5501,6 +5630,21 @@ impl MailApp {
                         })
                         .into_any_element()
                 };
+                let body_element = if selected_here {
+                    let content = if plain {
+                        body_element
+                    } else {
+                        self.styled_body(snapshot, cx).unwrap_or(body_element)
+                    };
+                    div()
+                        .relative()
+                        .w_full()
+                        .child(content)
+                        .child(self.styled_width_probe(cx))
+                        .into_any_element()
+                } else {
+                    body_element
+                };
                 let sender = snapshot
                     .accounts
                     .iter()
@@ -5659,85 +5803,44 @@ impl MailApp {
                                     ))
                                 }),
                         )
-                        .when(
-                            cached.is_some_and(|cached| !cached.source_html.is_empty()),
-                            |el| {
-                                let key = row.key.clone();
-                                el.child(
-                                    Button::new(SharedString::from(format!(
-                                        "reader-format-{}-{}-{}",
-                                        key.account_id, key.folder_path, key.uid
-                                    )))
-                                    .ghost()
-                                    .small()
-                                    .self_start()
-                                    .label(if plain {
-                                        "Show formatting"
-                                    } else {
-                                        "Plain text"
-                                    })
-                                    .accessibility_label(if plain {
-                                        "Show formatted message"
-                                    } else {
-                                        "View message as plain text"
-                                    })
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        if plain {
-                                            this.plain_messages.remove(&key);
-                                        } else {
-                                            this.plain_messages.insert(key.clone());
-                                        }
-                                        let snapshot = this.live.read(cx).snapshot();
-                                        this.refresh_reader_text(&snapshot, cx);
-                                        cx.notify();
-                                    })),
-                                )
-                            },
-                        )
                         .when(selected_here, |el| {
-                            el.child(
-                                Button::new("preview-saved-rules")
-                                    .ghost()
-                                    .small()
-                                    .label(if self.rule_preview_busy {
-                                        "Previewing rules…"
-                                    } else {
-                                        "Preview saved rules"
-                                    })
-                                    .disabled(
-                                        self.demo
-                                            || self.rule_preview_busy
-                                            || !snapshot.body_loaded,
-                                    )
-                                    .on_click(
-                                        cx.listener(|this, _, _, cx| this.preview_saved_rules(cx)),
-                                    ),
-                            )
-                            .when(self.rule_move_plan.is_some(), |el| el.child(Button::new("prepare-previewed-rule-move").ghost().small()
-                                .label("Review move from this preview")
-                                .disabled(self.rule_preview_busy || self.triage.busy())
-                                .on_click(cx.listener(|this, _, _, cx| this.apply_previewed_rule_move(cx)))))
-                            .child(Button::new("save-readable-text").ghost().small()
-                                .label(if self.reader_export_busy { "Saving text…" } else { "Save readable text" })
-                                .disabled(self.reader_export_busy || !snapshot.body_loaded)
-                                .tooltip("Save the displayed body as plain text, including decrypted content if displayed. Hidden quotes, formatting and attachments are omitted. Choose a new filename.")
-                                .on_click(cx.listener(|this, _, _, cx| this.save_readable_text(cx))))
-                            .child(Button::new("save-printable-html").ghost().small().label("Save printable message")
-                                .disabled(self.reader_export_busy || !snapshot.body_loaded)
-                                .tooltip("Save the displayed text and From/To/Subject as private HTML, including decrypted text when displayed. Open it in a browser to print or save as PDF; attachments and hidden quotes are omitted.")
-                                .on_click(cx.listener(|this, _, _, cx| this.save_printable_html(cx))))
-                            .when_some(self.reader_export_status.clone(), |el, status| el.child(div().text_size(px(11.)).text_color(palette.muted).child(status)))
-                            .children(
-                                self.rule_preview.iter().cloned().map(|line| {
+                            el.child(self.newsletter_panel(snapshot, palette, cx))
+                                .when(self.reader_find.is_open(), |el| {
+                                    el.child(self.reader_find_panel(palette, cx))
+                                })
+                        })
+                        .child(body_element)
+                        .when(selected_here, |el| {
+                            el.when_some(self.reader_export_status.clone(), |el, status| {
+                                el.child(
                                     div()
                                         .text_size(px(11.))
                                         .text_color(palette.muted)
-                                        .child(line)
-                                }),
+                                        .child(status),
+                                )
+                            })
+                            .children(self.rule_preview.iter().cloned().map(|line| {
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(palette.muted)
+                                    .child(line)
+                            }))
+                            .when(
+                                self.rule_move_plan.is_some(),
+                                |el| {
+                                    el.child(
+                                        Button::new("prepare-previewed-rule-move")
+                                            .ghost()
+                                            .small()
+                                            .label("Review proposed move")
+                                            .disabled(self.rule_preview_busy || self.triage.busy())
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.apply_previewed_rule_move(cx)
+                                            })),
+                                    )
+                                },
                             )
                         })
-                        .when(selected_here, |el| el.child(self.newsletter_panel(snapshot, palette, cx)).child(self.reader_find_panel(palette, cx)))
-                        .child(body_element)
                         .when(cached.is_none() && !selected_here, |el| {
                             let key = row.key.clone();
                             el.child(

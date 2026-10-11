@@ -17,6 +17,7 @@ struct ResultSet {
 }
 pub(crate) struct State {
     query: Entity<InputState>,
+    open: bool,
     busy: bool,
     result: Option<ResultSet>,
     current: usize,
@@ -27,6 +28,7 @@ impl State {
     pub fn new(window: &mut Window, cx: &mut Context<MailApp>) -> Self {
         Self {
             query: new_input(window, cx, "Exact text, case-sensitive"),
+            open: false,
             busy: false,
             result: None,
             current: 0,
@@ -34,7 +36,11 @@ impl State {
             revision: 0,
         }
     }
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
     pub fn clear(&mut self) {
+        self.open = false;
         self.result = None;
         self.current = 0;
         self.status.clear();
@@ -75,11 +81,13 @@ fn excerpt<'a>(text: &'a str, range: &Range<usize>) -> (&'a str, &'a str, &'a st
     )
 }
 impl MailApp {
-    pub(crate) fn focus_reader_find(&self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn focus_reader_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self
             .action_state(cx)
             .allows(desktop_actions::MailboxAction::FocusReader)
         {
+            self.reader_find.open = true;
+            cx.notify();
             self.reader_find
                 .query
                 .read(cx)
@@ -208,6 +216,16 @@ impl MailApp {
                                 cx.listener(|this, _, _, cx| this.find_in_displayed_message(cx)),
                             ),
                     ),
+            )
+            .child(
+                Button::new("close-reader-find")
+                    .ghost()
+                    .small()
+                    .label("Close find")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.reader_find.clear();
+                        cx.notify();
+                    })),
             )
             .when(!state.status.is_empty(), |el| {
                 el.child(div().text_size(px(11.)).text_color(palette.muted).child(

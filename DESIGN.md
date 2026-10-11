@@ -253,7 +253,7 @@ Use compact secondary actions with the Kit icon, short label, tooltip, and acces
 
 ### Reading pane
 
-Keep the body on the continuous reading plane. A selected conversation opens in chronological order, and the list lets users expand or collapse reply rows. Display selectable escaped plain text; do not render raw mail HTML or load remote content. When quote hiding is on, collapse only a conservative trailing quote block and keep the original text available to restore. Reply All excludes the user’s own addresses and aliases. Extracted validated links and attachments stay in separate panels with explicit open, download, or save actions.
+Keep the body on the continuous reading plane. A selected conversation opens in chronological order, and the list lets users expand or collapse reply rows. Preserve authored email colors, typography and table layout in an isolated inline frame. Keep selectable text available through the message menu, and block remote resources. When quote hiding is on, keep the original text available to restore. Reply All excludes the user’s own addresses and aliases. Attachments keep explicit open, download and save actions.
 
 ### Appearance
 
@@ -283,4 +283,4 @@ Settings manages accounts and mail preferences, and displays MegaMail’s active
 - **Don't** imply web/mobile responsiveness or measured performance from this native desktop app.
 - **Don't** add idle decorative animation or copy Zeron icons without their license and attribution.
 
-Incoming mail uses native semantic formatting with auto paragraph direction, selectable text, constrained wrapping, and local horizontal scrolling for wide data tables. Sender CSS cannot override the application theme or force fixed widths or arbitrary alignment. Thread headers stay flat, with recipients on wrapping selectable lines and a per-message plain-text control.
+Incoming HTML mail uses an ephemeral WebKit frame inside the native reader; sender CSS is confined to that frame. Native semantic formatting remains the fallback and selectable text view. Thread headers stay flat, with recipients on wrapping selectable lines. Find, view switching, exports and rule previews live in the message menu. Selection and mail rules live in the mailbox menu; show their controls only while the corresponding task is open.

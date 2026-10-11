@@ -149,6 +149,10 @@ pub(crate) fn developer_helper() -> Result<PathBuf, String> {
         .ok_or_else(|| {
             "Developer preview needs an explicit absolute trusted helper path.".to_owned()
         })?;
+    trusted_helper(path)
+}
+
+pub(crate) fn trusted_helper(path: PathBuf) -> Result<PathBuf, String> {
     if !path.is_absolute() || path.canonicalize().ok().as_ref() != Some(&path) {
         return Err("The helper path must be absolute and contain no symlink or traversal.".into());
     }

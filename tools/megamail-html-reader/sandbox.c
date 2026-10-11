@@ -15,7 +15,7 @@ static void arg(GPtrArray *args, const char *value) { g_ptr_array_add(args, g_st
 static void ro_bind(GPtrArray *args, const char *source, const char *target) {
     arg(args, "--ro-bind"); arg(args, source); arg(args, target);
 }
-gboolean mm_enter_sandbox(const char *self, GError **error) {
+static gboolean enter(const char *self, gboolean snapshot, GError **error) {
     (void)self;
     char executable[4096]; ssize_t size = readlink("/proc/self/exe", executable, sizeof executable-1);
     if (size < 0 || size >= (ssize_t)sizeof executable-1) return fail(error);
@@ -53,7 +53,12 @@ gboolean mm_enter_sandbox(const char *self, GError **error) {
     const char *backend = g_getenv("GDK_BACKEND");
     const char *wayland = g_getenv("WAYLAND_DISPLAY");
     gboolean is_wayland = (!backend || !strcmp(backend, "wayland")) && wayland;
-    if (is_wayland) {
+    if (snapshot) {
+        arg(args, "--symlink"); arg(args, "usr/bin"); arg(args, "/bin");
+        arg(args, "--dir"); arg(args, "/var"); arg(args, "--dir"); arg(args, "/var/lib"); arg(args, "--dir"); arg(args, "/var/lib/xkb");
+        arg(args, "--setenv"); arg(args, "GDK_BACKEND"); arg(args, "x11");
+        arg(args, "--setenv"); arg(args, "DISPLAY"); arg(args, ":90");
+    } else if (is_wayland) {
         const char *runtime = g_getenv("XDG_RUNTIME_DIR");
         if (!runtime || !g_path_is_absolute(runtime) || !*wayland || strlen(wayland) > 128 ||
             !strcmp(wayland, ".") || !strcmp(wayland, "..") || strchr(wayland, '/')) goto denied;
@@ -81,12 +86,14 @@ gboolean mm_enter_sandbox(const char *self, GError **error) {
         arg(args, "--setenv"); arg(args, "DISPLAY"); arg(args, display);
         arg(args, "--setenv"); arg(args, "GDK_BACKEND"); arg(args, "x11");
     }
-    arg(args, "/app/megamail-html-reader"); arg(args, "--contained");
+    arg(args, "/app/megamail-html-reader"); arg(args, snapshot ? "--contained-snapshot" : "--contained");
     g_ptr_array_add(args, NULL);
     execv("/usr/bin/bwrap", (char *const *)args->pdata);
  denied:
     g_ptr_array_unref(args); close(3); return fail(error);
 }
+gboolean mm_enter_sandbox(const char *self, GError **error) { return enter(self, FALSE, error); }
+gboolean mm_enter_snapshot(const char *self, GError **error) { return enter(self, TRUE, error); }
 gboolean mm_verify_sandbox(GError **error) {
     struct stat original, current;
     int fd = open("/proc/self/ns/net", O_RDONLY | O_CLOEXEC);

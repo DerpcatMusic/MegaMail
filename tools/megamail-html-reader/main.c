@@ -4,6 +4,8 @@
 #include <sys/resource.h>
 #include <unistd.h>
 #include <string.h>
+#include <signal.h>
+#include <sys/wait.h>
 #include "policy.h"
 #include "sandbox.h"
 
@@ -11,25 +13,31 @@ typedef struct {
     MmDocument *doc;
     WebKitWebView *view;
     GtkWidget *window, *stack, *plain_button, *notice;
-    gboolean acknowledged, loading, ready, failed;
+    gboolean acknowledged, loading, ready, failed, snapshot;
+    gboolean clipped;
+    double document_height;
+    gboolean capturing;
+    char *frame_png;
+    int width, frame_height;
     guint deadline, links;
 } Reader;
 static void failed(Reader *r, const char *code) {
     if (r->failed) return;
     r->failed = TRUE;
     webkit_web_view_stop_loading(r->view);
+    if (r->snapshot) { mm_emit("error", r->doc->token, "code", code); gtk_main_quit(); return; }
     gtk_stack_set_visible_child_name(GTK_STACK(r->stack), "plain");
     gtk_label_set_text(GTK_LABEL(r->notice), "Original formatting unavailable. Showing plain text.");
     mm_emit("error", r->doc->token, "code", code);
 }
 static gboolean deadline(gpointer data) {
     Reader *r = data; r->deadline = 0;
-    if (!r->ready) failed(r, "policy-or-load-timeout");
+    if (!r->ready || r->snapshot) failed(r, "policy-or-load-timeout");
     return G_SOURCE_REMOVE;
 }
 static gboolean heartbeat(gpointer data) {
     Reader *r = data;
-    if (r->ready && !r->failed) {
+    if (r->ready && !r->failed && !r->snapshot) {
         if (!webkit_web_view_get_is_web_process_responsive(r->view)) failed(r, "web-process-unresponsive");
         else mm_emit("heartbeat", r->doc->token, NULL, NULL);
     }
@@ -43,9 +51,17 @@ static gboolean load_document(gpointer data) {
     }
     return G_SOURCE_REMOVE;
 }
+static void configure_frame(Reader *r);
 static gboolean policy_message(WebKitWebView *view, WebKitUserMessage *message, gpointer data) {
     (void)view; Reader *r = data;
     GVariant *p = webkit_user_message_get_parameters(message);
+    if (r->snapshot && p && !strcmp(webkit_user_message_get_name(message), "megamail-layout-v1") &&
+        g_variant_is_of_type(p, G_VARIANT_TYPE("(sd)"))) {
+        const char *token = NULL; double height = 0;
+        g_variant_get(p, "(&sd)", &token, &height);
+        if (g_strcmp0(token, r->doc->token) || !r->acknowledged || !(height > 0 && height < 2147483647.0)) return FALSE;
+        r->document_height = height; configure_frame(r); return TRUE;
+    }
     if (strcmp(webkit_user_message_get_name(message), "megamail-policy-v1") || !p ||
         !g_variant_is_of_type(p, G_VARIANT_TYPE_STRING) || strcmp(g_variant_get_string(p, NULL), r->doc->token)) return FALSE;
     if (!r->acknowledged) {
@@ -114,11 +130,74 @@ static gboolean decide_policy(WebKitWebView *view, WebKitPolicyDecision *decisio
     }
     webkit_policy_decision_ignore(decision); return TRUE;
 }
+/* One ephemeral frame: actual WebKit CSS layout, never a persistent mail cache. */
+#define FRAME_WIDTH 640
+#define FRAME_HEIGHT_MAX 8192
+#define FRAME_BYTES_MAX (16u * 1024u * 1024u)
+static cairo_status_t png_chunk(void *closure, const unsigned char *bytes, unsigned int length) {
+    GByteArray *out = closure;
+    if (length > FRAME_BYTES_MAX - out->len) return CAIRO_STATUS_WRITE_ERROR;
+    g_byte_array_append(out, bytes, length); return CAIRO_STATUS_SUCCESS;
+}
+static void links_finished(GObject *object, GAsyncResult *result, gpointer data) {
+    Reader *r=data; GError *error=NULL;
+    WebKitUserMessage *reply=webkit_web_view_send_message_to_page_finish(WEBKIT_WEB_VIEW(object), result, &error);
+    GVariant *params=reply ? webkit_user_message_get_parameters(reply) : NULL;
+    if (!reply || strcmp(webkit_user_message_get_name(reply), "megamail-links-v1") || !params || !g_variant_is_of_type(params, G_VARIANT_TYPE("(ssd)"))) {
+        if (reply) g_object_unref(reply); g_clear_error(&error); failed(r, "frame-links-unavailable"); return;
+    }
+    const char *token=NULL, *links=NULL; double height=0; g_variant_get(params, "(&s&sd)", &token, &links, &height);
+    r->clipped = r->clipped || height > r->frame_height;
+    if (g_strcmp0(token,r->doc->token) || !links || strlen(links)>3*1024*1024) { g_object_unref(reply); failed(r, "frame-links-unavailable"); return; }
+    if (r->clipped) mm_emit("frame-clipped", r->doc->token, NULL, NULL);
+    mm_emit("frame-links", r->doc->token, "links", links);
+    mm_emit("frame", r->doc->token, "png", r->frame_png);
+    g_object_unref(reply); gtk_main_quit();
+}
+static void frame_finished(GObject *object, GAsyncResult *result, gpointer data) {
+    Reader *r = data; GError *error = NULL;
+    cairo_surface_t *surface = webkit_web_view_get_snapshot_finish(WEBKIT_WEB_VIEW(object), result, &error);
+    if (!surface || cairo_surface_get_type(surface) != CAIRO_SURFACE_TYPE_IMAGE ||
+        cairo_image_surface_get_width(surface) != r->width ||
+        cairo_image_surface_get_height(surface) < 1 || cairo_image_surface_get_height(surface) > FRAME_HEIGHT_MAX) {
+        if (surface) cairo_surface_destroy(surface); g_clear_error(&error); failed(r, "frame-unavailable"); return;
+    }
+    GByteArray *bytes = g_byte_array_new();
+    if (cairo_surface_write_to_png_stream(surface, png_chunk, bytes) != CAIRO_STATUS_SUCCESS) {
+        cairo_surface_destroy(surface); g_byte_array_unref(bytes); failed(r, "frame-limit"); return;
+    }
+    r->frame_height=cairo_image_surface_get_height(surface);
+    cairo_surface_destroy(surface);
+    char *encoded = g_base64_encode(bytes->data, bytes->len); g_byte_array_unref(bytes);
+    r->frame_png = encoded;
+    WebKitUserMessage *request = webkit_user_message_new("megamail-links-v1", g_variant_new("(sii)", r->doc->token, r->width, r->frame_height));
+    webkit_web_view_send_message_to_page(r->view, request, NULL, links_finished, r);
+}
+static gboolean capture_frame(gpointer data) {
+    Reader *r = data;
+    webkit_web_view_get_snapshot(r->view, WEBKIT_SNAPSHOT_REGION_VISIBLE, WEBKIT_SNAPSHOT_OPTIONS_NONE, NULL, frame_finished, r);
+    return G_SOURCE_REMOVE;
+}
+static void configure_frame(Reader *r) {
+    if (!r->ready || !r->document_height || r->capturing || r->failed) return;
+    r->capturing = TRUE;
+    r->clipped = r->document_height > FRAME_HEIGHT_MAX;
+    int bounded = (int)CLAMP(r->document_height, 1.0, (double)FRAME_HEIGHT_MAX);
+    gtk_widget_set_size_request(GTK_WIDGET(r->view), r->width, bounded);
+    gtk_window_resize(GTK_WINDOW(r->window), r->width, bounded);
+    g_timeout_add(150, capture_frame, r);
+}
 static void load_changed(WebKitWebView *view, WebKitLoadEvent event, gpointer data) {
     Reader *r = data;
     if (event == WEBKIT_LOAD_FINISHED && r->loading && r->acknowledged && !r->failed && !r->ready &&
         !g_strcmp0(webkit_web_view_get_uri(view), r->doc->document_uri)) {
         r->ready = TRUE;
+        if (r->snapshot) {
+            mm_emit("ready", r->doc->token, "policy", MM_READY_POLICY);
+            /* Geometry comes from the policy extension's DOM API; JavaScript remains disabled. */
+            configure_frame(r);
+            return;
+        }
         gtk_label_set_text(GTK_LABEL(r->notice), "Remote resources blocked. This is not the inline reader.");
         if (r->deadline) { g_source_remove(r->deadline); r->deadline = 0; }
         mm_emit("ready", r->doc->token, "policy", MM_READY_POLICY);
@@ -185,9 +264,10 @@ int main(int argc, char **argv) {
     GError *error = NULL;
     if (argc == 2 && !strcmp(argv[1], "--self-test")) return mm_policy_self_test();
     gboolean test = argc == 2 && !strcmp(argv[1], "--policy-test");
-    gboolean contained = argc == 2 && !strcmp(argv[1], "--contained");
+    gboolean snapshot = argc == 2 && (!strcmp(argv[1], "--snapshot") || !strcmp(argv[1], "--contained-snapshot"));
+    gboolean contained = argc == 2 && (!strcmp(argv[1], "--contained") || !strcmp(argv[1], "--contained-snapshot"));
     if (!test && !contained) {
-        if (argc != 1 || !mm_enter_sandbox(argv[0], &error)) {
+        if ((!snapshot && argc != 1) || !(snapshot ? mm_enter_snapshot(argv[0], &error) : mm_enter_sandbox(argv[0], &error))) {
             mm_emit("error", NULL, "code", "containment-unavailable"); g_clear_error(&error); return 2;
         }
     }
@@ -197,6 +277,19 @@ int main(int argc, char **argv) {
     char *wire = mm_read_input(&error);
     if (!wire) { mm_emit("error", NULL, "code", "input-rejected"); g_clear_error(&error); return 2; }
     if (test) { int code = policy_test(wire, "0123456789abcdef0123456789abcdef"); g_free(wire); return code; }
+    int viewport_width=FRAME_WIDTH;
+    JsonParser *viewport=json_parser_new();
+    if (json_parser_load_from_data(viewport, wire, -1, NULL) && JSON_NODE_HOLDS_OBJECT(json_parser_get_root(viewport))) {
+        JsonObject *obj=json_node_get_object(json_parser_get_root(viewport));
+        if (json_object_has_member(obj, "viewportWidth")) {
+            JsonNode *value=json_object_get_member(obj, "viewportWidth");
+            if (!JSON_NODE_HOLDS_VALUE(value) || json_node_get_value_type(value)!=G_TYPE_INT64 || json_node_get_int(value)<320 || json_node_get_int(value)>1280) {
+                g_object_unref(viewport); g_free(wire); mm_emit("error", NULL, "code", "viewport-rejected"); return 2;
+            }
+            viewport_width=json_node_get_int(value);
+        }
+    }
+    g_object_unref(viewport);
     char *uuid = g_uuid_string_random();
     GString *token = g_string_new(NULL);
     for (const char *p = uuid; *p; ++p) if (*p != '-') g_string_append_c(token, *p);
@@ -204,8 +297,18 @@ int main(int argc, char **argv) {
     MmDocument *doc = mm_document_parse(wire, strlen(wire), token->str, &error);
     g_free(wire); g_string_free(token, TRUE);
     if (!doc) { mm_emit("error", NULL, "code", "request-rejected"); g_clear_error(&error); return 2; }
+    GPid display_pid = 0;
+    if (snapshot) {
+        g_mkdir_with_parents("/tmp/.X11-unix", 0700);
+        /* This display exists only inside the verified private namespaces. No host display or auth is mounted. */
+        char *display_args[] = {"/usr/bin/Xvfb", ":90", "-screen", "0", "1024x768x24", "-nolisten", "tcp", "-ac", NULL};
+        if (!g_spawn_async(NULL, display_args, NULL, G_SPAWN_DO_NOT_REAP_CHILD | G_SPAWN_STDOUT_TO_DEV_NULL, NULL, NULL, &display_pid, &error)) {
+            mm_emit("error", NULL, "code", "private-display-unavailable"); g_clear_error(&error); mm_document_free(doc); return 2;
+        }
+        for (guint i=0; i<100 && !g_file_test("/tmp/.X11-unix/X90", G_FILE_TEST_EXISTS); ++i) g_usleep(20000);
+    }
     if (!gtk_init_check(&argc, &argv)) { mm_emit("error", NULL, "code", "display-unavailable"); mm_document_free(doc); return 2; }
-    Reader r = { .doc = doc };
+    Reader r = { .doc = doc, .snapshot = snapshot, .width = viewport_width };
     if (!g_file_test("/app/extensions/libmegamail-reader-policy.so", G_FILE_TEST_IS_REGULAR)) {
         mm_emit("error", NULL, "code", "extension-unavailable"); mm_document_free(doc); return 2;
     }
@@ -256,6 +359,13 @@ int main(int argc, char **argv) {
     g_signal_connect(r.view, "create", G_CALLBACK(deny_popup), NULL);
     g_signal_connect(r.view, "script-dialog", G_CALLBACK(deny_dialog), NULL);
     g_signal_connect(r.view, "authenticate", G_CALLBACK(deny_auth), NULL);
+    if (snapshot) {
+        r.window = gtk_offscreen_window_new();
+        gtk_window_set_default_size(GTK_WINDOW(r.window), r.width, 1);
+        gtk_widget_set_size_request(GTK_WIDGET(r.view), r.width, 1);
+        gtk_container_add(GTK_CONTAINER(r.window), GTK_WIDGET(r.view));
+        gtk_widget_show_all(r.window);
+    } else {
     r.window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(r.window), "Original formatting — temporary window");
     gtk_window_set_default_size(GTK_WINDOW(r.window), 680, 600);
@@ -323,6 +433,7 @@ int main(int argc, char **argv) {
     gtk_stack_set_visible_child_name(GTK_STACK(r.stack), "plain");
     g_signal_connect(r.window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
     gtk_widget_show_all(r.window);
+    }
     r.deadline = g_timeout_add_seconds(10, deadline, &r);
     guint pulse = g_timeout_add_seconds(2, heartbeat, &r);
     /* Only trusted about:blank bootstraps the extension. No untrusted load until ack. */
@@ -331,6 +442,7 @@ int main(int argc, char **argv) {
     if (r.deadline) g_source_remove(r.deadline);
     g_source_remove(pulse);
     mm_emit("closed", doc->token, NULL, NULL);
-    g_object_unref(context); mm_document_free(doc);
+    g_free(r.frame_png); g_object_unref(context); mm_document_free(doc);
+    if (display_pid) { kill(display_pid, SIGTERM); waitpid(display_pid, NULL, 0); g_spawn_close_pid(display_pid); }
     return r.failed ? 2 : 0;
 }
