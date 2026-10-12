@@ -2840,9 +2840,9 @@ impl LiveMailbox {
                 }
             }
             event @ WorkerMailboxEvent::BodyEpochStale { .. } => {
-                if let Some((path, reload)) = self.apply_epoch_stale_event(account_id, event) {
-                    if reload {
-                        self.reload_epoch_scope(account_id, &path, cx);
+                if let Some((_, retry)) = self.apply_epoch_stale_event(account_id, event) {
+                    if retry {
+                        self.request_selected_body(cx);
                     }
                     changed = true;
                 }
@@ -3808,7 +3808,8 @@ impl LiveMailbox {
     }
 
     /// A stale response only finishes its exact pending source-generation slot.
-    /// Returns one bounded reload request; it never labels old bytes with a new epoch.
+    /// Returns true when the body should be asked for again at the worker's newer
+    /// generation; it never labels old bytes with a new epoch.
     fn finish_body_epoch_stale(
         &mut self,
         account_id: u32,
@@ -3836,25 +3837,38 @@ impl LiveMailbox {
         }
         self.pending_body_versions.remove(&slot);
         let pending = self.pending_bodies.remove(&slot);
-        if pending
+        let selected = pending
             .as_ref()
-            .is_some_and(|pending| self.selected_key.as_ref() == Some(&pending.key))
+            .is_some_and(|pending| self.selected_key.as_ref() == Some(&pending.key));
+        if let Some(actual) =
+            actual_generation.filter(|generation| *generation > expected_generation)
         {
+            // The app simply lagged the worker's persisted namespace (startup,
+            // or a sync that landed first). Record the generation and ask again.
+            // A real UIDVALIDITY change arrives as MailboxEpochChanged and
+            // retires the folder there; doing it here would wipe the list and
+            // the selection. Generations only grow, so this cannot ping-pong.
+            let epoch = self
+                .mailbox_epochs
+                .entry((account_id, path.to_owned()))
+                .or_insert(NativeMailboxEpoch {
+                    uid_validity: 0,
+                    generation: 0,
+                });
+            epoch.generation = epoch.generation.max(actual);
+            self.epoch_reloads.remove(&PageKey {
+                account_id,
+                folder_path: path.to_owned(),
+            });
+            if selected {
+                self.body_loading = false;
+            }
+            return Some(true);
+        }
+        if selected {
             self.body_loading = false;
             self.selected_body_loaded = false;
             self.action_errors.insert(account_id, reason);
-        }
-        let no_namespace = !self
-            .mailbox_epochs
-            .contains_key(&(account_id, path.to_owned()));
-        if let Some(actual) = actual_generation
-            .filter(|generation| *generation != 0 && expected_generation == 0 && no_namespace)
-        {
-            // This field is producer-captured evidence of a known persisted
-            // namespace (worker filters missing UIDVALIDITY before publishing).
-            // It authorizes a NEW request only; never relabel the rejected body.
-            self.retire_mailbox_epoch(account_id, path, 0, actual);
-            return Some(true);
         }
         // Missing epoch / ordinary read failure is terminal. Explicit Refresh
         // can clear this guard; header callbacks cannot create a request loop.
@@ -6602,10 +6616,11 @@ mod epoch_integration_tests {
             live.apply_epoch_stale_event(7, stale),
             Some(("INBOX".into(), true))
         );
-        assert!(live.selected_key.is_none());
+        // A lagging generation keeps the list and the selection; only the
+        // retry is stamped with the worker's generation.
+        assert_eq!(live.selected_key.as_ref(), Some(&key));
         assert!(!live.body_loading);
-        let key = header(&mut live, 7, 1, 7);
-        live.selected_key = Some(key.clone());
+        assert!(live.action_errors.is_empty());
         assert!(matches!(
             live.prepare_body_request(&key, 7).unwrap(),
             MailRequest::LoadBodyAtEpoch {
