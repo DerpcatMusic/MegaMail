@@ -16,12 +16,21 @@ struct Request {
     scale: u32,
 }
 impl Request {
+    /// Same rendered output. Generation/body-version bumps from background
+    /// sync do not change the pixels when the source is identical.
     fn matches(&self, other: &Self) -> bool {
-        self.identity == other.identity
+        self.identity.key == other.identity.key
+            && self.identity.plain == other.identity.plain
+            && self.identity.quote_visible == other.identity.quote_visible
             && self.width == other.width
             && self.scale == other.scale
-            && Arc::ptr_eq(&self.source, &other.source)
+            && same_source(&self.source, &other.source)
     }
+}
+/// Mailbox snapshots are rebuilt on every sync event with fresh Arcs; compare
+/// content so background sync never forces a re-render of the open message.
+fn same_source(a: &Arc<str>, b: &Arc<str>) -> bool {
+    Arc::ptr_eq(a, b) || a == b
 }
 #[derive(Clone, serde::Deserialize)]
 struct Link {
@@ -55,6 +64,14 @@ impl State {
             cancel.store(true, Ordering::Release);
         }
         self.frame = None;
+        self.completed = None;
+    }
+    /// Same message at a new width/scale: keep showing the current frame
+    /// until the replacement is ready instead of blanking the reader.
+    fn supersede(&mut self) {
+        if let Some(cancel) = self.cancel.take() {
+            cancel.store(true, Ordering::Release);
+        }
         self.completed = None;
     }
 }
@@ -286,7 +303,8 @@ impl MailApp {
     ) {
         let desired = self
             .reader_text_identity(snapshot)
-            .filter(|id| !id.plain && snapshot.body_loaded)
+            // Wait for the measured width rather than rendering a 640px guess first.
+            .filter(|id| !id.plain && snapshot.body_loaded && self.styled_reader.width != 0)
             .and_then(|identity| {
                 snapshot
                     .selected_original
@@ -296,11 +314,7 @@ impl MailApp {
                     .map(|source| Request {
                         identity,
                         source,
-                        width: if self.styled_reader.width == 0 {
-                            640
-                        } else {
-                            self.styled_reader.width
-                        },
+                        width: self.styled_reader.width,
                         scale: self.styled_reader.scale.max(1),
                     })
             });
@@ -310,8 +324,23 @@ impl MailApp {
                 .as_ref()
                 .is_none_or(|d| !d.matches(r))
         }) {
-            self.styled_reader.retire();
+            let same_message = matches!(
+                (&self.styled_reader.desired, &desired),
+                (Some(old), Some(new)) if old.identity.key == new.identity.key
+                    && same_source(&old.source, &new.source)
+            );
+            if same_message {
+                self.styled_reader.supersede();
+            } else {
+                self.styled_reader.retire();
+            }
             self.styled_reader.desired = desired;
+        } else if let Some(desired) = desired {
+            // Track the current identity so the frame stays attached to it.
+            if let Some(completed) = self.styled_reader.completed.as_mut() {
+                completed.identity = desired.identity.clone();
+            }
+            self.styled_reader.desired = Some(desired);
         }
         let Some(request) = self.styled_reader.desired.clone() else {
             return;
@@ -329,7 +358,20 @@ impl MailApp {
         self.styled_reader.cancel = Some(cancel.clone());
         self.styled_reader.busy = true;
         let original = request.clone();
-        let task = cx.background_spawn(async move { render(request, cancel) });
+        let task = cx.background_spawn(async move {
+            let started = Instant::now();
+            let result = render(request, cancel);
+            match &result {
+                Ok(frame) => tracing::debug!(
+                    "styled frame {}x{} in {:?}",
+                    frame.width,
+                    frame.height,
+                    started.elapsed()
+                ),
+                Err(error) => tracing::debug!("styled frame failed: {error}"),
+            }
+            result
+        });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
@@ -341,7 +383,9 @@ impl MailApp {
                     .is_some_and(|d| d.matches(&original))
                 {
                     this.styled_reader.completed = Some(original);
-                    this.styled_reader.frame = result.ok();
+                    if let Ok(frame) = result {
+                        this.styled_reader.frame = Some(frame);
+                    }
                 }
                 let snapshot = this.live.read(cx).snapshot();
                 this.sync_styled_reader(&snapshot, cx);
@@ -392,16 +436,23 @@ impl MailApp {
                 .selected_original
                 .as_ref()
                 .and_then(|o| o.source.as_ref())
-                .is_some_and(|s| Arc::ptr_eq(s, &desired.source))
+                .is_some_and(|s| same_source(s, &desired.source))
         {
             return None;
         }
         let frame = self.styled_reader.frame.as_ref()?;
+        // Fixed CSS-px size: the bitmap is device-scaled, and letting the image's
+        // pixel size drive layout would draw it at 2x and clip it.
         let mut element = div()
             .relative()
-            .w_full()
-            .aspect_ratio(frame.width as f32 / frame.height as f32)
-            .child(gpui_kit::img(frame.image.clone()).size_full());
+            .flex_none()
+            .w(px(frame.width as f32))
+            .h(px(frame.height as f32))
+            .child(
+                gpui_kit::img(frame.image.clone())
+                    .w(px(frame.width as f32))
+                    .h(px(frame.height as f32)),
+            );
         for (index, link) in frame.links.iter().enumerate() {
             let expected = desired.clone();
             let url = link.url.clone();
@@ -425,7 +476,7 @@ impl MailApp {
                                 .selected_original
                                 .as_ref()
                                 .and_then(|o| o.source.as_ref())
-                                .is_some_and(|s| Arc::ptr_eq(s, &expected.source))
+                                .is_some_and(|s| same_source(s, &expected.source))
                             && megamail_core::mail_text::safe_browser_url(&url)
                         {
                             cx.open_url(&url);
@@ -513,13 +564,20 @@ mod tests {
         changed.width = 400;
         assert!(!request.matches(&changed));
         changed = request.clone();
-        changed.identity.generation += 1;
+        changed.scale = 2;
         assert!(!request.matches(&changed));
+        // Background sync bumps generations and rebuilds Arcs; same pixels.
+        changed = request.clone();
+        changed.identity.generation += 1;
+        assert!(request.matches(&changed));
+        changed = request.clone();
+        changed.source = Arc::from("<p>Fixture</p>");
+        assert!(request.matches(&changed));
         changed = request.clone();
         changed.identity.key.uid += 1;
         assert!(!request.matches(&changed));
         changed = request.clone();
-        changed.source = Arc::from("<p>Fixture</p>");
+        changed.source = Arc::from("<p>Edited</p>");
         assert!(!request.matches(&changed));
         let cancel = Arc::new(AtomicBool::new(false));
         let mut state = State::default();

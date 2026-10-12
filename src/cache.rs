@@ -204,14 +204,16 @@ END;
 /// around it (#312). The rows are cleaned in place, see
 /// [`Cache::clean_quoted_names`].
 // v21: persisted mailbox generations and durable outbox delivery states.
-const SCHEMA_VERSION: i64 = 21;
+// v22: a lone HTML part is stored as its own document, not nested inside a
+// wrapper <body> (which lost the message's own dir="rtl" and body styles).
+const SCHEMA_VERSION: i64 = 22;
 
 /// The newest version whose change altered how bodies are *rendered* or how
 /// senders are checked. Opening a database older than this drops `bodies` and
 /// `sender_checks` so they rebuild; a later purely-additive bump must not,
 /// or every such release would cost users a full re-fetch of everything they
 /// had read. Raise this only when the rendering itself changes.
-const RENDER_VERSION: i64 = 19;
+const RENDER_VERSION: i64 = 22;
 
 /// A message's keywords as one column: the server's, then any tag kept
 /// locally for the same Message-ID (POP3, or an IMAP server that refuses
@@ -3274,7 +3276,8 @@ mod integrity_tests {
             SCHEMA_VERSION
         );
         assert_eq!(copy_count(&c, "messages", 1, "INBOX"), 1);
-        assert_eq!(copy_count(&c, "bodies", 1, "INBOX"), 1);
+        // v20 predates RENDER_VERSION 22: rendered bodies are rebuilt, headers kept.
+        assert_eq!(copy_count(&c, "bodies", 1, "INBOX"), 0);
         assert_eq!(c.mailbox_epoch(1, "INBOX").unwrap().generation, 0);
         assert!(c.outbox_ready_items(1).unwrap().is_empty());
         assert_eq!(c.outbox_items(1)[0].id, id);

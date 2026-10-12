@@ -76,9 +76,57 @@ pub(super) struct StartupInventory {
     pub thunderbird: Result<SourceStore, String>,
 }
 
+/// Thunderbird used to run headless behind accounts listed in the source
+/// store. Convert those once into native accounts and forget the store, so
+/// Thunderbird is never started again. Returns per-account failures.
+fn migrate_legacy_thunderbird() -> Vec<String> {
+    let Ok(store) = read_store() else {
+        return Vec::new();
+    };
+    if store.profiles.iter().all(|profile| profile.accounts.is_empty()) {
+        return Vec::new();
+    }
+    let profiles = megamail_core::thunderbird::discover_profiles().unwrap_or_default();
+    let mut converted = Vec::new();
+    let mut failures = Vec::new();
+    for stored in &store.profiles {
+        let Some(profile) = profiles.iter().find(|p| p.path == stored.path) else {
+            failures.push(format!("Thunderbird profile {} is gone.", stored.path.display()));
+            continue;
+        };
+        let ids: Vec<String> = stored.accounts.iter().map(|a| a.source_id.clone()).collect();
+        match megamail_core::thunderbird_migrate::convert_profile(profile, &ids) {
+            Ok(results) => {
+                for (label, result) in results {
+                    match result {
+                        Ok(config) => converted.push(config),
+                        Err(error) => failures.push(format!("{label}: {error}")),
+                    }
+                }
+            }
+            Err(error) => failures.push(error),
+        }
+    }
+    match crate::provider_setup::add_migrated(converted, &[]) {
+        Ok(_) => {
+            // The accounts now live in accounts.toml; the store only kept
+            // Thunderbird running. Failed ones can be imported again by hand.
+            if let Ok(path) = store_path() {
+                let _ = fs::remove_file(path);
+            }
+        }
+        Err(error) => failures.push(error),
+    }
+    for failure in &failures {
+        tracing::warn!("Thunderbird migration: {failure}");
+    }
+    failures
+}
+
 impl StartupInventory {
     /// Call on a background executor. Both loaders run even if one fails.
     pub fn load() -> Self {
+        migrate_legacy_thunderbird();
         // Read TB first: config loading can assign missing direct IDs. Reserve
         // all durable external IDs before that side effect, not just live rows.
         let store = read_store();

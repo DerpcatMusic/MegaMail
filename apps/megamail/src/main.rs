@@ -3297,18 +3297,61 @@ impl MailApp {
         }
         setup.thunderbird_error = None;
 
-        let result = self
-            .live
-            .update(cx, |live, cx| live.import_thunderbird(selections, cx));
-        if let Some(setup) = self.setup.as_mut() {
-            match result {
-                Ok(()) => {
-                    self.thunderbird_auto_open_pending = true;
-                    self.thunderbird_auto_open_seen_loading = true;
+        // One-time migration: Thunderbird's settings and saved logins become
+        // native accounts; Thunderbird itself is never started.
+        setup.connecting = true;
+        let live_accounts = self.live.read(cx).snapshot().accounts;
+        let task = cx.background_spawn(async move {
+            let mut converted = Vec::new();
+            let mut failures = Vec::new();
+            for (profile, ids) in selections {
+                match megamail_core::thunderbird_migrate::convert_profile(&profile, &ids) {
+                    Ok(results) => {
+                        for (label, result) in results {
+                            match result {
+                                Ok(config) => converted.push(config),
+                                Err(error) => failures.push(format!("{label}: {error}")),
+                            }
+                        }
+                    }
+                    Err(error) => failures.push(error),
                 }
-                Err(error) => setup.thunderbird_error = Some(error),
             }
-        }
+            let saved = provider_setup::add_migrated(converted, &live_accounts);
+            (saved, failures)
+        });
+        cx.spawn(async move |this, cx| {
+            let (saved, mut failures) = task.await;
+            let _ = this.update(cx, |this, cx| {
+                match saved {
+                    Ok(profiles) if !profiles.is_empty() => {
+                        let known: HashSet<u32> = this.profiles.iter().map(|(id, _)| *id).collect();
+                        this.profiles = profiles.clone();
+                        for (id, profile) in profiles.into_iter().filter(|(id, _)| !known.contains(id)) {
+                            let email = profile.email.clone();
+                            if let Err(error) =
+                                this.live.update(cx, |live, cx| live.add_profile(id, profile, cx))
+                            {
+                                failures.push(format!("{email}: {error}"));
+                            }
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(error) => failures.push(error),
+                }
+                if failures.is_empty() {
+                    this.setup = None;
+                    this.setup_email_subscription = None;
+                    this.view = this.setup_return_view;
+                    this.startup_error = None;
+                } else if let Some(setup) = this.setup.as_mut() {
+                    setup.connecting = false;
+                    setup.thunderbird_error = Some(failures.join("\n"));
+                }
+                cx.notify();
+            });
+        })
+        .detach();
         cx.notify();
     }
 

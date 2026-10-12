@@ -11674,6 +11674,19 @@ pub fn extract_body(raw: &[u8]) -> String {
         }
     }
 
+    // A single HTML part is already a whole document. Nesting it inside the
+    // wrapper's <body> drops its own <body dir="rtl" style=...> attributes.
+    if let [Some(html)] = rendered
+        .iter()
+        .filter(|html| html.is_some())
+        .cloned()
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        if inner == *html {
+            return html.clone();
+        }
+    }
     if inner.trim().is_empty() {
         return match parsed.body_text(0) {
             Some(text) if !text.trim().is_empty() => wrap_plain(&text),
