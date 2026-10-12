@@ -13,6 +13,7 @@ pub mod query;
 pub mod search;
 pub mod thunderbird;
 pub mod thunderbird_bridge;
+pub mod thunderbird_secrets;
 
 #[path = "../../../src/backend.rs"]
 pub mod backend;

@@ -1553,6 +1553,7 @@ dependencies = [
  "libc",
  "mail-parser",
  "markup5ever_rcdom",
+ "openssl",
  "pulldown-cmark",
  "rfc2047-decoder",
  "roxmltree",
