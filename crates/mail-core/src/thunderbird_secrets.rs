@@ -25,7 +25,7 @@ impl std::fmt::Debug for Login {
 #[derive(Debug)]
 enum Der<'a> {
     Seq(Vec<Der<'a>>),
-    Bytes(u8, &'a [u8]),
+    Bytes(&'a [u8]),
 }
 
 fn der(input: &[u8]) -> Option<(Der<'_>, &[u8])> {
@@ -56,7 +56,7 @@ fn der(input: &[u8]) -> Option<(Der<'_>, &[u8])> {
         }
         Some((Der::Seq(items), tail))
     } else {
-        Some((Der::Bytes(tag, body), tail))
+        Some((Der::Bytes(body), tail))
     }
 }
 
@@ -69,7 +69,7 @@ impl<'a> Der<'a> {
     }
     fn bytes(&self) -> Option<&'a [u8]> {
         match self {
-            Der::Bytes(_, b) => Some(b),
+            Der::Bytes(b) => Some(b),
             _ => None,
         }
     }

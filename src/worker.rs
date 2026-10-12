@@ -11608,7 +11608,13 @@ pub fn extract_body(raw: &[u8]) -> String {
         return wrap_plain(&String::from_utf8_lossy(raw));
     };
 
-    let bodies: Vec<_> = parsed.html_bodies().collect();
+    let losing = losing_alternatives(&parsed.parts);
+    let bodies: Vec<_> = parsed
+        .html_body
+        .iter()
+        .filter(|id| !losing.contains(id))
+        .filter_map(|&id| parsed.parts.get(id))
+        .collect();
     let mut budget = INLINE_IMAGE_BUDGET;
     // Content-IDs rendered in place by `inline_cid_images`, so the loop below
     // doesn't also append them as standalone images.
@@ -11674,19 +11680,6 @@ pub fn extract_body(raw: &[u8]) -> String {
         }
     }
 
-    // A single HTML part is already a whole document. Nesting it inside the
-    // wrapper's <body> drops its own <body dir="rtl" style=...> attributes.
-    if let [Some(html)] = rendered
-        .iter()
-        .filter(|html| html.is_some())
-        .cloned()
-        .collect::<Vec<_>>()
-        .as_slice()
-    {
-        if inner == *html {
-            return html.clone();
-        }
-    }
     if inner.trim().is_empty() {
         return match parsed.body_text(0) {
             Some(text) if !text.trim().is_empty() => wrap_plain(&text),
@@ -11694,6 +11687,54 @@ pub fn extract_body(raw: &[u8]) -> String {
         };
     }
     wrap_fragment(&inner)
+}
+
+/// Part ids inside `multipart/alternative` branches that lose to a later HTML branch.
+///
+/// RFC 2046 says to show only the last alternative the client can render. Some
+/// senders put several HTML alternatives side by side, and mail-parser lists every
+/// one of them as an HTML body, so without this the reader stacks them.
+fn losing_alternatives(parts: &[mail_parser::MessagePart]) -> std::collections::HashSet<usize> {
+    use mail_parser::{MimeHeaders, PartType};
+
+    fn subtree(parts: &[mail_parser::MessagePart], id: usize, out: &mut Vec<usize>) {
+        out.push(id);
+        if let Some(PartType::Multipart(children)) = parts.get(id).map(|p| &p.body) {
+            for &child in children {
+                subtree(parts, child, out);
+            }
+        }
+    }
+
+    let mut losing = std::collections::HashSet::new();
+    for part in parts {
+        let PartType::Multipart(children) = &part.body else { continue };
+        let alternative = part
+            .content_type()
+            .is_some_and(|ct| ct.subtype().is_some_and(|s| s.eq_ignore_ascii_case("alternative")));
+        if !alternative {
+            continue;
+        }
+        let branches: Vec<Vec<usize>> = children
+            .iter()
+            .map(|&child| {
+                let mut ids = Vec::new();
+                subtree(parts, child, &mut ids);
+                ids
+            })
+            .collect();
+        let has_html = |ids: &Vec<usize>| {
+            ids.iter().any(|&id| matches!(parts.get(id).map(|p| &p.body), Some(PartType::Html(_))))
+        };
+        if let Some(winner) = branches.iter().rposition(has_html) {
+            for (i, ids) in branches.into_iter().enumerate() {
+                if i != winner {
+                    losing.extend(ids);
+                }
+            }
+        }
+    }
+    losing
 }
 
 /// Rewrite `cid:` resource references in `html` to `data:` URIs built from the
@@ -15622,6 +15663,27 @@ NIL NIL NIL NIL NIL NIL NIL))\r\n";
             body.contains("<a href=\"http://example.com/x\">http://example.com/x</a>"),
             "body was: {body}"
         );
+    }
+
+    /// Several HTML alternatives side by side: only the last one is shown, and as
+    /// the sender's own document so `<body dir="rtl">` survives.
+    #[test]
+    fn extract_body_shows_only_the_last_html_alternative() {
+        let raw = concat!(
+            "Content-Type: multipart/alternative; boundary=b1\r\n\r\n",
+            "--b1\r\nContent-Type: text/html\r\n\r\n<html><body>FIRST</body></html>\r\n",
+            "--b1\r\nContent-Type: multipart/related; boundary=b2\r\n\r\n",
+            "--b2\r\nContent-Type: text/html\r\n\r\n<html><body>SECOND</body></html>\r\n",
+            "--b2--\r\n",
+            "--b1\r\nContent-Type: text/plain\r\n\r\nPLAIN\r\n",
+            "--b1\r\nContent-Type: text/html\r\n\r\n<html><body dir=\"rtl\">LAST</body></html>\r\n",
+            "--b1--\r\n",
+        );
+        let body = extract_body(raw.as_bytes());
+        assert!(body.contains("<body dir=\"rtl\">LAST"), "body was: {body}");
+        for gone in ["FIRST", "SECOND", "PLAIN"] {
+            assert!(!body.contains(gone), "{gone} leaked: {body}");
+        }
     }
 
     /// An iPhone photo mail: multipart/mixed interleaving an empty text part, an
