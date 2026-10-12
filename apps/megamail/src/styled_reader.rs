@@ -12,11 +12,14 @@ struct Request {
     identity: reader_session::SemanticTextIdentity,
     source: Arc<str>,
     width: u32,
+    /// Device pixels per CSS px for the snapshot (1 or 2); layout stays in CSS px.
+    scale: u32,
 }
 impl Request {
     fn matches(&self, other: &Self) -> bool {
         self.identity == other.identity
             && self.width == other.width
+            && self.scale == other.scale
             && Arc::ptr_eq(&self.source, &other.source)
     }
 }
@@ -44,6 +47,7 @@ pub(crate) struct State {
     busy: bool,
     cancel: Option<Arc<AtomicBool>>,
     width: u32,
+    scale: u32,
 }
 impl State {
     fn retire(&mut self) {
@@ -87,11 +91,11 @@ fn wire(request: &Request) -> Result<Vec<u8>, String> {
         return Err("Message exceeds the HTML reader limits.".into());
     }
     serde_json::to_vec(
-        &serde_json::json!({"version":1,"html":source,"plainText":"","title":"Message", "viewportWidth":request.width}),
+        &serde_json::json!({"version":1,"html":source,"plainText":"","title":"Message", "viewportWidth":request.width, "deviceScale":request.scale}),
     )
     .map_err(|_| "The HTML reader request could not be prepared.".into())
 }
-fn parse_frame(bytes: &[u8]) -> Result<Frame, String> {
+fn parse_frame(bytes: &[u8], scale: u32) -> Result<Frame, String> {
     let fail = || "Styled message rendering was not confirmed.".to_owned();
     if bytes.len() as u64 > WIRE_MAX {
         return Err(fail());
@@ -163,9 +167,16 @@ fn parse_frame(bytes: &[u8]) -> Result<Frame, String> {
         image::ImageReader::with_format(std::io::Cursor::new(&png), image::ImageFormat::Png)
             .into_dimensions()
             .map_err(|_| fail())?;
-    if !(320..=1280).contains(&dimensions.0) || dimensions.1 == 0 || dimensions.1 > 8192 {
+    if scale == 0
+        || dimensions.0 % scale != 0
+        || !(320..=1280).contains(&(dimensions.0 / scale))
+        || dimensions.1 < scale
+        || dimensions.1 > 8192 * scale
+    {
         return Err(fail());
     }
+    // Links and the displayed aspect ratio are in CSS px.
+    let logical = (dimensions.0 / scale, dimensions.1 / scale);
     let links = links.ok_or_else(fail)?;
     if links.iter().any(|l| {
         !megamail_core::mail_text::safe_browser_url(&l.url)
@@ -176,17 +187,17 @@ fn parse_frame(bytes: &[u8]) -> Result<Frame, String> {
             || l.y < 0.
             || l.w <= 0.
             || l.h <= 0.
-            || l.x + l.w > dimensions.0 as f32
-            || l.y + l.h > dimensions.1 as f32
+            || l.x + l.w > logical.0 as f32
+            || l.y + l.h > logical.1 as f32
     }) {
         return Err(fail());
     }
     let mut reader =
         image::ImageReader::with_format(std::io::Cursor::new(png), image::ImageFormat::Png);
     let mut limits = image::Limits::default();
-    limits.max_image_width = Some(1280);
-    limits.max_image_height = Some(8192);
-    limits.max_alloc = Some(64 * 1024 * 1024);
+    limits.max_image_width = Some(1280 * scale);
+    limits.max_image_height = Some(8192 * scale);
+    limits.max_alloc = Some(64 * 1024 * 1024 * (scale as u64).pow(2));
     reader.limits(limits);
     let mut rgba = reader.decode().map_err(|_| fail())?.to_rgba8();
     for pixel in rgba.pixels_mut() {
@@ -194,8 +205,8 @@ fn parse_frame(bytes: &[u8]) -> Result<Frame, String> {
     }
     Ok(Frame {
         image: Arc::new(gpui_kit::RenderImage::new(vec![image::Frame::new(rgba)])),
-        height: dimensions.1,
-        width: dimensions.0,
+        height: logical.1,
+        width: logical.0,
         links,
         clipped,
     })
@@ -261,7 +272,7 @@ fn render(request: Request, cancel: Arc<AtomicBool>) -> Result<Frame, String> {
     if !accepted || !written || cancel.load(Ordering::Acquire) {
         return Err("Styled rendering was interrupted.".into());
     }
-    let frame = parse_frame(&output)?;
+    let frame = parse_frame(&output, request.scale)?;
     if frame.width != request.width {
         return Err("The HTML renderer returned a different viewport.".into());
     }
@@ -290,6 +301,7 @@ impl MailApp {
                         } else {
                             self.styled_reader.width
                         },
+                        scale: self.styled_reader.scale.max(1),
                     })
             });
         if desired.as_ref().is_none_or(|r| {
@@ -340,18 +352,22 @@ impl MailApp {
     }
     pub(crate) fn styled_width_probe(&self, cx: &mut Context<Self>) -> AnyElement {
         let owner = cx.entity().downgrade();
-        let current = self.styled_reader.width;
+        let current = (self.styled_reader.width, self.styled_reader.scale);
         gpui_kit::canvas(
-            move |bounds, _, cx| {
+            move |bounds, window, cx| {
                 let width =
                     (((f32::from(bounds.size.width) / 16.).round() * 16.) as u32).clamp(320, 1280);
-                if width != current {
+                // Fractional displays (1.25/1.5) downsample the 2x frame instead of
+                // upscaling a 1x one, which is what made text look pixelated.
+                let scale = if window.scale_factor() > 1. { 2 } else { 1 };
+                if (width, scale) != current {
                     cx.defer(move |cx| {
                         let _ = owner.update(cx, |this, cx| {
-                            if this.styled_reader.width == width {
+                            if (this.styled_reader.width, this.styled_reader.scale) == (width, scale) {
                                 return;
                             }
                             this.styled_reader.width = width;
+                            this.styled_reader.scale = scale;
                             let snapshot = this.live.read(cx).snapshot();
                             this.sync_styled_reader(&snapshot, cx);
                             cx.notify();
@@ -452,17 +468,17 @@ mod tests {
     fn confirmed_frame_decodes_and_rejects_uncorrelated_or_out_of_frame_links() {
         let link = serde_json::json!([{"url":"https://example.test/notes","label":"Read notes","x":1,"y":0,"w":10,"h":2}]);
         let wire = protocol(link.clone());
-        let frame = parse_frame(&wire).unwrap();
+        let frame = parse_frame(&wire, 1).unwrap();
         assert_eq!((frame.width, frame.height, frame.links.len()), (320, 2, 1));
         let mut outside = link.clone();
         outside[0]["w"] = 320.into();
-        assert!(parse_frame(&protocol(outside)).is_err());
+        assert!(parse_frame(&protocol(outside), 1).is_err());
         let mut unsafe_link = link;
         unsafe_link[0]["url"] = "javascript:alert(1)".into();
-        assert!(parse_frame(&protocol(unsafe_link)).is_err());
+        assert!(parse_frame(&protocol(unsafe_link), 1).is_err());
         let text = String::from_utf8(wire).unwrap();
         let unfinished = text.lines().take(3).collect::<Vec<_>>().join("\n");
-        assert!(parse_frame(unfinished.as_bytes()).is_err());
+        assert!(parse_frame(unfinished.as_bytes(), 1).is_err());
         let mut events: Vec<serde_json::Value> = text
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
@@ -472,7 +488,7 @@ mod tests {
             .iter()
             .map(|event| event.to_string() + "\n")
             .collect::<String>();
-        assert!(parse_frame(wrong_token.as_bytes()).is_err());
+        assert!(parse_frame(wrong_token.as_bytes(), 1).is_err());
     }
     #[test]
     fn reader_requests_retire_for_selection_generation_source_and_width_changes() {
@@ -490,6 +506,7 @@ mod tests {
             },
             source: Arc::from("<p>Fixture</p>"),
             width: 640,
+            scale: 1,
         };
         assert!(request.matches(&request.clone()));
         let mut changed = request.clone();
@@ -521,9 +538,9 @@ mod tests {
     #[test]
     fn forged_frames_and_policy_downgrades_are_rejected() {
         assert!(
-            parse_frame(br#"{"version":1,"event":"frame","token":"forged","png":""}"#).is_err()
+            parse_frame(br#"{"version":1,"event":"frame","token":"forged","png":""}"#, 1).is_err()
         );
-        assert!(parse_frame(br#"{"version":1,"event":"ready","token":"0123456789abcdef0123456789abcdef","policy":"test-only:no-csp"}"#).is_err());
-        assert!(parse_frame(&vec![0; WIRE_MAX as usize + 1]).is_err());
+        assert!(parse_frame(br#"{"version":1,"event":"ready","token":"0123456789abcdef0123456789abcdef","policy":"test-only:no-csp"}"#, 1).is_err());
+        assert!(parse_frame(&vec![0; WIRE_MAX as usize + 1], 1).is_err());
     }
 }

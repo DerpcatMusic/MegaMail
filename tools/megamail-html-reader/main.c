@@ -18,7 +18,7 @@ typedef struct {
     double document_height;
     gboolean capturing;
     char *frame_png;
-    int width, frame_height;
+    int width, frame_height, scale;
     guint deadline, links;
 } Reader;
 static void failed(Reader *r, const char *code) {
@@ -158,15 +158,16 @@ static void frame_finished(GObject *object, GAsyncResult *result, gpointer data)
     Reader *r = data; GError *error = NULL;
     cairo_surface_t *surface = webkit_web_view_get_snapshot_finish(WEBKIT_WEB_VIEW(object), result, &error);
     if (!surface || cairo_surface_get_type(surface) != CAIRO_SURFACE_TYPE_IMAGE ||
-        cairo_image_surface_get_width(surface) != r->width ||
-        cairo_image_surface_get_height(surface) < 1 || cairo_image_surface_get_height(surface) > FRAME_HEIGHT_MAX) {
+        cairo_image_surface_get_width(surface) != r->width * r->scale ||
+        cairo_image_surface_get_height(surface) < 1 || cairo_image_surface_get_height(surface) > FRAME_HEIGHT_MAX * r->scale) {
         if (surface) cairo_surface_destroy(surface); g_clear_error(&error); failed(r, "frame-unavailable"); return;
     }
     GByteArray *bytes = g_byte_array_new();
     if (cairo_surface_write_to_png_stream(surface, png_chunk, bytes) != CAIRO_STATUS_SUCCESS) {
         cairo_surface_destroy(surface); g_byte_array_unref(bytes); failed(r, "frame-limit"); return;
     }
-    r->frame_height=cairo_image_surface_get_height(surface);
+    /* Pixels are device-scaled; layout and link geometry stay in CSS px. */
+    r->frame_height=cairo_image_surface_get_height(surface) / r->scale;
     cairo_surface_destroy(surface);
     char *encoded = g_base64_encode(bytes->data, bytes->len); g_byte_array_unref(bytes);
     r->frame_png = encoded;
@@ -277,7 +278,7 @@ int main(int argc, char **argv) {
     char *wire = mm_read_input(&error);
     if (!wire) { mm_emit("error", NULL, "code", "input-rejected"); g_clear_error(&error); return 2; }
     if (test) { int code = policy_test(wire, "0123456789abcdef0123456789abcdef"); g_free(wire); return code; }
-    int viewport_width=FRAME_WIDTH;
+    int viewport_width=FRAME_WIDTH, device_scale=1;
     JsonParser *viewport=json_parser_new();
     if (json_parser_load_from_data(viewport, wire, -1, NULL) && JSON_NODE_HOLDS_OBJECT(json_parser_get_root(viewport))) {
         JsonObject *obj=json_node_get_object(json_parser_get_root(viewport));
@@ -287,6 +288,13 @@ int main(int argc, char **argv) {
                 g_object_unref(viewport); g_free(wire); mm_emit("error", NULL, "code", "viewport-rejected"); return 2;
             }
             viewport_width=json_node_get_int(value);
+        }
+        if (json_object_has_member(obj, "deviceScale")) {
+            JsonNode *value=json_object_get_member(obj, "deviceScale");
+            if (!JSON_NODE_HOLDS_VALUE(value) || json_node_get_value_type(value)!=G_TYPE_INT64 || json_node_get_int(value)<1 || json_node_get_int(value)>2) {
+                g_object_unref(viewport); g_free(wire); mm_emit("error", NULL, "code", "viewport-rejected"); return 2;
+            }
+            device_scale=json_node_get_int(value);
         }
     }
     g_object_unref(viewport);
@@ -307,8 +315,9 @@ int main(int argc, char **argv) {
         }
         for (guint i=0; i<100 && !g_file_test("/tmp/.X11-unix/X90", G_FILE_TEST_EXISTS); ++i) g_usleep(20000);
     }
+    if (snapshot) { char scale_text[2] = { (char)('0' + device_scale), 0 }; g_setenv("GDK_SCALE", scale_text, TRUE); }
     if (!gtk_init_check(&argc, &argv)) { mm_emit("error", NULL, "code", "display-unavailable"); mm_document_free(doc); return 2; }
-    Reader r = { .doc = doc, .snapshot = snapshot, .width = viewport_width };
+    Reader r = { .doc = doc, .snapshot = snapshot, .width = viewport_width, .scale = snapshot ? device_scale : 1 };
     if (!g_file_test("/app/extensions/libmegamail-reader-policy.so", G_FILE_TEST_IS_REGULAR)) {
         mm_emit("error", NULL, "code", "extension-unavailable"); mm_document_free(doc); return 2;
     }
