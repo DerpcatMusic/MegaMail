@@ -6162,6 +6162,60 @@ mod epoch_integration_tests {
     }
 
     #[test]
+    fn shared_folder_roles_and_local_search_keep_account_and_folder_scope() {
+        let mut live = mailbox();
+        live.scope = MailboxScope::Unified;
+        for account in [7, 8] {
+            live.accounts.push(Account {
+                id: account,
+                name: "Fictional".into(),
+                email: format!("{account}@example.test"),
+                label: "Fictional".into(),
+                accent: "#777777".into(),
+            });
+            live.folders_by_account.insert(
+                account,
+                vec![
+                    Folder {
+                        id: 1,
+                        account_id: account,
+                        name: "Inbox".into(),
+                        path: "INBOX".into(),
+                        kind: FolderKind::Inbox,
+                        unread: 0,
+                    },
+                    Folder {
+                        id: 2,
+                        account_id: account,
+                        name: "Sent".into(),
+                        path: "Sent".into(),
+                        kind: FolderKind::Sent,
+                        unread: 0,
+                    },
+                    Folder {
+                        id: 3,
+                        account_id: account,
+                        name: "Trash".into(),
+                        path: "Trash".into(),
+                        kind: FolderKind::Trash,
+                        unread: 0,
+                    },
+                ],
+            );
+        }
+        live.unified_kind = Some(FolderKind::Sent);
+        let sent = live.active_page_keys();
+        assert!(sent.iter().all(|key| key.folder_path == "Sent"));
+        assert!(sent.iter().any(|key| key.account_id == 7));
+        assert!(sent.iter().any(|key| key.account_id == 8));
+        live.unified_kind = None;
+        let all = live.active_page_keys();
+        assert!(all.iter().any(|key| key.folder_path == "INBOX"));
+        assert!(all.iter().any(|key| key.folder_path == "Sent"));
+        assert!(!all.iter().any(|key| key.folder_path == "Trash"));
+    }
+
+    #[test]
     fn native_receipts_require_the_complete_admitted_envelope() {
         let (mut live, request) = mutation_fixture();
         let receipt = worker::NativeMutationReceipt {

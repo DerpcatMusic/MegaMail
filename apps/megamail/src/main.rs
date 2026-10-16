@@ -7339,7 +7339,7 @@ impl MailApp {
         if let Some(composer) = self
             .composer
             .as_mut()
-            .filter(|c| c.can_edit() && c.message.client_message_id.is_none())
+            .filter(|c| c.can_edit() && !c.recovery.restored_hold)
         {
             match megamail_core::rng::token(24) {
                 Ok(token) => {
