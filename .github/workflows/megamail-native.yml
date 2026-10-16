@@ -51,6 +51,18 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Detect vendor changes
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [[ -z "$BASE_SHA" || "$BASE_SHA" =~ ^0+$ ]] || ! git diff --quiet "$BASE_SHA" HEAD -- vendor; then
+            echo "vendor=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "vendor=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: dtolnay/rust-toolchain@1.98.1
         with:
           components: rustfmt
@@ -82,12 +94,16 @@ jobs:
       - name: Test Zeron theme model and importer
         run: cargo test --manifest-path crates/zeron-theme/Cargo.toml --locked -j 2
       - name: Test bidi paragraph shaping
+        if: steps.scope.outputs.vendor == 'true'
         run: cargo test --manifest-path vendor/cosmic-text/Cargo.toml --lib --locked -j 2
       - name: Test wrapped text geometry and caches
+        if: steps.scope.outputs.vendor == 'true'
         run: cargo test --manifest-path vendor/gpui-pre/Cargo.toml --no-default-features --features test-support --lib text_system::line_layout::tests --locked -j 2
       - name: Test Linux bidi backend
+        if: steps.scope.outputs.vendor == 'true'
         run: cargo test --manifest-path vendor/gpui-pre-wgpu/Cargo.toml --lib --features test-support cosmic_text_system::tests --locked -j 2
       - name: Test native reader foundation
+        if: steps.scope.outputs.vendor == 'true'
         run: cargo test --manifest-path vendor/gpui-base/Cargo.toml --lib --locked -j 2
       - name: Test native mailbox and composer
         run: cargo test --manifest-path apps/megamail/Cargo.toml --locked -j 2 -- --test-threads=1

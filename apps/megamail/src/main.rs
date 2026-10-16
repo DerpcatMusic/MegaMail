@@ -7343,8 +7343,14 @@ impl MailApp {
         {
             match megamail_core::rng::token(24) {
                 Ok(token) => {
-                    composer.message.client_message_id =
-                        Some(format!("megamail-{token}@client.invalid"))
+                    composer.message.client_message_id = Some(format!(
+                        "megamail-{token}@{}",
+                        self.profiles
+                            .iter()
+                            .find(|(id, _)| *id == composer.message.from_account_id)
+                            .and_then(|(_, p)| p.email.rsplit_once('@').map(|(_, domain)| domain))
+                            .unwrap_or("megamail.local")
+                    ))
                 }
                 Err(_) => {
                     composer.error =
