@@ -190,10 +190,10 @@ pub(crate) fn split_quoted_text(body: &str) -> (&str, Option<&str>) {
     }
     let lines = body.split_inclusive('\n').collect::<Vec<_>>();
     let mut offset = 0;
+    let mut authored = false;
     for line in &lines {
         let marker = line_content(line).trim();
-        if offset > 0
-            && !body[..offset].trim().is_empty()
+        if authored
             && is_reply_marker(marker)
             && marker.contains('@')
             && marker.contains('<')
@@ -201,6 +201,7 @@ pub(crate) fn split_quoted_text(body: &str) -> (&str, Option<&str>) {
         {
             return (&body[..offset], Some(&body[offset..]));
         }
+        authored |= !marker.is_empty();
         offset += line.len();
     }
     let mut suffix_start = lines.len();

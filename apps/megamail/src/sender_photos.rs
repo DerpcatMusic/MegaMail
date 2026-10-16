@@ -9,7 +9,9 @@ pub(crate) struct State {
     images: HashMap<String, Arc<gpui_kit::RenderImage>>,
     requested: HashSet<String>,
     busy: bool,
-    revision: u64,
+    active_loads: usize,
+    pending: std::collections::VecDeque<(String, Option<String>)>,
+    revisions: HashMap<String, u64>,
 }
 fn email_key(email: &str) -> Option<String> {
     let key = email.trim().to_lowercase();
@@ -78,6 +80,7 @@ impl MailApp {
         if self.sender_photos.requested.len() > 128 {
             self.sender_photos.requested.clear();
             self.sender_photos.images.clear();
+            self.sender_photos.pending.clear();
             self.sender_photos.requested.insert(key.clone());
         }
         let configured = self
@@ -86,7 +89,18 @@ impl MailApp {
             .find(|(_, profile)| profile.email.eq_ignore_ascii_case(&key))
             .and_then(|(_, profile)| profile.avatar.clone())
             .filter(|name| Path::new(name).components().count() == 1 && !name.starts_with('.'));
-        let revision = self.sender_photos.revision;
+        self.sender_photos.pending.push_back((key, configured));
+        self.pump_sender_photos(cx);
+    }
+    fn pump_sender_photos(&mut self, cx: &mut Context<Self>) {
+        if self.sender_photos.active_loads >= 2 {
+            return;
+        }
+        let Some((key, configured)) = self.sender_photos.pending.pop_front() else {
+            return;
+        };
+        self.sender_photos.active_loads += 1;
+        let revision = self.sender_photos.revisions.get(&key).copied().unwrap_or(0);
         let worker_key = key.clone();
         let task = cx.background_spawn(async move {
             let local = local_path(&worker_key)?;
@@ -99,7 +113,8 @@ impl MailApp {
         cx.spawn(async move |this, cx| {
             let image = task.await;
             let _ = this.update(cx, |this, cx| {
-                if revision == this.sender_photos.revision
+                this.sender_photos.active_loads -= 1;
+                if revision == this.sender_photos.revisions.get(&key).copied().unwrap_or(0)
                     && this.sender_photos.requested.contains(&key)
                 {
                     if let Some(image) = image {
@@ -107,9 +122,11 @@ impl MailApp {
                         cx.notify();
                     }
                 }
+                this.pump_sender_photos(cx);
             });
         })
         .detach();
+        self.pump_sender_photos(cx);
     }
     pub(crate) fn sender_avatar(
         &self,
@@ -181,7 +198,7 @@ impl MailApp {
             let _ = this.update(cx, |this, cx| {
                 this.sender_photos.busy = false;
                 match result {
-                    Ok(Some(image)) => { this.sender_photos.revision = this.sender_photos.revision.saturating_add(1); this.sender_photos.images.insert(key, image); this.reader_session.notice = Some("Local sender photo saved. No image service was contacted.".into()); },
+                    Ok(Some(image)) => { let revision = this.sender_photos.revisions.entry(key.clone()).or_default(); *revision = revision.saturating_add(1); this.sender_photos.images.insert(key, image); this.reader_session.notice = Some("Local sender photo saved. No image service was contacted.".into()); },
                     Ok(None) => {},
                     Err(error) => this.reader_session.notice = Some(error),
                 }

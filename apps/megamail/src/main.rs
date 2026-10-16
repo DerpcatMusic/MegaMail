@@ -867,6 +867,7 @@ struct MailApp {
     live: Entity<LiveMailbox>,
     sender_photos: sender_photos::State,
     mail_panes: Entity<gpui_kit::component::resizable::ResizableState>,
+    compact_mail_panes: Entity<gpui_kit::component::resizable::ResizableState>,
     _live_subscription: Subscription,
     profiles: Vec<(u32, AccountConfig)>,
     comfort: comfort::State,
@@ -1050,6 +1051,7 @@ impl MailApp {
             mailbox_focus_admitted: false,
             compose_tools_busy: false,
             mail_panes: cx.new(|_| Default::default()),
+            compact_mail_panes: cx.new(|_| Default::default()),
             sender_photos: Default::default(),
             reader_text: None,
             rule_preview: Vec::new(),
@@ -1956,13 +1958,6 @@ impl MailApp {
                 return;
             }
         }
-        if self
-            .reader_text
-            .as_ref()
-            .is_some_and(|target| target.unchanged(&identity, &html))
-        {
-            return;
-        }
         // A replaced body/mode gets a new state, so its old selection cannot
         // survive into another message or an asynchronously parsed replacement.
         self.rule_preview.clear();
@@ -1971,12 +1966,11 @@ impl MailApp {
         self.reader_export_status = None;
         self.reader_find.clear();
         self.attachment_preview.clear();
+        let plain = identity.plain;
         self.reader_text = Some(reader_session::SemanticTextTarget {
             identity,
             html,
-            state: if body.key == snapshot.selected_key.clone().unwrap()
-                && self.plain_messages.contains(&body.key)
-            {
+            state: if plain {
                 body.plain_state.as_ref().unwrap().clone()
             } else {
                 body.current_state.as_ref().unwrap().clone()
@@ -1988,6 +1982,15 @@ impl MailApp {
         let snapshot = self.live.read(cx).snapshot();
         if let Some(row) = &snapshot.selected_message {
             self.load_sender_photo(&row.message.from_addr, cx);
+            if let Some(conversation) = snapshot
+                .conversations
+                .iter()
+                .find(|thread| thread.members.iter().any(|member| member.key == row.key))
+            {
+                for member in conversation.members.iter().take(32) {
+                    self.load_sender_photo(&member.message.from_addr, cx);
+                }
+            }
         }
         for card in &mut self.comfort.outgoing {
             if let Some(result) = self
@@ -7924,7 +7927,6 @@ impl Render for MailApp {
                                     })
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.sidebar_collapsed = !this.sidebar_collapsed;
-                                        this.mail_panes = cx.new(|_| Default::default());
                                         cx.notify();
                                     })),
                             )
@@ -8029,7 +8031,11 @@ impl Render for MailApp {
                     } else {
                         "mail-panes"
                     })
-                    .with_state(&self.mail_panes)
+                    .with_state(if self.sidebar_collapsed {
+                        &self.compact_mail_panes
+                    } else {
+                        &self.mail_panes
+                    })
                     .child(
                         gpui_kit::component::resizable::resizable_panel()
                             .size(if self.sidebar_collapsed {
