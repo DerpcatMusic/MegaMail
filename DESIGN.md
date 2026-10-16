@@ -62,6 +62,7 @@ typography:
 rounded:
   sm: "4px"
   md: "6px"
+  reader-block: "8px"
   lg: "10px"
   xl: "10px"
   full: "9999px"
@@ -140,12 +141,12 @@ components:
     rounded: "{rounded.md}"
     size: "small"
   message-reader-dark:
-    backgroundColor: "rgb(6 6 6 / 95%)"
+    backgroundColor: "{colors.canvas-dark}"
     textColor: "{colors.text-dark}"
     padding: "24px"
     typography: "{typography.body}"
   message-reader-light:
-    backgroundColor: "rgb(255 255 255 / 95%)"
+    backgroundColor: "{colors.canvas-light}"
     textColor: "{colors.text-light}"
     padding: "24px"
     typography: "{typography.body}"
@@ -157,15 +158,15 @@ components:
 
 **Creative North Star: “Zeron’s quiet, continuous work canvas.”**
 
-MegaMail carries Zeron’s calm surface hierarchy, compact controls, and careful text ladder into a native email workspace. The desktop layout is a 232px account/folder rail, a 332px message list, and a continuous reading pane. Rows are 78px high with 4px corners. The panes read as one work surface separated by hairlines, not as a stack of cards.
+MegaMail carries Zeron’s calm surface hierarchy, compact controls, and careful text ladder into a native email workspace. The desktop layout is a 232px account/folder rail, a 332px message list, and an opaque reading pane. Rows are 78px high with 4px corners. Hairlines separate the work panes; individual messages use restrained authored blocks within the reader.
 
-The app uses official GPUI Kit 0.7.1 and the complete standalone Zeron theme model copied from MIT-licensed source commit `0c4835d2b73aa632b7b4d626ee0826a25ec1c9b9`: 19 families and 30 built-in variants. System mode follows the desktop appearance; Light and Dark variant selections are independent. Accent and surface treatments can be overridden. The [dark](docs/preview/dark.png), [light](docs/preview/light.png), [search](docs/preview/search.png), and [appearance](docs/preview/appearance.png) captures show the current release in fictional demo mode.
+The app uses official GPUI Kit 0.7.1 and the complete standalone Zeron theme model copied from MIT-licensed source commit `0c4835d2b73aa632b7b4d626ee0826a25ec1c9b9`: 19 families and 30 built-in variants. System mode follows the desktop appearance; Light and Dark variant selections are independent. Accent and surface treatments can be overridden. The [preview captures](docs/preview/) show earlier release surfaces in fictional demo mode; comfort-work captures live under `.impeccable/review/`. Source is authoritative where a capture predates a correction.
 
 **Key Characteristics:**
-- A continuous reading canvas with a quiet navigation shell and one message-list plane.
+- Opaque work panes with a quiet navigation shell, one message-list plane and distinct authored message blocks.
 - Dense but legible email rows, with sender, subject, and snippet in clear order.
 - Indigo reserved for focus and identity cues; neutral fills show hover and selection.
-- Wallpaper-backed tinted panes with a contrast-aware cap on background bleed.
+- Opaque mail and task surfaces that keep wallpaper out of reading and interaction areas.
 
 ## Colors
 
@@ -187,11 +188,11 @@ The YAML palette records MegaMail’s default dark and light roles. Selecting an
 | Hover fill | `#252527` | `#efeff2` | Hovered controls and message rows; folder rows use Zeron's shared neutral wash |
 | Text on accent | `#101014` | `#ffffff` | Inverse text when a filled accent action is used |
 
-Zeron uses neutral lightness roles, translucent hairlines, and restrained hover/selection washes. MegaMail resolves roles from the selected theme and caps wallpaper bleed at 24% in the rail, 10% in the list, and 5% in the reader. The sampled theme-contrast guard can reduce it further.
+Zeron uses neutral lightness roles, translucent hairlines, and restrained hover/selection washes. MegaMail resolves these roles from the selected theme and forces the navigation, list, reader and task pane backgrounds opaque. Correspondent colors are derived from full addresses and constrained against the active theme’s reader, control, selected, hover and avatar surfaces for small-text legibility; the full address and own-message label carry authorship independently of color.
 
 **The Role Remap Rule.** Keep semantic roles stable across modes and use each mode’s own value. Do not mechanically invert the dark palette.
 
-**The Quiet Accent Rule.** Keep indigo to focus, unread, star, and identity cues. Neutral fills carry large selected and hovered areas.
+**The Quiet Accent Rule.** Keep the selected accent to focus, unread, star and own-message identity cues. A quiet accent wash distinguishes authored outgoing blocks; neutral fills carry large selected and hovered areas.
 
 ## Typography
 
@@ -223,15 +224,15 @@ Use the observed 4/8/12/16/20/24px spacing steps for the app’s grouping. Tight
 
 ## Elevation & Depth
 
-The app conveys depth with a full-window background, theme-derived pane tints, and 1px separators. Wallpaper bleed is capped at 24% in the rail, 10% in the list, and 5% in the reader, then bounded by a sampled contrast estimate for the selected theme. This is a sampled safeguard, not a per-pixel contrast guarantee. Wallpaper blur and treatments are preprocessed into cached images; image changes crossfade over 240ms. The [materials research](docs/research/zeron-materials.md) explains the distinction from Zeron’s renderer implementation.
+The app conveys depth with opaque theme-derived planes and 1px separators. The full-window wallpaper remains behind the workspace without bleeding into navigation, message-list, reader or task panes. Authored message blocks use a neutral control surface for correspondents and a quiet accent wash for own mail. Wallpaper blur and treatments are preprocessed into cached images; image changes crossfade over 240ms. The [materials research](docs/research/zeron-materials.md) records the earlier material exploration and the distinction from Zeron’s renderer implementation.
 
-**The Tinted Pane Rule.** Keep pane tint roles and the 24/10/5% bleed caps explicit; allow the theme-based contrast estimate to reduce wallpaper visibility further.
+**The Opaque Work Pane Rule.** Keep navigation, message-list, reader and task pane backgrounds fully opaque in every theme and surface preference. Wallpaper must not compete with mail text or controls.
 
 **The Static Material Rule.** Apply wallpaper blur and treatments before caching. MegaMail does not implement Zeron’s renderer-specific backdrop blur or per-primitive edge fades.
 
 ## Shapes
 
-Message and navigation rows use a restrained 4px corner. GPUI Kit’s shared component radii remain 6px and 10px where its controls and larger surfaces use them. Avatars and unread dots are circular. Pane edges stay square and use hairlines rather than rounded cards.
+Message and navigation rows use a restrained 4px corner. GPUI Kit’s shared component radii remain 6px and 10px where its controls and larger surfaces use them. Avatars and unread dots are circular. Pane edges stay square and use hairlines. Authored reader blocks use an 8px corner and 16px internal padding to separate messages without changing the pane silhouette.
 
 ## Components
 
@@ -245,7 +246,7 @@ A compact text hierarchy rather than a card stack. Regular rows are 78px high an
 
 ### Search field
 
-Search is scoped to loaded headers in the active account/folder or Unified Inbox. The All, Unread, Starred, and Attachments filters intersect with the search text over that loaded set. Search does not cover all server history or message bodies. Keep the focus indicator visible in every theme.
+Direct accounts search the local SQLite cache within the selected folder or All local mail; `body:` covers downloaded, unencrypted bodies only. All local mail excludes Trash, Junk and Templates. Legacy adapters search loaded headers. Filters intersect with the bounded loaded results; no search claims provider-global coverage. Date, sender email, subject and unread sorting run before paging for direct-account folder caches, and over loaded headers for legacy adapters. Keep the scope hint, partial-result warnings and focus indicator visible.
 
 ### Archive and restore action
 
@@ -253,7 +254,15 @@ Use compact secondary actions with the Kit icon, short label, tooltip, and acces
 
 ### Reading pane
 
-Keep the body on the continuous reading plane. A selected conversation opens in chronological order, and the list lets users expand or collapse reply rows. Preserve authored email colors, typography and table layout in an isolated inline frame. Keep selectable text available through the message menu, and block remote resources. When quote hiding is on, keep the original text available to restore. Reply All excludes the user’s own addresses and aliases. Attachments keep explicit open, download and save actions.
+Separate each message into a quiet authored block with an 8px corner and 16px padding. Use the neutral surface for correspondents and the accent wash for own messages. Keep the full sender address visible; “You · draft” and “You · sent” derive from the folder role. Correspondent avatars and names share a stable address-derived color, constrained against the active theme surfaces. Color supplements the explicit identity.
+
+Conversations remain chronological, with controls to expand all or collapse history. The selected, newest and latest sent messages can open independently. Show warnings when the bounded related-message lookup is incomplete. The native semantic view remains selectable and sanitized; the isolated ephemeral WebKit helper preserves authored HTML typography, colors and table layout while blocking remote resources. Plain-text and selectable-text views remain available. Keep recognized quote history restorable and metadata details on demand. Reply All excludes own addresses and aliases; attachments keep explicit open, download and save actions.
+
+### Composition and work state
+
+Retain the composer while browsing accounts and folders, with an explicit Resume draft action. Plain text is the default; opt-in Markdown has a formatted preview, and recovered HTML is preserved. Keep the editor’s format and sender identity explicit. Work-state controls distinguish suggestions from device-saved Needs reply, Waiting, Done and one-day Snoozed states. These states do not change provider flags; newer inbound mail reopens Waiting/Done. Demo work-state changes are session-only.
+
+Provisional outgoing blocks show the actual pending, queued, accepted, uncertain or refused state. Exact account and Message-ID reconciliation retires the session-local block. Durable Outbox and draft recovery carry restart authority; accepted never claims delivery, and uncertainty requires review before retry.
 
 ### Appearance
 
@@ -267,10 +276,10 @@ Settings manages accounts and mail preferences, and displays MegaMail’s active
 
 ### Do:
 - **Do** use the native palette values in the YAML as the source for text and tint roles; label Zeron source values separately.
-- **Do** keep the reading pane continuous and reserve raised surfaces for controls and overlays.
+- **Do** keep the outer reading pane quiet and use authored blocks to distinguish individual messages.
 - **Do** distinguish hover from selection, and pair unread weight with its dot cue.
-- **Do** preserve the rail/list/reader wallpaper bleed caps of 24/10/5%.
-- **Do** let the sampled custom-image contrast estimate reduce wallpaper opacity beneath text.
+- **Do** keep mail and task pane backgrounds fully opaque across appearance settings.
+- **Do** check small sender text against the actual theme and its selected, hover and avatar surfaces.
 - **Do** keep keyboard navigation, Kit focus treatment, accessible action labels, and Linux caption behavior intact.
 - **Do** distinguish live account state and operation results from sample-data visual fixtures.
 - **Do** keep motion tied to changing state and honor reduced-motion settings if transitions are added.
@@ -278,9 +287,9 @@ Settings manages accounts and mail preferences, and displays MegaMail’s active
 
 ### Don't:
 - **Don't** wrap every pane or message row in a card.
-- **Don't** use accent as a large surface or rely on color alone for unread state.
-- **Don't** exceed the pane bleed caps or imply a per-pixel contrast guarantee.
+- **Don't** use saturated accent as a large surface or rely on color alone for unread state or authorship.
+- **Don't** expose wallpaper through mail or task panes or imply a per-pixel contrast guarantee.
 - **Don't** imply web/mobile responsiveness or measured performance from this native desktop app.
 - **Don't** add idle decorative animation or copy Zeron icons without their license and attribution.
 
-Incoming HTML mail uses an ephemeral WebKit frame inside the native reader; sender CSS is confined to that frame. Native semantic formatting remains the fallback and selectable text view. Thread headers stay flat, with recipients on wrapping selectable lines. Find, view switching, exports and rule previews live in the message menu. Selection and mail rules live in the mailbox menu; show their controls only while the corresponding task is open.
+Incoming HTML mail uses an isolated ephemeral WebKit helper inside the native reader; authored styling is confined to that rendering path. Native semantic formatting remains the fallback and selectable text view. Message headers sit within authored blocks, with recipients on wrapping selectable lines. Find, view switching, exports and rule previews live in the message menu. Selection and mail rules live in the mailbox menu; show their controls only while the corresponding task is open.

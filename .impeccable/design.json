@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-09T00:00:00Z",
+  "generatedAt": "2026-10-16T09:39:41.420271Z",
   "title": "Design System: MegaMail",
   "extensions": {
     "colorMeta": {
@@ -480,15 +480,22 @@
       },
       "paneSurfaces": {
         "navigationRail": {
-          "maxWallpaperBleed": "24%"
+          "opacity": "100%",
+          "maxWallpaperBleed": "0%"
         },
         "messageList": {
-          "maxWallpaperBleed": "10%"
+          "opacity": "100%",
+          "maxWallpaperBleed": "0%"
         },
         "reader": {
-          "maxWallpaperBleed": "5%"
+          "opacity": "100%",
+          "maxWallpaperBleed": "0%"
         },
-        "contrastGuard": "The selected theme bounds wallpaper visibility using sampled contrast. This is not a per-pixel contrast guarantee."
+        "taskPanes": {
+          "opacity": "100%",
+          "maxWallpaperBleed": "0%"
+        },
+        "contrastGuard": "Opaque work panes exclude wallpaper. Address-derived correspondent colors are constrained against actual theme, selection, hover and avatar surfaces for small-text legibility."
       },
       "renderingLimit": "MegaMail does not use Zeron renderer-specific backdrop blur or per-primitive edge fades.",
       "themePreferences": "$XDG_CONFIG_HOME/megamail/theme.v1",
@@ -498,9 +505,10 @@
         "appearanceView": "apps/megamail/src/appearance_view.rs",
         "appearanceProcessing": "apps/megamail/src/appearance.rs",
         "wallpaperEffects": "apps/megamail/src/zeron_wallpaper.rs",
-        "paneSurfaces": "apps/megamail/src/zeron_background.rs",
+        "paneSurfaces": "apps/megamail/src/main.rs: pane_surface",
         "layoutAndRows": "apps/megamail/src/main.rs",
-        "searchAndFilters": "apps/megamail/src/live.rs"
+        "searchAndFilters": "apps/megamail/src/live.rs",
+        "authorship": "apps/megamail/src/comfort.rs"
       }
     },
     "mailExperience": {
@@ -514,8 +522,8 @@
         "referenceAncestorLimit": 24,
         "partialResults": "Warn when related-message lookup is incomplete; do not promise every historical or future reply."
       },
-      "threadPresentation": "Expandable child replies in the list; chronological message order in the reader.",
-      "search": "Searches headers in the loaded account/folder or Unified Inbox view. It does not cover full server history or message bodies.",
+      "threadPresentation": "Expandable replies in the list; chronological authored reader blocks with selected, newest and latest sent messages available to open independently. Full sender addresses and folder-role-based You · draft / You · sent labels distinguish authorship.",
+      "search": "Direct accounts query the local SQLite cache within the selected folder or All local mail; body: covers downloaded, unencrypted bodies only. All local mail excludes Trash, Junk and Templates. Legacy adapters search loaded headers. No provider-global coverage is claimed.",
       "bodyHandling": {
         "thunderbirdUnifiedQueries": "Bounded headers only; fetch message bodies when selected.",
         "liveSelection": "Retain only the selected message body in the live mailbox state.",
@@ -528,8 +536,8 @@
         "trash"
       ],
       "replyAll": "Use the owning account; exclude the user’s own account addresses and aliases.",
-      "reader": "Selectable escaped plain text; raw mail HTML is not rendered and remote content is not loaded.",
-      "quoteHiding": "Collapse only a trailing quoted block; preserve the source text so it can be restored.",
+      "reader": "Selectable sanitized native semantic HTML, with an isolated ephemeral WebKit helper preserving authored HTML typography, colors and table layout while blocking remote resources. Plain-text and selectable-text views remain available.",
+      "quoteHiding": "Recognized quoted history can be collapsed and restored; original-format and native semantic views retain their distinct rendering policies.",
       "preferences": {
         "density": [
           "Regular",
@@ -550,12 +558,15 @@
         "F5": "Refresh"
       },
       "notPorted": [
-        "all-folder search",
-        "message-body search",
         "bulk triage",
         "inline reply",
-        "rich HTML composition"
-      ]
+        "provider-global search",
+        "WYSIWYG rich HTML editing"
+      ],
+      "sorting": "Date, sender email, subject and unread, in either direction: direct-account folder cache sorting before paging; loaded-header sorting for legacy adapters. Unified lists merge bounded pages.",
+      "workStates": "Needs reply, Waiting, Done and one-day Snoozed are saved on this device independently of provider flags. New inbound mail reopens Waiting/Done. Suggestions never claim saved work; loading, busy and save errors are explicit. Demo changes are session-only.",
+      "composition": "Browsing retains the active composer with Resume draft. Plain text is the default; opt-in Markdown includes a formatted preview and recovered HTML is preserved. This is not WYSIWYG editing.",
+      "outgoingCards": "Session-local provisional replies show actual send state and reconcile by exact account and Message-ID. Durable Outbox and draft recovery remain restart authority. Acceptance is not delivery; uncertain outcomes require review before retry."
     }
   },
   "components": [
@@ -579,7 +590,7 @@
       "name": "Message search input",
       "kind": "input",
       "refersTo": "input-search-dark",
-      "description": "Search and filters operate on loaded headers in the active account/folder or Unified Inbox; there is no full-history or body search.",
+      "description": "Direct accounts query the local SQLite cache within the selected folder or All local mail; body: covers downloaded, unencrypted bodies only. All local mail excludes Trash, Junk and Templates. Legacy adapters search loaded headers. No provider-global coverage is claimed.",
       "html": "<div class=\"ds-themes\"><label class=\"ds-search ds-dark\"><svg class=\"ds-search-icon\" viewBox=\"0 0 16 16\" aria-hidden=\"true\"><circle cx=\"7\" cy=\"7\" r=\"4.5\"></circle><path d=\"m10.5 10.5 3 3\"></path></svg><input type=\"search\" aria-label=\"Search sample messages\" placeholder=\"Search sample mail\"><button class=\"ds-clear\" type=\"button\" aria-label=\"Clear search\">×</button></label><label class=\"ds-search ds-light\"><svg class=\"ds-search-icon\" viewBox=\"0 0 16 16\" aria-hidden=\"true\"><circle cx=\"7\" cy=\"7\" r=\"4.5\"></circle><path d=\"m10.5 10.5 3 3\"></path></svg><input type=\"search\" aria-label=\"Search sample messages\" placeholder=\"Search sample mail\"><button class=\"ds-clear\" type=\"button\" aria-label=\"Clear search\">×</button></label></div>",
       "css": ".ds-themes{display:grid;gap:8px;font:14px Geist,sans-serif}.ds-search{display:flex;height:32px;align-items:center;gap:8px;padding:0 10px;border:1px solid #202020;border-radius:8px;background:#0e0e0e;color:#e8e8ea}.ds-search.ds-light{border-color:#e5e5e9;background:#fff;color:#303035}.ds-search-icon{width:14px;height:14px;flex:none;fill:none;stroke:#85858a;stroke-width:1.5}.ds-light .ds-search-icon{stroke:#73737a}.ds-search input{min-width:0;flex:1;border:0;outline:0;background:transparent;color:inherit;font:14px Geist,sans-serif}.ds-search input::placeholder{color:#a9a9ae}.ds-light input::placeholder{color:#62626a}.ds-clear{border:0;background:transparent;color:inherit;font-size:16px;cursor:pointer}.ds-search:focus-within{outline:2px solid #7c86ff;outline-offset:1px}.ds-search.ds-light:focus-within{outline-color:#5b43e8}"
     },
@@ -595,19 +606,19 @@
       "name": "Email reading pane",
       "kind": "custom",
       "refersTo": "message-reader-dark",
-      "description": "Chronological conversation reader with selectable escaped plain text, conservative restorable quote hiding, explicit links and attachment actions.",
-      "html": "<div class=\"ds-themes\"><article class=\"ds-reader ds-dark\"><h2>The new identity system is ready</h2><div class=\"ds-author\"><span class=\"ds-avatar\">MC</span><span><strong>Maya Chen</strong><small>maya@northstar.example</small></span><time>10:42 AM</time></div><hr><p>Hi team,</p><p>I pulled the final typography and color studies into one clear direction. The new system feels calmer, but it still has enough character to stand on its own.</p><small class=\"ds-note\">Fictional sample content · no mailbox or network action is active.</small></article><article class=\"ds-reader ds-light\"><h2>The new identity system is ready</h2><div class=\"ds-author\"><span class=\"ds-avatar\">MC</span><span><strong>Maya Chen</strong><small>maya@northstar.example</small></span><time>10:42 AM</time></div><hr><p>Hi team,</p><p>I pulled the final typography and color studies into one clear direction. The new system feels calmer, but it still has enough character to stand on its own.</p><small class=\"ds-note\">Fictional sample content · no mailbox or network action is active.</small></article></div>",
-      "css": ".ds-themes{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:8px;background:linear-gradient(135deg,#394254,#43384f);font-family:Geist,sans-serif}.ds-reader{box-sizing:border-box;max-width:680px;padding:24px}.ds-dark{background:rgb(6 6 6 / 95%);color:#e8e8ea}.ds-light{background:rgb(255 255 255 / 95%);color:#303035}.ds-reader h2{margin:0 0 20px;font-size:24px;font-weight:600;line-height:1.2}.ds-author{display:flex;align-items:center;gap:12px;font-size:13px}.ds-avatar{display:grid;width:36px;height:36px;flex:none;place-items:center;border-radius:9999px;background:#2e2e30;color:#a9a9ae;font-size:11px;font-weight:600}.ds-light .ds-avatar{background:#e8e8eb;color:#62626a}.ds-author strong,.ds-author small{display:block}.ds-author small,.ds-author time,.ds-note{color:#85858a;font-size:11px}.ds-light .ds-author small,.ds-light .ds-author time,.ds-light .ds-note{color:#73737a}.ds-author time{margin-left:auto}.ds-reader hr{height:1px;margin:24px 0;border:0;background:#202020}.ds-light hr{background:#e5e5e9}.ds-reader p{font-size:14px;line-height:1.6}.ds-note{display:block;margin-top:24px}"
+      "description": "Opaque chronological reader with distinct neutral or quiet accent-tinted authored blocks, full sender addresses and explicit own-message labels; sanitized semantic and isolated original-format views block remote resources.",
+      "html": "<div class=\"ds-themes\"><article class=\"ds-reader ds-dark\"><h2>The new identity system is ready</h2><section class=\"ds-message\"><div class=\"ds-author\"><span class=\"ds-avatar\">MC</span><span><strong>Maya Chen</strong><small>maya@northstar.example</small></span><time>10:42 AM</time></div><hr><p>Hi team,</p><p>I pulled the final typography and color studies into one clear direction. The new system feels calmer, but it still has enough character to stand on its own.</p></section><small class=\"ds-note\">Fictional sample content · no mailbox or network action is active.</small></article><article class=\"ds-reader ds-light\"><h2>The new identity system is ready</h2><section class=\"ds-message\"><div class=\"ds-author\"><span class=\"ds-avatar\">MC</span><span><strong>Maya Chen</strong><small>maya@northstar.example</small></span><time>10:42 AM</time></div><hr><p>Hi team,</p><p>I pulled the final typography and color studies into one clear direction. The new system feels calmer, but it still has enough character to stand on its own.</p></section><small class=\"ds-note\">Fictional sample content · no mailbox or network action is active.</small></article></div>",
+      "css": ".ds-themes{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:8px;background:linear-gradient(135deg,#394254,#43384f);font-family:Geist,sans-serif}.ds-reader{box-sizing:border-box;max-width:680px;padding:24px}.ds-dark{background:#060606;color:#e8e8ea}.ds-light{background:#ffffff;color:#303035}.ds-reader h2{margin:0 0 20px;font-size:24px;font-weight:600;line-height:1.2}.ds-author{display:flex;align-items:center;gap:12px;font-size:13px}.ds-avatar{display:grid;width:36px;height:36px;flex:none;place-items:center;border-radius:9999px;background:#2e2e30;color:#a9a9ae;font-size:11px;font-weight:600}.ds-light .ds-avatar{background:#e8e8eb;color:#62626a}.ds-author strong,.ds-author small{display:block}.ds-author small,.ds-author time,.ds-note{color:#85858a;font-size:11px}.ds-light .ds-author small,.ds-light .ds-author time,.ds-light .ds-note{color:#73737a}.ds-author time{margin-left:auto}.ds-reader hr{height:1px;margin:24px 0;border:0;background:#202020}.ds-light hr{background:#e5e5e9}.ds-reader p{font-size:14px;line-height:1.6}.ds-note{display:block;margin-top:24px} .ds-message{padding:16px;border-top:1px solid #202020;border-radius:8px;background:#0e0e0e}.ds-light .ds-message{border-color:#e5e5e9;background:#ffffff}"
     }
   ],
   "narrative": {
-    "northStar": "Zeron’s quiet canvas, adapted to the three-pane mail workflow.",
-    "overview": "MegaMail is a Linux desktop email client using official GPUI Kit 0.7.1. The desktop layout uses a 232px navigation rail, a 332px message list, and a continuous reading pane; rows are 78px high with 4px corners. The standalone MIT Zeron theme model at commit 0c4835d2b73aa632b7b4d626ee0826a25ec1c9b9 supplies 19 families and 30 variants. System mode follows the desktop appearance, Light and Dark selections are independent, and accent/surface settings can override the selected theme. Wallpaper processing is static and cached, with pane bleed capped at 24/10/5% by a theme-based contrast estimate. These materials do not implement Zeron’s renderer-specific backdrop blur or per-primitive edge fades. The default Unified Inbox merges bounded per-account header pages and keeps partial failures visible. Message-reference grouping spans bounded related-header lookups across folders and Sent without subject-only guesses; replies expand in the list and open chronologically, with warnings for incomplete results. Search stays within loaded headers and does not search message bodies or full server history. Reader text is selectable and escaped; raw HTML is not rendered. Current preview captures use fictional demo messages.",
+    "northStar": "Zeron’s quiet, continuous work canvas.",
+    "overview": "MegaMail carries Zeron’s calm surface hierarchy, compact controls, and careful text ladder into a native email workspace. The desktop layout is a 232px account/folder rail, a 332px message list, and an opaque reading pane. Rows are 78px high with 4px corners. Hairlines separate the work panes; individual messages use restrained authored blocks within the reader.\n\nThe app uses official GPUI Kit 0.7.1 and the complete standalone Zeron theme model copied from MIT-licensed source commit `0c4835d2b73aa632b7b4d626ee0826a25ec1c9b9`: 19 families and 30 built-in variants. System mode follows the desktop appearance; Light and Dark variant selections are independent. Accent and surface treatments can be overridden. The [preview captures](docs/preview/) show earlier release surfaces in fictional demo mode; comfort-work captures live under `.impeccable/review/`. Source is authoritative where a capture predates a correction.",
     "keyCharacteristics": [
-      "Continuous three-pane work surface with a quiet navigation rail and compact message list.",
-      "Regular/Compact rows; conversation replies expand in the list and read chronologically.",
-      "Account-scoped message identity keeps equal IMAP UIDs from colliding across folders or accounts.",
-      "Unified Inbox combines bounded per-account pages and keeps partial failures visible."
+      "Opaque work panes with a quiet navigation shell, one message-list plane and distinct authored message blocks.",
+      "Dense but legible email rows, with sender, subject, and snippet in clear order.",
+      "Indigo reserved for focus and identity cues; neutral fills show hover and selection.",
+      "Opaque mail and task surfaces that keep wallpaper out of reading and interaction areas."
     ],
     "rules": [
       {
@@ -617,37 +628,37 @@
       },
       {
         "name": "The Quiet Accent Rule",
-        "body": "Keep indigo to focus, unread, star, and identity cues. Neutral fills carry large selected and hovered areas.",
+        "body": "Keep the selected accent to focus, unread, star and own-message identity cues. A quiet accent wash distinguishes authored outgoing blocks; neutral fills carry large selected and hovered areas.",
         "section": "colors"
       },
       {
-        "name": "The Tinted Pane Rule",
-        "body": "Keep the 24/10/5% rail/list/reader bleed caps explicit; the selected theme contrast estimate may reduce them further.",
+        "name": "The Opaque Work Pane Rule",
+        "body": "Keep navigation, message-list, reader and task pane backgrounds fully opaque in every theme and surface preference. Wallpaper must not compete with mail text or controls.",
         "section": "elevation"
       },
       {
         "name": "The Static Material Rule",
-        "body": "Cache wallpaper blur and treatments before painting. MegaMail does not implement Zeron renderer-specific backdrop blur or per-primitive edge fades.",
+        "body": "Apply wallpaper blur and treatments before caching. MegaMail does not implement Zeron’s renderer-specific backdrop blur or per-primitive edge fades.",
         "section": "elevation"
       }
     ],
     "dos": [
       "Do use the native palette values in the YAML as the source for text and tint roles; label Zeron source values separately.",
-      "Do keep the reading pane continuous and reserve raised surfaces for controls and overlays.",
+      "Do keep the outer reading pane quiet and use authored blocks to distinguish individual messages.",
       "Do distinguish hover from selection, and pair unread weight with its dot cue.",
-      "Do preserve the rail/list/reader wallpaper bleed caps.",
-      "Do let the sampled custom-image contrast estimate reduce wallpaper opacity beneath text.",
+      "Do keep mail and task pane backgrounds fully opaque across appearance settings.",
+      "Do check small sender text against the actual theme and its selected, hover and avatar surfaces.",
       "Do keep keyboard navigation, Kit focus treatment, accessible action labels, and Linux caption behavior intact.",
       "Do distinguish live account state and operation results from sample-data visual fixtures.",
       "Do keep motion tied to changing state and honor reduced-motion settings if transitions are added.",
       "Do preserve Zeron source attribution and the license for every copied implementation or asset."
     ],
     "donts": [
-      "Don’t wrap every pane or message row in a card.",
-      "Don’t use accent as a large surface or rely on color alone for unread state.",
-      "Don’t exceed the pane bleed caps or rely on a compositor effect for text contrast.",
-      "Don’t imply web/mobile responsiveness or measured performance from this native desktop app.",
-      "Don’t add idle decorative animation or copy Zeron icons without their license and attribution."
+      "Don't wrap every pane or message row in a card.",
+      "Don't use saturated accent as a large surface or rely on color alone for unread state or authorship.",
+      "Don't expose wallpaper through mail or task panes or imply a per-pixel contrast guarantee.",
+      "Don't imply web/mobile responsiveness or measured performance from this native desktop app.",
+      "Don't add idle decorative animation or copy Zeron icons without their license and attribution."
     ]
   }
 }
