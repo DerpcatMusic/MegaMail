@@ -2,6 +2,7 @@ name: MegaMail Linux native
 
 on:
   push:
+    branches: [main]
     paths:
       - 'apps/megamail/**'
       - 'vendor/gpui-base/**'
@@ -36,6 +37,10 @@ on:
       - 'data/megamail.*'
       - '.github/workflows/megamail-native.yml'
   workflow_dispatch:
+
+concurrency:
+  group: megamail-native-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

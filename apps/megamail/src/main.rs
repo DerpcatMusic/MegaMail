@@ -1211,6 +1211,12 @@ impl MailApp {
                             cx.notify();
                         }
                         this.pump_triage(cx);
+                        let minute = megamail_core::datefmt::now() / 60;
+                        if minute != this.comfort.last_minute {
+                            this.comfort.last_minute = minute;
+                            if this.comfort.filter.is_some() { this.rebuild_list_rows(&this.live.read(cx).snapshot(), cx); }
+                            cx.notify();
+                        }
                         let previous_recovery_status =
                             this.composer.as_ref().map(|c| c.recovery.status.clone());
                         let previous_reader_notice = this.reader_session.notice.clone();
@@ -2658,10 +2664,12 @@ impl MailApp {
             let bm = comfort::latest(b);
             let order = match self.comfort.sort {
                 comfort::Sort::Date => bm.timestamp.cmp(&am.timestamp),
-                comfort::Sort::Sender => am
+                comfort::Sort::Sender => a
+                    .row
+                    .message
                     .from_addr
                     .to_lowercase()
-                    .cmp(&bm.from_addr.to_lowercase()),
+                    .cmp(&b.row.message.from_addr.to_lowercase()),
                 comfort::Sort::Subject => am.subject.to_lowercase().cmp(&bm.subject.to_lowercase()),
                 comfort::Sort::Unread => b
                     .conversation

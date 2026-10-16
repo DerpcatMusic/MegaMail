@@ -31,6 +31,7 @@ pub(crate) struct State {
     pub sort: Sort,
     pub reverse: bool,
     pub health_open: bool,
+    pub last_minute: i64,
     pub outbox_open: bool,
     pub details: HashSet<MessageKey>,
     pub outgoing: Vec<OutgoingCard>,
