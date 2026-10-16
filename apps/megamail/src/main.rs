@@ -961,7 +961,30 @@ impl MailApp {
                 LiveMailbox::new(Vec::new(), None, cx)
             }
         });
-        let live_subscription = cx.observe(&live, |this, _, cx| this.on_live_change(cx));
+        let live_subscription = cx.observe_in(&live, window, |this, _, window, cx| {
+            let reader_had_focus = this.reader_text.as_ref().is_some_and(|target| {
+                target
+                    .state
+                    .read(cx)
+                    .focus_handle()
+                    .contains_focused(window, cx)
+            });
+            this.on_live_change(cx);
+            if reader_had_focus
+                && this.view == View::Mailbox
+                && !this.reader_text.as_ref().is_some_and(|target| {
+                    target
+                        .state
+                        .read(cx)
+                        .focus_handle()
+                        .contains_focused(window, cx)
+                })
+            {
+                // The old semantic node can disappear during a folder/body update.
+                // Keep shortcuts in the stable mailbox context instead of a retired node.
+                this.mailbox_focus.focus(window, cx);
+            }
+        });
         let message_focus = cx.focus_handle().tab_stop(true);
         let search_subscription = cx.subscribe_in(&search, window, {
             let search = search.clone();
@@ -3744,7 +3767,8 @@ impl MailApp {
             })
             .tooltip(format!("{} · {}", folder.name, folder.path))
             .accessibility_label(format!("{} folder", folder.name))
-            .on_click(cx.listener(move |this, _, _, cx| {
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.mailbox_focus.focus(window, cx);
                 this.live
                     .update(cx, |live, cx| live.select_folder(path.clone(), cx));
                 this.list_scroll = UniformListScrollHandle::new();
@@ -3851,7 +3875,8 @@ impl MailApp {
                 button.w(px(42.)).px_0().tooltip(account.label.clone())
             })
             .accessibility_label(format!("Switch to {}", account.label))
-            .on_click(cx.listener(move |this, _, _, cx| {
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.mailbox_focus.focus(window, cx);
                 this.live
                     .update(cx, |live, cx| live.switch_account(account_id, cx));
                 this.list_scroll = UniformListScrollHandle::new();
@@ -4200,7 +4225,10 @@ impl MailApp {
         .when(!collapsed, |el| el.label("All inboxes"))
         .tooltip("Inbox mail from every account")
         .accessibility_label("All inboxes from every account")
-        .on_click(cx.listener(|this, _, _, cx| {
+        .on_click(cx.listener(|this, _, window, cx| {
+            this.mailbox_focus.focus(window, cx);
+            this.comfort.outbox_open = false;
+            this.comfort.filter = None;
             this.live.update(cx, |live, cx| live.select_unified(cx));
             this.list_scroll = UniformListScrollHandle::new();
             this.view = View::Mailbox;
@@ -6958,7 +6986,7 @@ impl MailApp {
                             )
                             .child(from_control),
                     )
-                    .child(Button::new("browse-while-composing").ghost().small().label("Back to mail · keep draft").on_click(cx.listener(|this, _, _, cx| { this.capture_recovery(cx); this.view = View::Mailbox; cx.notify(); })))
+                    .child(Button::new("browse-while-composing").ghost().small().label("Back to mail · keep draft").on_click(cx.listener(|this, _, window, cx| { this.capture_recovery(cx); this.mailbox_focus.focus(window, cx); this.view = View::Mailbox; cx.notify(); })))
                     .child(
                         Button::new("close-composer")
                             .ghost()
@@ -8055,8 +8083,9 @@ impl Render for MailApp {
                         }
                     }
                 }))
-                .on_action(cx.listener(|this, _: &AllSent, _, cx| {
+                .on_action(cx.listener(|this, _: &AllSent, window, cx| {
                     if this.view == View::Mailbox {
+                        this.mailbox_focus.focus(window, cx);
                         this.comfort.outbox_open = false;
                         this.comfort.filter = None;
                         this.live.update(cx, |live, cx| {
@@ -8065,8 +8094,9 @@ impl Render for MailApp {
                         cx.notify();
                     }
                 }))
-                .on_action(cx.listener(|this, _: &AllDrafts, _, cx| {
+                .on_action(cx.listener(|this, _: &AllDrafts, window, cx| {
                     if this.view == View::Mailbox {
+                        this.mailbox_focus.focus(window, cx);
                         this.comfort.outbox_open = false;
                         this.comfort.filter = None;
                         this.live.update(cx, |live, cx| {
@@ -8075,19 +8105,23 @@ impl Render for MailApp {
                         cx.notify();
                     }
                 }))
-                .on_action(cx.listener(|this, _: &SortSender, _, cx| {
+                .on_action(cx.listener(|this, _: &SortSender, window, cx| {
                     if this.view == View::Mailbox {
+                        this.mailbox_focus.focus(window, cx);
                         this.comfort.sort = comfort::Sort::Sender;
                         this.apply_mail_sort(cx);
                         this.rebuild_list_rows(&this.live.read(cx).snapshot(), cx);
                         cx.notify();
                     }
                 }))
-                .on_action(cx.listener(|this, _: &UnifiedInbox, _, cx| {
+                .on_action(cx.listener(|this, _: &UnifiedInbox, window, cx| {
                     if this
                         .action_state(cx)
                         .allows(desktop_actions::MailboxAction::UnifiedInbox)
                     {
+                        this.mailbox_focus.focus(window, cx);
+                        this.comfort.outbox_open = false;
+                        this.comfort.filter = None;
                         this.live.update(cx, |live, cx| live.select_unified(cx));
                         this.view = View::Mailbox;
                     }

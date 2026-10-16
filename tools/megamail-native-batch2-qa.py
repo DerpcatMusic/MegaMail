@@ -242,6 +242,7 @@ def inside(args: argparse.Namespace) -> int:
             raise RuntimeError("owned window not labeled as demo; refusing interaction")
         observations.append(result("demo_window", "pass", "Only PID ownership and demo title asserted; not body readiness.",
                                    window_id=window, owning_pid=app.pid, title=title))
+        run(["xdotool", "windowmove", "--sync", window, "0", "0"])
         pause()
         capture("startup")
         # Only non-destructive focus/navigation keys; no pixel clicks/URLs/f5/send.

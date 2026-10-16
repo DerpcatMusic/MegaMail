@@ -383,7 +383,7 @@ impl MailApp {
                             } else {
                                 "Default order"
                             })
-                            .tooltip("Reverse the current loaded-result sort")
+                            .tooltip("Reverse the current sort order")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.comfort.reverse = !this.comfort.reverse;
                                 this.apply_mail_sort(cx);
@@ -547,7 +547,8 @@ impl MailApp {
                             snapshot.scope == MailboxScope::Unified
                                 && snapshot.unified_kind == kind,
                         )
-                        .on_click(cx.listener(move |this, _, _, cx| {
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.mailbox_focus.focus(window, cx);
                             this.comfort.filter = None;
                             this.comfort.outbox_open = false;
                             this.live
@@ -566,7 +567,8 @@ impl MailApp {
                     .justify_start()
                     .icon(Icon::new(IconName::Mail).size(px(14.)))
                     .label(format!("Outbox · {}", snapshot.outbox.len()))
-                    .on_click(cx.listener(|this, _, _, cx| {
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.mailbox_focus.focus(window, cx);
                         this.comfort.outbox_open = true;
                         this.view = View::Mailbox;
                         cx.notify();
