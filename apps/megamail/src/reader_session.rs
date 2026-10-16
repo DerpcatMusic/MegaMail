@@ -135,21 +135,14 @@ impl SemanticTextTarget {
     }
 }
 
-/// No automatic release enablement. A developer can explicitly preview only
-/// fictional fixtures with an absolute, privately trusted helper. Presence of
-/// a binary/policy handshake is NOT security acceptance for real mail.
-pub(crate) fn developer_helper() -> Result<PathBuf, String> {
-    if std::env::var_os("MEGAMAIL_HTML_READER_DEVELOPER_PREVIEW").as_deref()
-        != Some(std::ffi::OsStr::new("1"))
-    {
-        return Err("Original formatting is unavailable: helper security acceptance is pending. Native selectable formatting remains available.".into());
-    }
-    let path = std::env::var_os("MEGAMAIL_HTML_READER_HELPER")
-        .map(PathBuf::from)
-        .ok_or_else(|| {
-            "Developer preview needs an explicit absolute trusted helper path.".to_owned()
-        })?;
-    trusted_helper(path)
+/// Used only by the deliberate original-formatting action. Installed binaries
+/// and their policy extension must have trusted ownership and permissions.
+pub(crate) fn installed_helper() -> Result<PathBuf, String> {
+    let directory = megamail_core::config::data_base()
+        .ok_or("The original reader’s installation directory is unavailable.")?
+        .join("html-reader");
+    trusted_helper(directory.join("extensions/libmegamail-reader-policy.so"))?;
+    trusted_helper(directory.join("megamail-html-reader"))
 }
 
 pub(crate) fn trusted_helper(path: PathBuf) -> Result<PathBuf, String> {
@@ -236,7 +229,7 @@ impl Session {
                 _ => break,
             };
             match event {
-                ReaderHostEvent::Ready { scope } if self.accepts(&scope) => self.notice = Some("Helper reports ready — temporary developer window. Remote-resource/CID blocking is a policy claim; helper security acceptance remains pending.".into()),
+                ReaderHostEvent::Ready { scope } if self.accepts(&scope) => self.notice = Some("Original formatting is open in a separate window. Close it to return here; native text stays available.".into()),
                 ReaderHostEvent::UserClickedLink { scope, url } if self.accepts(&scope) => {
                     if megamail_core::mail_text::safe_browser_url(&url) { links.push(url); }
                 },
