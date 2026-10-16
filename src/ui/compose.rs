@@ -3120,6 +3120,7 @@ impl Compose {
         html: String,
     ) -> OutgoingMessage {
         OutgoingMessage {
+            client_message_id: None,
             from_account_id,
             from_alias,
             to,

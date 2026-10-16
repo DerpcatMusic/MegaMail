@@ -94,6 +94,53 @@ fn packed_rgb(color: gpui_kit::Hsla) -> u32 {
         | (color.b * 255.0).round() as u32
 }
 
+// Static icon bytes also work in isolated debug builds with no registry access.
+gpui_kit::assets::icon_assets!(
+    MailIcons,
+    [
+        Archive,
+        ArchiveRestore,
+        ArrowLeft,
+        ArrowRight,
+        Check,
+        ChevronDown,
+        ChevronLeft,
+        ChevronRight,
+        ChevronUp,
+        Close,
+        Copy,
+        CornerUpLeft,
+        CornerUpRight,
+        Download,
+        FileText,
+        Folder,
+        FolderOpen,
+        Image,
+        Inbox,
+        Info,
+        ListFilter,
+        LoaderCircle,
+        Mail,
+        Moon,
+        Palette,
+        PanelLeftClose,
+        PanelLeftOpen,
+        Paperclip,
+        PenLine,
+        Plus,
+        RefreshCw,
+        Search,
+        Send,
+        Settings2,
+        Star,
+        StarFill,
+        Sun,
+        Trash,
+        TriangleAlert,
+        X
+    ]
+);
+
 fn init(cx: &mut App) {
     desktop_actions::bind_keys(cx);
 }
@@ -7911,13 +7958,10 @@ impl Render for MailApp {
         window_border().child(
             v_flex()
                 .size_full()
-                .when(
-                    self.view == View::Mailbox && self.composer.is_none(),
-                    |el| {
-                        el.track_focus(&self.mailbox_focus)
-                            .key_context(desktop_actions::MAILBOX_CONTEXT)
-                    },
-                )
+                .when(self.view == View::Mailbox, |el| {
+                    el.track_focus(&self.mailbox_focus)
+                        .key_context(desktop_actions::MAILBOX_CONTEXT)
+                })
                 .on_action(cx.listener(|this, _: &ComposeMessage, window, cx| {
                     this.open_new_message(window, cx)
                 }))
@@ -9232,7 +9276,7 @@ fn main() {
     };
     let activation_for_app = activation.clone();
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::AllAssets)
+        .with_assets(MailIcons)
         .run(move |cx| {
             gpui_kit::init(cx);
             cx.text_system()

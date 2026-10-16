@@ -252,7 +252,7 @@ def inside(args: argparse.Namespace) -> int:
             capture(label + "-before")
             run(["xdotool", "windowfocus", "--sync", window])
             for key in keys:
-                run(["xdotool", "key", "--window", window, key])
+                run(["xdotool", "key", "--clearmodifiers", key])
             pause()
             capture(label)
         for width, height in ((1060, 640), (1520, 900)):
@@ -263,7 +263,7 @@ def inside(args: argparse.Namespace) -> int:
         # Guarded compose request, NOT proof that a composer opened or preserved fields.
         capture("compose-request-before")
         run(["xdotool", "windowfocus", "--sync", window])
-        run(["xdotool", "key", "--window", window, "ctrl+n"])
+        run(["xdotool", "key", "--clearmodifiers", "ctrl+n"])
         pause()
         capture("compose-request")
         observations.append(result("interaction_observations", "not_run", "Inputs delivered; inspect captures manually. No field/model assertion."))
