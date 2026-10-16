@@ -120,12 +120,90 @@ fn take_bounded(file: File, limit: u64) -> Take<File> {
     file.take(limit + 1)
 }
 
+/// Extract trailing outer blockquotes from the canonical, already sanitized
+/// native fragment. A linear scan avoids building another DOM on the UI thread.
+/// Authored text after a quote prevents hiding that quote.
+pub(crate) fn quoted_html(html: &str) -> Option<String> {
+    if html.len() > 2 * 1024 * 1024 {
+        return None;
+    }
+    let mut ranges = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0;
+    let mut offset = 0;
+    while let Some(next) = html[offset..].find('<') {
+        let at = offset + next;
+        let end = at + html[at..].find('>')? + 1;
+        let tag = &html[at..end];
+        if tag == "<blockquote>" || tag.starts_with("<blockquote ") {
+            if depth == 0 {
+                start = at;
+            }
+            depth += 1;
+        } else if tag == "</blockquote>" {
+            depth = depth.checked_sub(1)?;
+            if depth == 0 {
+                ranges.push(start..end);
+            }
+        }
+        offset = end;
+    }
+    if depth != 0 {
+        return None;
+    }
+    fn only_wrapper_ends(mut text: &str) -> bool {
+        loop {
+            text = text.trim();
+            if text.is_empty() {
+                return true;
+            }
+            if !text.starts_with("</") {
+                return false;
+            }
+            let Some(end) = text.find('>') else {
+                return false;
+            };
+            text = &text[end + 1..];
+        }
+    }
+    let mut end = html.len();
+    let mut quotes = Vec::new();
+    for range in ranges.into_iter().rev() {
+        if !only_wrapper_ends(&html[range.end..end]) {
+            break;
+        }
+        quotes.push(&html[range.clone()]);
+        end = range.start;
+    }
+    if quotes.is_empty() {
+        None
+    } else {
+        quotes.reverse();
+        Some(quotes.concat())
+    }
+}
+
 /// Split only a trailing, contiguous quoted block, retaining the original text.
 pub(crate) fn split_quoted_text(body: &str) -> (&str, Option<&str>) {
     if let Some(split) = outlook_quote_boundary(body) {
         return (&body[..split], Some(&body[split..]));
     }
     let lines = body.split_inclusive('\n').collect::<Vec<_>>();
+    let mut offset = 0;
+    let mut authored = false;
+    for line in &lines {
+        let marker = line_content(line).trim();
+        if authored
+            && is_reply_marker(marker)
+            && marker.contains('@')
+            && marker.contains('<')
+            && marker.contains('>')
+        {
+            return (&body[..offset], Some(&body[offset..]));
+        }
+        authored |= !marker.is_empty();
+        offset += line.len();
+    }
     let mut suffix_start = lines.len();
     let mut has_quote = false;
     while suffix_start > 0 {
@@ -143,7 +221,7 @@ pub(crate) fn split_quoted_text(body: &str) -> (&str, Option<&str>) {
         return (body, None);
     }
 
-    if suffix_start > 0 && is_reply_marker(line_content(lines[suffix_start - 1])) {
+    if suffix_start > 0 && is_reply_marker(line_content(lines[suffix_start - 1]).trim()) {
         suffix_start -= 1;
     }
 
@@ -230,6 +308,38 @@ fn is_reply_marker(line: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn quoted_html_preserves_nested_history_without_repeating_authored_text() {
+        let html = "<p>Current reply</p><blockquote dir=\"rtl\"><p>Previous</p><blockquote>Older</blockquote></blockquote>";
+        let quote = super::quoted_html(html).unwrap();
+        assert!(!quote.contains("Current reply"));
+        assert!(quote.contains("dir=\"rtl\""));
+        assert!(quote.contains("<blockquote>Older</blockquote>"));
+        assert_eq!(
+            super::quoted_html("<p>Before</p><blockquote>Inline citation</blockquote><p>After</p>"),
+            None
+        );
+        assert_eq!(
+            super::quoted_html("<blockquote>One</blockquote><blockquote>Two</blockquote>"),
+            Some("<blockquote>One</blockquote><blockquote>Two</blockquote>".into())
+        );
+        assert_eq!(super::quoted_html("<blockquote>Unclosed"), None);
+    }
+    #[test]
+    fn address_attribution_splits_unprefixed_history_and_restores_exactly() {
+        let original = "Current reply.\n\nOn 16 Oct 2026, Ada <ada@example.test> wrote:\n\nEarlier text\nOlder text";
+        let (current, history) = super::split_quoted_text(original);
+        assert_eq!(current, "Current reply.\n\n");
+        assert!(history.unwrap().starts_with("On 16 Oct"));
+        assert_eq!(format!("{current}{}", history.unwrap()), original);
+        assert!(
+            super::split_quoted_text(
+                "Today I read a note.\nOn empathy, Ada wrote:\nThis is authored prose"
+            )
+            .1
+            .is_none()
+        );
+    }
     #[test]
     fn localized_outlook_history_is_collapsed_and_exactly_restorable() {
         let body = "שלום,\nהתשובה כאן.\n\nמאת: Fictional <a@example.test>\nנשלח: yesterday\nאל: b@example.test\nנושא: שאלה\n\nOriginal text";

@@ -1,5 +1,57 @@
 # Batch 2 native QA: frozen-source synthetic harness and acceptance plan
 
+## Native-reader repair: current acceptance evidence
+
+This section supersedes the historical source-only handoff below for the native
+reader repair at source `42cc125`. It is not a build or installation receipt.
+The initial PR #10 qualification remains historical; a new release receipt must
+record the final optimized build, portable-core results and installation hashes.
+
+The corrected light and dark evidence lives in
+`.impeccable/review/native-reader/{dark,light}`: 28 fictional screenshots and
+`observations.json` files. A fresh full independent finish review inspected all
+28 captures and returned **SHIP**, with no material fixes. Native tests pass (319). CI also passes 616 portable-core tests and 25 theme tests at source `42cc125`. Optimized release installation is recorded separately in [the repair receipt](native-reader-qualification.md).
+
+The extended isolated harness now performs guarded coordinate actions on its
+owned demo window and reads its private X11 clipboard. Actual copied body text,
+sender address and newsletter text matched fictional expected content. It also
+exercised independent quote disclosure, message disclosure/details, a local-photo
+fixture, divider dragging, expanded/compact layout retention and window resizing.
+An explicit original-formatting action opened a separate helper window; closing
+it retained native text. These results are narrower than complete accessibility,
+provider behavior or physical-device latency qualification. Screenshot existence
+and delivered input alone remain observations rather than feature assertions.
+
+Current source behavior and acceptance boundaries:
+
+- Stable selectable GPUI semantic text is the default. Native states are retained;
+  no helper is started automatically, and no late PNG replaces selectable text.
+- Authored reply content and recognized quoted history use separate text states;
+  nested attribution remains restorable. Explicitly hidden inline preheaders are
+  omitted from the semantic view. Quote recognition is not universal HTML parity.
+- Sender/address text sits outside the disclosure button. Details show actual
+  authentication summary/findings or an explicit unavailable state.
+- Explicit local PNG/JPEG/WebP photos and configured own-account avatars use
+  bounded background thumbnail decoding with at most two concurrent loads and
+  initials fallback. No automatic Gravatar, remote image fetch or contacts sync.
+- Pane dividers enforce minimum widths and retain separate expanded/compact
+  layouts in session and through window resizing, not across restart.
+- Original formatting is an explicit separate isolated window, with remote
+  resources blocked. It requires complete eligible source; unattested direct
+  MIME fails honestly rather than claiming full original rendering. Synthetic
+  helper-window evidence does not establish every provider's MIME/CID coverage.
+- Clipboard observations under software Xvfb demonstrate those actual interactions;
+  they do not establish hardware FPS, input latency, AT-SPI or screen-reader support.
+
+## Historical batch-2 source-only handoff
+
+The following sections retain the earlier harness preparation, source review and
+limitations as historical evidence. Their statements about unexecuted runtime,
+missing clipboard/coordinate automation and a closed original-mode release gate
+are descriptions of that earlier handoff, not the repaired source above. Do not
+reuse those historical limitations as current implementation claims or treat the
+current narrow acceptance as proof that every older backlog item is complete.
+
 ## Status / ownership
 
 Prepared, not executed native QA. This owner created only:

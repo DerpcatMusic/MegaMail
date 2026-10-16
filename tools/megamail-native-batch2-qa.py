@@ -33,7 +33,7 @@ CHECKS = {
     "invitation": "Demo metadata is not causally correlated direct BodyAtEpoch evidence.",
     "mailto_ipc": "Demo bypasses activation and rejects --demo plus URI; never launch normal mode.",
     "account_provider_recovery": "Real roster/provider/TB/keyring operations prohibited; separate fixtures required.",
-    "helper": "With --helper, fictional mail renders inline; manually inspect captured pixels. The separate developer window remains gated.",
+    "helper": "With --helper, original formatting is available only when explicitly requested; no renderer should launch during native reading.",
     "physical_performance_accessibility": "Xvfb/software captures prove neither FPS nor accessibility.",
 }
 
@@ -57,7 +57,7 @@ def trusted_file(value: str, executable: bool = True) -> Path:
 
 def source_digest() -> str:
     # A freeze/review receipt, NOT a Rust parser or proof of control flow.
-    paths = {ROOT / "Cargo.toml", ROOT / "Cargo.lock", ROOT / "apps/megamail/Cargo.toml",
+    paths = {Path(__file__).resolve(), ROOT / "Cargo.toml", ROOT / "Cargo.lock", ROOT / "apps/megamail/Cargo.toml",
              ROOT / "apps/megamail/Cargo.lock", ROOT / "crates/mail-core/Cargo.toml",
              ROOT / "docs/fixtures/html-reader/batch2/authored.html"}
     for directory in ("apps/megamail/src", "crates/mail-core/src", "src"):
@@ -144,9 +144,17 @@ def sandbox_command(root: Path, binary: Path, args: argparse.Namespace) -> list[
                 raise ValueError("Runtime directory must be canonical, not symlinked.")
             command += ["--ro-bind", str(runtime), "/qa/data/megamail/html-reader/runtime"]
     command += ["--", "/usr/bin/python3", "/qa-run.py", "--inside", "--execute",
-                "--timeout", str(args.timeout), "--settle", str(args.settle), "--theme", args.theme]
+                "--timeout", str(args.timeout), "--settle", str(args.settle), "--theme", args.theme, "--selection-y", str(args.selection_y), "--newsletter-selection-y", str(args.newsletter_selection_y)]
     if args.developer_helper_preview:
         command += ["--developer-helper-preview"]
+    if args.reader_interactions:
+        command += ["--reader-interactions"]
+    if args.extended_reader:
+        command += ["--extended-reader"]
+    if args.assert_only:
+        command += ["--assert-only"]
+    if args.newsletter_only:
+        command += ["--newsletter-only"]
     return command
 
 
@@ -187,6 +195,8 @@ def inside(args: argparse.Namespace) -> int:
         owner = int(run(["xdotool", "getwindowpid", window]))
         if owner != app.pid or app.poll() is not None:
             raise RuntimeError("window no longer belongs to the owned native process")
+        if args.assert_only:
+            return  # Repeat executable assertions without another visual-polish capture pass.
         geometry = run(["xdotool", "getwindowgeometry", "--shell", window])
         facts = dict(window_id=window, owning_pid=owner, display=os.environ["DISPLAY"],
                      geometry=geometry, utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -219,6 +229,15 @@ def inside(args: argparse.Namespace) -> int:
         preferences = root / "config/megamail/theme.v1"
         preferences.parent.mkdir(parents=True, exist_ok=True)
         preferences.write_text(json.dumps({"mode": args.theme}))
+        if args.extended_reader:
+            # A two-color synthetic photo tests local loading; no contact service is consulted.
+            for email in ("notes@example.test", "leila.bendavid@example.test"):
+                key = email.encode().hex()
+                photo = root / "data/megamail/sender-photos.v1"
+                for at in range(0, len(key), 64):
+                    photo = photo / key[at:at + 64]
+                photo.mkdir(parents=True, exist_ok=True)
+                run(["magick", "-size", "128x128", "xc:#275D8C", "-fill", "#F1BC66", "-draw", "rectangle 0,0 63,127", str(photo / "photo.png")])
         app = subprocess.Popen(["/app/megamail", "--demo"], stdout=log, stderr=log,
                                start_new_session=True)
         children.append(app)
@@ -245,6 +264,123 @@ def inside(args: argparse.Namespace) -> int:
         run(["xdotool", "windowmove", "--sync", window, "0", "0"])
         pause()
         capture("startup")
+        if args.reader_interactions:
+            # All clipboard content is fictional and namespace-owned. No host X server is mounted.
+            from Xlib import X, display
+            def clipboard() -> str:
+                connection = display.Display()
+                requestor = connection.screen().root.create_window(0, 0, 1, 1, 0, X.CopyFromParent)
+                selection = connection.intern_atom("CLIPBOARD")
+                target = connection.intern_atom("UTF8_STRING")
+                prop = connection.intern_atom("MEGAMAIL_QA_CLIPBOARD")
+                requestor.convert_selection(selection, target, prop, X.CurrentTime)
+                connection.flush()
+                until = time.monotonic() + 2
+                value = ""
+                while time.monotonic() < until:
+                    if connection.pending_events():
+                        event = connection.next_event()
+                        if event.type == X.SelectionNotify:
+                            if event.property != X.NONE:
+                                data = requestor.get_full_property(prop, target)
+                                if data is not None:
+                                    value = bytes(data.value).decode("utf-8", errors="replace")
+                            break
+                    else:
+                        time.sleep(0.02)
+                requestor.destroy(); connection.close()
+                return value
+            def copy_expected(label: str, needle: str) -> str:
+                started_copy = time.monotonic()
+                run(["xdotool", "key", "--clearmodifiers", "ctrl+c"])
+                until = min(deadline, started_copy + 3)
+                copied = ""
+                while time.monotonic() < until:
+                    copied = clipboard()
+                    if needle in copied:
+                        break
+                    time.sleep(0.05)
+                observations.append(result(label, "pass" if needle in copied else "fail",
+                                           "Actual X selection conversion awaited until the expected fictional text appears.",
+                                           expected=needle, copied=copied,
+                                           clipboard_ready_ms=round((time.monotonic() - started_copy) * 1000, 1)))
+                return copied
+            def drag(x: int, y: int, end_x: int, end_y: int) -> None:
+                if int(run(["xdotool", "getwindowpid", window])) != app.pid:
+                    raise RuntimeError("refusing drag outside the owned demo")
+                run(["xdotool", "windowfocus", "--sync", window])
+                run(["xdotool", "windowraise", window])
+                run(["xdotool", "mousemove", "--window", window, str(x), str(y), "mousedown", "1"])
+                for step in range(1, 13):
+                    run(["xdotool", "mousemove", "--window", window,
+                         str(round(x + (end_x - x) * step / 12)), str(round(y + (end_y - y) * step / 12))])
+                    time.sleep(0.025)
+                run(["xdotool", "mouseup", "1"])
+            def click(x: int, y: int) -> None:
+                if int(run(["xdotool", "getwindowpid", window])) != app.pid:
+                    raise RuntimeError("refusing click outside the owned demo")
+                run(["xdotool", "windowfocus", "--sync", window])
+                run(["xdotool", "windowraise", window])
+                run(["xdotool", "mousemove", "--window", window, str(x), str(y), "click", "1"])
+            if args.newsletter_only:
+                click(400, 400)
+                time.sleep(3)
+                capture("newsletter-settled")
+                drag(625, args.newsletter_selection_y, 1120, args.newsletter_selection_y)
+                copy_expected("newsletter_drag_copy", "fictional mail")
+                capture("newsletter-selection")
+                return 0
+            time.sleep(3)
+            capture("reader-settled")
+            # Before/after snapshots share the same fictional scene and coordinates.
+            drag(785, args.selection_y, 1185, args.selection_y)
+            copy_expected("native_drag_copy", "Hebrew")
+            capture("reader-selection")
+            if args.extended_reader:
+                drag(648, 460, 980, 460)
+                copy_expected("sender_address_copy", "leila.bendavid@example.test")
+                capture("sender-address-selection")
+                click(650, 493); pause(); capture("message-auth-details")
+                click(650, 493); pause()
+            drag(232, 500, 290, 500)
+            pause(); capture("sidebar-dragged")
+            drag(564, 500, 650, 500)
+            pause(); capture("message-pane-dragged")
+            for width, height in ((1060, 640), (1520, 900)):
+                run(["xdotool", "windowsize", window, str(width), str(height)])
+                pause(); capture(f"reader-{width}x{height}")
+            if args.extended_reader:
+                click(1408, 20); pause(); capture("sidebar-collapsed")
+                click(1408, 20); pause(); capture("sidebar-restored")
+                run(["xdotool", "windowsize", window, "1280", "800"]); pause()
+                click(480, 400); pause(); capture("newsletter-native")
+                drag(725, args.newsletter_selection_y, 1180, args.newsletter_selection_y)
+                copy_expected("newsletter_drag_copy", "fictional mail")
+                capture("newsletter-selection")
+                # Quote control is below the short current message. Review the exact captured state.
+                click(770, 535); pause(); capture("newsletter-history-disclosure")
+                click(770, 535); pause(); capture("newsletter-history-restored")
+                # Explicit original formatting is the only action allowed to start WebKit.
+                click(760, 112); time.sleep(3); capture("explicit-original-request")
+                try:
+                    names = run(["xdotool", "search", "--onlyvisible", "--name", "Original formatting"]).splitlines()
+                except subprocess.CalledProcessError:
+                    names = []
+                observations.append(result("explicit_original_window", "pass" if names else "fail", "Separate visible original-formatting window discovered only after the explicit action.", windows=names))
+                # Close original from the still-owned native window; avoids trusting the helper's nested PID.
+                click(920, 112); pause(); capture("native-after-original")
+            # Observe actual process startup, not a synthetic renderer-ready flag.
+            commands = []
+            for proc in Path("/proc").iterdir():
+                if proc.name.isdecimal():
+                    try:
+                        command = (proc / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+                        if command.split(" ", 1)[0].endswith(("/megamail-html-reader", "/WebKitWebProcess", "/WebKitNetworkProcess")):
+                            commands.append(command[:256])
+                    except OSError:
+                        pass
+            observations.append(result("automatic_html_processes", "pass" if not commands else "fail", "Namespace process inventory after native selection and resizing.", processes=commands))
+            return int(any(item["status"] == "fail" for item in observations))
         # Only non-destructive focus/navigation keys; no URLs/f5/send.
         for label, keys in (("select-next", ["ctrl+alt+l", "Down"]),
                             ("select-previous", ["ctrl+alt+l", "Up"]),
@@ -360,6 +496,12 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--timeout", type=int, default=60, help="Whole inner session budget, 20..120 seconds")
     p.add_argument("--settle", type=float, default=1.0, help="Fixed observation pause, 0.2..3 seconds; not readiness telemetry")
     p.add_argument("--theme", choices=("light", "dark"), default="light", help="Synthetic profile theme")
+    p.add_argument("--assert-only", action="store_true", help="Run executable interaction assertions without saving screenshots")
+    p.add_argument("--extended-reader", action="store_true", help="Reviewed header, photo, disclosure, layout-retention and explicit-original scenarios")
+    p.add_argument("--newsletter-only", action="store_true", help="Bounded installed-baseline newsletter regression scene")
+    p.add_argument("--newsletter-selection-y", type=int, default=410)
+    p.add_argument("--selection-y", type=int, default=695, help="Reviewed reader text baseline for the bounded pointer selection")
+    p.add_argument("--reader-interactions", action="store_true", help="Bounded fictional reader drag/copy/resize observations")
     p.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
     return p
 
@@ -387,6 +529,9 @@ def main() -> int:
         if args.developer_helper_preview:
             trusted_file(str(helper.parent / "extensions/libmegamail-reader-policy.so"), executable=False)
         dependencies = {name: shutil.which(name, path="/usr/bin:/bin") for name in TOOLS}
+        if args.reader_interactions:
+            import importlib.util
+            dependencies["python-xlib"] = bool(importlib.util.find_spec("Xlib"))
         metadata = dict(source_sha256=digest, binary=str(binary) if binary else None,
                         helper=str(helper) if helper else None, developer_helper_preview=args.developer_helper_preview,
                         dependencies=dependencies,

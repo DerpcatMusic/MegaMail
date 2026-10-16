@@ -96,13 +96,16 @@ pub(crate) struct SemanticTextIdentity {
     pub quote_visible: bool,
 }
 
-fn semantic_text_unchanged(
+fn same_native_body(
     previous: &SemanticTextIdentity,
     previous_html: &str,
     current: &SemanticTextIdentity,
     current_html: &str,
 ) -> bool {
-    previous == current && previous_html == current_html
+    previous.key == current.key
+        && previous.version == current.version
+        && previous.plain == current.plain
+        && previous_html == current_html
 }
 
 pub(crate) struct SemanticTextTarget {
@@ -111,45 +114,28 @@ pub(crate) struct SemanticTextTarget {
     pub state: gpui_kit::Entity<gpui_kit::component::text::TextViewState>,
 }
 impl SemanticTextTarget {
-    /// Called on body/mode transitions, never from render. The vendor state
-    /// bounds synchronous parsing to 4 KiB and parses larger input off-thread.
-    pub fn new(
-        identity: SemanticTextIdentity,
-        html: gpui_kit::SharedString,
-        cx: &mut gpui_kit::App,
-    ) -> Self {
-        use gpui_kit::AppContext as _;
-        let state =
-            cx.new(|cx| gpui_kit::component::text::TextViewState::html(&html, cx).selectable(true));
-        Self {
-            identity,
-            html,
-            state,
-        }
-    }
     pub fn matches(&self, identity: &SemanticTextIdentity) -> bool {
         &self.identity == identity
     }
-    pub fn unchanged(&self, identity: &SemanticTextIdentity, html: &str) -> bool {
-        semantic_text_unchanged(&self.identity, &self.html, identity, html)
+    /// Keep selection through helper-generation and quote-disclosure changes.
+    /// A changed mailbox epoch, message, mode or body retires the native state.
+    pub fn rebind_unchanged(&mut self, identity: SemanticTextIdentity, html: &str) -> bool {
+        if !same_native_body(&self.identity, &self.html, &identity, html) {
+            return false;
+        }
+        self.identity = identity;
+        true
     }
 }
 
-/// No automatic release enablement. A developer can explicitly preview only
-/// fictional fixtures with an absolute, privately trusted helper. Presence of
-/// a binary/policy handshake is NOT security acceptance for real mail.
-pub(crate) fn developer_helper() -> Result<PathBuf, String> {
-    if std::env::var_os("MEGAMAIL_HTML_READER_DEVELOPER_PREVIEW").as_deref()
-        != Some(std::ffi::OsStr::new("1"))
-    {
-        return Err("Original formatting is unavailable: helper security acceptance is pending. Native selectable formatting remains available.".into());
-    }
-    let path = std::env::var_os("MEGAMAIL_HTML_READER_HELPER")
-        .map(PathBuf::from)
-        .ok_or_else(|| {
-            "Developer preview needs an explicit absolute trusted helper path.".to_owned()
-        })?;
-    trusted_helper(path)
+/// Used only by the deliberate original-formatting action. Installed binaries
+/// and their policy extension must have trusted ownership and permissions.
+pub(crate) fn installed_helper() -> Result<PathBuf, String> {
+    let directory = megamail_core::config::data_base()
+        .ok_or("The original reader’s installation directory is unavailable.")?
+        .join("html-reader");
+    trusted_helper(directory.join("extensions/libmegamail-reader-policy.so"))?;
+    trusted_helper(directory.join("megamail-html-reader"))
 }
 
 pub(crate) fn trusted_helper(path: PathBuf) -> Result<PathBuf, String> {
@@ -236,7 +222,7 @@ impl Session {
                 _ => break,
             };
             match event {
-                ReaderHostEvent::Ready { scope } if self.accepts(&scope) => self.notice = Some("Helper reports ready — temporary developer window. Remote-resource/CID blocking is a policy claim; helper security acceptance remains pending.".into()),
+                ReaderHostEvent::Ready { scope } if self.accepts(&scope) => self.notice = Some("Original formatting is open in a separate window. Close it to return here; native text stays available.".into()),
                 ReaderHostEvent::UserClickedLink { scope, url } if self.accepts(&scope) => {
                     if megamail_core::mail_text::safe_browser_url(&url) { links.push(url); }
                 },
@@ -280,29 +266,23 @@ mod tests {
     #[test]
     fn semantic_target_retention_reuses_only_unchanged_body_and_mode() {
         let identity = semantic_identity();
-        assert!(semantic_text_unchanged(
+        assert!(same_native_body(
             &identity,
             "<p>same</p>",
             &identity,
             "<p>same</p>"
         ));
-        assert!(!semantic_text_unchanged(
+        assert!(!same_native_body(
             &identity,
             "<p>old</p>",
             &identity,
             "<p>new</p>"
         ));
-        for current in [
-            SemanticTextIdentity {
-                plain: true,
-                ..identity.clone()
-            },
-            SemanticTextIdentity {
-                quote_visible: true,
-                ..identity.clone()
-            },
-        ] {
-            assert!(!semantic_text_unchanged(
+        for current in [SemanticTextIdentity {
+            plain: true,
+            ..identity.clone()
+        }] {
+            assert!(!same_native_body(
                 &identity,
                 "<p>same</p>",
                 &current,
@@ -311,13 +291,20 @@ mod tests {
         }
     }
     #[test]
+    fn quote_and_helper_transitions_keep_current_body_but_actions_still_use_exact_identity() {
+        let identity = semantic_identity();
+        let current = SemanticTextIdentity {
+            generation: identity.generation + 1,
+            quote_visible: true,
+            ..identity.clone()
+        };
+        assert!(same_native_body(&identity, "same", &current, "same"));
+        assert_ne!(identity, current);
+    }
+    #[test]
     fn semantic_target_retention_rejects_uid_reuse_and_source_generation_changes() {
         let identity = semantic_identity();
         for current in [
-            SemanticTextIdentity {
-                generation: 4,
-                ..identity.clone()
-            },
             SemanticTextIdentity {
                 version: Some(DirectBodyVersion {
                     uid: 42,
@@ -330,7 +317,7 @@ mod tests {
                 ..identity.clone()
             },
         ] {
-            assert!(!semantic_text_unchanged(
+            assert!(!same_native_body(
                 &identity,
                 "<p>same</p>",
                 &current,
@@ -359,7 +346,7 @@ mod tests {
                 key,
                 ..identity.clone()
             };
-            assert!(!semantic_text_unchanged(
+            assert!(!same_native_body(
                 &identity,
                 "<p>same</p>",
                 &current,

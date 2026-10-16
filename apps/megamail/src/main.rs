@@ -73,7 +73,7 @@ mod rules_editor;
 mod rules_preview;
 mod rules_ui;
 mod scheduling;
-mod styled_reader;
+mod sender_photos;
 mod theme;
 mod thunderbird_adapter;
 mod triage;
@@ -756,6 +756,10 @@ struct ReaderBody {
     plain_html: SharedString,
     plain_html_without_quote: SharedString,
     retained_bytes: usize,
+    current_state: Option<Entity<gpui_kit::component::text::TextViewState>>,
+    plain_state: Option<Entity<gpui_kit::component::text::TextViewState>>,
+    quote_state: Option<Entity<gpui_kit::component::text::TextViewState>>,
+    plain_quote_state: Option<Entity<gpui_kit::component::text::TextViewState>>,
 }
 
 impl ReaderBody {
@@ -766,6 +770,22 @@ impl ReaderBody {
             (false, true) => self.html.clone(),
             (false, false) => self.html_without_quote.clone(),
         }
+    }
+
+    fn prepare(&mut self, cx: &mut App) {
+        let state = |markup: &str, cx: &mut App| {
+            Some(cx.new(|cx| {
+                gpui_kit::component::text::TextViewState::html(markup, cx).selectable(true)
+            }))
+        };
+        let (_, quote) = preferences::split_quoted_text(&self.text);
+        let quote_markup = preferences::quoted_html(&self.source_html)
+            .unwrap_or_else(|| preferences::plain_text_html(quote.unwrap_or_default()));
+        self.current_state = state(&self.html_without_quote, cx);
+        self.plain_state = state(&self.plain_html_without_quote, cx);
+        self.quote_state = state(&quote_markup, cx);
+        self.plain_quote_state =
+            state(&preferences::plain_text_html(quote.unwrap_or_default()), cx);
     }
 
     fn new(
@@ -828,6 +848,10 @@ impl ReaderBody {
             plain_html,
             plain_html_without_quote,
             retained_bytes,
+            current_state: None,
+            plain_state: None,
+            quote_state: None,
+            plain_quote_state: None,
         }
     }
 }
@@ -841,6 +865,9 @@ struct ListRow {
 
 struct MailApp {
     live: Entity<LiveMailbox>,
+    sender_photos: sender_photos::State,
+    mail_panes: Entity<gpui_kit::component::resizable::ResizableState>,
+    compact_mail_panes: Entity<gpui_kit::component::resizable::ResizableState>,
     _live_subscription: Subscription,
     profiles: Vec<(u32, AccountConfig)>,
     comfort: comfort::State,
@@ -857,7 +884,6 @@ struct MailApp {
     rule_editor: rules_editor::State,
     reader_export_busy: bool,
     reader_find: reader_find::State,
-    styled_reader: styled_reader::State,
     attachment_preview: attachment_preview::State,
     reader_export_status: Option<String>,
     triage: triage_ui::State,
@@ -925,6 +951,7 @@ struct MailApp {
     expanded_messages: std::collections::HashSet<MessageKey>,
     collapsed_messages: std::collections::HashSet<MessageKey>,
     visible_quotes: std::collections::HashSet<MessageKey>,
+    hidden_quotes: std::collections::HashSet<MessageKey>,
     plain_messages: std::collections::HashSet<MessageKey>,
     link_details: std::collections::HashSet<MessageKey>,
     reader_bodies: std::collections::VecDeque<ReaderBody>,
@@ -1023,6 +1050,9 @@ impl MailApp {
             mailbox_focus: cx.focus_handle().tab_stop(true),
             mailbox_focus_admitted: false,
             compose_tools_busy: false,
+            mail_panes: cx.new(|_| Default::default()),
+            compact_mail_panes: cx.new(|_| Default::default()),
+            sender_photos: Default::default(),
             reader_text: None,
             rule_preview: Vec::new(),
             newsletter_status: None,
@@ -1031,7 +1061,6 @@ impl MailApp {
             rule_editor: rules_editor::State::new(window, cx),
             reader_export_busy: false,
             reader_find: reader_find::State::new(window, cx),
-            styled_reader: Default::default(),
             attachment_preview: Default::default(),
             reader_export_status: None,
             triage: triage_ui::State::new(window, cx),
@@ -1099,6 +1128,7 @@ impl MailApp {
             expanded_messages: std::collections::HashSet::new(),
             collapsed_messages: std::collections::HashSet::new(),
             visible_quotes: std::collections::HashSet::new(),
+            hidden_quotes: std::collections::HashSet::new(),
             plain_messages: std::collections::HashSet::new(),
             link_details: std::collections::HashSet::new(),
             reader_bodies: std::collections::VecDeque::new(),
@@ -1748,7 +1778,7 @@ impl MailApp {
         let title: Arc<str> = Arc::from(row.message.subject.as_str());
         let worker_scope = scope.clone();
         let task = cx.background_spawn(async move {
-            let path = reader_session::developer_helper()?;
+            let path = reader_session::installed_helper()?;
             let document = original.document(worker_scope, semantic, plain, title)?;
             reader_host::ReaderHost::start(path, document).map_err(|_| {
                 "Original reader could not start; native text remains available.".to_owned()
@@ -1877,7 +1907,9 @@ impl MailApp {
             version: snapshot.selected_body_version,
             generation: self.reader_session.generation,
             plain: self.plain_messages.contains(key),
-            quote_visible: !self.preferences.hide_quoted_text || self.visible_quotes.contains(key),
+            quote_visible: (!self.preferences.hide_quoted_text
+                || self.visible_quotes.contains(key))
+                && !self.hidden_quotes.contains(key),
         })
     }
 
@@ -1892,7 +1924,6 @@ impl MailApp {
     /// Keep the actual selected TextView consumer outside the render path.
     fn refresh_reader_text(&mut self, snapshot: &MailboxSnapshot, cx: &mut Context<Self>) {
         self.refresh_semantic_reader_text(snapshot, cx);
-        self.sync_styled_reader(snapshot, cx);
     }
     fn refresh_semantic_reader_text(&mut self, snapshot: &MailboxSnapshot, cx: &mut Context<Self>) {
         let Some(identity) = self.reader_text_identity(snapshot) else {
@@ -1919,13 +1950,11 @@ impl MailApp {
             self.reader_export_status = None;
             return;
         };
-        let html = body.markup(identity.plain, identity.quote_visible);
-        if self
-            .reader_text
-            .as_ref()
-            .is_some_and(|target| target.unchanged(&identity, &html))
-        {
-            return;
+        let html = body.markup(identity.plain, false);
+        if let Some(target) = &mut self.reader_text {
+            if target.rebind_unchanged(identity.clone(), &html) {
+                return;
+            }
         }
         // A replaced body/mode gets a new state, so its old selection cannot
         // survive into another message or an asynchronously parsed replacement.
@@ -1935,11 +1964,32 @@ impl MailApp {
         self.reader_export_status = None;
         self.reader_find.clear();
         self.attachment_preview.clear();
-        self.reader_text = Some(reader_session::SemanticTextTarget::new(identity, html, cx));
+        let plain = identity.plain;
+        self.reader_text = Some(reader_session::SemanticTextTarget {
+            identity,
+            html,
+            state: if plain {
+                body.plain_state.as_ref().unwrap().clone()
+            } else {
+                body.current_state.as_ref().unwrap().clone()
+            },
+        });
     }
 
     fn on_live_change(&mut self, cx: &mut Context<Self>) {
         let snapshot = self.live.read(cx).snapshot();
+        if let Some(row) = &snapshot.selected_message {
+            self.load_sender_photo(&row.message.from_addr, cx);
+            if let Some(conversation) = snapshot
+                .conversations
+                .iter()
+                .find(|thread| thread.members.iter().any(|member| member.key == row.key))
+            {
+                for member in conversation.members.iter().take(32) {
+                    self.load_sender_photo(&member.message.from_addr, cx);
+                }
+            }
+        }
         for card in &mut self.comfort.outgoing {
             if let Some(result) = self
                 .live
@@ -2032,6 +2082,8 @@ impl MailApp {
                 .retain(|key| reader_scope_retained(key, &retired));
             self.visible_quotes
                 .retain(|key| reader_scope_retained(key, &retired));
+            self.hidden_quotes
+                .retain(|key| reader_scope_retained(key, &retired));
             self.link_details
                 .retain(|key| reader_scope_retained(key, &retired));
             self.expanded_messages
@@ -2082,12 +2134,13 @@ impl MailApp {
                     && cached.text.as_ref() == row.message.body
                     && cached.source_html.as_ref() == snapshot.selected_html.as_ref()
             }) {
-                let cached = ReaderBody::new(
+                let mut cached = ReaderBody::new(
                     row.key.clone(),
                     &row.message.body,
                     snapshot.selected_html.clone(),
                     snapshot.selected_html_without_quote.clone(),
                 );
+                cached.prepare(cx);
                 self.reader_bodies.retain(|cached| cached.key != row.key);
                 self.reader_bodies.push_front(cached);
                 while self.reader_bodies.len() > 8
@@ -3988,7 +4041,13 @@ impl MailApp {
             .collect::<Vec<_>>();
         other.sort_by_key(|folder| folder.name.to_lowercase());
         v_flex()
-            .w(width)
+            .map(|el| {
+                if width == px(0.) {
+                    el.w_full()
+                } else {
+                    el.w(width)
+                }
+            })
             .h_full()
             .min_h_0()
             .flex_shrink_0()
@@ -4709,7 +4768,13 @@ impl MailApp {
         let title = snapshot.title.clone();
         let unavailable = snapshot.account_errors.len();
         v_flex()
-            .w(width)
+            .map(|el| {
+                if width == px(0.) {
+                    el.w_full()
+                } else {
+                    el.w(width)
+                }
+            })
             .h_full()
             .min_w_0()
             .flex_shrink_0()
@@ -5369,13 +5434,14 @@ impl MailApp {
                     "Copy message text",
                     "Find in message",
                     if plain {
-                        "Show styled message"
+                        "Use native formatting"
                     } else {
                         "Read as text"
                     },
                     "Save message text…",
                     "Save for printing…",
                     "Preview mail rules",
+                    "Open original formatting…",
                 ]
                 .into_iter()
                 .enumerate()
@@ -5389,7 +5455,8 @@ impl MailApp {
                                 3 => body.is_empty(),
                                 4..=5 => !body_loaded,
                                 6..=7 => !body_loaded || export_busy,
-                                _ => demo || !body_loaded || rules_busy,
+                                8 => demo || !body_loaded || rules_busy,
+                                _ => !body_loaded,
                             })
                             .on_click(move |_, window, cx| {
                                 let _ = owner.update(cx, |this, cx| match index {
@@ -5424,7 +5491,8 @@ impl MailApp {
                                     }
                                     6 => this.save_readable_text(cx),
                                     7 => this.save_printable_html(cx),
-                                    _ => this.preview_saved_rules(cx),
+                                    8 => this.preview_saved_rules(cx),
+                                    _ => this.open_original_formatting(cx),
                                 });
                             }),
                     );
@@ -5693,6 +5761,13 @@ impl MailApp {
                             .min_w_0()
                             .max_w(px(680.))
                             .gap_4()
+                            .child(h_flex().gap_2()
+                                .child(Button::new("open-original-formatting").ghost().small().label("Original formatting…")
+                                    .disabled(!snapshot.body_loaded)
+                                    .tooltip("Open the sender’s original layout in a separate window")
+                                    .on_click(cx.listener(|this, _, _, cx| this.open_original_formatting(cx))))
+                                .when(self.reader_session.active.is_some(), |el| el.child(Button::new("close-original-formatting").ghost().small().label("Close original")
+                                    .on_click(cx.listener(|this, _, _, cx| { this.retire_reader_session(cx); this.reader_session.notice = None; cx.notify(); })))))
                             .when_some(self.reader_session.notice.clone(), |el, notice| el.child(div().text_size(px(11.)).text_color(palette.muted).child(notice)))
                             .when_some(self.invitation_error.clone(), |el, error| el.child(div().text_size(px(11.)).text_color(palette.muted).child(error)))
                             .when_some(self.invitation_preview.clone(), |el, invitation| {
@@ -5804,7 +5879,7 @@ impl MailApp {
                 let selected_here = key == selected.key;
                 let cached = self.reader_bodies.iter().find(|cached| cached.key == key);
                 let quote_visible =
-                    !self.preferences.hide_quoted_text || self.visible_quotes.contains(&key);
+                    (!self.preferences.hide_quoted_text || self.visible_quotes.contains(&key)) && !self.hidden_quotes.contains(&key);
                 let plain = self.plain_messages.contains(&key);
                 let has_quote = cached.is_some_and(|cached| {
                     if plain {
@@ -5839,13 +5914,9 @@ impl MailApp {
                     let text_view = if let Some(target) = target {
                         gpui_kit::component::text::TextView::new(&target.state)
                     } else {
-                        gpui_kit::component::text::TextView::html(
-                            SharedString::from(format!(
-                                "mail-text-{}-{}-{}-{quote_visible}-{plain}",
-                                key.account_id, key.folder_path, key.uid,
-                            )),
-                            cached.markup(plain, quote_visible),
-                        )
+                        gpui_kit::component::text::TextView::new(if plain {
+                            cached.plain_state.as_ref().unwrap()
+                        } else { cached.current_state.as_ref().unwrap() })
                     };
                     text_view
                         .selectable(true)
@@ -5903,21 +5974,6 @@ impl MailApp {
                         })
                         .into_any_element()
                 };
-                let body_element = if selected_here {
-                    let content = if plain || (has_quote && !quote_visible) {
-                        body_element
-                    } else {
-                        self.styled_body(snapshot, cx).unwrap_or(body_element)
-                    };
-                    div()
-                        .relative()
-                        .w_full()
-                        .child(content)
-                        .child(self.styled_width_probe(cx))
-                        .into_any_element()
-                } else {
-                    body_element
-                };
                 let own = self.own_message(&row.message, snapshot);
                 let sender = if own {
                     comfort::own_label(
@@ -5935,14 +5991,13 @@ impl MailApp {
                 } else {
                     comfort::identity_color(&row.message.from_addr, palette)
                 };
-                let header = Button::new(SharedString::from(format!(
+                let disclosure = Button::new(SharedString::from(format!(
                     "reader-message-{}-{}-{}",
                     key.account_id, key.folder_path, key.uid
                 )))
                 .ghost()
                 .small()
-                .w_full()
-                .min_h(px(52.))
+                .size(px(32.))
                 .h_auto()
                 .px_0()
                 .rounded(px(4.))
@@ -5964,72 +6019,23 @@ impl MailApp {
                     this.refresh_reader_text(&snapshot, cx);
                     cx.notify();
                 }))
-                .child(
-                    h_flex()
-                        .w_full()
-                        .min_w_0()
-                        .items_center()
-                        .gap_3()
-                        .child(
-                            div()
-                                .flex()
-                                .flex_shrink_0()
-                                .size(px(28.))
-                                .rounded_full()
-                                .bg(sender_color.opacity(if self.dark { 0.14 } else { 0.09 }))
-                                .text_color(sender_color)
-                                .text_size(px(11.))
-                                .items_center()
-                                .justify_center()
-                                .child(initials(&sender)),
-                        )
-                        .child(
-                            v_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .gap_1()
-                                .child(
-                                    div()
-                                        .text_size(px(13.))
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .whitespace_normal()
-                                        .text_color(sender_color)
-                                        .child(sender),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(12.))
-                                        .text_color(palette.muted)
-                                        .whitespace_normal()
-                                        .child(row.message.from_addr.clone()),
-                                )
-                                .when(!open, |el| {
-                                    el.child(
-                                        div()
-                                            .text_size(px(12.))
-                                            .text_color(palette.muted)
-                                            .child(row.message.preview.clone()),
-                                    )
-                                }),
-                        )
-                        .child(
-                            div()
-                                .max_w(px(110.))
-                                .whitespace_normal()
-                                .text_size(px(11.))
-                                .text_color(palette.muted)
-                                .child(row.message.date.clone()),
-                        )
-                        .child(
-                            Icon::new(if open {
-                                IconName::ChevronDown
-                            } else {
-                                IconName::ChevronRight
-                            })
-                            .size(px(14.))
-                            .text_color(palette.muted),
-                        ),
-                );
+                .icon(Icon::new(if open { IconName::ChevronDown } else { IconName::ChevronRight }).size(px(14.)))
+                .tooltip(if open { "Collapse message" } else { "Expand message" });
+                let header = h_flex().w_full().min_w_0().items_center().gap_3()
+                    .child(self.sender_avatar(&row.message.from_addr, &sender, sender_color, cx))
+                    .child(v_flex().flex_1().min_w_0().gap_1()
+                        .child(gpui_kit::component::text::TextView::html(
+                            SharedString::from(format!("sender-name-{}-{}-{}", row.key.account_id, row.key.folder_path, row.key.uid)),
+                            preferences::plain_text_html(&sender))
+                            .selectable(true).w_full().min_w_0().text_size(px(13.))
+                            .font_weight(FontWeight::SEMIBOLD).text_color(sender_color))
+                        .child(gpui_kit::component::text::TextView::html(
+                            SharedString::from(format!("sender-address-{}-{}-{}", row.key.account_id, row.key.folder_path, row.key.uid)),
+                            preferences::plain_text_html(&row.message.from_addr))
+                            .selectable(true).w_full().min_w_0().text_size(px(12.)).text_color(palette.muted))
+                        .when(!open, |el| el.child(div().text_size(px(12.)).text_color(palette.muted).child(row.message.preview.clone()))))
+                    .child(div().max_w(px(110.)).whitespace_normal().text_size(px(11.)).text_color(palette.muted).child(row.message.date.clone()))
+                    .child(disclosure);
                 v_flex()
                     .id(SharedString::from(format!(
                         "reader-anchor-{}-{}-{}",
@@ -6094,6 +6100,14 @@ impl MailApp {
                                         },
                                         palette,
                                     ))
+                                    .child(reader_recipient(&row.key, "Auth", &if selected_here {
+                                        snapshot.selected_sender_check.as_ref().map(|check| {
+                                            std::iter::once(check.summary.as_str()).chain(check.findings.iter().map(String::as_str)).collect::<Vec<_>>().join("\n")
+                                        }).unwrap_or_else(|| "Authentication results unavailable for this message.".to_owned())
+                                    } else { "Open this message to view its authentication results.".to_owned() }, palette))
+                                    .child(Button::new(SharedString::from(format!("sender-photo-{}-{}-{}", row.key.account_id, row.key.folder_path, row.key.uid)))
+                                        .ghost().small().self_start().label(if self.sender_photos.busy() { "Choosing photo…" } else { "Choose local photo…" }).disabled(self.sender_photos.busy())
+                                        .on_click({ let email = row.message.from_addr.clone(); cx.listener(move |this, _, _, cx| this.choose_sender_photo(email.clone(), cx)) }))
                                     .child(reader_recipient(
                                         &row.key,
                                         "To",
@@ -6189,7 +6203,7 @@ impl MailApp {
                                 )),
                             )
                         })
-                        .when(has_quote && self.preferences.hide_quoted_text, |el| {
+                        .when(has_quote, |el| {
                             let key = row.key.clone();
                             el.child(
                                 Button::new(SharedString::from(format!(
@@ -6200,9 +6214,9 @@ impl MailApp {
                                 .small()
                                 .self_start()
                                 .label(if quote_visible {
-                                    "Hide quoted text"
+                                    "Hide quoted history"
                                 } else {
-                                    "Show quoted text"
+                                    "Show quoted history"
                                 })
                                 .accessibility_label(if quote_visible {
                                     "Hide the original quoted message text"
@@ -6213,8 +6227,10 @@ impl MailApp {
                                     move |this, _, _, cx| {
                                         if quote_visible {
                                             this.visible_quotes.remove(&key);
+                                            this.hidden_quotes.insert(key.clone());
                                         } else {
                                             this.visible_quotes.insert(key.clone());
+                                            this.hidden_quotes.remove(&key);
                                         }
                                         let snapshot = this.live.read(cx).snapshot();
                                         this.refresh_reader_text(&snapshot, cx);
@@ -6222,6 +6238,15 @@ impl MailApp {
                                     },
                                 )),
                             )
+                        })
+                        .when(has_quote && quote_visible, |el| {
+                            if let Some(cached) = cached {
+                                el.child(div().w_full().min_w_0().pt_2().border_t_1().border_color(palette.border)
+                                    .child(gpui_kit::component::text::TextView::new(if plain { cached.plain_quote_state.as_ref().unwrap() } else { cached.quote_state.as_ref().unwrap() })
+                                        .selectable(true).w_full().min_w_0().text_size(px(14.)).line_height(relative(1.6))
+                                        .text_color(palette.muted)
+                                        .on_link_click(|url, _, _, cx| { if megamail_core::mail_text::safe_browser_url(url) { cx.open_url(url); } })))
+                            } else { el }
                         })
                         .when(
                             members.len() > 1
@@ -7994,16 +8019,51 @@ impl Render for MailApp {
                 self.setup_view(palette, cx)
             }
         } else {
-            h_flex()
+            div()
                 .flex_1()
                 .min_h_0()
-                .child(self.sidebar(&snapshot, palette, cx, rail_width))
-                .child(self.message_pane(&snapshot, palette, cx, list_width))
-                .child(if self.view == View::Compose {
-                    self.composer_view(&snapshot, palette, cx)
-                } else {
-                    self.reader(&snapshot, palette, cx)
-                })
+                .w_full()
+                .child(
+                    gpui_kit::component::resizable::h_resizable(if self.sidebar_collapsed {
+                        "mail-panes-compact"
+                    } else {
+                        "mail-panes"
+                    })
+                    .with_state(if self.sidebar_collapsed {
+                        &self.compact_mail_panes
+                    } else {
+                        &self.mail_panes
+                    })
+                    .child(
+                        gpui_kit::component::resizable::resizable_panel()
+                            .size(if self.sidebar_collapsed {
+                                px(48.)
+                            } else {
+                                rail_width
+                            })
+                            .size_range(if self.sidebar_collapsed {
+                                px(48.)..px(49.)
+                            } else {
+                                px(176.)..px(420.)
+                            })
+                            .child(self.sidebar(&snapshot, palette, cx, px(0.))),
+                    )
+                    .child(
+                        gpui_kit::component::resizable::resizable_panel()
+                            .size(list_width)
+                            .size_range(px(240.)..px(680.))
+                            .child(self.message_pane(&snapshot, palette, cx, px(0.))),
+                    )
+                    .child(
+                        gpui_kit::component::resizable::resizable_panel()
+                            .size_range(px(300.)..gpui_kit::Pixels::MAX)
+                            .child(if self.view == View::Compose {
+                                self.composer_view(&snapshot, palette, cx)
+                            } else {
+                                self.reader(&snapshot, palette, cx)
+                            }),
+                    ),
+                )
                 .into_any_element()
         };
         window_border().child(

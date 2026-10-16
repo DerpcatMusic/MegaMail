@@ -11,6 +11,8 @@ const MAX_MATCHES: usize = 500;
 struct ResultSet {
     identity: reader_session::SemanticTextIdentity,
     text: String,
+    current_text: String,
+    quoted_text: Option<String>,
     needle: String,
     matches: Vec<Range<usize>>,
     limited: bool,
@@ -46,6 +48,12 @@ impl State {
         self.status.clear();
         // Retain admission until an existing background scan actually finishes.
         self.revision = self.revision.saturating_add(1);
+    }
+}
+fn join_displayed_text(current: &str, quoted: Option<&str>) -> String {
+    match quoted.filter(|text| !text.is_empty()) {
+        Some(quote) => format!("{current}\n{quote}"),
+        None => current.to_owned(),
     }
 }
 fn matches(text: &str, needle: &str) -> Result<(Vec<Range<usize>>, bool), String> {
@@ -95,6 +103,43 @@ impl MailApp {
                 .focus(window, cx);
         }
     }
+    fn reader_text_segments(
+        &self,
+        identity: &reader_session::SemanticTextIdentity,
+        cx: &App,
+    ) -> Option<(
+        gpui_kit::component::text::RenderedText,
+        Option<gpui_kit::component::text::RenderedText>,
+    )> {
+        let target = self
+            .reader_text
+            .as_ref()
+            .filter(|target| target.matches(identity))?;
+        let current = target.state.read(cx).rendered_text();
+        let quoted = if identity.quote_visible {
+            self.reader_bodies
+                .iter()
+                .find(|body| body.key == identity.key && body.has_quote)
+                .and_then(|body| {
+                    if identity.plain {
+                        body.plain_quote_state.as_ref()
+                    } else {
+                        body.quote_state.as_ref()
+                    }
+                })
+                .map(|state| state.read(cx).rendered_text())
+        } else {
+            None
+        };
+        Some((current, quoted))
+    }
+    fn find_result_matches(&self, result: &ResultSet, cx: &App) -> bool {
+        self.reader_text_segments(&result.identity, cx)
+            .is_some_and(|(current, quote)| {
+                current.as_str() == result.current_text
+                    && quote.as_ref().map(|text| text.as_str()) == result.quoted_text.as_deref()
+            })
+    }
     pub(crate) fn find_in_displayed_message(&mut self, cx: &mut Context<Self>) {
         if self.reader_find.busy || self.view != View::Mailbox {
             return;
@@ -103,10 +148,12 @@ impl MailApp {
         let Some(identity) = self.reader_text_identity(&snapshot) else {
             return;
         };
-        let Some(target) = self.reader_text.as_ref().filter(|t| t.matches(&identity)) else {
+        let Some((current, quoted)) = self.reader_text_segments(&identity, cx) else {
             return;
         };
-        let text = target.state.read(cx).rendered_text().as_str().to_owned();
+        let current_text = current.as_str().to_owned();
+        let quoted_text = quoted.map(|text| text.as_str().to_owned());
+        let text = join_displayed_text(&current_text, quoted_text.as_deref());
         let needle = self.reader_find.query.read(cx).value().to_string();
         if text.len() > reader_document::SOURCE_MAX
             || needle.is_empty()
@@ -132,6 +179,8 @@ impl MailApp {
             matches(&text, &needle).map(|(matches, limited)| ResultSet {
                 identity,
                 text,
+                current_text,
+                quoted_text,
                 needle,
                 matches,
                 limited,
@@ -151,10 +200,7 @@ impl MailApp {
                         let still_current = this.view == View::Mailbox
                             && this.reader_text_identity(&snapshot).as_ref()
                                 == Some(&result.identity)
-                            && this.reader_text.as_ref().is_some_and(|t| {
-                                t.matches(&result.identity)
-                                    && t.state.read(cx).rendered_text().as_str() == result.text
-                            });
+                            && this.find_result_matches(&result, cx);
                         if still_current {
                             this.reader_find.current = 0;
                             this.reader_find.status = if result.matches.is_empty() {
@@ -182,11 +228,10 @@ impl MailApp {
     }
     pub(crate) fn reader_find_panel(&self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
         let state = &self.reader_find;
-        let result = state.result.as_ref().filter(|r| {
-            self.reader_text.as_ref().is_some_and(|t| {
-                t.matches(&r.identity) && t.state.read(cx).rendered_text().as_str() == r.text
-            })
-        });
+        let result = state
+            .result
+            .as_ref()
+            .filter(|result| self.find_result_matches(result, cx));
         v_flex()
             .w_full()
             .gap_2()
@@ -295,6 +340,24 @@ impl MailApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn visible_history_is_searchable_but_collapsed_history_is_excluded() {
+        let current = "Current reply";
+        let quote = "Earlier quoted phrase";
+        assert_eq!(
+            super::matches(&super::join_displayed_text(current, Some(quote)), "quoted")
+                .unwrap()
+                .0
+                .len(),
+            1
+        );
+        assert!(
+            super::matches(&super::join_displayed_text(current, None), "quoted")
+                .unwrap()
+                .0
+                .is_empty()
+        );
+    }
     #[test]
     fn literal_search_and_unicode_excerpts_are_bounded() {
         let text = format!("{}Needle é[]{}", "界".repeat(80), "🙂".repeat(80));

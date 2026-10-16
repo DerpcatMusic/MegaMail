@@ -5252,7 +5252,7 @@ fn demo_styled_message() -> (Message, String) {
     let source = include_str!("../../../docs/fixtures/html-reader/batch2/authored.html").replace(
         "<body>",
         "<body><div style=\"display:none\">Hidden duplicate preheader</div>",
-    );
+    ).replace("</body>", "<blockquote><p>On 15 Oct 2026, Ada &lt;ada@example.test&gt; wrote:</p><p>Earlier review: keep the current reply separate from this history.</p><blockquote><p>Original project note: preserve nested attribution.</p></blockquote></blockquote></body>");
     (message, source)
 }
 
