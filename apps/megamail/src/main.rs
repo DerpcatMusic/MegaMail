@@ -7321,7 +7321,7 @@ impl MailApp {
                                 div()
                                     .text_size(px(11.))
                                     .text_color(palette.faint)
-                                    .child(if composer.markup.enabled { "Formatted Markdown · HTML + plain text" } else if composer.message.html.is_some() { "Original HTML retained" } else { "Plain-text message" }),
+                                    .child(if composer.markup.enabled { "Formatted Markdown · HTML + plain text" } else if !composer.message.html.is_empty() { "Original HTML retained" } else { "Plain-text message" }),
                             )
                             .child(
                                 h_flex()
