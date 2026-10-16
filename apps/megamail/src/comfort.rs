@@ -98,6 +98,7 @@ fn identity_contrast(color: gpui_kit::Hsla, palette: Palette) -> f32 {
     ]
     .into_iter()
     .flat_map(|surface| {
+        let surface = palette.background.blend(surface);
         let background = luminance(surface, palette.background);
         let avatar = luminance(color.opacity(0.12), surface);
         [background, avatar]
