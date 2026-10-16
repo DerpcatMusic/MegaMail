@@ -83,8 +83,8 @@ mod zeron_background;
 mod zeron_style;
 
 use action::{
-    ComposeMessage, FindInMessage, FocusMessages, FocusReader, FocusSearch, NextMessage,
-    PreviousMessage, RefreshMail, ReplyAll, ReplyMessage, UnifiedInbox,
+    AllDrafts, AllSent, ComposeMessage, FindInMessage, FocusMessages, FocusReader, FocusSearch,
+    NextMessage, PreviousMessage, RefreshMail, ReplyAll, ReplyMessage, SortSender, UnifiedInbox,
 };
 
 fn packed_rgb(color: gpui_kit::Hsla) -> u32 {
@@ -3684,6 +3684,7 @@ impl MailApp {
                     .icon(Icon::new(folder_icon(folder.kind)).small())
                     .tooltip(folder.name.clone())
             })
+            .tooltip(format!("{} · {}", folder.name, folder.path))
             .accessibility_label(format!("{} folder", folder.name))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.live
@@ -3930,16 +3931,17 @@ impl MailApp {
                                     .min_w_0()
                                     .flex_1()
                                     .h(px(38.))
-                                    .icon(Icon::new(IconName::Mail).size(px(15.)))
+                                    .icon(
+                                        Icon::new(if self.accounts_expanded {
+                                            IconName::ChevronDown
+                                        } else {
+                                            IconName::ChevronRight
+                                        })
+                                        .size(px(15.)),
+                                    )
                                     .label(
                                         account
-                                            .map(|account| {
-                                                if account.name.is_empty() {
-                                                    account.email.clone()
-                                                } else {
-                                                    account.name.clone()
-                                                }
-                                            })
+                                            .map(|account| account.email.clone())
                                             .unwrap_or_else(|| "Mail accounts".into()),
                                     )
                                     .tooltip(
@@ -7364,7 +7366,13 @@ impl MailApp {
         }
         composer.error = None;
         composer.send_queued = false;
-        let outgoing_card = (!message.in_reply_to.is_empty()).then(|| comfort::OutgoingCard {
+        let outgoing_card = (!message.in_reply_to.is_empty()
+            && self
+                .live
+                .read(cx)
+                .schedule_session(message.from_account_id)
+                .is_some())
+        .then(|| comfort::OutgoingCard {
             account: message.from_account_id,
             request: 0,
             parent: comfort::normalized_id(&message.in_reply_to),
@@ -7984,6 +7992,33 @@ impl Render for MailApp {
                                 cx,
                             );
                         }
+                    }
+                }))
+                .on_action(cx.listener(|this, _: &AllSent, _, cx| {
+                    if this.view == View::Mailbox {
+                        this.comfort.outbox_open = false;
+                        this.comfort.filter = None;
+                        this.live.update(cx, |live, cx| {
+                            live.select_unified_kind(Some(FolderKind::Sent), cx)
+                        });
+                        cx.notify();
+                    }
+                }))
+                .on_action(cx.listener(|this, _: &AllDrafts, _, cx| {
+                    if this.view == View::Mailbox {
+                        this.comfort.outbox_open = false;
+                        this.comfort.filter = None;
+                        this.live.update(cx, |live, cx| {
+                            live.select_unified_kind(Some(FolderKind::Drafts), cx)
+                        });
+                        cx.notify();
+                    }
+                }))
+                .on_action(cx.listener(|this, _: &SortSender, _, cx| {
+                    if this.view == View::Mailbox {
+                        this.comfort.sort = comfort::Sort::Sender;
+                        this.rebuild_list_rows(&this.live.read(cx).snapshot(), cx);
+                        cx.notify();
                     }
                 }))
                 .on_action(cx.listener(|this, _: &UnifiedInbox, _, cx| {
@@ -9137,6 +9172,14 @@ mod tests {
 }
 
 fn main() {
+    if std::env::args_os().skip(1).collect::<Vec<_>>() == [std::ffi::OsString::from("--version")] {
+        println!(
+            "MegaMail {} ({})",
+            env!("CARGO_PKG_VERSION"),
+            option_env!("MEGAMAIL_SOURCE_REVISION").unwrap_or("source revision unavailable")
+        );
+        return;
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

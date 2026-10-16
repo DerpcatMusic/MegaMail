@@ -42,14 +42,32 @@ static gboolean enter(const char *self, gboolean snapshot, GError **error) {
         "--setenv", "NO_AT_BRIDGE", "1", "--setenv", "LANG", "C.UTF-8",
         "--chdir", "/home/reader" };
     for (guint i = 0; i < G_N_ELEMENTS(fixed); ++i) arg(args, fixed[i]);
-    ro_bind(args, "/usr", "/usr");
+    char *bundled_usr = g_build_filename(package, "runtime/usr", NULL);
+    if (g_file_test(bundled_usr, G_FILE_TEST_IS_DIR)) {
+        /* WebKit release builds use an absolute libexec path. Overlay the
+         * public system files with the adjacent package, read-only, so that
+         * path exists without a system install or broader sandbox grants. */
+        arg(args, "--overlay-src"); arg(args, "/usr");
+        arg(args, "--overlay-src"); arg(args, bundled_usr);
+        arg(args, "--ro-overlay"); arg(args, "/usr");
+    } else { ro_bind(args, "/usr", "/usr"); }
+    g_free(bundled_usr);
     for (guint i = 0; i < 2; ++i) {
         const char *p = i ? "/lib64" : "/lib";
         if (g_file_test(p, G_FILE_TEST_EXISTS)) ro_bind(args, p, p);
     }
     ro_bind(args, "/etc/fonts", "/etc/fonts");
     if (g_file_test("/etc/ld.so.cache", G_FILE_TEST_EXISTS)) ro_bind(args, "/etc/ld.so.cache", "/etc/ld.so.cache");
-    ro_bind(args, package, "/app"); g_free(package);
+    ro_bind(args, package, "/app");
+    /* Optional app-owned WebKit runtime. It is mounted read-only with this
+     * package; no host environment or additional filesystem access is granted. */
+    char *runtime = g_build_filename(package, "runtime/usr/lib/libwebkit2gtk-4.1.so.0", NULL);
+    if (g_file_test(runtime, G_FILE_TEST_IS_REGULAR)) {
+        arg(args, "--setenv"); arg(args, "LD_LIBRARY_PATH"); arg(args, "/app/runtime/usr/lib");
+        arg(args, "--setenv"); arg(args, "WEBKIT_EXEC_PATH"); arg(args, "/app/runtime/usr/lib/webkit2gtk-4.1");
+        arg(args, "--setenv"); arg(args, "WEBKIT_INJECTED_BUNDLE_PATH"); arg(args, "/app/runtime/usr/lib/webkit2gtk-4.1/injected-bundle");
+    }
+    g_free(runtime); g_free(package);
     const char *backend = g_getenv("GDK_BACKEND");
     const char *wayland = g_getenv("WAYLAND_DISPLAY");
     gboolean is_wayland = (!backend || !strcmp(backend, "wayland")) && wayland;

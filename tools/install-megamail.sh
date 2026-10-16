@@ -153,6 +153,11 @@ mkdir -- "$temporary_html/extensions"
 chmod 0755 "$temporary_html" "$temporary_html/extensions"
 install -m 0755 -- "$repo_root/tools/megamail-html-reader/build/megamail-html-reader" "$temporary_html/megamail-html-reader"
 install -m 0644 -- "$repo_root/tools/megamail-html-reader/build/extensions/libmegamail-reader-policy.so" "$temporary_html/extensions/libmegamail-reader-policy.so"
+# A supplied, reviewed adjacent WebKit runtime is part of the helper package.
+# Never infer one from LD_LIBRARY_PATH or copy any account/profile directory.
+if [[ -d "$repo_root/tools/megamail-html-reader/build/runtime" ]]; then
+    cp -a -- "$repo_root/tools/megamail-html-reader/build/runtime" "$temporary_html/runtime"
+fi
 if [[ -e "$html_directory" ]]; then
     [[ -d "$html_directory" ]] || die "HTML reader destination is not a directory"
     backup_html="$(mktemp -d "$app_data_directory/.html-reader-backup.XXXXXX")"

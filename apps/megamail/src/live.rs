@@ -1658,6 +1658,9 @@ impl LiveMailbox {
                 continue;
             }
             sent |= self.request_page_for(&key, None, false, cx);
+            if self.scope == MailboxScope::Unified && self.unified_kind.is_none() {
+                continue;
+            }
             if let Some(folder_id) = self.folder_id(key.account_id, &key.folder_path) {
                 sent |= self.send_request(
                     key.account_id,
@@ -5306,6 +5309,7 @@ fn default_accent(account_id: u32) -> &'static str {
 
 fn outbox_summary(item: &OutboxItem) -> OutboxSummary {
     OutboxSummary {
+        account_id: item.account_id,
         id: item.id,
         recipients: item.recipients.clone(),
         subject: item.subject.clone(),

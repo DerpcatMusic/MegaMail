@@ -51,7 +51,8 @@ def source_audit():
     import re
     for text in [main, extension]:
         symbols.update(re.findall(r'\b(webkit_[a-z0-9_]+)\s*\(', text))
-    installed = "\n".join(p.read_text(errors="replace") for p in Path("/usr/include/webkitgtk-4.1").rglob("*.h"))
+    include = subprocess.check_output(["pkg-config", "--variable=includedir", "webkit2gtk-4.1"], text=True).strip()
+    installed = "\n".join(p.read_text(errors="replace") for p in (Path(include) / "webkitgtk-4.1").rglob("*.h"))
     # The extension entrypoint is exported by us, not declared by WebKit.
     symbols.discard("webkit_web_extension_initialize_with_user_data")
     missing = sorted(s for s in symbols if s not in installed)
