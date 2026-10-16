@@ -90,7 +90,7 @@ jobs:
       - name: Test HTML reader policy
         run: python3 tools/megamail-html-reader/tests.py --helper tools/megamail-html-reader/build/megamail-html-reader
       - name: Test portable mail core
-        run: cargo test --manifest-path crates/mail-core/Cargo.toml --locked -j 2
+        run: cargo test --manifest-path crates/mail-core/Cargo.toml --locked -j 2 -- --test-threads=1
       - name: Test Zeron theme model and importer
         run: cargo test --manifest-path crates/zeron-theme/Cargo.toml --locked -j 2
       - name: Test bidi paragraph shaping
