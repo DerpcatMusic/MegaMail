@@ -4,25 +4,25 @@ Requested 2026-10-16: make the entire daily mail experience comfortable and depe
 
 ## Implementation and verification
 
-- [ ] Folder/account navigation stays usable while a draft is retained; return to the same draft without losing text.
-- [ ] All-account Inbox, Sent, Drafts, Archive and searchable local mail are discoverable.
-- [ ] Date, sender/email, subject and unread sorting, with direction; direct accounts sort the entire local folder cache before paging, legacy adapters sort loaded headers.
-- [ ] Distinct You / correspondent identity, visible addresses, sender-specific avatars and sent-message treatment.
-- [ ] Opaque reading/list surfaces; readable metadata and clear selection/focus in light and dark themes.
-- [ ] Restore the full original message; collapse recognized quote history, including Outlook-style reply headers.
-- [ ] Newest relevant message opens clearly; expand/collapse the conversation without losing selection.
-- [ ] Outgoing reply remains visible with accurate sending/queued/accepted/uncertain/refused status until reconciliation.
-- [ ] Durable Needs reply / Waiting / Done / Snoozed state, independent of unread, with new inbound reopening and explicit scope.
-- [ ] Search scope and cached-body limitations visible; all-folder local search and useful field hints.
-- [ ] Persistent per-account sync/connection health and visible recovery actions.
-- [ ] Compose identity, recipients, draft retention, attachment warnings and send-state recovery remain truthful.
-- [ ] Relevant Hylki correctness changes assessed; preserve shared GTK callers and profile separation.
-- [ ] Native/core tests, formatting, bridge/helper checks, production build and native demo interaction evidence.
-- [ ] Fresh independent finish review, accurate docs, reviewed PR, verified install and source receipt.
+- [x] Folder/account navigation stays usable while a draft is retained; return to the same draft without losing text.
+- [x] All-account Inbox, Sent, Drafts, Archive and searchable local mail are discoverable.
+- [x] Date, sender/email, subject and unread sorting, with direction; direct accounts sort the entire local folder cache before paging, legacy adapters sort loaded headers.
+- [x] Distinct You / correspondent identity, visible addresses, sender-specific avatars and sent-message treatment.
+- [x] Opaque reading/list surfaces; readable metadata and clear selection/focus in light and dark themes.
+- [x] Restore the full original message; collapse recognized quote history, including Outlook-style reply headers.
+- [x] Newest relevant message opens clearly; expand/collapse the conversation without losing selection.
+- [x] Outgoing reply remains visible with accurate sending/queued/accepted/uncertain/refused status until reconciliation.
+- [x] Durable Needs reply / Waiting / Done / Snoozed state, independent of unread, with new inbound reopening and explicit scope.
+- [x] Search scope and cached-body limitations visible; all-folder local search and useful field hints.
+- [x] Persistent per-account sync/connection health and visible recovery actions.
+- [x] Compose identity, recipients, draft retention, attachment warnings and send-state recovery remain truthful.
+- [x] Relevant Hylki correctness changes assessed; preserve shared GTK callers and profile separation.
+- [x] Native/core tests, formatting, bridge/helper checks, production build and native demo interaction evidence.
+- [x] Fresh independent finish review, accurate docs, reviewed PR, verified install and source receipt.
 
 ## Release boundaries
 
-A checklist item is checked only with implemented behavior and named verification. Provider-wide delivery, Windows/macOS support, rich HTML editing and provider-global search require separate evidence and must never be implied by local fixtures. Controlled test mail uses fictional loopback fixtures only. Unknown delivery never authorizes an automatic retry.
+A checked item records implementation with the source/test/capture evidence in the qualification receipt; it does not extend beyond the release boundaries below. Provider-wide delivery, Windows/macOS support, rich HTML editing and provider-global search require separate evidence and must never be implied by local fixtures. Controlled test mail uses fictional loopback fixtures only. Unknown delivery never authorizes an automatic retry.
 
 ## Daily-use guide
 

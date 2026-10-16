@@ -75,8 +75,11 @@ def main():
         _, links, _ = run(helper, request(name))
         assert all("user:secret" not in link["url"] for link in links)
     long = request(); long["html"] = '<html><body style="margin:0"><a href="https://example.test/top">Top</a><div style="height:9000px"></div><a href="https://example.test/bottom">Bottom</a></body></html>'
-    image, links, clipped = run(helper, long)
-    assert image.height == 8192 and clipped and [link["label"] for link in links] == ["Top"]
+    # Repeated launches catch provisional document-loaded geometry and stale
+    # offscreen allocations; never accept a tiny frame merely marked clipped.
+    for _ in range(4):
+        image, links, clipped = run(helper, long)
+        assert image.height == 8192 and clipped and [link["label"] for link in links] == ["Top"], (image.size, clipped, links)
     for width in (0, 319, 1281, 400.5, "640"):
         invalid = request(); invalid["viewportWidth"] = width
         run(helper, invalid, accepted=False)

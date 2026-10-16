@@ -18,8 +18,8 @@ typedef struct {
     double document_height;
     gboolean capturing;
     char *frame_png;
-    int width, frame_height, scale;
-    guint deadline, links, measurements;
+    int width, frame_height, target_height, scale;
+    guint deadline, links, measurements, captures;
 } Reader;
 static void failed(Reader *r, const char *code) {
     if (r->failed) return;
@@ -60,7 +60,9 @@ static gboolean policy_message(WebKitWebView *view, WebKitUserMessage *message, 
         const char *token = NULL; double height = 0;
         g_variant_get(p, "(&sd)", &token, &height);
         if (g_strcmp0(token, r->doc->token) || !r->acknowledged || !(height > 0 && height < 2147483647.0)) return FALSE;
-        r->document_height = height; configure_frame(r); return TRUE;
+        /* document-loaded geometry is provisional, even when it is positive.
+         * Only the explicit post-load measurement may start a snapshot. */
+        r->document_height = height; return TRUE;
     }
     if (strcmp(webkit_user_message_get_name(message), "megamail-policy-v1") || !p ||
         !g_variant_is_of_type(p, G_VARIANT_TYPE_STRING) || strcmp(g_variant_get_string(p, NULL), r->doc->token)) return FALSE;
@@ -154,6 +156,7 @@ static void links_finished(GObject *object, GAsyncResult *result, gpointer data)
     mm_emit("frame", r->doc->token, "png", r->frame_png);
     g_object_unref(reply); gtk_main_quit();
 }
+static gboolean capture_frame(gpointer data);
 static void frame_finished(GObject *object, GAsyncResult *result, gpointer data) {
     Reader *r = data; GError *error = NULL;
     cairo_surface_t *surface = webkit_web_view_get_snapshot_finish(WEBKIT_WEB_VIEW(object), result, &error);
@@ -161,6 +164,14 @@ static void frame_finished(GObject *object, GAsyncResult *result, gpointer data)
         cairo_image_surface_get_width(surface) != r->width * r->scale ||
         cairo_image_surface_get_height(surface) < 1 || cairo_image_surface_get_height(surface) > FRAME_HEIGHT_MAX * r->scale) {
         if (surface) cairo_surface_destroy(surface); g_clear_error(&error); failed(r, "frame-unavailable"); return;
+    }
+    if (cairo_image_surface_get_height(surface) != r->target_height * r->scale) {
+        /* Offscreen WebKit may return the previous allocation after a resize.
+         * Do not publish a tiny/stale image as the complete clipped frame. */
+        cairo_surface_destroy(surface);
+        if (r->captures < 30) g_timeout_add(50, capture_frame, r);
+        else failed(r, "frame-layout-unavailable");
+        return;
     }
     GByteArray *bytes = g_byte_array_new();
     if (cairo_surface_write_to_png_stream(surface, png_chunk, bytes) != CAIRO_STATUS_SUCCESS) {
@@ -176,6 +187,12 @@ static void frame_finished(GObject *object, GAsyncResult *result, gpointer data)
 }
 static gboolean capture_frame(gpointer data) {
     Reader *r = data;
+    if (r->failed) return G_SOURCE_REMOVE;
+    if (++r->captures > 30) { failed(r, "frame-layout-unavailable"); return G_SOURCE_REMOVE; }
+    if (gtk_widget_get_allocated_width(GTK_WIDGET(r->view)) != r->width ||
+        gtk_widget_get_allocated_height(GTK_WIDGET(r->view)) != r->target_height) {
+        g_timeout_add(50, capture_frame, r); return G_SOURCE_REMOVE;
+    }
     webkit_web_view_get_snapshot(r->view, WEBKIT_SNAPSHOT_REGION_VISIBLE, WEBKIT_SNAPSHOT_OPTIONS_NONE, NULL, frame_finished, r);
     return G_SOURCE_REMOVE;
 }
@@ -184,6 +201,7 @@ static void configure_frame(Reader *r) {
     r->capturing = TRUE;
     r->clipped = r->document_height > FRAME_HEIGHT_MAX;
     int bounded = (int)CLAMP(r->document_height, 1.0, (double)FRAME_HEIGHT_MAX);
+    r->target_height = bounded;
     gtk_widget_set_size_request(GTK_WIDGET(r->view), r->width, bounded);
     gtk_window_resize(GTK_WINDOW(r->window), r->width, bounded);
     g_timeout_add(150, capture_frame, r);
@@ -221,8 +239,7 @@ static void load_changed(WebKitWebView *view, WebKitLoadEvent event, gpointer da
         if (r->snapshot) {
             mm_emit("ready", r->doc->token, "policy", MM_READY_POLICY);
             /* Geometry comes from the policy extension's DOM API; JavaScript remains disabled. */
-            configure_frame(r);
-            if (!r->capturing) g_timeout_add(50, measure_frame, r);
+            g_timeout_add(50, measure_frame, r);
             return;
         }
         gtk_label_set_text(GTK_LABEL(r->notice), "Remote resources blocked. This is not the inline reader.");
