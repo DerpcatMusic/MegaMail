@@ -5763,7 +5763,7 @@ impl MailApp {
                             .gap_4()
                             .child(h_flex().gap_2()
                                 .child(Button::new("open-original-formatting").ghost().small().label("Original formatting…")
-                                    .disabled(!snapshot.body_loaded || snapshot.selected_original.as_ref().is_none_or(|body| body.completeness != reader_document::Completeness::Complete))
+                                    .disabled(!snapshot.body_loaded)
                                     .tooltip("Open the sender’s original layout in a separate window")
                                     .on_click(cx.listener(|this, _, _, cx| this.open_original_formatting(cx))))
                                 .when(self.reader_session.active.is_some(), |el| el.child(Button::new("close-original-formatting").ghost().small().label("Close original")
