@@ -13,7 +13,7 @@ typedef struct {
     MmDocument *doc;
     WebKitWebView *view;
     GtkWidget *window, *stack, *plain_button, *notice;
-    gboolean acknowledged, loading, ready, failed, snapshot;
+    gboolean acknowledged, blank_finished, loading, ready, failed, snapshot;
     gboolean clipped;
     double document_height;
     gboolean capturing;
@@ -45,7 +45,7 @@ static gboolean heartbeat(gpointer data) {
 }
 static gboolean load_document(gpointer data) {
     Reader *r = data;
-    if (!r->failed && r->acknowledged && !r->loading) {
+    if (!r->failed && r->acknowledged && !r->loading && r->blank_finished) {
         r->loading = TRUE;
         webkit_web_view_load_uri(r->view, r->doc->document_uri);
     }
@@ -233,6 +233,12 @@ static gboolean measure_frame(gpointer data) {
 }
 static void load_changed(WebKitWebView *view, WebKitLoadEvent event, gpointer data) {
     Reader *r = data;
+    if (event == WEBKIT_LOAD_FINISHED && !r->loading && !r->failed &&
+        !g_strcmp0(webkit_web_view_get_uri(view), "about:blank")) {
+        r->blank_finished = TRUE;
+        if (r->acknowledged) g_idle_add(load_document, r);
+        return;
+    }
     if (event == WEBKIT_LOAD_FINISHED && r->loading && r->acknowledged && !r->failed && !r->ready &&
         !g_strcmp0(webkit_web_view_get_uri(view), r->doc->document_uri)) {
         r->ready = TRUE;
@@ -411,6 +417,9 @@ int main(int argc, char **argv) {
     g_signal_connect(r.view, "create", G_CALLBACK(deny_popup), NULL);
     g_signal_connect(r.view, "script-dialog", G_CALLBACK(deny_dialog), NULL);
     g_signal_connect(r.view, "authenticate", G_CALLBACK(deny_auth), NULL);
+    /* Finish the initial trusted blank before asking the acknowledged page to
+     * load mail. Otherwise its late completion can masquerade as the mail load. */
+    webkit_web_view_load_uri(r.view, "about:blank");
     if (snapshot) {
         r.window = gtk_offscreen_window_new();
         gtk_window_set_default_size(GTK_WINDOW(r.window), r.width, 1);

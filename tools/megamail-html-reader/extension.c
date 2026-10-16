@@ -14,10 +14,13 @@ static gboolean cancel_request(WebKitWebPage *page, WebKitURIRequest *request,
 }
 static void document_loaded(WebKitWebPage *page, gpointer unused) {
     (void)unused;
-    char *expected = g_strdup_printf("megamail-resource://%s/document", token);
-    gboolean own = !g_strcmp0(webkit_web_page_get_uri(page), expected); g_free(expected);
-    if (!own) return;
     WebKitDOMDocument *doc = webkit_web_page_get_dom_document(page);
+    char *expected = g_strdup_printf("megamail-resource://%s/document", token);
+    char *uri = doc ? webkit_dom_document_get_document_uri(doc) : NULL;
+    gboolean own = !g_strcmp0(uri, expected);
+    g_free(uri); g_free(expected);
+    if (!own) return;
+    g_object_set_data(G_OBJECT(page), "megamail-document-loaded", GINT_TO_POINTER(1));
     WebKitDOMElement *root = doc ? webkit_dom_document_get_document_element(doc) : NULL;
     if (!root) return;
     double height = webkit_dom_element_get_scroll_height(root);
@@ -32,6 +35,14 @@ static gboolean link_map(WebKitWebPage *page, WebKitUserMessage *message, gpoint
     const char *input=NULL; int viewport_width=0, viewport_height=0;
     g_variant_get(params, "(&sii)", &input, &viewport_width, &viewport_height);
     if (g_strcmp0(input, token) || viewport_width<320 || viewport_width>1280 || viewport_height<1 || viewport_height>8192) return FALSE;
+    /* UI-process load-finished can arrive before this page has parsed its DOM.
+     * An empty about:blank root can have a positive (8px) layout, so height
+     * alone is never proof that the immutable email document is ready. */
+    if (!g_object_get_data(G_OBJECT(page), "megamail-document-loaded")) {
+        WebKitUserMessage *reply = webkit_user_message_new("megamail-links-v1", g_variant_new("(ssd)", token, "[]", 0.0));
+        webkit_user_message_send_reply(message, reply);
+        return TRUE;
+    }
     WebKitDOMDocument *doc = webkit_web_page_get_dom_document(page);
     WebKitDOMHTMLCollection *anchors = doc ? webkit_dom_document_get_elements_by_tag_name_as_html_collection(doc, "a") : NULL;
     JsonBuilder *out = json_builder_new(); json_builder_begin_array(out);
