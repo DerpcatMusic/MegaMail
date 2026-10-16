@@ -2081,6 +2081,8 @@ impl MailApp {
                 .retain(|key| reader_scope_retained(key, &retired));
             self.visible_quotes
                 .retain(|key| reader_scope_retained(key, &retired));
+            self.hidden_quotes
+                .retain(|key| reader_scope_retained(key, &retired));
             self.link_details
                 .retain(|key| reader_scope_retained(key, &retired));
             self.expanded_messages

@@ -33,7 +33,7 @@ CHECKS = {
     "invitation": "Demo metadata is not causally correlated direct BodyAtEpoch evidence.",
     "mailto_ipc": "Demo bypasses activation and rejects --demo plus URI; never launch normal mode.",
     "account_provider_recovery": "Real roster/provider/TB/keyring operations prohibited; separate fixtures required.",
-    "helper": "With --helper, fictional mail renders inline; manually inspect captured pixels. The separate developer window remains gated.",
+    "helper": "With --helper, original formatting is available only when explicitly requested; no renderer should launch during native reading.",
     "physical_performance_accessibility": "Xvfb/software captures prove neither FPS nor accessibility.",
 }
 
@@ -144,9 +144,11 @@ def sandbox_command(root: Path, binary: Path, args: argparse.Namespace) -> list[
                 raise ValueError("Runtime directory must be canonical, not symlinked.")
             command += ["--ro-bind", str(runtime), "/qa/data/megamail/html-reader/runtime"]
     command += ["--", "/usr/bin/python3", "/qa-run.py", "--inside", "--execute",
-                "--timeout", str(args.timeout), "--settle", str(args.settle), "--theme", args.theme]
+                "--timeout", str(args.timeout), "--settle", str(args.settle), "--theme", args.theme, "--selection-y", str(args.selection_y)]
     if args.developer_helper_preview:
         command += ["--developer-helper-preview"]
+    if args.reader_interactions:
+        command += ["--reader-interactions"]
     return command
 
 
@@ -245,6 +247,69 @@ def inside(args: argparse.Namespace) -> int:
         run(["xdotool", "windowmove", "--sync", window, "0", "0"])
         pause()
         capture("startup")
+        if args.reader_interactions:
+            # All clipboard content is fictional and namespace-owned. No host X server is mounted.
+            from Xlib import X, display
+            def clipboard() -> str:
+                connection = display.Display()
+                requestor = connection.screen().root.create_window(0, 0, 1, 1, 0, X.CopyFromParent)
+                selection = connection.intern_atom("CLIPBOARD")
+                target = connection.intern_atom("UTF8_STRING")
+                prop = connection.intern_atom("MEGAMAIL_QA_CLIPBOARD")
+                requestor.convert_selection(selection, target, prop, X.CurrentTime)
+                connection.flush()
+                until = time.monotonic() + 2
+                value = ""
+                while time.monotonic() < until:
+                    if connection.pending_events():
+                        event = connection.next_event()
+                        if event.type == X.SelectionNotify:
+                            if event.property != X.NONE:
+                                data = requestor.get_full_property(prop, target)
+                                if data is not None:
+                                    value = bytes(data.value).decode("utf-8", errors="replace")
+                            break
+                    else:
+                        time.sleep(0.02)
+                requestor.destroy(); connection.close()
+                return value
+            def drag(x: int, y: int, end_x: int, end_y: int) -> None:
+                if int(run(["xdotool", "getwindowpid", window])) != app.pid:
+                    raise RuntimeError("refusing drag outside the owned demo")
+                run(["xdotool", "windowfocus", "--sync", window])
+                run(["xdotool", "mousemove", "--window", window, str(x), str(y), "mousedown", "1"])
+                for step in range(1, 13):
+                    run(["xdotool", "mousemove", "--window", window,
+                         str(round(x + (end_x - x) * step / 12)), str(round(y + (end_y - y) * step / 12))])
+                    time.sleep(0.025)
+                run(["xdotool", "mouseup", "1"])
+            time.sleep(3)
+            capture("reader-settled")
+            # Before/after snapshots share the same fictional scene and coordinates.
+            drag(785, args.selection_y, 1185, args.selection_y)
+            run(["xdotool", "key", "--clearmodifiers", "ctrl+c"])
+            copied = clipboard()
+            observations.append(result("native_drag_copy", "pass" if copied else "fail", "Actual X selection conversion after pointer drag and Ctrl+C.", copied=copied))
+            capture("reader-selection")
+            drag(232, 500, 290, 500)
+            pause(); capture("sidebar-dragged")
+            drag(564, 500, 650, 500)
+            pause(); capture("message-pane-dragged")
+            for width, height in ((1060, 640), (1520, 900)):
+                run(["xdotool", "windowsize", window, str(width), str(height)])
+                pause(); capture(f"reader-{width}x{height}")
+            # Observe actual process startup, not a synthetic renderer-ready flag.
+            commands = []
+            for proc in Path("/proc").iterdir():
+                if proc.name.isdecimal():
+                    try:
+                        command = (proc / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+                        if command.split(" ", 1)[0].endswith(("/megamail-html-reader", "/WebKitWebProcess", "/WebKitNetworkProcess")):
+                            commands.append(command[:256])
+                    except OSError:
+                        pass
+            observations.append(result("automatic_html_processes", "pass" if not commands else "fail", "Namespace process inventory after native selection and resizing.", processes=commands))
+            return 0
         # Only non-destructive focus/navigation keys; no URLs/f5/send.
         for label, keys in (("select-next", ["ctrl+alt+l", "Down"]),
                             ("select-previous", ["ctrl+alt+l", "Up"]),
@@ -360,6 +425,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--timeout", type=int, default=60, help="Whole inner session budget, 20..120 seconds")
     p.add_argument("--settle", type=float, default=1.0, help="Fixed observation pause, 0.2..3 seconds; not readiness telemetry")
     p.add_argument("--theme", choices=("light", "dark"), default="light", help="Synthetic profile theme")
+    p.add_argument("--selection-y", type=int, default=695, help="Reviewed reader text baseline for the bounded pointer selection")
+    p.add_argument("--reader-interactions", action="store_true", help="Bounded fictional reader drag/copy/resize observations")
     p.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
     return p
 

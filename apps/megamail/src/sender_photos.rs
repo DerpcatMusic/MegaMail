@@ -166,10 +166,10 @@ impl MailApp {
                         // Rename a private, fully written PNG into place.
                         let parent = destination.parent().ok_or("Local photo storage is unavailable.")?;
                         std::fs::create_dir_all(parent).map_err(|_| "The photo directory could not be created.")?;
-                        let temporary = parent.join("photo.pending.png");
+                        let temporary = parent.join(format!("photo.{}.{}.pending", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|_| "The photo could not be saved.")?.as_nanos()));
                         use std::os::unix::fs::OpenOptionsExt as _;
                         use std::io::Write as _;
-                        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temporary).map_err(|_| "The photo could not be saved. Remove an unfinished photo.pending.png before retrying.")?;
+                        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temporary).map_err(|_| "The photo could not be saved. Try choosing the photo again.")?;
                         let write = file.write_all(encoded.get_ref()).and_then(|_| file.sync_all()).and_then(|_| std::fs::rename(&temporary, destination));
                         if write.is_err() { let _ = std::fs::remove_file(&temporary); return Err("The photo could not be saved.".to_owned()); }
                         Ok(Some(render_image(pixels)))
