@@ -46,6 +46,24 @@ enum ReaderWalk {
     Exit(&'static str),
 }
 
+/// Only explicit inline hiding is interpreted by the native semantic reader.
+/// This prevents invisible mail preheaders/duplicate fallbacks becoming visible
+/// when sender CSS is discarded; it does not evaluate stylesheets or fetch CSS.
+fn hidden_inline_style(style: &str) -> bool {
+    style.split(';').any(|declaration| {
+        let Some((name, value)) = declaration.split_once(':') else {
+            return false;
+        };
+        let name = name.trim().to_ascii_lowercase();
+        let value = value.trim().to_ascii_lowercase();
+        let value = value.strip_suffix("!important").unwrap_or(&value).trim();
+        matches!(
+            (name.as_str(), value),
+            ("display", "none") | ("visibility", "hidden" | "collapse") | ("mso-hide", "all")
+        )
+    })
+}
+
 /// Returns a bounded, formatting-preserving HTML fragment for the native mail reader.
 ///
 /// Only semantic text markup and explicit HTTP(S) links survive. Message CSS,
@@ -120,7 +138,12 @@ fn render_reader_html(html: &str, hide_trailing_quote: bool) -> Result<Option<St
                             .and_then(|attribute| TextDirection::parse(&attribute.value));
                         let direction = node_direction.or(direction);
 
-                        if drops_reader_subtree(name) {
+                        let hidden = attrs.iter().any(|attr| {
+                            (attr.name.local.as_ref() == "hidden")
+                                || (attr.name.local.as_ref() == "style"
+                                    && hidden_inline_style(&attr.value))
+                        });
+                        if hidden || drops_reader_subtree(name) {
                             (direction, None, layout_table, true, None, None)
                         } else if name == "img" {
                             let alt = attrs
@@ -375,7 +398,7 @@ fn trailing_blockquotes(root: &Handle) -> Result<HashSet<usize>, ()> {
                 for sibling in children[..index].iter().rev() {
                     match &sibling.data {
                         NodeData::Text { contents } if contents.borrow().trim().is_empty() => {
-                            continue
+                            continue;
                         }
                         NodeData::Comment { .. } => continue,
                         NodeData::Element { name, .. } if name.local.as_ref() == "blockquote" => {
@@ -504,7 +527,7 @@ fn anchor_text(node: &Handle) -> String {
             NodeData::Element { name, .. }
                 if matches!(name.local.as_ref(), "script" | "style" | "template") =>
             {
-                continue
+                continue;
             }
             _ => {}
         }
@@ -520,6 +543,16 @@ fn anchor_text(node: &Handle) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn semantic_reader_omits_hidden_preheaders_without_hiding_visible_prose() {
+        let html = reader_html(
+            "<div style=' DISPLAY : none !important'>Duplicate preheader</div><p hidden>Hidden fallback</p><div style='mso-hide:all'>Outlook preheader</div><p style='color:red'>Visible reply</p>",
+        );
+        assert!(!html.contains("preheader"));
+        assert!(!html.contains("Hidden fallback"));
+        assert!(html.contains("Visible reply"));
+        assert!(reader_html("<p style='display:block'>Visible</p>").contains("Visible"));
+    }
     #[test]
     fn keeps_cta_destination_and_decodes_entities_without_fetching_images() {
         assert!(safe_browser_url("https://example.com/login?a=1&b=2"));
