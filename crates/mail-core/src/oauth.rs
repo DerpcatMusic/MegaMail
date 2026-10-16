@@ -83,13 +83,15 @@ fn oauth_agent() -> &'static ureq::Agent {
 // MegaMail owns no provider registration yet. Official builds leave these
 // empty; build-time and runtime overrides allow a registration to be supplied
 // without committing its credentials to the source tree.
+// Google falls back to Thunderbird's desktop registration, which is also what
+// accounts migrated from Thunderbird were issued under.
 const GOOGLE_CLIENT_ID: &str = match option_env!("MEGAMAIL_GOOGLE_CLIENT_ID") {
     Some(v) => v,
-    None => "",
+    None => crate::thunderbird_migrate::THUNDERBIRD_GOOGLE_CLIENT_ID,
 };
 const GOOGLE_CLIENT_SECRET: &str = match option_env!("MEGAMAIL_GOOGLE_CLIENT_SECRET") {
     Some(v) => v,
-    None => "",
+    None => crate::thunderbird_migrate::THUNDERBIRD_GOOGLE_CLIENT_SECRET,
 };
 // Microsoft is a public client (PKCE, no secret). Keep the default empty until
 // MegaMail has its own registered client; never borrow another mail client's ID.

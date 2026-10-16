@@ -1,3 +1,21 @@
+# MegaMail native shortcuts
+
+The GPUI application exposes its current shortcuts in Settings. Useful mailbox controls include:
+
+| Shortcut | Action |
+| --- | --- |
+| Ctrl+N | New message, or resume retained draft |
+| Ctrl+Shift+L | All inboxes |
+| Ctrl+Alt+2 | All Sent |
+| Ctrl+Alt+3 | All Drafts |
+| Ctrl+Alt+S | Sort by sender email |
+| Ctrl+Alt+L | Focus message list |
+| Ctrl+Alt+R | Focus reader |
+
+See [the daily-use guide](MAIL_COMFORT_CHECKLIST.md) for navigation, search coverage, work state and send recovery.
+
+The following legacy reference describes the retained GTK Hylki application; its optional single-key scheme is not a GPUI feature-parity claim.
+
 # Keyboard shortcuts
 
 Hylki can be driven from the keyboard without holding a modifier, in the style

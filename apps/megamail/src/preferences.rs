@@ -122,6 +122,9 @@ fn take_bounded(file: File, limit: u64) -> Take<File> {
 
 /// Split only a trailing, contiguous quoted block, retaining the original text.
 pub(crate) fn split_quoted_text(body: &str) -> (&str, Option<&str>) {
+    if let Some(split) = outlook_quote_boundary(body) {
+        return (&body[..split], Some(&body[split..]));
+    }
     let lines = body.split_inclusive('\n').collect::<Vec<_>>();
     let mut suffix_start = lines.len();
     let mut has_quote = false;
@@ -146,6 +149,53 @@ pub(crate) fn split_quoted_text(body: &str) -> (&str, Option<&str>) {
 
     let split = lines[..suffix_start].iter().map(|line| line.len()).sum();
     (&body[..split], Some(&body[split..]))
+}
+
+/// Outlook and localized reply history often has no > or blockquote marker.
+/// Require a From header plus two distinct following header roles and a real
+/// current reply before it, so an isolated "From:" in authored prose is kept.
+fn outlook_quote_boundary(body: &str) -> Option<usize> {
+    let lines: Vec<_> = body.split_inclusive('\n').collect();
+    let mut offset = 0;
+    for (i, line) in lines.iter().enumerate() {
+        let value = line
+            .trim()
+            .trim_start_matches(['\u{200e}', '\u{200f}'])
+            .trim();
+        let from = ["from:", "מאת:", "von:", "de:"]
+            .iter()
+            .any(|p| value.to_lowercase().starts_with(p));
+        if from && offset > 0 && !body[..offset].trim().is_empty() {
+            let tail: Vec<_> = lines[i + 1..]
+                .iter()
+                .filter(|l| !l.trim().is_empty())
+                .take(6)
+                .map(|l| {
+                    l.trim()
+                        .trim_start_matches(['\u{200e}', '\u{200f}'])
+                        .to_lowercase()
+                })
+                .collect();
+            let roles = [
+                ["sent:", "נשלח:", "gesendet:", "envoyé:"],
+                ["to:", "אל:", "an:", "à:"],
+                ["subject:", "נושא:", "betreff:", "objet:"],
+            ];
+            if roles
+                .iter()
+                .filter(|role| {
+                    tail.iter()
+                        .any(|line| role.iter().any(|prefix| line.starts_with(prefix)))
+                })
+                .count()
+                >= 2
+            {
+                return Some(offset);
+            }
+        }
+        offset += line.len();
+    }
+    None
 }
 
 fn line_content(line: &str) -> &str {
@@ -180,6 +230,26 @@ fn is_reply_marker(line: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn localized_outlook_history_is_collapsed_and_exactly_restorable() {
+        let body = "שלום,\nהתשובה כאן.\n\nמאת: Fictional <a@example.test>\nנשלח: yesterday\nאל: b@example.test\nנושא: שאלה\n\nOriginal text";
+        let (reply, quote) = split_quoted_text(body);
+        assert!(reply.contains("התשובה כאן"));
+        assert!(!reply.contains("Original text"));
+        assert_eq!(format!("{}{}", reply, quote.unwrap()), body);
+        assert!(
+            split_quoted_text("Authored prose\nFrom: the documentation\nTo: illustrate a point")
+                .1
+                .is_none()
+        );
+        assert!(
+            split_quoted_text(
+                "From: a@example.test\nSent: today\nTo: b@example.test\nEntire original message"
+            )
+            .1
+            .is_none()
+        );
+    }
     #[test]
     fn selectable_body_markup_cannot_create_remote_content_or_links() {
         let html = super::plain_text_html(

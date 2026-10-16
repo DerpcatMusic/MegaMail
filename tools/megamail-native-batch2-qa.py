@@ -137,8 +137,14 @@ def sandbox_command(root: Path, binary: Path, args: argparse.Namespace) -> list[
                     "--dir", "/qa/data/megamail/html-reader/extensions",
                     "--ro-bind", str(helper), "/qa/data/megamail/html-reader/megamail-html-reader",
                     "--ro-bind", str(extension), "/qa/data/megamail/html-reader/extensions/libmegamail-reader-policy.so"]
+    if args.helper:
+        runtime = Path(args.helper).parent / "runtime"
+        if runtime.is_dir():
+            if runtime.resolve(strict=True) != runtime:
+                raise ValueError("Runtime directory must be canonical, not symlinked.")
+            command += ["--ro-bind", str(runtime), "/qa/data/megamail/html-reader/runtime"]
     command += ["--", "/usr/bin/python3", "/qa-run.py", "--inside", "--execute",
-                "--timeout", str(args.timeout), "--settle", str(args.settle)]
+                "--timeout", str(args.timeout), "--settle", str(args.settle), "--theme", args.theme]
     if args.developer_helper_preview:
         command += ["--developer-helper-preview"]
     return command
@@ -210,6 +216,9 @@ def inside(args: argparse.Namespace) -> int:
         os.environ["DISPLAY"] = ":" + display
         log = (root / "native.log").open("w")
         logs.append(log)
+        preferences = root / "config/megamail/theme.v1"
+        preferences.parent.mkdir(parents=True, exist_ok=True)
+        preferences.write_text(json.dumps({"mode": args.theme}))
         app = subprocess.Popen(["/app/megamail", "--demo"], stdout=log, stderr=log,
                                start_new_session=True)
         children.append(app)
@@ -233,16 +242,21 @@ def inside(args: argparse.Namespace) -> int:
             raise RuntimeError("owned window not labeled as demo; refusing interaction")
         observations.append(result("demo_window", "pass", "Only PID ownership and demo title asserted; not body readiness.",
                                    window_id=window, owning_pid=app.pid, title=title))
+        run(["xdotool", "windowmove", "--sync", window, "0", "0"])
         pause()
         capture("startup")
-        # Only non-destructive focus/navigation keys; no pixel clicks/URLs/f5/send.
+        # Only non-destructive focus/navigation keys; no URLs/f5/send.
         for label, keys in (("select-next", ["ctrl+alt+l", "Down"]),
                             ("select-previous", ["ctrl+alt+l", "Up"]),
-                            ("reader-focus", ["ctrl+alt+r"])):
+                            ("reader-focus", ["ctrl+alt+r"]),
+                            ("all-sent", ["ctrl+alt+2"]),
+                            ("all-drafts", ["ctrl+alt+3"]),
+                            ("all-inboxes", ["ctrl+shift+l"]),
+                            ("sort-sender", ["ctrl+alt+s"])):
             capture(label + "-before")
             run(["xdotool", "windowfocus", "--sync", window])
             for key in keys:
-                run(["xdotool", "key", "--window", window, key])
+                run(["xdotool", "key", "--clearmodifiers", key])
             pause()
             capture(label)
         for width, height in ((1060, 640), (1520, 900)):
@@ -253,9 +267,30 @@ def inside(args: argparse.Namespace) -> int:
         # Guarded compose request, NOT proof that a composer opened or preserved fields.
         capture("compose-request-before")
         run(["xdotool", "windowfocus", "--sync", window])
-        run(["xdotool", "key", "--window", window, "ctrl+n"])
+        run(["xdotool", "key", "--clearmodifiers", "ctrl+n"])
         pause()
         capture("compose-request")
+        # Fictional text and known coordinates from the reviewed 1520x900 capture.
+        # All clicks target this isolated owned window; demo cannot send/save mail.
+        def click(x: int, y: int) -> None:
+            if int(run(["xdotool", "getwindowpid", window])) != app.pid:
+                raise RuntimeError("refusing click outside the owned demo")
+            run(["xdotool", "mousemove", "--window", window, str(x), str(y), "click", "1"])
+        click(850, 398)
+        run(["xdotool", "type", "--clearmodifiers", "--delay", "1", "Fictional QA retained draft"])
+        click(850, 500)
+        run(["xdotool", "type", "--clearmodifiers", "--delay", "1", "**Fictional formatted draft** - retained while browsing."])
+        click(860, 438)
+        pause()
+        click(1000, 438)
+        pause()
+        capture("formatted-compose")
+        click(90, 191)
+        pause()
+        capture("draft-retained-in-sent")
+        click(110, 331)
+        pause()
+        capture("draft-resumed")
         observations.append(result("interaction_observations", "not_run", "Inputs delivered; inspect captures manually. No field/model assertion."))
         returncode = 0
         if args.developer_helper_preview:
@@ -324,6 +359,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--output-dir", help="New absolute directory for fictional artifacts; parent must already exist")
     p.add_argument("--timeout", type=int, default=60, help="Whole inner session budget, 20..120 seconds")
     p.add_argument("--settle", type=float, default=1.0, help="Fixed observation pause, 0.2..3 seconds; not readiness telemetry")
+    p.add_argument("--theme", choices=("light", "dark"), default="light", help="Synthetic profile theme")
     p.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
     return p
 

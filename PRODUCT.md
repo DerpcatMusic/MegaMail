@@ -54,21 +54,49 @@ message-reference headers across folders and Sent; it never groups solely by
 subject. Related lookups inspect up to 128 candidate headers across at most 8
 folders and walk up to 24 reference ancestors; warnings report partial results,
 and the client does not promise every historical or future reply will appear.
-Expanded list replies open in chronological order. Single-message read/unread,
-star, and trash actions use the owning account worker.
+Expanded list replies open in chronological order, with the selected, newest and
+latest sent messages available as distinct authored blocks. Own-message labels use
+the folder role: “You · draft” in Drafts and “You · sent” in Sent, with the full
+sender address visible. Single-message read/unread, star, and trash actions use
+the owning account worker.
 
-Search and filters cover loaded message headers in the active folder or
-Unified Inbox; full server-history and message-body search are not ported. The
-reader presents selectable native text with sanitized HTML formatting: headings,
-paragraphs, emphasis, lists, quotes, code, and tables. Message CSS and remote
-resources are removed; presentation tables become flowing content, and data
-tables scroll locally when narrow. A per-message plain-text view remains
-available. Quote hiding collapses only a conservative trailing quoted block
-that can be restored, preserving formatting in the remaining body. Reply All
-excludes the user's own account addresses and aliases. Rich HTML composition,
-inline reply, and bulk triage are not ported. Settings expose account
+The shared rail exposes All inboxes, All Sent, All Drafts, Archived, All local
+mail and Outbox. Direct-account search queries the local SQLite cache across the
+selected folder or local-mail scope; `body:` covers downloaded, unencrypted
+bodies only. All local mail excludes Trash, Junk and Templates. Legacy adapters
+search loaded headers. No view establishes provider-global history coverage.
+Date, sender email, subject and unread sorting support both directions; direct
+accounts sort the local folder cache before paging, while legacy adapters sort
+loaded headers. Unified lists merge bounded per-account pages, and work filters
+apply to the loaded results.
+
+The reader offers selectable native semantic text with sanitized HTML formatting
+and an isolated, ephemeral WebKit helper that preserves authored HTML colors,
+typography and table layout. Remote resources remain blocked. The semantic view
+removes message CSS and provides a plain-text fallback; its table simplification
+does not describe the original-format view. Recognized quote history can be
+collapsed and restored. Reply All excludes the user's own addresses and aliases.
+Attachments retain explicit open, download and save actions.
+
+Navigation retains an active composition, and Resume draft returns to it. Plain
+text is the default; opt-in Markdown composition includes a formatted preview
+and preserves recovered HTML. It is not a WYSIWYG editor. Settings expose account
 management, Regular/Compact density, conversation grouping, default Unified
 Inbox, quote hiding, reduced motion, and the current keyboard shortcuts.
+
+Conversation work states—Needs reply, Waiting, Done and one-day Snoozed—are saved
+on this device independently of read/unread and provider flags. Newer inbound
+mail reopens Waiting/Done, and expired snoozes reappear. Suggested states are
+explicitly distinguished from saved work; demo changes last only for the session.
+Per-account connection errors and observed folder-sync times remain visible,
+without claiming complete provider synchronization.
+
+An outgoing message appears immediately as a provisional reply card with its
+actual pending, queued, accepted, uncertain or refused state. Reconciliation
+requires the exact account and Message-ID. These cards are session-local;
+durable Outbox tickets and recovered drafts carry restart and retry authority.
+Server acceptance is not delivery, and an unknown outcome never triggers an
+automatic retry.
 
 SMTP supports a separate username/password or a no-login choice for MegaMail's
 direct IMAP path. Gmail app-password setup remains available; there is no
@@ -84,15 +112,18 @@ removed; Reset restores preferences while retaining the theme library. Aurora,
 Midnight, Paper, and custom wallpaper support Original, Dither, ASCII,
 Halftone, and Scanlines, 0–100% treatment strength and wallpaper opacity, blur
 values 0/10/16, and bottom fade. Cached wallpaper crossfades over 240 ms below
-pane surfaces capped at 24/10/5% bleed by a theme-based contrast estimate. This
-does not include Zeron's renderer-level backdrop blur or per-primitive edge fade.
+opaque navigation, message-list, reader and task surfaces. Wallpaper remains
+behind the workspace without showing through mail content. This does not include
+Zeron's renderer-level backdrop blur or per-primitive edge fade.
 
 ## Brand Commitments
 
 The name is MegaMail. The user explicitly wants much of Zeron's look and a
 deep understanding of its hierarchy, design system and visual language.
 Translate the existing Zeron language to email rather than inventing a new
-visual identity. Preserve upstream attribution and applicable licenses.
+visual identity. Preserve upstream attribution and applicable licenses: the
+Hylki-derived application/mail core remains AGPL-3.0-or-later, and the standalone
+Zeron theme copy remains MIT.
 
 ## Evidence on Hand
 
@@ -104,9 +135,11 @@ application is separate from Hylki's existing GTK package.
 ## Open Decisions
 
 The public GitHub fork is `DerpcatMusic/MegaMail`, in Hylki's fork network.
-Full-fidelity rich HTML composition, inline reply, bulk triage, all-folder/body
-search, broader provider coverage, and MegaMail-owned public OAuth registrations
-remain separate launch work.
+WYSIWYG rich HTML editing, provider-global search, complete historical thread
+coverage, reminders beyond one-day snooze, cloud work-state synchronization,
+broader provider qualification, and MegaMail-owned public OAuth registrations
+remain separate launch work. See `docs/MAIL_COMFORT_CHECKLIST.md` for the daily-use
+guide and qualification boundaries.
 
 ## Product Principles
 

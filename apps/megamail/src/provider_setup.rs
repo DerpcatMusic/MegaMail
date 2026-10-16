@@ -133,6 +133,36 @@ pub(crate) fn add_password(
     )
 }
 
+/// Save accounts converted from Thunderbird in one roster write. Addresses
+/// already configured (directly or live) are skipped, not overwritten.
+pub(crate) fn add_migrated(
+    accounts: Vec<AccountConfig>,
+    live: &[megamail_core::models::Account],
+) -> Result<Vec<(u32, AccountConfig)>, String> {
+    let _guard = DIRECT_WRITE
+        .lock()
+        .map_err(|_| "Account admission is unavailable.".to_owned())?;
+    let mut direct: Vec<AccountConfig> = config::load_profiles_existing()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|(_, profile)| profile)
+        .collect();
+    let before = direct.len();
+    for account in accounts {
+        let known = direct
+            .iter()
+            .map(|p| p.email.as_str())
+            .chain(live.iter().map(|a| a.email.as_str()));
+        if !duplicate(&account.email, known) {
+            direct.push(account);
+        }
+    }
+    if direct.len() == before {
+        return Ok(Vec::new());
+    }
+    crate::account_registry::save_direct(&direct)
+}
+
 /// Concrete AccountStore adapter: reserve native stable IDs BEFORE credentials
 /// are saved. Never use ConfigAccountStore's plain save followed by allocation.
 struct RegistryStore {

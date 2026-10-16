@@ -40,7 +40,10 @@ pub(crate) mod action {
             RefreshMail,
             UnifiedInbox,
             FocusMessages,
-            FocusReader
+            FocusReader,
+            AllSent,
+            AllDrafts,
+            SortSender
         ]
     );
 }
@@ -64,6 +67,9 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("f5", RefreshMail, Some(MAILBOX_CONTEXT)),
         KeyBinding::new("ctrl-alt-l", FocusMessages, Some(MAILBOX_CONTEXT)),
         KeyBinding::new("ctrl-alt-r", FocusReader, Some(MAILBOX_CONTEXT)),
+        KeyBinding::new("ctrl-alt-2", AllSent, Some(MAILBOX_CONTEXT)),
+        KeyBinding::new("ctrl-alt-3", AllDrafts, Some(MAILBOX_CONTEXT)),
+        KeyBinding::new("ctrl-alt-s", SortSender, Some(MAILBOX_CONTEXT)),
     ]);
 }
 

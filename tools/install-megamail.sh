@@ -97,7 +97,13 @@ printf 'Building MegaMail (locked release build, two jobs)…\n'
 cargo build --release --locked -j 2 --manifest-path "$manifest" --bin "$binary_name"
 
 # Build the isolated HTML package in the same admitted serial installation slot.
-make -j1 -C "$repo_root/tools/megamail-html-reader" all
+reader_runtime="$repo_root/tools/megamail-html-reader/build/runtime"
+if [[ -d "$reader_runtime/usr/lib/pkgconfig" && ! -L "$reader_runtime" ]]; then
+    PKG_CONFIG_PATH="$reader_runtime/usr/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
+        make -j1 -C "$repo_root/tools/megamail-html-reader" "LDFLAGS=-Wl,-rpath-link,$reader_runtime/usr/lib" all
+else
+    make -j1 -C "$repo_root/tools/megamail-html-reader" all
+fi
 
 built_binary="$target_directory/release/$binary_name"
 [[ -x "$built_binary" ]] || die "Cargo succeeded but the expected executable is missing: $built_binary"
@@ -153,6 +159,11 @@ mkdir -- "$temporary_html/extensions"
 chmod 0755 "$temporary_html" "$temporary_html/extensions"
 install -m 0755 -- "$repo_root/tools/megamail-html-reader/build/megamail-html-reader" "$temporary_html/megamail-html-reader"
 install -m 0644 -- "$repo_root/tools/megamail-html-reader/build/extensions/libmegamail-reader-policy.so" "$temporary_html/extensions/libmegamail-reader-policy.so"
+# A supplied, reviewed adjacent WebKit runtime is part of the helper package.
+# Never infer one from LD_LIBRARY_PATH or copy any account/profile directory.
+if [[ -d "$repo_root/tools/megamail-html-reader/build/runtime" ]]; then
+    cp -a -- "$repo_root/tools/megamail-html-reader/build/runtime" "$temporary_html/runtime"
+fi
 if [[ -e "$html_directory" ]]; then
     [[ -d "$html_directory" ]] || die "HTML reader destination is not a directory"
     backup_html="$(mktemp -d "$app_data_directory/.html-reader-backup.XXXXXX")"

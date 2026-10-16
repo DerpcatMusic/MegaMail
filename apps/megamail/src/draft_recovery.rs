@@ -153,6 +153,8 @@ struct Record {
     sensitive: bool,
     source_address: String,
     from_alias: Option<String>,
+    #[serde(default)]
+    client_message_id: Option<String>,
     to: String,
     cc: String,
     bcc: String,
@@ -216,6 +218,7 @@ impl Record {
             sensitive: update.retention == Retention::DecryptedPlaintextOptIn,
             source_address: update.source_address.clone(),
             from_alias: m.from_alias.clone(),
+            client_message_id: m.client_message_id.clone(),
             to: m.to.clone(),
             cc: m.cc.clone(),
             bcc: m.bcc.clone(),
@@ -246,6 +249,7 @@ impl Record {
     }
     fn message(&self) -> OutgoingMessage {
         OutgoingMessage {
+            client_message_id: self.client_message_id.clone(),
             from_account_id: self.key.account_id,
             from_alias: self.from_alias.clone(),
             to: self.to.clone(),
@@ -329,6 +333,13 @@ fn validate_text(m: &OutgoingMessage) -> Result<(), RecoveryError> {
     ];
     let mut total: usize = fields.iter().map(|s| s.len()).sum();
     total += m.from_alias.as_ref().map_or(0, String::len);
+    if m.client_message_id
+        .as_deref()
+        .is_some_and(|id| !megamail_core::worker::valid_client_message_id(id))
+    {
+        return Err(RecoveryError::TooLarge);
+    }
+    total += m.client_message_id.as_ref().map_or(0, String::len);
     total += m.draft_origin.as_ref().map_or(0, |o| o.path.len());
     total += m
         .calendar

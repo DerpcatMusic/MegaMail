@@ -13,13 +13,13 @@ typedef struct {
     MmDocument *doc;
     WebKitWebView *view;
     GtkWidget *window, *stack, *plain_button, *notice;
-    gboolean acknowledged, loading, ready, failed, snapshot;
+    gboolean acknowledged, blank_finished, loading, ready, failed, snapshot;
     gboolean clipped;
     double document_height;
     gboolean capturing;
     char *frame_png;
-    int width, frame_height;
-    guint deadline, links;
+    int width, frame_height, target_height, scale;
+    guint deadline, links, measurements, captures;
 } Reader;
 static void failed(Reader *r, const char *code) {
     if (r->failed) return;
@@ -45,7 +45,7 @@ static gboolean heartbeat(gpointer data) {
 }
 static gboolean load_document(gpointer data) {
     Reader *r = data;
-    if (!r->failed && r->acknowledged && !r->loading) {
+    if (!r->failed && r->acknowledged && !r->loading && r->blank_finished) {
         r->loading = TRUE;
         webkit_web_view_load_uri(r->view, r->doc->document_uri);
     }
@@ -60,7 +60,9 @@ static gboolean policy_message(WebKitWebView *view, WebKitUserMessage *message, 
         const char *token = NULL; double height = 0;
         g_variant_get(p, "(&sd)", &token, &height);
         if (g_strcmp0(token, r->doc->token) || !r->acknowledged || !(height > 0 && height < 2147483647.0)) return FALSE;
-        r->document_height = height; configure_frame(r); return TRUE;
+        /* document-loaded geometry is provisional, even when it is positive.
+         * Only the explicit post-load measurement may start a snapshot. */
+        r->document_height = height; return TRUE;
     }
     if (strcmp(webkit_user_message_get_name(message), "megamail-policy-v1") || !p ||
         !g_variant_is_of_type(p, G_VARIANT_TYPE_STRING) || strcmp(g_variant_get_string(p, NULL), r->doc->token)) return FALSE;
@@ -154,19 +156,29 @@ static void links_finished(GObject *object, GAsyncResult *result, gpointer data)
     mm_emit("frame", r->doc->token, "png", r->frame_png);
     g_object_unref(reply); gtk_main_quit();
 }
+static gboolean capture_frame(gpointer data);
 static void frame_finished(GObject *object, GAsyncResult *result, gpointer data) {
     Reader *r = data; GError *error = NULL;
     cairo_surface_t *surface = webkit_web_view_get_snapshot_finish(WEBKIT_WEB_VIEW(object), result, &error);
     if (!surface || cairo_surface_get_type(surface) != CAIRO_SURFACE_TYPE_IMAGE ||
-        cairo_image_surface_get_width(surface) != r->width ||
-        cairo_image_surface_get_height(surface) < 1 || cairo_image_surface_get_height(surface) > FRAME_HEIGHT_MAX) {
+        cairo_image_surface_get_width(surface) != r->width * r->scale ||
+        cairo_image_surface_get_height(surface) < 1 || cairo_image_surface_get_height(surface) > FRAME_HEIGHT_MAX * r->scale) {
         if (surface) cairo_surface_destroy(surface); g_clear_error(&error); failed(r, "frame-unavailable"); return;
+    }
+    if (cairo_image_surface_get_height(surface) != r->target_height * r->scale) {
+        /* Offscreen WebKit may return the previous allocation after a resize.
+         * Do not publish a tiny/stale image as the complete clipped frame. */
+        cairo_surface_destroy(surface);
+        if (r->captures < 30) g_timeout_add(50, capture_frame, r);
+        else failed(r, "frame-layout-unavailable");
+        return;
     }
     GByteArray *bytes = g_byte_array_new();
     if (cairo_surface_write_to_png_stream(surface, png_chunk, bytes) != CAIRO_STATUS_SUCCESS) {
         cairo_surface_destroy(surface); g_byte_array_unref(bytes); failed(r, "frame-limit"); return;
     }
-    r->frame_height=cairo_image_surface_get_height(surface);
+    /* Pixels are device-scaled; layout and link geometry stay in CSS px. */
+    r->frame_height=cairo_image_surface_get_height(surface) / r->scale;
     cairo_surface_destroy(surface);
     char *encoded = g_base64_encode(bytes->data, bytes->len); g_byte_array_unref(bytes);
     r->frame_png = encoded;
@@ -175,6 +187,12 @@ static void frame_finished(GObject *object, GAsyncResult *result, gpointer data)
 }
 static gboolean capture_frame(gpointer data) {
     Reader *r = data;
+    if (r->failed) return G_SOURCE_REMOVE;
+    if (++r->captures > 30) { failed(r, "frame-layout-unavailable"); return G_SOURCE_REMOVE; }
+    if (gtk_widget_get_allocated_width(GTK_WIDGET(r->view)) != r->width ||
+        gtk_widget_get_allocated_height(GTK_WIDGET(r->view)) != r->target_height) {
+        g_timeout_add(50, capture_frame, r); return G_SOURCE_REMOVE;
+    }
     webkit_web_view_get_snapshot(r->view, WEBKIT_SNAPSHOT_REGION_VISIBLE, WEBKIT_SNAPSHOT_OPTIONS_NONE, NULL, frame_finished, r);
     return G_SOURCE_REMOVE;
 }
@@ -183,19 +201,51 @@ static void configure_frame(Reader *r) {
     r->capturing = TRUE;
     r->clipped = r->document_height > FRAME_HEIGHT_MAX;
     int bounded = (int)CLAMP(r->document_height, 1.0, (double)FRAME_HEIGHT_MAX);
+    r->target_height = bounded;
     gtk_widget_set_size_request(GTK_WIDGET(r->view), r->width, bounded);
     gtk_window_resize(GTK_WINDOW(r->window), r->width, bounded);
     g_timeout_add(150, capture_frame, r);
 }
+static gboolean measure_frame(gpointer data);
+static void measured_frame(GObject *object, GAsyncResult *result, gpointer data) {
+    Reader *r = data; GError *error = NULL;
+    WebKitUserMessage *reply = webkit_web_view_send_message_to_page_finish(WEBKIT_WEB_VIEW(object), result, &error);
+    GVariant *params = reply ? webkit_user_message_get_parameters(reply) : NULL;
+    if (!params || !g_variant_is_of_type(params, G_VARIANT_TYPE("(ssd)")) ||
+        strcmp(webkit_user_message_get_name(reply), "megamail-links-v1")) {
+        if (reply) g_object_unref(reply);
+        g_clear_error(&error); failed(r, "frame-layout-unavailable"); return;
+    }
+    const char *token = NULL, *links = NULL; double height = 0;
+    g_variant_get(params, "(&s&sd)", &token, &links, &height);
+    if (g_strcmp0(token, r->doc->token)) { g_object_unref(reply); failed(r, "frame-layout-unavailable"); return; }
+    if (height > 0 && height < 2147483647.0) { r->document_height = height; configure_frame(r); }
+    else if (++r->measurements < 30) { g_timeout_add(50, measure_frame, r); }
+    else { failed(r, "frame-layout-unavailable"); }
+    g_object_unref(reply);
+}
+static gboolean measure_frame(gpointer data) {
+    Reader *r = data;
+    if (r->failed || r->capturing) return G_SOURCE_REMOVE;
+    WebKitUserMessage *request = webkit_user_message_new("megamail-links-v1", g_variant_new("(sii)", r->doc->token, r->width, FRAME_HEIGHT_MAX));
+    webkit_web_view_send_message_to_page(r->view, request, NULL, measured_frame, r);
+    return G_SOURCE_REMOVE;
+}
 static void load_changed(WebKitWebView *view, WebKitLoadEvent event, gpointer data) {
     Reader *r = data;
+    if (event == WEBKIT_LOAD_FINISHED && !r->loading && !r->failed &&
+        !g_strcmp0(webkit_web_view_get_uri(view), "about:blank")) {
+        r->blank_finished = TRUE;
+        if (r->acknowledged) g_idle_add(load_document, r);
+        return;
+    }
     if (event == WEBKIT_LOAD_FINISHED && r->loading && r->acknowledged && !r->failed && !r->ready &&
         !g_strcmp0(webkit_web_view_get_uri(view), r->doc->document_uri)) {
         r->ready = TRUE;
         if (r->snapshot) {
             mm_emit("ready", r->doc->token, "policy", MM_READY_POLICY);
             /* Geometry comes from the policy extension's DOM API; JavaScript remains disabled. */
-            configure_frame(r);
+            g_timeout_add(50, measure_frame, r);
             return;
         }
         gtk_label_set_text(GTK_LABEL(r->notice), "Remote resources blocked. This is not the inline reader.");
@@ -277,7 +327,7 @@ int main(int argc, char **argv) {
     char *wire = mm_read_input(&error);
     if (!wire) { mm_emit("error", NULL, "code", "input-rejected"); g_clear_error(&error); return 2; }
     if (test) { int code = policy_test(wire, "0123456789abcdef0123456789abcdef"); g_free(wire); return code; }
-    int viewport_width=FRAME_WIDTH;
+    int viewport_width=FRAME_WIDTH, device_scale=1;
     JsonParser *viewport=json_parser_new();
     if (json_parser_load_from_data(viewport, wire, -1, NULL) && JSON_NODE_HOLDS_OBJECT(json_parser_get_root(viewport))) {
         JsonObject *obj=json_node_get_object(json_parser_get_root(viewport));
@@ -287,6 +337,13 @@ int main(int argc, char **argv) {
                 g_object_unref(viewport); g_free(wire); mm_emit("error", NULL, "code", "viewport-rejected"); return 2;
             }
             viewport_width=json_node_get_int(value);
+        }
+        if (json_object_has_member(obj, "deviceScale")) {
+            JsonNode *value=json_object_get_member(obj, "deviceScale");
+            if (!JSON_NODE_HOLDS_VALUE(value) || json_node_get_value_type(value)!=G_TYPE_INT64 || json_node_get_int(value)<1 || json_node_get_int(value)>2) {
+                g_object_unref(viewport); g_free(wire); mm_emit("error", NULL, "code", "viewport-rejected"); return 2;
+            }
+            device_scale=json_node_get_int(value);
         }
     }
     g_object_unref(viewport);
@@ -307,8 +364,9 @@ int main(int argc, char **argv) {
         }
         for (guint i=0; i<100 && !g_file_test("/tmp/.X11-unix/X90", G_FILE_TEST_EXISTS); ++i) g_usleep(20000);
     }
+    if (snapshot) { char scale_text[2] = { (char)('0' + device_scale), 0 }; g_setenv("GDK_SCALE", scale_text, TRUE); }
     if (!gtk_init_check(&argc, &argv)) { mm_emit("error", NULL, "code", "display-unavailable"); mm_document_free(doc); return 2; }
-    Reader r = { .doc = doc, .snapshot = snapshot, .width = viewport_width };
+    Reader r = { .doc = doc, .snapshot = snapshot, .width = viewport_width, .scale = snapshot ? device_scale : 1 };
     if (!g_file_test("/app/extensions/libmegamail-reader-policy.so", G_FILE_TEST_IS_REGULAR)) {
         mm_emit("error", NULL, "code", "extension-unavailable"); mm_document_free(doc); return 2;
     }
@@ -359,6 +417,9 @@ int main(int argc, char **argv) {
     g_signal_connect(r.view, "create", G_CALLBACK(deny_popup), NULL);
     g_signal_connect(r.view, "script-dialog", G_CALLBACK(deny_dialog), NULL);
     g_signal_connect(r.view, "authenticate", G_CALLBACK(deny_auth), NULL);
+    /* Finish the initial trusted blank before asking the acknowledged page to
+     * load mail. Otherwise its late completion can masquerade as the mail load. */
+    webkit_web_view_load_uri(r.view, "about:blank");
     if (snapshot) {
         r.window = gtk_offscreen_window_new();
         gtk_window_set_default_size(GTK_WINDOW(r.window), r.width, 1);

@@ -34,13 +34,14 @@ impl MailApp {
         palette: Palette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let Some((account, id)) = self
-            .outbox_review
-            .filter(|(account, _)| snapshot.current_account_id == Some(*account))
-        else {
+        let Some((account, id)) = self.outbox_review else {
             return div().into_any_element();
         };
-        let Some(item) = snapshot.outbox.iter().find(|item| item.id == id) else {
+        let Some(item) = snapshot
+            .outbox
+            .iter()
+            .find(|item| item.id == id && item.account_id == account)
+        else {
             return div().into_any_element();
         };
         let (title, explanation) = guidance(item.phase);

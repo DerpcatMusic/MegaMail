@@ -659,6 +659,8 @@ pub enum MailRequest {
 /// A message composed by the user, ready to send.
 #[derive(Debug, Clone)]
 pub struct OutgoingMessage {
+    /// Native send intent identity, bare Message-ID; None preserves GTK behavior.
+    pub client_message_id: Option<String>,
     /// The account to send from.
     pub from_account_id: u32,
     /// Send-as alias (#34): the full From for the wire ("Name <alias@host>"),
@@ -6182,7 +6184,11 @@ fn build_message(
     // here means the copy we keep and the copy that arrives share the same id.
     let mut builder = builder
         .subject(msg.subject.clone())
-        .message_id(Some(new_message_id(&from_addr)));
+        .message_id(Some(match msg.client_message_id.as_deref() {
+            Some(id) if valid_client_message_id(id) => format!("<{id}>"),
+            Some(_) => return Err("Invalid outgoing Message-ID".into()),
+            None => new_message_id(&from_addr),
+        }));
     // Threading headers, re-wrapped in the angle brackets the wire format wants
     // (they are stored stripped). References carries the whole chain so a client
     // can place the reply even if it never saw the immediate parent.
@@ -6277,7 +6283,7 @@ fn build_message(
     let email = if msg.attachments.is_empty() {
         match content {
             Some(content) => builder.multipart(content)?,
-            None => builder.body(msg.body.clone())?,
+            None => builder.header(lettre::message::header::ContentType::TEXT_PLAIN).body(msg.body.clone())?,
         }
     } else {
         builder.multipart(attachments_multipart(content, msg)?)?
@@ -6507,6 +6513,11 @@ fn alt_of_enclosing_tag(html: &str, uri_start: usize, uri_end: usize) -> Option<
 
 /// A Message-ID for outgoing mail: unique, and in the sender's own domain so it
 /// looks like what it is rather than like this machine.
+pub fn valid_client_message_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 256 && id.contains('@')
+        && id.bytes().all(|b| b.is_ascii_alphanumeric() || b".-_@+".contains(&b))
+}
+
 fn new_message_id(from: &str) -> String {
     let domain = from.rsplit('@').next().filter(|d| !d.is_empty()).unwrap_or("localhost");
     let unique = crate::rng::nonce(18).unwrap_or_else(|_| {
@@ -11608,7 +11619,13 @@ pub fn extract_body(raw: &[u8]) -> String {
         return wrap_plain(&String::from_utf8_lossy(raw));
     };
 
-    let bodies: Vec<_> = parsed.html_bodies().collect();
+    let losing = losing_alternatives(&parsed.parts);
+    let bodies: Vec<_> = parsed
+        .html_body
+        .iter()
+        .filter(|id| !losing.contains(id))
+        .filter_map(|&id| parsed.parts.get(id))
+        .collect();
     let mut budget = INLINE_IMAGE_BUDGET;
     // Content-IDs rendered in place by `inline_cid_images`, so the loop below
     // doesn't also append them as standalone images.
@@ -11681,6 +11698,54 @@ pub fn extract_body(raw: &[u8]) -> String {
         };
     }
     wrap_fragment(&inner)
+}
+
+/// Part ids inside `multipart/alternative` branches that lose to a later HTML branch.
+///
+/// RFC 2046 says to show only the last alternative the client can render. Some
+/// senders put several HTML alternatives side by side, and mail-parser lists every
+/// one of them as an HTML body, so without this the reader stacks them.
+fn losing_alternatives(parts: &[mail_parser::MessagePart]) -> std::collections::HashSet<usize> {
+    use mail_parser::{MimeHeaders, PartType};
+
+    fn subtree(parts: &[mail_parser::MessagePart], id: usize, out: &mut Vec<usize>) {
+        out.push(id);
+        if let Some(PartType::Multipart(children)) = parts.get(id).map(|p| &p.body) {
+            for &child in children {
+                subtree(parts, child, out);
+            }
+        }
+    }
+
+    let mut losing = std::collections::HashSet::new();
+    for part in parts {
+        let PartType::Multipart(children) = &part.body else { continue };
+        let alternative = part
+            .content_type()
+            .is_some_and(|ct| ct.subtype().is_some_and(|s| s.eq_ignore_ascii_case("alternative")));
+        if !alternative {
+            continue;
+        }
+        let branches: Vec<Vec<usize>> = children
+            .iter()
+            .map(|&child| {
+                let mut ids = Vec::new();
+                subtree(parts, child, &mut ids);
+                ids
+            })
+            .collect();
+        let has_html = |ids: &Vec<usize>| {
+            ids.iter().any(|&id| matches!(parts.get(id).map(|p| &p.body), Some(PartType::Html(_))))
+        };
+        if let Some(winner) = branches.iter().rposition(has_html) {
+            for (i, ids) in branches.into_iter().enumerate() {
+                if i != winner {
+                    losing.extend(ids);
+                }
+            }
+        }
+    }
+    losing
 }
 
 /// Rewrite `cid:` resource references in `html` to `data:` URIs built from the
@@ -12694,6 +12759,7 @@ NIL NIL NIL NIL NIL NIL NIL))\r\n";
 
     fn sample_outgoing() -> OutgoingMessage {
         OutgoingMessage {
+            client_message_id: None,
             from_account_id: 1,
             from_alias: None,
             to: String::new(),
@@ -12777,6 +12843,7 @@ NIL NIL NIL NIL NIL NIL NIL))\r\n";
 
     fn encrypted_outbox_composition() -> OutgoingMessage {
         OutgoingMessage {
+            client_message_id: None,
             from_account_id: 7001,
             to: "to@example.invalid".into(),
             cc: "cc@example.invalid".into(),
@@ -13799,6 +13866,7 @@ NIL NIL NIL NIL NIL NIL NIL))\r\n";
             ..sample_account()
         };
         let msg = OutgoingMessage {
+            client_message_id: None,
             from_account_id: 7,
             from_alias: Some("Alias <alias@example.invalid>".into()),
             to: "to@example.invalid".into(),
@@ -14396,6 +14464,24 @@ NIL NIL NIL NIL NIL NIL NIL))\r\n";
     /// the copy filed in Sent has none — and nothing that replies to it can be
     /// linked back to it. It must also be in the sender's domain, not this
     /// machine's hostname.
+    #[test]
+    fn native_send_identity_is_exact_and_plain_unicode_declares_its_charset() {
+        let msg = OutgoingMessage {
+            client_message_id: Some("megamail-fixed@example.test".into()),
+            to: "recipient@example.test".into(),
+            body: "שלום — café".into(),
+            ..sample_outgoing()
+        };
+        let first = build_email(&sample_account(), &msg).unwrap().formatted();
+        let second = build_email(&sample_account(), &msg).unwrap().formatted();
+        let raw = String::from_utf8_lossy(&first);
+        assert!(raw.contains("Message-ID: <megamail-fixed@example.test>"));
+        assert!(String::from_utf8_lossy(&second).contains("Message-ID: <megamail-fixed@example.test>"));
+        assert!(raw.to_ascii_lowercase().contains("content-type: text/plain; charset=utf-8"));
+        let bad = OutgoingMessage { client_message_id: Some("bad\r\nBcc: injected@example.test".into()), ..msg };
+        assert!(build_email(&sample_account(), &bad).is_err());
+    }
+
     #[test]
     fn outgoing_mail_carries_a_message_id_in_the_senders_domain() {
         let account = AccountConfig { email: "me@example.com".into(), ..sample_account() };
@@ -15609,6 +15695,27 @@ NIL NIL NIL NIL NIL NIL NIL))\r\n";
             body.contains("<a href=\"http://example.com/x\">http://example.com/x</a>"),
             "body was: {body}"
         );
+    }
+
+    /// Several HTML alternatives side by side: only the last one is shown, and as
+    /// the sender's own document so `<body dir="rtl">` survives.
+    #[test]
+    fn extract_body_shows_only_the_last_html_alternative() {
+        let raw = concat!(
+            "Content-Type: multipart/alternative; boundary=b1\r\n\r\n",
+            "--b1\r\nContent-Type: text/html\r\n\r\n<html><body>FIRST</body></html>\r\n",
+            "--b1\r\nContent-Type: multipart/related; boundary=b2\r\n\r\n",
+            "--b2\r\nContent-Type: text/html\r\n\r\n<html><body>SECOND</body></html>\r\n",
+            "--b2--\r\n",
+            "--b1\r\nContent-Type: text/plain\r\n\r\nPLAIN\r\n",
+            "--b1\r\nContent-Type: text/html\r\n\r\n<html><body dir=\"rtl\">LAST</body></html>\r\n",
+            "--b1--\r\n",
+        );
+        let body = extract_body(raw.as_bytes());
+        assert!(body.contains("<body dir=\"rtl\">LAST"), "body was: {body}");
+        for gone in ["FIRST", "SECOND", "PLAIN"] {
+            assert!(!body.contains(gone), "{gone} leaked: {body}");
+        }
     }
 
     /// An iPhone photo mail: multipart/mixed interleaving an empty text part, an

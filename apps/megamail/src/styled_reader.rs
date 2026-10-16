@@ -12,13 +12,25 @@ struct Request {
     identity: reader_session::SemanticTextIdentity,
     source: Arc<str>,
     width: u32,
+    /// Device pixels per CSS px for the snapshot (1 or 2); layout stays in CSS px.
+    scale: u32,
 }
 impl Request {
+    /// Same rendered output. Generation/body-version bumps from background
+    /// sync do not change the pixels when the source is identical.
     fn matches(&self, other: &Self) -> bool {
-        self.identity == other.identity
+        self.identity.key == other.identity.key
+            && self.identity.plain == other.identity.plain
+            && self.identity.quote_visible == other.identity.quote_visible
             && self.width == other.width
-            && Arc::ptr_eq(&self.source, &other.source)
+            && self.scale == other.scale
+            && same_source(&self.source, &other.source)
     }
+}
+/// Mailbox snapshots are rebuilt on every sync event with fresh Arcs; compare
+/// content so background sync never forces a re-render of the open message.
+fn same_source(a: &Arc<str>, b: &Arc<str>) -> bool {
+    Arc::ptr_eq(a, b) || a == b
 }
 #[derive(Clone, serde::Deserialize)]
 struct Link {
@@ -44,6 +56,7 @@ pub(crate) struct State {
     busy: bool,
     cancel: Option<Arc<AtomicBool>>,
     width: u32,
+    scale: u32,
 }
 impl State {
     fn retire(&mut self) {
@@ -51,6 +64,14 @@ impl State {
             cancel.store(true, Ordering::Release);
         }
         self.frame = None;
+        self.completed = None;
+    }
+    /// Same message at a new width/scale: keep showing the current frame
+    /// until the replacement is ready instead of blanking the reader.
+    fn supersede(&mut self) {
+        if let Some(cancel) = self.cancel.take() {
+            cancel.store(true, Ordering::Release);
+        }
         self.completed = None;
     }
 }
@@ -87,11 +108,11 @@ fn wire(request: &Request) -> Result<Vec<u8>, String> {
         return Err("Message exceeds the HTML reader limits.".into());
     }
     serde_json::to_vec(
-        &serde_json::json!({"version":1,"html":source,"plainText":"","title":"Message", "viewportWidth":request.width}),
+        &serde_json::json!({"version":1,"html":source,"plainText":"","title":"Message", "viewportWidth":request.width, "deviceScale":request.scale}),
     )
     .map_err(|_| "The HTML reader request could not be prepared.".into())
 }
-fn parse_frame(bytes: &[u8]) -> Result<Frame, String> {
+fn parse_frame(bytes: &[u8], scale: u32) -> Result<Frame, String> {
     let fail = || "Styled message rendering was not confirmed.".to_owned();
     if bytes.len() as u64 > WIRE_MAX {
         return Err(fail());
@@ -163,9 +184,16 @@ fn parse_frame(bytes: &[u8]) -> Result<Frame, String> {
         image::ImageReader::with_format(std::io::Cursor::new(&png), image::ImageFormat::Png)
             .into_dimensions()
             .map_err(|_| fail())?;
-    if !(320..=1280).contains(&dimensions.0) || dimensions.1 == 0 || dimensions.1 > 8192 {
+    if scale == 0
+        || dimensions.0 % scale != 0
+        || !(320..=1280).contains(&(dimensions.0 / scale))
+        || dimensions.1 < scale
+        || dimensions.1 > 8192 * scale
+    {
         return Err(fail());
     }
+    // Links and the displayed aspect ratio are in CSS px.
+    let logical = (dimensions.0 / scale, dimensions.1 / scale);
     let links = links.ok_or_else(fail)?;
     if links.iter().any(|l| {
         !megamail_core::mail_text::safe_browser_url(&l.url)
@@ -176,17 +204,17 @@ fn parse_frame(bytes: &[u8]) -> Result<Frame, String> {
             || l.y < 0.
             || l.w <= 0.
             || l.h <= 0.
-            || l.x + l.w > dimensions.0 as f32
-            || l.y + l.h > dimensions.1 as f32
+            || l.x + l.w > logical.0 as f32
+            || l.y + l.h > logical.1 as f32
     }) {
         return Err(fail());
     }
     let mut reader =
         image::ImageReader::with_format(std::io::Cursor::new(png), image::ImageFormat::Png);
     let mut limits = image::Limits::default();
-    limits.max_image_width = Some(1280);
-    limits.max_image_height = Some(8192);
-    limits.max_alloc = Some(64 * 1024 * 1024);
+    limits.max_image_width = Some(1280 * scale);
+    limits.max_image_height = Some(8192 * scale);
+    limits.max_alloc = Some(64 * 1024 * 1024 * (scale as u64).pow(2));
     reader.limits(limits);
     let mut rgba = reader.decode().map_err(|_| fail())?.to_rgba8();
     for pixel in rgba.pixels_mut() {
@@ -194,8 +222,8 @@ fn parse_frame(bytes: &[u8]) -> Result<Frame, String> {
     }
     Ok(Frame {
         image: Arc::new(gpui_kit::RenderImage::new(vec![image::Frame::new(rgba)])),
-        height: dimensions.1,
-        width: dimensions.0,
+        height: logical.1,
+        width: logical.0,
         links,
         clipped,
     })
@@ -261,7 +289,7 @@ fn render(request: Request, cancel: Arc<AtomicBool>) -> Result<Frame, String> {
     if !accepted || !written || cancel.load(Ordering::Acquire) {
         return Err("Styled rendering was interrupted.".into());
     }
-    let frame = parse_frame(&output)?;
+    let frame = parse_frame(&output, request.scale)?;
     if frame.width != request.width {
         return Err("The HTML renderer returned a different viewport.".into());
     }
@@ -275,7 +303,8 @@ impl MailApp {
     ) {
         let desired = self
             .reader_text_identity(snapshot)
-            .filter(|id| !id.plain && snapshot.body_loaded)
+            // Wait for the measured width rather than rendering a 640px guess first.
+            .filter(|id| !id.plain && snapshot.body_loaded && self.styled_reader.width != 0)
             .and_then(|identity| {
                 snapshot
                     .selected_original
@@ -285,11 +314,8 @@ impl MailApp {
                     .map(|source| Request {
                         identity,
                         source,
-                        width: if self.styled_reader.width == 0 {
-                            640
-                        } else {
-                            self.styled_reader.width
-                        },
+                        width: self.styled_reader.width,
+                        scale: self.styled_reader.scale.max(1),
                     })
             });
         if desired.as_ref().is_none_or(|r| {
@@ -298,8 +324,23 @@ impl MailApp {
                 .as_ref()
                 .is_none_or(|d| !d.matches(r))
         }) {
-            self.styled_reader.retire();
+            let same_message = matches!(
+                (&self.styled_reader.desired, &desired),
+                (Some(old), Some(new)) if old.identity.key == new.identity.key
+                    && same_source(&old.source, &new.source)
+            );
+            if same_message {
+                self.styled_reader.supersede();
+            } else {
+                self.styled_reader.retire();
+            }
             self.styled_reader.desired = desired;
+        } else if let Some(desired) = desired {
+            // Track the current identity so the frame stays attached to it.
+            if let Some(completed) = self.styled_reader.completed.as_mut() {
+                completed.identity = desired.identity.clone();
+            }
+            self.styled_reader.desired = Some(desired);
         }
         let Some(request) = self.styled_reader.desired.clone() else {
             return;
@@ -317,7 +358,20 @@ impl MailApp {
         self.styled_reader.cancel = Some(cancel.clone());
         self.styled_reader.busy = true;
         let original = request.clone();
-        let task = cx.background_spawn(async move { render(request, cancel) });
+        let task = cx.background_spawn(async move {
+            let started = Instant::now();
+            let result = render(request, cancel);
+            match &result {
+                Ok(frame) => tracing::debug!(
+                    "styled frame {}x{} in {:?}",
+                    frame.width,
+                    frame.height,
+                    started.elapsed()
+                ),
+                Err(error) => tracing::debug!("styled frame failed: {error}"),
+            }
+            result
+        });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
@@ -329,7 +383,9 @@ impl MailApp {
                     .is_some_and(|d| d.matches(&original))
                 {
                     this.styled_reader.completed = Some(original);
-                    this.styled_reader.frame = result.ok();
+                    if let Ok(frame) = result {
+                        this.styled_reader.frame = Some(frame);
+                    }
                 }
                 let snapshot = this.live.read(cx).snapshot();
                 this.sync_styled_reader(&snapshot, cx);
@@ -340,18 +396,24 @@ impl MailApp {
     }
     pub(crate) fn styled_width_probe(&self, cx: &mut Context<Self>) -> AnyElement {
         let owner = cx.entity().downgrade();
-        let current = self.styled_reader.width;
+        let current = (self.styled_reader.width, self.styled_reader.scale);
         gpui_kit::canvas(
-            move |bounds, _, cx| {
+            move |bounds, window, cx| {
                 let width =
                     (((f32::from(bounds.size.width) / 16.).round() * 16.) as u32).clamp(320, 1280);
-                if width != current {
+                // Fractional displays (1.25/1.5) downsample the 2x frame instead of
+                // upscaling a 1x one, which is what made text look pixelated.
+                let scale = if window.scale_factor() > 1. { 2 } else { 1 };
+                if (width, scale) != current {
                     cx.defer(move |cx| {
                         let _ = owner.update(cx, |this, cx| {
-                            if this.styled_reader.width == width {
+                            if (this.styled_reader.width, this.styled_reader.scale)
+                                == (width, scale)
+                            {
                                 return;
                             }
                             this.styled_reader.width = width;
+                            this.styled_reader.scale = scale;
                             let snapshot = this.live.read(cx).snapshot();
                             this.sync_styled_reader(&snapshot, cx);
                             cx.notify();
@@ -376,16 +438,23 @@ impl MailApp {
                 .selected_original
                 .as_ref()
                 .and_then(|o| o.source.as_ref())
-                .is_some_and(|s| Arc::ptr_eq(s, &desired.source))
+                .is_some_and(|s| same_source(s, &desired.source))
         {
             return None;
         }
         let frame = self.styled_reader.frame.as_ref()?;
+        // Fixed CSS-px size: the bitmap is device-scaled, and letting the image's
+        // pixel size drive layout would draw it at 2x and clip it.
         let mut element = div()
             .relative()
-            .w_full()
-            .aspect_ratio(frame.width as f32 / frame.height as f32)
-            .child(gpui_kit::img(frame.image.clone()).size_full());
+            .flex_none()
+            .w(px(frame.width as f32))
+            .h(px(frame.height as f32))
+            .child(
+                gpui_kit::img(frame.image.clone())
+                    .w(px(frame.width as f32))
+                    .h(px(frame.height as f32)),
+            );
         for (index, link) in frame.links.iter().enumerate() {
             let expected = desired.clone();
             let url = link.url.clone();
@@ -409,7 +478,7 @@ impl MailApp {
                                 .selected_original
                                 .as_ref()
                                 .and_then(|o| o.source.as_ref())
-                                .is_some_and(|s| Arc::ptr_eq(s, &expected.source))
+                                .is_some_and(|s| same_source(s, &expected.source))
                             && megamail_core::mail_text::safe_browser_url(&url)
                         {
                             cx.open_url(&url);
@@ -452,17 +521,17 @@ mod tests {
     fn confirmed_frame_decodes_and_rejects_uncorrelated_or_out_of_frame_links() {
         let link = serde_json::json!([{"url":"https://example.test/notes","label":"Read notes","x":1,"y":0,"w":10,"h":2}]);
         let wire = protocol(link.clone());
-        let frame = parse_frame(&wire).unwrap();
+        let frame = parse_frame(&wire, 1).unwrap();
         assert_eq!((frame.width, frame.height, frame.links.len()), (320, 2, 1));
         let mut outside = link.clone();
         outside[0]["w"] = 320.into();
-        assert!(parse_frame(&protocol(outside)).is_err());
+        assert!(parse_frame(&protocol(outside), 1).is_err());
         let mut unsafe_link = link;
         unsafe_link[0]["url"] = "javascript:alert(1)".into();
-        assert!(parse_frame(&protocol(unsafe_link)).is_err());
+        assert!(parse_frame(&protocol(unsafe_link), 1).is_err());
         let text = String::from_utf8(wire).unwrap();
         let unfinished = text.lines().take(3).collect::<Vec<_>>().join("\n");
-        assert!(parse_frame(unfinished.as_bytes()).is_err());
+        assert!(parse_frame(unfinished.as_bytes(), 1).is_err());
         let mut events: Vec<serde_json::Value> = text
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
@@ -472,7 +541,7 @@ mod tests {
             .iter()
             .map(|event| event.to_string() + "\n")
             .collect::<String>();
-        assert!(parse_frame(wrong_token.as_bytes()).is_err());
+        assert!(parse_frame(wrong_token.as_bytes(), 1).is_err());
     }
     #[test]
     fn reader_requests_retire_for_selection_generation_source_and_width_changes() {
@@ -490,19 +559,27 @@ mod tests {
             },
             source: Arc::from("<p>Fixture</p>"),
             width: 640,
+            scale: 1,
         };
         assert!(request.matches(&request.clone()));
         let mut changed = request.clone();
         changed.width = 400;
         assert!(!request.matches(&changed));
         changed = request.clone();
-        changed.identity.generation += 1;
+        changed.scale = 2;
         assert!(!request.matches(&changed));
+        // Background sync bumps generations and rebuilds Arcs; same pixels.
+        changed = request.clone();
+        changed.identity.generation += 1;
+        assert!(request.matches(&changed));
+        changed = request.clone();
+        changed.source = Arc::from("<p>Fixture</p>");
+        assert!(request.matches(&changed));
         changed = request.clone();
         changed.identity.key.uid += 1;
         assert!(!request.matches(&changed));
         changed = request.clone();
-        changed.source = Arc::from("<p>Fixture</p>");
+        changed.source = Arc::from("<p>Edited</p>");
         assert!(!request.matches(&changed));
         let cancel = Arc::new(AtomicBool::new(false));
         let mut state = State::default();
@@ -521,9 +598,13 @@ mod tests {
     #[test]
     fn forged_frames_and_policy_downgrades_are_rejected() {
         assert!(
-            parse_frame(br#"{"version":1,"event":"frame","token":"forged","png":""}"#).is_err()
+            parse_frame(
+                br#"{"version":1,"event":"frame","token":"forged","png":""}"#,
+                1
+            )
+            .is_err()
         );
-        assert!(parse_frame(br#"{"version":1,"event":"ready","token":"0123456789abcdef0123456789abcdef","policy":"test-only:no-csp"}"#).is_err());
-        assert!(parse_frame(&vec![0; WIRE_MAX as usize + 1]).is_err());
+        assert!(parse_frame(br#"{"version":1,"event":"ready","token":"0123456789abcdef0123456789abcdef","policy":"test-only:no-csp"}"#, 1).is_err());
+        assert!(parse_frame(&vec![0; WIRE_MAX as usize + 1], 1).is_err());
     }
 }

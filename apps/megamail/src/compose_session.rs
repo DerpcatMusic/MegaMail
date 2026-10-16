@@ -282,6 +282,7 @@ impl Capture {
 }
 pub(crate) fn same(a: &OutgoingMessage, b: &OutgoingMessage) -> bool {
     a.from_account_id == b.from_account_id
+        && a.client_message_id == b.client_message_id
         && a.from_alias == b.from_alias
         && a.to == b.to
         && a.cc == b.cc

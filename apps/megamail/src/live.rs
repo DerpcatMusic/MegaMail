@@ -101,6 +101,7 @@ impl MessageFilter {
 
 #[derive(Debug, Clone)]
 pub struct OutboxSummary {
+    pub account_id: u32,
     pub id: u32,
     pub recipients: String,
     pub subject: String,
@@ -173,12 +174,15 @@ pub struct DirectBodyVersion {
 pub struct MailboxSnapshot {
     pub accounts: Vec<Account>,
     pub scope: MailboxScope,
+    pub unified_kind: Option<FolderKind>,
+    pub last_synced: HashMap<u32, i64>,
     pub title: String,
     pub account_labels: HashMap<u32, String>,
     pub account_loading: HashMap<u32, bool>,
     pub account_errors: HashMap<u32, String>,
     pub current_account_id: Option<u32>,
     pub folders: Vec<Folder>,
+    pub folder_kinds: HashMap<(u32, u32), FolderKind>,
     pub current_folder_path: Option<String>,
     pub page: Arc<Vec<Arc<MessageRow>>>,
     pub conversations: Arc<Vec<ConversationRow>>,
@@ -391,6 +395,7 @@ struct PageKey {
 
 #[derive(Debug, Clone, Default)]
 struct FolderPageState {
+    next_sorted: Option<megamail_core::cache::SortCursor>,
     folder_id: u32,
     generation: u64,
     pending_generation: Option<u64>,
@@ -450,6 +455,9 @@ pub struct LiveMailbox {
     current_account_id: Option<u32>,
     current_folder_path: Option<String>,
     scope: MailboxScope,
+    page_order: megamail_core::cache::PageOrder,
+    unified_kind: Option<FolderKind>,
+    last_synced: HashMap<u32, i64>,
     messages: Vec<Message>,
     visible_indices: Vec<usize>,
     truncated: bool,
@@ -628,6 +636,12 @@ impl LiveMailbox {
             current_account_id,
             current_folder_path: None,
             scope: MailboxScope::Account,
+            page_order: megamail_core::cache::PageOrder {
+                key: megamail_core::cache::SortKey::Date,
+                reverse: false,
+            },
+            unified_kind: Some(FolderKind::Inbox),
+            last_synced: HashMap::new(),
             messages: Vec::new(),
             visible_indices: Vec::new(),
             truncated: false,
@@ -732,11 +746,23 @@ impl LiveMailbox {
             .and_then(|conversation| self.conversation_errors.get(&conversation.key).cloned());
         let conversation_warning = selected_conversation
             .and_then(|conversation| self.conversation_warnings.get(&conversation.key).cloned());
-        let outbox = current_account_id
-            .and_then(|id| self.outbox_by_account.get(&id))
-            .into_iter()
-            .flatten()
-            .cloned()
+        let outbox = self
+            .outbox_by_account
+            .iter()
+            .flat_map(|(account_id, items)| {
+                items.iter().map(move |item| OutboxSummary {
+                    account_id: *account_id,
+                    id: item.id,
+                    recipients: item.recipients.clone(),
+                    subject: item.subject.clone(),
+                    preview: item.preview.clone(),
+                    queued_at: item.queued_at,
+                    attempts: item.attempts,
+                    last_error: item.last_error.clone(),
+                    send_at: item.send_at,
+                    phase: item.phase,
+                })
+            })
             .collect();
         let page_states = self.active_page_keys();
         let has_more = page_states.iter().any(|key| {
@@ -759,7 +785,7 @@ impl LiveMailbox {
                 .folders_by_account
                 .values()
                 .flatten()
-                .filter(|folder| folder.kind == FolderKind::Inbox)
+                .filter(|folder| self.unified_folder_matches(folder.kind))
                 .map(|folder| folder.unread)
                 .sum(),
         };
@@ -781,12 +807,23 @@ impl LiveMailbox {
         MailboxSnapshot {
             accounts: self.accounts.clone(),
             scope: self.scope,
+            unified_kind: self.unified_kind,
+            last_synced: self.last_synced.clone(),
             title,
             account_labels,
             account_loading,
             account_errors,
             current_account_id,
             folders,
+            folder_kinds: self
+                .folders_by_account
+                .iter()
+                .flat_map(|(account, folders)| {
+                    folders
+                        .iter()
+                        .map(move |folder| ((*account, folder.id), folder.kind))
+                })
+                .collect(),
             current_folder_path,
             page: self.page_rows.clone(),
             conversations: self.conversation_rows.clone(),
@@ -1368,31 +1405,29 @@ impl LiveMailbox {
     }
 
     pub fn select_unified(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.scope == MailboxScope::Unified {
+        self.select_unified_kind(Some(FolderKind::Inbox), cx)
+    }
+
+    /// Unified folder roles; None searches locally indexed mail across folders.
+    pub fn select_unified_kind(
+        &mut self,
+        kind: Option<FolderKind>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.scope == MailboxScope::Unified && self.unified_kind == kind {
             return false;
         }
         self.scope = MailboxScope::Unified;
+        self.unified_kind = kind;
         self.current_folder_path = None;
         self.clear_selection();
-        self.loading = (self.accounts.is_empty() && !self.request_senders.is_empty())
-            || self.accounts.iter().any(|account| {
-                self.folders_by_account
-                    .get(&account.id)
-                    .is_none_or(|folders| {
-                        !folders
-                            .iter()
-                            .any(|folder| folder.kind == FolderKind::Inbox)
-                    })
-            });
+        self.loading = self.accounts.is_empty() && !self.request_senders.is_empty();
         for key in self.active_page_keys() {
-            if let Some(state) = self.page_states.get(&key) {
-                if state.pending_generation.is_none() {
-                    self.request_page_for(&key, None, false, cx);
-                }
-            } else {
-                self.request_page_for(&key, None, false, cx);
+            self.request_page_for(&key, None, false, cx);
+            // All-local search never fans network requests across every folder.
+            if kind.is_some() {
+                self.request_current_folder_for(key.account_id, &key.folder_path, cx);
             }
-            self.request_current_folder_for(key.account_id, &key.folder_path, cx);
         }
         self.rebuild_visible();
         self.ensure_visible_selection(cx);
@@ -1453,7 +1488,9 @@ impl LiveMailbox {
         else {
             return false;
         };
-        if self.current_folder_path.as_deref() == Some(path.as_str()) {
+        if self.scope == MailboxScope::Account
+            && self.current_folder_path.as_deref() == Some(path.as_str())
+        {
             return false;
         }
         self.scope = MailboxScope::Account;
@@ -1555,6 +1592,21 @@ impl LiveMailbox {
         true
     }
 
+    pub fn set_order(&mut self, order: megamail_core::cache::PageOrder, cx: &mut Context<Self>) {
+        if self.page_order == order {
+            return;
+        }
+        self.page_order = order;
+        if self.demo_mode {
+            self.rebuild_visible();
+            cx.notify();
+            return;
+        }
+        self.clear_all_page_data();
+        self.request_page(None, false, cx);
+        cx.notify();
+    }
+
     pub fn set_search(&mut self, query: impl Into<String>, cx: &mut Context<Self>) {
         let query = query.into();
         let parsed = megamail_core::search::SearchQuery::parse(&query);
@@ -1637,6 +1689,9 @@ impl LiveMailbox {
                 continue;
             }
             sent |= self.request_page_for(&key, None, false, cx);
+            if self.scope == MailboxScope::Unified && self.unified_kind.is_none() {
+                continue;
+            }
             if let Some(folder_id) = self.folder_id(key.account_id, &key.folder_path) {
                 sent |= self.send_request(
                     key.account_id,
@@ -2591,6 +2646,7 @@ impl LiveMailbox {
                 state.pending_generation = None;
                 state.pending_append = false;
                 state.next_cursor = None;
+                state.next_sorted = None;
                 state.truncated = false;
             }
         }
@@ -2714,33 +2770,28 @@ impl LiveMailbox {
                         .and_then(|old| old.iter().find(|folder| &folder.path == path))
                         .map(|folder| folder.id)
                 });
-                let old_inbox_id = self
-                    .folders_by_account
-                    .get(&account_id)
-                    .and_then(|old| old.iter().find(|folder| folder.kind == FolderKind::Inbox))
-                    .map(|folder| folder.id);
                 self.folders_by_account.insert(account_id, folders.clone());
                 if self.scope == MailboxScope::Unified {
-                    if let Some(inbox) = folders
+                    for folder in folders
                         .iter()
-                        .find(|folder| folder.kind == FolderKind::Inbox)
+                        .filter(|f| self.unified_folder_matches(f.kind))
+                        .cloned()
+                        .collect::<Vec<_>>()
                     {
-                        if old_selected
-                            .as_ref()
-                            .is_none_or(|path| !folders.iter().any(|folder| &folder.path == path))
-                        {
-                            self.selected_folder_by_account
-                                .insert(account_id, inbox.path.clone());
-                        }
                         let key = PageKey {
                             account_id,
-                            folder_path: inbox.path.clone(),
+                            folder_path: folder.path.clone(),
                         };
-                        let changed_id = old_inbox_id != Some(inbox.id);
-                        if changed_id || !self.page_states.contains_key(&key) {
+                        let changed_id = self
+                            .page_states
+                            .get(&key)
+                            .is_none_or(|state| state.folder_id != folder.id);
+                        if changed_id {
                             self.request_page_for(&key, None, false, cx);
                         }
-                        self.request_current_folder_for(account_id, &inbox.path, cx);
+                        if self.unified_kind.is_some() {
+                            self.request_current_folder_for(account_id, &folder.path, cx);
+                        }
                     }
                     if self.current_account_id.is_none() {
                         self.current_account_id = Some(account_id);
@@ -2840,9 +2891,9 @@ impl LiveMailbox {
                 }
             }
             event @ WorkerMailboxEvent::BodyEpochStale { .. } => {
-                if let Some((path, reload)) = self.apply_epoch_stale_event(account_id, event) {
-                    if reload {
-                        self.reload_epoch_scope(account_id, &path, cx);
+                if let Some((_, retry)) = self.apply_epoch_stale_event(account_id, event) {
+                    if retry {
+                        self.request_selected_body(cx);
                     }
                     changed = true;
                 }
@@ -2955,6 +3006,7 @@ impl LiveMailbox {
                         if let Some(state) = self.page_states.get_mut(&page_key) {
                             state.pending_generation = None;
                             state.next_cursor = None;
+                            state.next_sorted = None;
                         }
                     }
                     self.messages.extend(messages);
@@ -3229,6 +3281,9 @@ impl LiveMailbox {
                     set_folder_unread(&mut self.folders_by_account, account_id, &path, unread);
             }
             WorkerMailboxEvent::FolderSynced { folder_id } => {
+                self.last_synced
+                    .insert(account_id, megamail_core::datefmt::now());
+                changed = true;
                 if let Some(path) = self.path_for_folder(account_id, folder_id) {
                     let key = PageKey {
                         account_id,
@@ -3261,7 +3316,7 @@ impl LiveMailbox {
                 if let Some(result) = self.record_send_completion(account_id, &event) {
                     let outcome = result.outcome;
                     if outcome == SendOutcome::Sent {
-                        self.invalidate_conversation_cache(account_id);
+                        self.thread_summary_requests.remove(&account_id);
                         if self.thunderbird_accounts.contains(&account_id) {
                             self.request_thread_summaries(cx);
                         } else {
@@ -3470,6 +3525,7 @@ impl LiveMailbox {
             state.pending_generation = Some(state.generation);
             state.pending_append = append;
             state.next_cursor = None;
+            state.next_sorted = None;
             state.truncated = false;
             return true;
         }
@@ -3484,6 +3540,7 @@ impl LiveMailbox {
         if folder_changed {
             state.folder_id = folder_id;
             state.next_cursor = None;
+            state.next_sorted = None;
             state.truncated = false;
             state.pending_generation = None;
         }
@@ -3491,7 +3548,7 @@ impl LiveMailbox {
         let generation = state.generation;
         state.pending_generation = Some(generation);
         state.pending_append = append;
-        let request = make_page_request(
+        let mut request = make_page_request(
             key.account_id,
             key.folder_path.clone(),
             folder_id,
@@ -3499,6 +3556,12 @@ impl LiveMailbox {
             generation,
             cursor,
         );
+        request.order = self.page_order;
+        request.after_sorted = if append {
+            state.next_sorted.clone()
+        } else {
+            None
+        };
         if let Some(sender) = self.page_senders.get(&key.account_id) {
             if let Err(error) = sender(request) {
                 if let Some(state) = self.page_states.get_mut(key) {
@@ -3632,6 +3695,7 @@ impl LiveMailbox {
                 }));
                 if let Some(state) = self.page_states.get_mut(&key) {
                     state.next_cursor = result.next_cursor;
+                    state.next_sorted = result.next_sorted;
                     state.truncated = messages.len() >= MESSAGE_CAP && state.next_cursor.is_some();
                 }
                 self.query_errors.remove(&result.account_id);
@@ -3719,6 +3783,7 @@ impl LiveMailbox {
             state.pending_generation = None;
             state.pending_append = false;
             state.next_cursor = None;
+            state.next_sorted = None;
             state.truncated = false;
         }
         self.page_keys
@@ -3808,7 +3873,8 @@ impl LiveMailbox {
     }
 
     /// A stale response only finishes its exact pending source-generation slot.
-    /// Returns one bounded reload request; it never labels old bytes with a new epoch.
+    /// Returns true when the body should be asked for again at the worker's newer
+    /// generation; it never labels old bytes with a new epoch.
     fn finish_body_epoch_stale(
         &mut self,
         account_id: u32,
@@ -3836,25 +3902,38 @@ impl LiveMailbox {
         }
         self.pending_body_versions.remove(&slot);
         let pending = self.pending_bodies.remove(&slot);
-        if pending
+        let selected = pending
             .as_ref()
-            .is_some_and(|pending| self.selected_key.as_ref() == Some(&pending.key))
+            .is_some_and(|pending| self.selected_key.as_ref() == Some(&pending.key));
+        if let Some(actual) =
+            actual_generation.filter(|generation| *generation > expected_generation)
         {
+            // The app simply lagged the worker's persisted namespace (startup,
+            // or a sync that landed first). Record the generation and ask again.
+            // A real UIDVALIDITY change arrives as MailboxEpochChanged and
+            // retires the folder there; doing it here would wipe the list and
+            // the selection. Generations only grow, so this cannot ping-pong.
+            let epoch = self
+                .mailbox_epochs
+                .entry((account_id, path.to_owned()))
+                .or_insert(NativeMailboxEpoch {
+                    uid_validity: 0,
+                    generation: 0,
+                });
+            epoch.generation = epoch.generation.max(actual);
+            self.epoch_reloads.remove(&PageKey {
+                account_id,
+                folder_path: path.to_owned(),
+            });
+            if selected {
+                self.body_loading = false;
+            }
+            return Some(true);
+        }
+        if selected {
             self.body_loading = false;
             self.selected_body_loaded = false;
             self.action_errors.insert(account_id, reason);
-        }
-        let no_namespace = !self
-            .mailbox_epochs
-            .contains_key(&(account_id, path.to_owned()));
-        if let Some(actual) = actual_generation
-            .filter(|generation| *generation != 0 && expected_generation == 0 && no_namespace)
-        {
-            // This field is producer-captured evidence of a known persisted
-            // namespace (worker filters missing UIDVALIDITY before publishing).
-            // It authorizes a NEW request only; never relabel the rejected body.
-            self.retire_mailbox_epoch(account_id, path, 0, actual);
-            return Some(true);
         }
         // Missing epoch / ordinary read failure is terminal. Explicit Refresh
         // can clear this guard; header callbacks cannot create a request loop.
@@ -4698,6 +4777,7 @@ impl LiveMailbox {
             state.pending_generation = None;
             state.pending_append = false;
             state.next_cursor = None;
+            state.next_sorted = None;
             state.truncated = false;
         }
         self.messages.clear();
@@ -4760,7 +4840,7 @@ impl LiveMailbox {
                         .get(&account.id)
                         .into_iter()
                         .flatten()
-                        .filter(|folder| folder.kind == FolderKind::Inbox)
+                        .filter(|folder| self.unified_folder_matches(folder.kind))
                         .map(|folder| PageKey {
                             account_id: account.id,
                             folder_path: folder.path.clone(),
@@ -4829,9 +4909,26 @@ impl LiveMailbox {
             .collect()
     }
 
+    fn unified_folder_matches(&self, kind: FolderKind) -> bool {
+        self.unified_kind.map_or(
+            !matches!(
+                kind,
+                FolderKind::Trash | FolderKind::Junk | FolderKind::Templates
+            ),
+            |wanted| kind == wanted,
+        )
+    }
+
     fn scope_title(&self) -> String {
         if self.scope == MailboxScope::Unified {
-            return "Unified Inbox".into();
+            return match self.unified_kind {
+                Some(FolderKind::Sent) => "All sent",
+                Some(FolderKind::Drafts) => "All drafts",
+                Some(FolderKind::Archive) => "All archived",
+                None => "All local mail",
+                _ => "Unified Inbox",
+            }
+            .into();
         }
         self.current_folder_path
             .as_ref()
@@ -5256,6 +5353,7 @@ fn default_accent(account_id: u32) -> &'static str {
 
 fn outbox_summary(item: &OutboxItem) -> OutboxSummary {
     OutboxSummary {
+        account_id: item.account_id,
         id: item.id,
         recipients: item.recipients.clone(),
         subject: item.subject.clone(),
@@ -5719,6 +5817,7 @@ fn finish_superseded_page(state: &mut FolderPageState, append: bool) {
     state.pending_append = false;
     if append {
         state.next_cursor = None;
+        state.next_sorted = None;
         state.truncated = false;
     }
 }
@@ -5752,6 +5851,8 @@ fn make_page_request(
     cursor: Option<MessageCursor>,
 ) -> PageRequest {
     PageRequest {
+        order: Default::default(),
+        after_sorted: None,
         account_id,
         folder_path,
         folder_id,
@@ -6105,6 +6206,60 @@ mod epoch_integration_tests {
         live.pending_native_mutations
             .insert((7, request.token), request.clone());
         (live, request)
+    }
+
+    #[test]
+    fn shared_folder_roles_and_local_search_keep_account_and_folder_scope() {
+        let mut live = mailbox();
+        live.scope = MailboxScope::Unified;
+        for account in [7, 8] {
+            live.accounts.push(Account {
+                id: account,
+                name: "Fictional".into(),
+                email: format!("{account}@example.test"),
+                label: "Fictional".into(),
+                accent: "#777777".into(),
+            });
+            live.folders_by_account.insert(
+                account,
+                vec![
+                    Folder {
+                        id: 1,
+                        account_id: account,
+                        name: "Inbox".into(),
+                        path: "INBOX".into(),
+                        kind: FolderKind::Inbox,
+                        unread: 0,
+                    },
+                    Folder {
+                        id: 2,
+                        account_id: account,
+                        name: "Sent".into(),
+                        path: "Sent".into(),
+                        kind: FolderKind::Sent,
+                        unread: 0,
+                    },
+                    Folder {
+                        id: 3,
+                        account_id: account,
+                        name: "Trash".into(),
+                        path: "Trash".into(),
+                        kind: FolderKind::Trash,
+                        unread: 0,
+                    },
+                ],
+            );
+        }
+        live.unified_kind = Some(FolderKind::Sent);
+        let sent = live.active_page_keys();
+        assert!(sent.iter().all(|key| key.folder_path == "Sent"));
+        assert!(sent.iter().any(|key| key.account_id == 7));
+        assert!(sent.iter().any(|key| key.account_id == 8));
+        live.unified_kind = None;
+        let all = live.active_page_keys();
+        assert!(all.iter().any(|key| key.folder_path == "INBOX"));
+        assert!(all.iter().any(|key| key.folder_path == "Sent"));
+        assert!(!all.iter().any(|key| key.folder_path == "Trash"));
     }
 
     #[test]
@@ -6602,10 +6757,11 @@ mod epoch_integration_tests {
             live.apply_epoch_stale_event(7, stale),
             Some(("INBOX".into(), true))
         );
-        assert!(live.selected_key.is_none());
+        // A lagging generation keeps the list and the selection; only the
+        // retry is stamped with the worker's generation.
+        assert_eq!(live.selected_key.as_ref(), Some(&key));
         assert!(!live.body_loading);
-        let key = header(&mut live, 7, 1, 7);
-        live.selected_key = Some(key.clone());
+        assert!(live.action_errors.is_empty());
         assert!(matches!(
             live.prepare_body_request(&key, 7).unwrap(),
             MailRequest::LoadBodyAtEpoch {
@@ -7354,6 +7510,7 @@ mod tests {
             ..FolderPageState::default()
         };
         let result = |account_id, generation| PageResult {
+            next_sorted: None,
             account_id,
             folder_path: "INBOX".into(),
             folder_id: 3,

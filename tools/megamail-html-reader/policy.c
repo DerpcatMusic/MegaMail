@@ -281,7 +281,7 @@ MmDocument *mm_document_parse(const char *wire, gsize length, const char *token,
     JsonNode *viewport = json_object_get_member(obj, "viewportWidth");
     if (!version || !JSON_NODE_HOLDS_VALUE(version) || json_node_get_value_type(version) != G_TYPE_INT64 ||
         json_node_get_int(version) != 1 || !html || !plain || !title ||
-        !only_members(obj, "|version|html|plainText|title|resources|viewportWidth|") ||
+        !only_members(obj, "|version|html|plainText|title|resources|viewportWidth|deviceScale|") ||
         (viewport && (!JSON_NODE_HOLDS_VALUE(viewport) || json_node_get_value_type(viewport)!=G_TYPE_INT64 ||
          json_node_get_int(viewport)<320 || json_node_get_int(viewport)>1280))) {
         g_object_unref(parser); fail(error, "request-schema"); return NULL;

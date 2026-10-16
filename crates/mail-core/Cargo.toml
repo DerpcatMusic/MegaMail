@@ -39,6 +39,8 @@ markup5ever_rcdom = "0.39.0"
 html5ever = "0.39"
 css-inline = { version = "0.21.2", default-features = false }
 roxmltree = "0.20"
+# Already in the tree via native-tls; used only to read Thunderbird's saved logins once.
+openssl = "0.10"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }

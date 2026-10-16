@@ -712,6 +712,7 @@ mod tests {
 
     fn message() -> OutgoingMessage {
         OutgoingMessage {
+            client_message_id: None,
             from_account_id: 7,
             from_alias: None,
             to: "to@example.invalid".into(),
