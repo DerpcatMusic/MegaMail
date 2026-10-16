@@ -19,7 +19,7 @@ typedef struct {
     gboolean capturing;
     char *frame_png;
     int width, frame_height, scale;
-    guint deadline, links;
+    guint deadline, links, measurements;
 } Reader;
 static void failed(Reader *r, const char *code) {
     if (r->failed) return;
@@ -188,6 +188,31 @@ static void configure_frame(Reader *r) {
     gtk_window_resize(GTK_WINDOW(r->window), r->width, bounded);
     g_timeout_add(150, capture_frame, r);
 }
+static gboolean measure_frame(gpointer data);
+static void measured_frame(GObject *object, GAsyncResult *result, gpointer data) {
+    Reader *r = data; GError *error = NULL;
+    WebKitUserMessage *reply = webkit_web_view_send_message_to_page_finish(WEBKIT_WEB_VIEW(object), result, &error);
+    GVariant *params = reply ? webkit_user_message_get_parameters(reply) : NULL;
+    if (!params || !g_variant_is_of_type(params, G_VARIANT_TYPE("(ssd)")) ||
+        strcmp(webkit_user_message_get_name(reply), "megamail-links-v1")) {
+        if (reply) g_object_unref(reply);
+        g_clear_error(&error); failed(r, "frame-layout-unavailable"); return;
+    }
+    const char *token = NULL, *links = NULL; double height = 0;
+    g_variant_get(params, "(&s&sd)", &token, &links, &height);
+    if (g_strcmp0(token, r->doc->token)) { g_object_unref(reply); failed(r, "frame-layout-unavailable"); return; }
+    if (height > 0 && height < 2147483647.0) { r->document_height = height; configure_frame(r); }
+    else if (++r->measurements < 30) { g_timeout_add(50, measure_frame, r); }
+    else { failed(r, "frame-layout-unavailable"); }
+    g_object_unref(reply);
+}
+static gboolean measure_frame(gpointer data) {
+    Reader *r = data;
+    if (r->failed || r->capturing) return G_SOURCE_REMOVE;
+    WebKitUserMessage *request = webkit_user_message_new("megamail-links-v1", g_variant_new("(sii)", r->doc->token, r->width, FRAME_HEIGHT_MAX));
+    webkit_web_view_send_message_to_page(r->view, request, NULL, measured_frame, r);
+    return G_SOURCE_REMOVE;
+}
 static void load_changed(WebKitWebView *view, WebKitLoadEvent event, gpointer data) {
     Reader *r = data;
     if (event == WEBKIT_LOAD_FINISHED && r->loading && r->acknowledged && !r->failed && !r->ready &&
@@ -197,6 +222,7 @@ static void load_changed(WebKitWebView *view, WebKitLoadEvent event, gpointer da
             mm_emit("ready", r->doc->token, "policy", MM_READY_POLICY);
             /* Geometry comes from the policy extension's DOM API; JavaScript remains disabled. */
             configure_frame(r);
+            if (!r->capturing) g_timeout_add(50, measure_frame, r);
             return;
         }
         gtk_label_set_text(GTK_LABEL(r->notice), "Remote resources blocked. This is not the inline reader.");

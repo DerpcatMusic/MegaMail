@@ -57,6 +57,13 @@ static gboolean link_map(WebKitWebPage *page, WebKitUserMessage *message, gpoint
         json_builder_set_member_name(out, "h"); json_builder_add_double_value(out, h);
         json_builder_end_object(out); ++emitted; g_free(url); g_free(label); g_object_unref(rect);
     }
+    /* document-loaded can precede the first layout in an offscreen view.
+     * Read geometry after forcing layout, then report the complete height. */
+    if (root_element) {
+        WebKitDOMClientRect *rect = webkit_dom_element_get_bounding_client_rect(root_element);
+        document_height = MAX(webkit_dom_element_get_scroll_height(root_element), webkit_dom_client_rect_get_height(rect));
+        g_object_unref(rect);
+    }
     json_builder_end_array(out); JsonNode *root=json_builder_get_root(out);
     JsonGenerator *generator=json_generator_new(); json_generator_set_root(generator, root);
     char *json=json_generator_to_data(generator, NULL);

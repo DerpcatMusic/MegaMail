@@ -137,6 +137,12 @@ def sandbox_command(root: Path, binary: Path, args: argparse.Namespace) -> list[
                     "--dir", "/qa/data/megamail/html-reader/extensions",
                     "--ro-bind", str(helper), "/qa/data/megamail/html-reader/megamail-html-reader",
                     "--ro-bind", str(extension), "/qa/data/megamail/html-reader/extensions/libmegamail-reader-policy.so"]
+    if args.helper:
+        runtime = Path(args.helper).parent / "runtime"
+        if runtime.is_dir():
+            if runtime.resolve(strict=True) != runtime:
+                raise ValueError("Runtime directory must be canonical, not symlinked.")
+            command += ["--ro-bind", str(runtime), "/qa/data/megamail/html-reader/runtime"]
     command += ["--", "/usr/bin/python3", "/qa-run.py", "--inside", "--execute",
                 "--timeout", str(args.timeout), "--settle", str(args.settle)]
     if args.developer_helper_preview:
@@ -238,7 +244,11 @@ def inside(args: argparse.Namespace) -> int:
         # Only non-destructive focus/navigation keys; no pixel clicks/URLs/f5/send.
         for label, keys in (("select-next", ["ctrl+alt+l", "Down"]),
                             ("select-previous", ["ctrl+alt+l", "Up"]),
-                            ("reader-focus", ["ctrl+alt+r"])):
+                            ("reader-focus", ["ctrl+alt+r"]),
+                            ("all-sent", ["ctrl+alt+2"]),
+                            ("all-drafts", ["ctrl+alt+3"]),
+                            ("all-inboxes", ["ctrl+shift+l"]),
+                            ("sort-sender", ["ctrl+alt+s"])):
             capture(label + "-before")
             run(["xdotool", "windowfocus", "--sync", window])
             for key in keys:

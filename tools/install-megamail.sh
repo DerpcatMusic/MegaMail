@@ -97,7 +97,13 @@ printf 'Building MegaMail (locked release build, two jobs)…\n'
 cargo build --release --locked -j 2 --manifest-path "$manifest" --bin "$binary_name"
 
 # Build the isolated HTML package in the same admitted serial installation slot.
-make -j1 -C "$repo_root/tools/megamail-html-reader" all
+reader_runtime="$repo_root/tools/megamail-html-reader/build/runtime"
+if [[ -d "$reader_runtime/usr/lib/pkgconfig" && ! -L "$reader_runtime" ]]; then
+    PKG_CONFIG_PATH="$reader_runtime/usr/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
+        make -j1 -C "$repo_root/tools/megamail-html-reader" "LDFLAGS=-Wl,-rpath-link,$reader_runtime/usr/lib" all
+else
+    make -j1 -C "$repo_root/tools/megamail-html-reader" all
+fi
 
 built_binary="$target_directory/release/$binary_name"
 [[ -x "$built_binary" ]] || die "Cargo succeeded but the expected executable is missing: $built_binary"
