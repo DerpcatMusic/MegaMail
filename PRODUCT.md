@@ -70,13 +70,30 @@ accounts sort the local folder cache before paging, while legacy adapters sort
 loaded headers. Unified lists merge bounded per-account pages, and work filters
 apply to the loaded results.
 
-The reader offers selectable native semantic text with sanitized HTML formatting
-and an isolated, ephemeral WebKit helper that preserves authored HTML colors,
-typography and table layout. Remote resources remain blocked. The semantic view
-removes message CSS and provides a plain-text fallback; its table simplification
-does not describe the original-format view. Recognized quote history can be
-collapsed and restored. Reply All excludes the user's own addresses and aliases.
-Attachments retain explicit open, download and save actions.
+The default reader is stable, selectable native GPUI semantic text with sanitized
+HTML formatting. It retains native text states and never automatically starts a
+WebKit helper or replaces text with a rendered image. Current authored content
+and recognized quoted history have separate selectable text states; history can
+be disclosed independently, preserving nested attribution. Explicitly hidden
+inline preheaders are omitted from semantic mail. The semantic view removes
+message CSS and offers a plain-text mode; it simplifies authored table layout.
+**Original formatting…** deliberately opens an isolated, ephemeral WebKit window
+for eligible complete source, preserving authored colors, typography and table
+layout while blocking remote resources. Closing it leaves native text intact.
+Unknown or incomplete source, including unattested direct-worker MIME, reports
+unavailability rather than reconstructing an original from sanitized text.
+Reply All excludes the user's own addresses and aliases. Attachments retain
+explicit open, download and save actions.
+
+Sender names and addresses remain selectable outside each message's disclosure
+button. Message details display the actual available authentication summary and
+findings; missing evidence says unavailable. Photos come from explicit local
+PNG/JPEG/WebP choices or a configured own-account avatar, with initials as the
+fallback. Thumbnail loading and decoding run in bounded background work with at
+most two concurrent loads. No automatic Gravatar lookup, remote photo fetch or
+contact synchronization is performed. Native draggable pane dividers enforce
+minimum widths; expanded and compact layouts retain their separate sizes during
+the session and window resizing, but do not persist across restart.
 
 Navigation retains an active composition, and Resume draft returns to it. Plain
 text is the default; opt-in Markdown composition includes a formatted preview
