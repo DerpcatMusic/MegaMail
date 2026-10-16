@@ -20,6 +20,8 @@ const REQUEST_QUEUE_CAPACITY: usize = 32;
 /// results that have already gone stale. It is not itself a UIDVALIDITY value.
 #[derive(Debug, Clone)]
 pub struct PageRequest {
+    pub order: crate::cache::PageOrder,
+    pub after_sorted: Option<crate::cache::SortCursor>,
     pub account_id: u32,
     pub folder_path: String,
     pub folder_id: u32,
@@ -46,6 +48,7 @@ pub enum PageStatus {
 /// A missing `next_cursor` means the page exhausted the matching rows.
 #[derive(Debug, Clone)]
 pub struct PageResult {
+    pub next_sorted: Option<crate::cache::SortCursor>,
     pub account_id: u32,
     pub folder_path: String,
     pub folder_id: u32,
@@ -202,13 +205,15 @@ fn read_page(
         {
             return Ok(None);
         }
-        let page = cache.message_page_predicate(
+        let page = cache.message_page_ordered(
             request.account_id,
             &request.folder_path,
             request.folder_id,
             &predicate.clause,
             &predicate.values,
             request.cursor,
+            request.after_sorted.as_ref(),
+            request.order,
             request.limit.min(MESSAGE_PAGE_LIMIT_MAX),
         )?;
         let after = cache
@@ -225,6 +230,7 @@ fn read_page(
             // invalidation; no database read can make UI delivery atomic.
             epochs.insert(scope, (request.generation, epoch));
             PageResult {
+                next_sorted: page.next_sorted,
                 account_id: request.account_id,
                 folder_path: request.folder_path.clone(),
                 folder_id: request.folder_id,
@@ -247,6 +253,7 @@ fn stale_result(pending: &PendingPage) -> PageResult {
 
 fn failed_result(pending: &PendingPage, message: String) -> PageResult {
     PageResult {
+        next_sorted: None,
         account_id: pending.request.account_id,
         folder_path: pending.request.folder_path.clone(),
         folder_id: pending.request.folder_id,
@@ -259,6 +266,7 @@ fn failed_result(pending: &PendingPage, message: String) -> PageResult {
 
 fn superseded(pending: PendingPage) {
     let result = PageResult {
+        next_sorted: None,
         account_id: pending.request.account_id,
         folder_path: pending.request.folder_path,
         folder_id: pending.request.folder_id,
@@ -325,6 +333,8 @@ mod tests {
         cursor: Option<MessageCursor>,
     ) -> PageRequest {
         PageRequest {
+            order: Default::default(),
+            after_sorted: None,
             account_id,
             folder_path: folder_path.to_string(),
             folder_id: 1,
@@ -463,6 +473,112 @@ mod tests {
         for suffix in ["", "-wal", "-shm", "-journal"] {
             let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
         }
+    }
+
+    #[test]
+    fn cache_sort_pages_before_limiting_and_keeps_equal_senders_and_changed_flags() {
+        use crate::cache::{PageOrder, SortKey};
+        let c = Cache::in_memory().unwrap();
+        let mut rows = Vec::new();
+        for (uid, address) in [
+            (1, "z@example.test"),
+            (400, "a@example.test"),
+            (2, "a@example.test"),
+            (8, "b@example.test"),
+        ] {
+            let mut m = synthetic_message(7, 17, uid, "Fictional".into(), format!("Subject {uid}"));
+            m.from_addr = address.into();
+            m.unread = true;
+            rows.push(m);
+        }
+        c.upsert_messages(7, "INBOX", &rows);
+        let order = PageOrder {
+            key: SortKey::Sender,
+            reverse: false,
+        };
+        let first = c
+            .message_page_ordered(7, "INBOX", 17, "1", &[], None, None, order, 1)
+            .unwrap();
+        assert_eq!(first.rows[0].uid, 2);
+        let next = c
+            .message_page_ordered(
+                7,
+                "INBOX",
+                17,
+                "1",
+                &[],
+                first.next_cursor,
+                first.next_sorted.as_ref(),
+                order,
+                2,
+            )
+            .unwrap();
+        assert_eq!(
+            next.rows.iter().map(|m| m.uid).collect::<Vec<_>>(),
+            [400, 8]
+        );
+        let last = c
+            .message_page_ordered(
+                7,
+                "INBOX",
+                17,
+                "1",
+                &[],
+                next.next_cursor,
+                next.next_sorted.as_ref(),
+                order,
+                2,
+            )
+            .unwrap();
+        assert_eq!(last.rows[0].uid, 1);
+        assert!(last.next_cursor.is_none());
+        let reverse = c
+            .message_page_ordered(
+                7,
+                "INBOX",
+                17,
+                "1",
+                &[],
+                None,
+                None,
+                PageOrder {
+                    reverse: true,
+                    ..order
+                },
+                4,
+            )
+            .unwrap();
+        assert_eq!(
+            reverse.rows.iter().map(|m| m.uid).collect::<Vec<_>>(),
+            [1, 8, 400, 2]
+        );
+        let unread_order = PageOrder {
+            key: SortKey::Unread,
+            reverse: false,
+        };
+        let first = c
+            .message_page_ordered(7, "INBOX", 17, "1", &[], None, None, unread_order, 1)
+            .unwrap();
+        assert_eq!(first.rows[0].uid, 400);
+        rows[1].unread = false;
+        c.upsert_messages(7, "INBOX", &[rows[1].clone()]);
+        let next = c
+            .message_page_ordered(
+                7,
+                "INBOX",
+                17,
+                "1",
+                &[],
+                first.next_cursor,
+                first.next_sorted.as_ref(),
+                unread_order,
+                1,
+            )
+            .unwrap();
+        assert_eq!(
+            next.rows[0].uid, 8,
+            "bookmark retains the original unread rank even after opening a message"
+        );
     }
 
     #[test]

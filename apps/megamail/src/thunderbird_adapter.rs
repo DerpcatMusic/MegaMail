@@ -293,6 +293,7 @@ struct PageJob {
 impl PageJob {
     fn result(&self, status: PageStatus) -> PageResult {
         PageResult {
+            next_sorted: None,
             account_id: self.request.account_id,
             folder_path: self.request.folder_path.clone(),
             folder_id: self.request.folder_id,
@@ -1140,6 +1141,7 @@ impl ActorState {
                 let _ = self
                     .event_sender
                     .unbounded_send(MailboxEvent::Page(PageResult {
+                        next_sorted: None,
                         account_id: request.account_id,
                         folder_path: request.folder_path,
                         folder_id: request.folder_id,
@@ -1605,6 +1607,7 @@ impl ActorState {
         let path = request.folder_path.clone();
         let folder_id = request.folder_id;
         let failed = |status| PageResult {
+            next_sorted: None,
             account_id,
             folder_path: path.clone(),
             folder_id,
@@ -1820,6 +1823,7 @@ impl ActorState {
                 megamail_core::cache::MessageCursor { before_uid: token }
             });
         PageResult {
+            next_sorted: None,
             rows,
             next_cursor,
             ..job.result(PageStatus::Ready)
@@ -4560,6 +4564,8 @@ mod page_lane_tests {
                 selected_uid: message.uid,
             };
             fixture.send(Command::Page(PageRequest {
+                order: Default::default(),
+                after_sorted: None,
                 account_id: 1,
                 folder_path: "fiction://INBOX".into(),
                 folder_id: inbox,
@@ -4651,6 +4657,8 @@ mod page_lane_tests {
 
     fn page(folder: &str, folder_id: u32, generation: u64) -> Command {
         Command::Page(PageRequest {
+            order: Default::default(),
+            after_sorted: None,
             account_id: 1,
             folder_path: folder.into(),
             folder_id,
@@ -4858,6 +4866,8 @@ mod page_lane_tests {
         let mut state = fixture.finish();
         let job = PageJob {
             request: PageRequest {
+                order: Default::default(),
+                after_sorted: None,
                 account_id: 1,
                 folder_path: "fiction://INBOX".into(),
                 folder_id: 1,

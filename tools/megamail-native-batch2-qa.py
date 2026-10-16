@@ -144,7 +144,7 @@ def sandbox_command(root: Path, binary: Path, args: argparse.Namespace) -> list[
                 raise ValueError("Runtime directory must be canonical, not symlinked.")
             command += ["--ro-bind", str(runtime), "/qa/data/megamail/html-reader/runtime"]
     command += ["--", "/usr/bin/python3", "/qa-run.py", "--inside", "--execute",
-                "--timeout", str(args.timeout), "--settle", str(args.settle)]
+                "--timeout", str(args.timeout), "--settle", str(args.settle), "--theme", args.theme]
     if args.developer_helper_preview:
         command += ["--developer-helper-preview"]
     return command
@@ -216,6 +216,9 @@ def inside(args: argparse.Namespace) -> int:
         os.environ["DISPLAY"] = ":" + display
         log = (root / "native.log").open("w")
         logs.append(log)
+        preferences = root / "config/megamail/theme.v1"
+        preferences.parent.mkdir(parents=True, exist_ok=True)
+        preferences.write_text(json.dumps({"mode": args.theme}))
         app = subprocess.Popen(["/app/megamail", "--demo"], stdout=log, stderr=log,
                                start_new_session=True)
         children.append(app)
@@ -334,6 +337,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--output-dir", help="New absolute directory for fictional artifacts; parent must already exist")
     p.add_argument("--timeout", type=int, default=60, help="Whole inner session budget, 20..120 seconds")
     p.add_argument("--settle", type=float, default=1.0, help="Fixed observation pause, 0.2..3 seconds; not readiness telemetry")
+    p.add_argument("--theme", choices=("light", "dark"), default="light", help="Synthetic profile theme")
     p.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
     return p
 

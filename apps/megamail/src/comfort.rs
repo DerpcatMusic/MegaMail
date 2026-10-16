@@ -96,6 +96,21 @@ pub(crate) fn latest(row: &ListRow) -> &Message {
 }
 
 impl MailApp {
+    pub(crate) fn apply_mail_sort(&mut self, cx: &mut Context<Self>) {
+        use megamail_core::cache::{PageOrder, SortKey};
+        let key = match self.comfort.sort {
+            Sort::Date => SortKey::Date,
+            Sort::Sender => SortKey::Sender,
+            Sort::Subject => SortKey::Subject,
+            Sort::Unread => SortKey::Unread,
+        };
+        let order = PageOrder {
+            key,
+            reverse: self.comfort.reverse,
+        };
+        self.live.update(cx, |live, cx| live.set_order(order, cx));
+    }
+
     pub(crate) fn own_message(&self, message: &Message, snapshot: &MailboxSnapshot) -> bool {
         let email = message.from_addr.trim();
         snapshot
@@ -332,7 +347,7 @@ impl MailApp {
                             .small()
                             .label(format!("Sort: {}", self.comfort.sort.label()))
                             .tooltip(
-                                "Sort the loaded result window; load more to include older mail",
+                                "Direct accounts sort the local cache before paging. Legacy adapters sort loaded headers.",
                             )
                             .dropdown_menu(move |menu, _, _| {
                                 let mut menu = menu;
@@ -346,6 +361,7 @@ impl MailApp {
                                             .on_click(move |_, _, cx| {
                                                 let _ = owner.update(cx, |this, cx| {
                                                     this.comfort.sort = sort;
+                                                    this.apply_mail_sort(cx);
                                                     this.rebuild_list_rows(
                                                         &this.live.read(cx).snapshot(),
                                                         cx,
@@ -370,6 +386,7 @@ impl MailApp {
                             .tooltip("Reverse the current loaded-result sort")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.comfort.reverse = !this.comfort.reverse;
+                                this.apply_mail_sort(cx);
                                 this.rebuild_list_rows(&this.live.read(cx).snapshot(), cx);
                                 cx.notify();
                             })),

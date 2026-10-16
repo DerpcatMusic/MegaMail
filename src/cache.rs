@@ -61,6 +61,10 @@ CREATE TABLE IF NOT EXISTS messages (
     PRIMARY KEY (account_id, folder_path, uid)
 );
 CREATE INDEX IF NOT EXISTS messages_by_message_id ON messages (message_id);
+CREATE INDEX IF NOT EXISTS messages_by_date ON messages (account_id, folder_path, ts, uid);
+CREATE INDEX IF NOT EXISTS messages_by_sender ON messages (account_id, folder_path, lower(from_addr), uid);
+CREATE INDEX IF NOT EXISTS messages_by_subject ON messages (account_id, folder_path, lower(subject), uid);
+CREATE INDEX IF NOT EXISTS messages_by_unread ON messages (account_id, folder_path, unread, uid);
 CREATE TABLE IF NOT EXISTS local_tags (
     account_id  INTEGER NOT NULL,
     message_id  TEXT    NOT NULL,
@@ -317,12 +321,21 @@ pub struct MessageCursor {
     pub before_uid: u32,
 }
 
+/// Trusted cache ordering; user text never becomes an SQL identifier.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SortKey { #[default] Uid, Date, Sender, Subject, Unread }
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PageOrder { pub key: SortKey, pub reverse: bool }
+#[derive(Debug, Clone, PartialEq)]
+pub struct SortCursor { pub value: rusqlite::types::Value, pub uid: u32 }
+
 /// One bounded page of cached message summaries.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MessagePage {
     pub rows: Vec<Message>,
     /// Present only when at least one more matching row exists.
     pub next_cursor: Option<MessageCursor>,
+    pub next_sorted: Option<SortCursor>,
 }
 
 /// Hard ceiling for mailbox summary pages. Search can cover a large folder,
@@ -1057,14 +1070,28 @@ impl Cache {
         cursor: Option<MessageCursor>,
         limit: usize,
     ) -> rusqlite::Result<MessagePage> {
+        self.message_page_ordered(account_id, folder_path, folder_id, predicate, values, cursor, None, PageOrder::default(), limit)
+    }
+
+    pub fn message_page_ordered(
+        &self, account_id: u32, folder_path: &str, folder_id: u32,
+        predicate: &str, values: &[rusqlite::types::Value],
+        cursor: Option<MessageCursor>, sorted: Option<&SortCursor>, order: PageOrder,
+        limit: usize,
+    ) -> rusqlite::Result<MessagePage> {
         use rusqlite::types::Value;
         let limit = limit.clamp(1, MESSAGE_PAGE_LIMIT_MAX);
-        let before = cursor.map_or(Value::Null, |c| Value::Integer(c.before_uid.into()));
+        let sort_key = match order.key { SortKey::Uid => "m.uid", SortKey::Date => "m.ts", SortKey::Sender => "lower(m.from_addr)", SortKey::Subject => "lower(m.subject)", SortKey::Unread => "m.unread" };
+        let ascending = matches!(order.key, SortKey::Sender | SortKey::Subject) != order.reverse;
+        let direction = if ascending { "ASC" } else { "DESC" };
+        let comparison = if ascending { ">" } else { "<" };
+        let legacy = cursor.filter(|_| order.key == SortKey::Uid && !order.reverse).map(|c| SortCursor { value: Value::Integer(c.before_uid.into()), uid: c.before_uid });
+        let after = sorted.or(legacy.as_ref());
         let mut bindings = vec![
-            Value::Integer(account_id.into()),
-            Value::Text(folder_path.into()),
-            before.clone(),
-            before,
+            Value::Integer(account_id.into()), Value::Text(folder_path.into()),
+            if after.is_some() { Value::Integer(1) } else { Value::Null },
+            after.map_or(Value::Null, |c| c.value.clone()),
+            after.map_or(Value::Null, |c| Value::Integer(c.uid.into())),
         ];
         bindings.extend_from_slice(values);
         bindings.push(Value::Integer((limit + 1) as i64));
@@ -1080,14 +1107,14 @@ impl Cache {
                     m.unread, m.starred,
                     {attachment_flag}, m.recipients, m.cc,
                     m.message_id, m.references_, m.preview, m.reply_to,
-                    {keywords}, m.importance, m.due
+                    {keywords}, m.importance, m.due, {sort_key}
              FROM messages m LEFT JOIN bodies b
                ON b.account_id = m.account_id AND b.folder_path = m.folder_path AND b.uid = m.uid
               AND NOT EXISTS (SELECT 1 FROM sender_checks s WHERE s.account_id = m.account_id
                   AND s.folder_path = m.folder_path AND s.uid = m.uid AND s.pgp != '')
              WHERE m.account_id = ? AND m.folder_path = ?
-               AND (? IS NULL OR m.uid < ?) AND ({predicate})
-             ORDER BY m.uid DESC LIMIT ?"
+               AND (? IS NULL OR ({sort_key}, m.uid) {comparison} (?, ?)) AND ({predicate})
+             ORDER BY {sort_key} {direction}, m.uid {direction} LIMIT ?"
         ))?;
         let mut rows = stmt
             .query_map(rusqlite::params_from_iter(bindings), |row| {
@@ -1117,15 +1144,17 @@ impl Cache {
                     body: String::new(),
                 };
                 message.scrub_nuls();
-                Ok(message)
+                Ok((message, row.get::<_, Value>(18)?))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let has_more = rows.len() > limit;
         rows.truncate(limit);
         let next_cursor = has_more.then(|| MessageCursor {
-            before_uid: rows.last().unwrap().uid,
+            before_uid: rows.last().unwrap().0.uid,
         });
-        Ok(MessagePage { rows, next_cursor })
+        let next_sorted = has_more.then(|| { let (message, value) = rows.last().unwrap(); SortCursor { value: value.clone(), uid: message.uid } });
+        let rows = rows.into_iter().map(|(message, _)| message).collect();
+        Ok(MessagePage { rows, next_cursor, next_sorted })
     }
 
     /// UIDs whose attachments have been fetched (`attachments_checked`) but which

@@ -394,6 +394,7 @@ struct PageKey {
 
 #[derive(Debug, Clone, Default)]
 struct FolderPageState {
+    next_sorted: Option<megamail_core::cache::SortCursor>,
     folder_id: u32,
     generation: u64,
     pending_generation: Option<u64>,
@@ -453,6 +454,7 @@ pub struct LiveMailbox {
     current_account_id: Option<u32>,
     current_folder_path: Option<String>,
     scope: MailboxScope,
+    page_order: megamail_core::cache::PageOrder,
     unified_kind: Option<FolderKind>,
     last_synced: HashMap<u32, i64>,
     messages: Vec<Message>,
@@ -633,6 +635,10 @@ impl LiveMailbox {
             current_account_id,
             current_folder_path: None,
             scope: MailboxScope::Account,
+            page_order: megamail_core::cache::PageOrder {
+                key: megamail_core::cache::SortKey::Date,
+                reverse: false,
+            },
             unified_kind: Some(FolderKind::Inbox),
             last_synced: HashMap::new(),
             messages: Vec::new(),
@@ -1574,6 +1580,21 @@ impl LiveMailbox {
         self.select_message(row.representative.key.clone(), cx);
         self.request_conversation_members(&row, true, cx);
         true
+    }
+
+    pub fn set_order(&mut self, order: megamail_core::cache::PageOrder, cx: &mut Context<Self>) {
+        if self.page_order == order {
+            return;
+        }
+        self.page_order = order;
+        if self.demo_mode {
+            self.rebuild_visible();
+            cx.notify();
+            return;
+        }
+        self.clear_all_page_data();
+        self.request_page(None, false, cx);
+        cx.notify();
     }
 
     pub fn set_search(&mut self, query: impl Into<String>, cx: &mut Context<Self>) {
@@ -2615,6 +2636,7 @@ impl LiveMailbox {
                 state.pending_generation = None;
                 state.pending_append = false;
                 state.next_cursor = None;
+                state.next_sorted = None;
                 state.truncated = false;
             }
         }
@@ -2974,6 +2996,7 @@ impl LiveMailbox {
                         if let Some(state) = self.page_states.get_mut(&page_key) {
                             state.pending_generation = None;
                             state.next_cursor = None;
+                            state.next_sorted = None;
                         }
                     }
                     self.messages.extend(messages);
@@ -3492,6 +3515,7 @@ impl LiveMailbox {
             state.pending_generation = Some(state.generation);
             state.pending_append = append;
             state.next_cursor = None;
+            state.next_sorted = None;
             state.truncated = false;
             return true;
         }
@@ -3506,6 +3530,7 @@ impl LiveMailbox {
         if folder_changed {
             state.folder_id = folder_id;
             state.next_cursor = None;
+            state.next_sorted = None;
             state.truncated = false;
             state.pending_generation = None;
         }
@@ -3513,7 +3538,7 @@ impl LiveMailbox {
         let generation = state.generation;
         state.pending_generation = Some(generation);
         state.pending_append = append;
-        let request = make_page_request(
+        let mut request = make_page_request(
             key.account_id,
             key.folder_path.clone(),
             folder_id,
@@ -3521,6 +3546,12 @@ impl LiveMailbox {
             generation,
             cursor,
         );
+        request.order = self.page_order;
+        request.after_sorted = if append {
+            state.next_sorted.clone()
+        } else {
+            None
+        };
         if let Some(sender) = self.page_senders.get(&key.account_id) {
             if let Err(error) = sender(request) {
                 if let Some(state) = self.page_states.get_mut(key) {
@@ -3654,6 +3685,7 @@ impl LiveMailbox {
                 }));
                 if let Some(state) = self.page_states.get_mut(&key) {
                     state.next_cursor = result.next_cursor;
+                    state.next_sorted = result.next_sorted;
                     state.truncated = messages.len() >= MESSAGE_CAP && state.next_cursor.is_some();
                 }
                 self.query_errors.remove(&result.account_id);
@@ -3741,6 +3773,7 @@ impl LiveMailbox {
             state.pending_generation = None;
             state.pending_append = false;
             state.next_cursor = None;
+            state.next_sorted = None;
             state.truncated = false;
         }
         self.page_keys
@@ -4734,6 +4767,7 @@ impl LiveMailbox {
             state.pending_generation = None;
             state.pending_append = false;
             state.next_cursor = None;
+            state.next_sorted = None;
             state.truncated = false;
         }
         self.messages.clear();
@@ -5773,6 +5807,7 @@ fn finish_superseded_page(state: &mut FolderPageState, append: bool) {
     state.pending_append = false;
     if append {
         state.next_cursor = None;
+        state.next_sorted = None;
         state.truncated = false;
     }
 }
@@ -5806,6 +5841,8 @@ fn make_page_request(
     cursor: Option<MessageCursor>,
 ) -> PageRequest {
     PageRequest {
+        order: Default::default(),
+        after_sorted: None,
         account_id,
         folder_path,
         folder_id,
@@ -7463,6 +7500,7 @@ mod tests {
             ..FolderPageState::default()
         };
         let result = |account_id, generation| PageResult {
+            next_sorted: None,
             account_id,
             folder_path: "INBOX".into(),
             folder_id: 3,

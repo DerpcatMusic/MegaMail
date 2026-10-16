@@ -2668,9 +2668,12 @@ impl MailApp {
                     .row
                     .message
                     .from_addr
-                    .to_lowercase()
-                    .cmp(&b.row.message.from_addr.to_lowercase()),
-                comfort::Sort::Subject => am.subject.to_lowercase().cmp(&bm.subject.to_lowercase()),
+                    .to_ascii_lowercase()
+                    .cmp(&b.row.message.from_addr.to_ascii_lowercase()),
+                comfort::Sort::Subject => am
+                    .subject
+                    .to_ascii_lowercase()
+                    .cmp(&bm.subject.to_ascii_lowercase()),
                 comfort::Sort::Unread => b
                     .conversation
                     .as_ref()
@@ -8075,6 +8078,7 @@ impl Render for MailApp {
                 .on_action(cx.listener(|this, _: &SortSender, _, cx| {
                     if this.view == View::Mailbox {
                         this.comfort.sort = comfort::Sort::Sender;
+                        this.apply_mail_sort(cx);
                         this.rebuild_list_rows(&this.live.read(cx).snapshot(), cx);
                         cx.notify();
                     }
