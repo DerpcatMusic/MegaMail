@@ -13,6 +13,11 @@ pub(crate) struct State {
     pending: std::collections::VecDeque<(String, Option<String>)>,
     revisions: HashMap<String, u64>,
 }
+impl State {
+    pub(crate) fn busy(&self) -> bool {
+        self.busy
+    }
+}
 fn email_key(email: &str) -> Option<String> {
     let key = email.trim().to_lowercase();
     (key.len() <= 254 && key.contains('@') && !key.chars().any(char::is_control)).then_some(key)

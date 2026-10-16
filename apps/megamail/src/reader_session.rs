@@ -96,13 +96,16 @@ pub(crate) struct SemanticTextIdentity {
     pub quote_visible: bool,
 }
 
-fn semantic_text_unchanged(
+fn same_native_body(
     previous: &SemanticTextIdentity,
     previous_html: &str,
     current: &SemanticTextIdentity,
     current_html: &str,
 ) -> bool {
-    previous == current && previous_html == current_html
+    previous.key == current.key
+        && previous.version == current.version
+        && previous.plain == current.plain
+        && previous_html == current_html
 }
 
 pub(crate) struct SemanticTextTarget {
@@ -111,27 +114,17 @@ pub(crate) struct SemanticTextTarget {
     pub state: gpui_kit::Entity<gpui_kit::component::text::TextViewState>,
 }
 impl SemanticTextTarget {
-    /// Called on body/mode transitions, never from render. The vendor state
-    /// bounds synchronous parsing to 4 KiB and parses larger input off-thread.
-    pub fn new(
-        identity: SemanticTextIdentity,
-        html: gpui_kit::SharedString,
-        cx: &mut gpui_kit::App,
-    ) -> Self {
-        use gpui_kit::AppContext as _;
-        let state =
-            cx.new(|cx| gpui_kit::component::text::TextViewState::html(&html, cx).selectable(true));
-        Self {
-            identity,
-            html,
-            state,
-        }
-    }
     pub fn matches(&self, identity: &SemanticTextIdentity) -> bool {
         &self.identity == identity
     }
-    pub fn unchanged(&self, identity: &SemanticTextIdentity, html: &str) -> bool {
-        semantic_text_unchanged(&self.identity, &self.html, identity, html)
+    /// Keep selection through helper-generation and quote-disclosure changes.
+    /// A changed mailbox epoch, message, mode or body retires the native state.
+    pub fn rebind_unchanged(&mut self, identity: SemanticTextIdentity, html: &str) -> bool {
+        if !same_native_body(&self.identity, &self.html, &identity, html) {
+            return false;
+        }
+        self.identity = identity;
+        true
     }
 }
 
@@ -273,29 +266,23 @@ mod tests {
     #[test]
     fn semantic_target_retention_reuses_only_unchanged_body_and_mode() {
         let identity = semantic_identity();
-        assert!(semantic_text_unchanged(
+        assert!(same_native_body(
             &identity,
             "<p>same</p>",
             &identity,
             "<p>same</p>"
         ));
-        assert!(!semantic_text_unchanged(
+        assert!(!same_native_body(
             &identity,
             "<p>old</p>",
             &identity,
             "<p>new</p>"
         ));
-        for current in [
-            SemanticTextIdentity {
-                plain: true,
-                ..identity.clone()
-            },
-            SemanticTextIdentity {
-                quote_visible: true,
-                ..identity.clone()
-            },
-        ] {
-            assert!(!semantic_text_unchanged(
+        for current in [SemanticTextIdentity {
+            plain: true,
+            ..identity.clone()
+        }] {
+            assert!(!same_native_body(
                 &identity,
                 "<p>same</p>",
                 &current,
@@ -304,13 +291,20 @@ mod tests {
         }
     }
     #[test]
+    fn quote_and_helper_transitions_keep_current_body_but_actions_still_use_exact_identity() {
+        let identity = semantic_identity();
+        let current = SemanticTextIdentity {
+            generation: identity.generation + 1,
+            quote_visible: true,
+            ..identity.clone()
+        };
+        assert!(same_native_body(&identity, "same", &current, "same"));
+        assert_ne!(identity, current);
+    }
+    #[test]
     fn semantic_target_retention_rejects_uid_reuse_and_source_generation_changes() {
         let identity = semantic_identity();
         for current in [
-            SemanticTextIdentity {
-                generation: 4,
-                ..identity.clone()
-            },
             SemanticTextIdentity {
                 version: Some(DirectBodyVersion {
                     uid: 42,
@@ -323,7 +317,7 @@ mod tests {
                 ..identity.clone()
             },
         ] {
-            assert!(!semantic_text_unchanged(
+            assert!(!same_native_body(
                 &identity,
                 "<p>same</p>",
                 &current,
@@ -352,7 +346,7 @@ mod tests {
                 key,
                 ..identity.clone()
             };
-            assert!(!semantic_text_unchanged(
+            assert!(!same_native_body(
                 &identity,
                 "<p>same</p>",
                 &current,

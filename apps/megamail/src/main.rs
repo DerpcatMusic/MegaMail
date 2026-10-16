@@ -1952,9 +1952,7 @@ impl MailApp {
         };
         let html = body.markup(identity.plain, false);
         if let Some(target) = &mut self.reader_text {
-            if target.identity.key == identity.key && target.html == html {
-                // Rebind action correlation without discarding an unchanged selection.
-                target.identity = identity;
+            if target.rebind_unchanged(identity.clone(), &html) {
                 return;
             }
         }
@@ -6108,7 +6106,7 @@ impl MailApp {
                                         }).unwrap_or_else(|| "Authentication results unavailable for this message.".to_owned())
                                     } else { "Open this message to view its authentication results.".to_owned() }, palette))
                                     .child(Button::new(SharedString::from(format!("sender-photo-{}-{}-{}", row.key.account_id, row.key.folder_path, row.key.uid)))
-                                        .ghost().small().self_start().label("Choose local photo…")
+                                        .ghost().small().self_start().label(if self.sender_photos.busy() { "Choosing photo…" } else { "Choose local photo…" }).disabled(self.sender_photos.busy())
                                         .on_click({ let email = row.message.from_addr.clone(); cx.listener(move |this, _, _, cx| this.choose_sender_photo(email.clone(), cx)) }))
                                     .child(reader_recipient(
                                         &row.key,
