@@ -15,7 +15,10 @@ The first test script queried the clipboard before the application processed Cop
 - 319 native tests pass locally and in [Linux CI](https://github.com/DerpcatMusic/MegaMail/actions/runs/38896447638).
 - The same CI passes 591 portable-core unit tests, 4 OAuth callback tests and 21 provider-auth tests (616 active; 22 prerequisite-dependent cases explicitly ignored), plus 25 theme tests.
 - Locked native build, formatting, helper policy/ABI checks, Thunderbird bridge and installer syntax pass in CI. Local reader focus wiring (6) and QA import (2) contracts pass.
-- Optimized release installation: pending final artifact/hash verification.
+- Locked optimized release build passes (`38be7825a12e5ab3cce0f71bf9eb10a752e86278`). The source-identical release executable passes the actual body/address/newsletter clipboard expectations, explicit original-window and helper-shutdown assertions again without another screenshot pass.
+- Installed atomically at `~/.local/bin/megamail`; verified SHA-256 `83ad2fbf6cc14429a54ebb172cc6558c9cc9cf6588e7208cea7774a6f3d55161` matches the retained release artifact. The previous executable is backed up, and the running instance was not restarted. Reopening the app loads the replacement.
+
+Release artifact and machine-local install receipt: `/mnt/Windows11/DEV_WORKSPACE/PluginArtifacts/MegaMail/reader-release-38be782/receipt.json`. The existing qualified helper, policy extension, runtime and license bundle are unchanged; their installed hashes were verified against the previous qualification. This is a qualification for the current Linux host, not a cross-platform bundle claim.
 
 Machine-local evidence is retained under `/mnt/Windows11/DEV_WORKSPACE/PluginArtifacts/MegaMail/reader-reviewed-{dark,light}/`. Each contains the fictional captures, observed clipboard values, executable/source hashes and isolated execution receipt. Source-identical development candidate: `native-reader-42cc125/megamail`. The full independent review and final executable/install receipt are retained with the release artifact.
 

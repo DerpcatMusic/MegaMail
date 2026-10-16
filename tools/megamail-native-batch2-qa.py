@@ -151,6 +151,8 @@ def sandbox_command(root: Path, binary: Path, args: argparse.Namespace) -> list[
         command += ["--reader-interactions"]
     if args.extended_reader:
         command += ["--extended-reader"]
+    if args.assert_only:
+        command += ["--assert-only"]
     if args.newsletter_only:
         command += ["--newsletter-only"]
     return command
@@ -193,6 +195,8 @@ def inside(args: argparse.Namespace) -> int:
         owner = int(run(["xdotool", "getwindowpid", window]))
         if owner != app.pid or app.poll() is not None:
             raise RuntimeError("window no longer belongs to the owned native process")
+        if args.assert_only:
+            return  # Repeat executable assertions without another visual-polish capture pass.
         geometry = run(["xdotool", "getwindowgeometry", "--shell", window])
         facts = dict(window_id=window, owning_pid=owner, display=os.environ["DISPLAY"],
                      geometry=geometry, utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -376,7 +380,7 @@ def inside(args: argparse.Namespace) -> int:
                     except OSError:
                         pass
             observations.append(result("automatic_html_processes", "pass" if not commands else "fail", "Namespace process inventory after native selection and resizing.", processes=commands))
-            return 0
+            return int(any(item["status"] == "fail" for item in observations))
         # Only non-destructive focus/navigation keys; no URLs/f5/send.
         for label, keys in (("select-next", ["ctrl+alt+l", "Down"]),
                             ("select-previous", ["ctrl+alt+l", "Up"]),
@@ -492,6 +496,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--timeout", type=int, default=60, help="Whole inner session budget, 20..120 seconds")
     p.add_argument("--settle", type=float, default=1.0, help="Fixed observation pause, 0.2..3 seconds; not readiness telemetry")
     p.add_argument("--theme", choices=("light", "dark"), default="light", help="Synthetic profile theme")
+    p.add_argument("--assert-only", action="store_true", help="Run executable interaction assertions without saving screenshots")
     p.add_argument("--extended-reader", action="store_true", help="Reviewed header, photo, disclosure, layout-retention and explicit-original scenarios")
     p.add_argument("--newsletter-only", action="store_true", help="Bounded installed-baseline newsletter regression scene")
     p.add_argument("--newsletter-selection-y", type=int, default=410)
@@ -524,6 +529,9 @@ def main() -> int:
         if args.developer_helper_preview:
             trusted_file(str(helper.parent / "extensions/libmegamail-reader-policy.so"), executable=False)
         dependencies = {name: shutil.which(name, path="/usr/bin:/bin") for name in TOOLS}
+        if args.reader_interactions:
+            import importlib.util
+            dependencies["python-xlib"] = bool(importlib.util.find_spec("Xlib"))
         metadata = dict(source_sha256=digest, binary=str(binary) if binary else None,
                         helper=str(helper) if helper else None, developer_helper_preview=args.developer_helper_preview,
                         dependencies=dependencies,
