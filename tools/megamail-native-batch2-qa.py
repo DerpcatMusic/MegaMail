@@ -286,6 +286,21 @@ def inside(args: argparse.Namespace) -> int:
                         time.sleep(0.02)
                 requestor.destroy(); connection.close()
                 return value
+            def copy_expected(label: str, needle: str) -> str:
+                started_copy = time.monotonic()
+                run(["xdotool", "key", "--clearmodifiers", "ctrl+c"])
+                until = min(deadline, started_copy + 3)
+                copied = ""
+                while time.monotonic() < until:
+                    copied = clipboard()
+                    if needle in copied:
+                        break
+                    time.sleep(0.05)
+                observations.append(result(label, "pass" if needle in copied else "fail",
+                                           "Actual X selection conversion awaited until the expected fictional text appears.",
+                                           expected=needle, copied=copied,
+                                           clipboard_ready_ms=round((time.monotonic() - started_copy) * 1000, 1)))
+                return copied
             def drag(x: int, y: int, end_x: int, end_y: int) -> None:
                 if int(run(["xdotool", "getwindowpid", window])) != app.pid:
                     raise RuntimeError("refusing drag outside the owned demo")
@@ -308,24 +323,18 @@ def inside(args: argparse.Namespace) -> int:
                 time.sleep(3)
                 capture("newsletter-settled")
                 drag(625, args.newsletter_selection_y, 1120, args.newsletter_selection_y)
-                run(["xdotool", "key", "--clearmodifiers", "ctrl+c"])
-                copied = clipboard()
-                observations.append(result("newsletter_drag_copy", "pass" if copied else "fail", "Actual fictional newsletter selection after settled original HTML.", copied=copied))
+                copy_expected("newsletter_drag_copy", "fictional mail")
                 capture("newsletter-selection")
                 return 0
             time.sleep(3)
             capture("reader-settled")
             # Before/after snapshots share the same fictional scene and coordinates.
             drag(785, args.selection_y, 1185, args.selection_y)
-            run(["xdotool", "key", "--clearmodifiers", "ctrl+c"])
-            copied = clipboard()
-            observations.append(result("native_drag_copy", "pass" if copied else "fail", "Actual X selection conversion after pointer drag and Ctrl+C.", copied=copied))
+            copy_expected("native_drag_copy", "Hebrew")
             capture("reader-selection")
             if args.extended_reader:
-                drag(650, 460, 980, 460)
-                run(["xdotool", "key", "--clearmodifiers", "ctrl+c"])
-                address = clipboard()
-                observations.append(result("sender_address_copy", "pass" if "leila.bendavid@example.test" in address else "fail", "Actual header drag and copy outside the disclosure button.", copied=address))
+                drag(648, 460, 980, 460)
+                copy_expected("sender_address_copy", "leila.bendavid@example.test")
                 capture("sender-address-selection")
                 click(650, 493); pause(); capture("message-auth-details")
                 click(650, 493); pause()
@@ -342,13 +351,11 @@ def inside(args: argparse.Namespace) -> int:
                 run(["xdotool", "windowsize", window, "1280", "800"]); pause()
                 click(480, 400); pause(); capture("newsletter-native")
                 drag(725, args.newsletter_selection_y, 1180, args.newsletter_selection_y)
-                run(["xdotool", "key", "--clearmodifiers", "ctrl+c"])
-                copied = clipboard()
-                observations.append(result("newsletter_drag_copy", "pass" if copied else "fail", "Actual fictional native newsletter selection.", copied=copied))
+                copy_expected("newsletter_drag_copy", "fictional mail")
                 capture("newsletter-selection")
                 # Quote control is below the short current message. Review the exact captured state.
-                click(770, 624); pause(); capture("newsletter-history-disclosure")
-                click(770, 624); pause(); capture("newsletter-history-restored")
+                click(770, 535); pause(); capture("newsletter-history-disclosure")
+                click(770, 535); pause(); capture("newsletter-history-restored")
                 # Explicit original formatting is the only action allowed to start WebKit.
                 click(760, 112); time.sleep(3); capture("explicit-original-request")
                 try:
