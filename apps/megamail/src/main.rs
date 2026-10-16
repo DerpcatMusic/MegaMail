@@ -46,7 +46,9 @@ mod account_session;
 mod appearance;
 mod appearance_view;
 mod attachment_preview;
+mod comfort;
 mod compose;
+mod compose_markdown;
 mod compose_productivity;
 mod compose_session;
 mod compose_tools_ui;
@@ -76,6 +78,7 @@ mod theme;
 mod thunderbird_adapter;
 mod triage;
 mod triage_ui;
+mod workflow;
 mod zeron_background;
 mod zeron_style;
 
@@ -426,6 +429,7 @@ impl SetupState {
 }
 
 struct Composer {
+    markup: compose_markdown::Markup,
     message: OutgoingMessage,
     to: Entity<InputState>,
     cc: Entity<InputState>,
@@ -461,6 +465,7 @@ struct SenderChoice {
 impl Composer {
     fn new(message: OutgoingMessage, window: &mut Window, cx: &mut Context<MailApp>) -> Self {
         let mut composer = Self {
+            markup: Default::default(),
             to: new_input_value(window, cx, "recipient@example.com", message.to.clone()),
             cc: new_input_value(window, cx, "Copy to", message.cc.clone()),
             bcc: new_input_value(window, cx, "Blind copy to", message.bcc.clone()),
@@ -514,6 +519,7 @@ impl Composer {
                     if let Some(composer) = &mut this.composer {
                         composer.recovery.dirty_input = true;
                     }
+                    this.refresh_markdown(cx);
                     cx.notify();
                 }
             },
@@ -543,6 +549,9 @@ impl Composer {
         message.bcc = self.bcc.read(cx).value().to_string();
         message.subject = self.subject.read(cx).value().to_string();
         message.body = self.body.read(cx).value().to_string();
+        if self.markup.enabled && !self.markup.busy && self.markup.ready_source == message.body {
+            message.html = self.markup.html.clone();
+        }
         // Keep recovered HTML unchanged. Editing it requires an explicit
         // plain-text conversion; never silently flatten a restored alternative.
         message
@@ -731,6 +740,8 @@ impl ReaderBody {
         } else {
             plain_html.clone()
         };
+        let formatted_without_quote = formatted_without_quote
+            .or_else(|| quote.is_some().then(|| plain_html_without_quote.clone()));
         let formatted = !source_html.is_empty();
         let html = if formatted {
             source_html.clone()
@@ -785,6 +796,7 @@ struct MailApp {
     live: Entity<LiveMailbox>,
     _live_subscription: Subscription,
     profiles: Vec<(u32, AccountConfig)>,
+    comfort: comfort::State,
     search: Entity<InputState>,
     message_focus: FocusHandle,
     mailbox_focus: FocusHandle,
@@ -935,6 +947,7 @@ impl MailApp {
             live,
             _live_subscription: live_subscription,
             profiles: Vec::new(),
+            comfort: comfort::State::default(),
             search,
             message_focus,
             mailbox_focus: cx.focus_handle().tab_stop(true),
@@ -1036,6 +1049,11 @@ impl MailApp {
                         appearance::AppearanceState::load(),
                         theme::ThemeState::load(),
                         MailPreferences::load(),
+                        if demo {
+                            Ok(workflow::Ledger::default())
+                        } else {
+                            workflow::Ledger::load()
+                        },
                     )
                 })
                 .await;
@@ -1048,6 +1066,13 @@ impl MailApp {
                 match loaded.2 {
                     Ok(preferences) => this.preferences = preferences,
                     Err(error) => this.preferences_error = Some(error),
+                }
+                match loaded.3 {
+                    Ok(ledger) => {
+                        this.comfort.ledger = ledger;
+                        this.comfort.loaded = true;
+                    }
+                    Err(error) => this.comfort.error = Some(error),
                 }
                 this.preferences_loading = false;
                 let snapshot = this.live.read(cx).snapshot();
@@ -1112,7 +1137,7 @@ impl MailApp {
         let snapshot = self.live.read(cx).snapshot();
         desktop_actions::ActionState {
             mailbox_visible: self.view == View::Mailbox,
-            composer_present: self.composer.is_some(),
+            composer_present: self.composer.is_some() && self.view == View::Compose,
             modal_active: self.loading_profiles || self.preferences_busy || self.recovery_listing,
             has_accounts: !snapshot.accounts.is_empty(),
             usable_sender: self.live.read(cx).composer_account_id().is_some(),
@@ -1142,7 +1167,7 @@ impl MailApp {
                         let previous_recovery_status =
                             this.composer.as_ref().map(|c| c.recovery.status.clone());
                         let previous_reader_notice = this.reader_session.notice.clone();
-                        let ready = this
+                        let ready = this.composer.is_none() && this
                             .action_state(cx)
                             .allows(desktop_actions::MailboxAction::ComposeMessage)
                             && this.setup.is_none()
@@ -1839,6 +1864,33 @@ impl MailApp {
 
     fn on_live_change(&mut self, cx: &mut Context<Self>) {
         let snapshot = self.live.read(cx).snapshot();
+        for card in &mut self.comfort.outgoing {
+            if let Some(result) = self
+                .live
+                .read(cx)
+                .send_result_for(card.account, card.request)
+            {
+                card.status = if result.uncertain {
+                    "Outcome unknown · review Outbox before resending"
+                } else {
+                    match result.outcome {
+                        SendOutcome::Sent => "Server accepted · waiting for Sent copy",
+                        SendOutcome::Queued => "Saved to Outbox · not sent yet",
+                        SendOutcome::Failed => "Send failed · your text remains in the draft",
+                    }
+                };
+            }
+        }
+        self.comfort.outgoing.retain(|card| {
+            !snapshot
+                .conversations
+                .iter()
+                .flat_map(|t| t.members.iter())
+                .any(|m| {
+                    m.key.account_id == card.account
+                        && comfort::normalized_id(&m.message.message_id) == card.message_id
+                })
+        });
         let retired = changed_mailbox_scopes(&self.reader_mailbox_epochs, &snapshot.mailbox_epochs);
         let same_source = match (&self.reader_source, &snapshot.selected_original) {
             (Some(previous), Some(current)) => Arc::ptr_eq(previous, current),
@@ -2297,20 +2349,8 @@ impl MailApp {
         cx.notify();
     }
 
-    fn pane_surface(&self, color: gpui_kit::Hsla, bleed: f32) -> gpui_kit::Hsla {
-        if self.surface_treatment == zeron_theme::SurfaceTreatment::Opaque {
-            return gpui_kit::Hsla { a: 1.0, ..color };
-        }
-        let limit = if self.appearance.visual_wallpaper_opacity() > 0.001 {
-            (self.appearance.safe_opacity() / self.appearance.visual_wallpaper_opacity())
-                .clamp(0.0, 1.0)
-        } else {
-            1.0
-        };
-        gpui_kit::Hsla {
-            a: 1.0 - bleed.min(limit),
-            ..color
-        }
+    fn pane_surface(&self, color: gpui_kit::Hsla, _bleed: f32) -> gpui_kit::Hsla {
+        gpui_kit::Hsla { a: 1.0, ..color }
     }
 
     fn activate_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2540,28 +2580,70 @@ impl MailApp {
     }
 
     fn rebuild_list_rows(&mut self, snapshot: &MailboxSnapshot, cx: &mut Context<Self>) {
-        let mut rows = Vec::new();
-        if self.preferences.group_conversations {
-            for conversation in snapshot.conversations.iter() {
-                rows.push(ListRow {
-                    row: conversation.representative.clone(),
-                    conversation: Some(conversation.clone()),
+        let mut parents: Vec<ListRow> = if self.preferences.group_conversations {
+            snapshot
+                .conversations
+                .iter()
+                .map(|t| ListRow {
+                    row: t.representative.clone(),
+                    conversation: Some(t.clone()),
                     child: false,
-                });
-                if self.expanded_conversations.contains(&conversation.key) {
-                    rows.extend(conversation.members.iter().map(|member| ListRow {
-                        row: member.clone(),
-                        conversation: None,
-                        child: true,
-                    }));
-                }
-            }
+                })
+                .collect()
         } else {
-            rows.extend(snapshot.page.iter().map(|row| ListRow {
-                row: row.clone(),
-                conversation: None,
-                child: false,
-            }));
+            snapshot
+                .page
+                .iter()
+                .map(|row| ListRow {
+                    row: row.clone(),
+                    conversation: None,
+                    child: false,
+                })
+                .collect()
+        };
+        parents.retain(|row| {
+            self.comfort.filter.is_none_or(|wanted| {
+                self.work_status(row.conversation.as_ref(), &row.row, snapshot) == wanted
+            })
+        });
+        parents.sort_by(|a, b| {
+            let am = comfort::latest(a);
+            let bm = comfort::latest(b);
+            let order = match self.comfort.sort {
+                comfort::Sort::Date => bm.timestamp.cmp(&am.timestamp),
+                comfort::Sort::Sender => am
+                    .from_addr
+                    .to_lowercase()
+                    .cmp(&bm.from_addr.to_lowercase()),
+                comfort::Sort::Subject => am.subject.to_lowercase().cmp(&bm.subject.to_lowercase()),
+                comfort::Sort::Unread => b
+                    .conversation
+                    .as_ref()
+                    .map_or(bm.unread, |t| t.unread > 0)
+                    .cmp(&a.conversation.as_ref().map_or(am.unread, |t| t.unread > 0))
+                    .then_with(|| bm.timestamp.cmp(&am.timestamp)),
+            }
+            .then_with(|| am.message_id.cmp(&bm.message_id))
+            .then_with(|| a.row.key.account_id.cmp(&b.row.key.account_id))
+            .then_with(|| a.row.key.folder_path.cmp(&b.row.key.folder_path))
+            .then_with(|| a.row.key.uid.cmp(&b.row.key.uid));
+            if self.comfort.reverse {
+                order.reverse()
+            } else {
+                order
+            }
+        });
+        let mut rows = Vec::new();
+        for row in parents {
+            let thread = row.conversation.clone();
+            rows.push(row);
+            if let Some(t) = thread.filter(|t| self.expanded_conversations.contains(&t.key)) {
+                rows.extend(t.members.iter().map(|row| ListRow {
+                    row: row.clone(),
+                    conversation: None,
+                    child: true,
+                }));
+            }
         }
         self.list_rows = Arc::new(rows);
         self.refresh_triage(snapshot, cx);
@@ -2768,6 +2850,11 @@ impl MailApp {
     }
 
     fn open_new_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.composer.is_some() {
+            self.view = View::Compose;
+            cx.notify();
+            return;
+        }
         if !self
             .action_state(cx)
             .allows(desktop_actions::MailboxAction::ComposeMessage)
@@ -3327,10 +3414,13 @@ impl MailApp {
                     Ok(profiles) if !profiles.is_empty() => {
                         let known: HashSet<u32> = this.profiles.iter().map(|(id, _)| *id).collect();
                         this.profiles = profiles.clone();
-                        for (id, profile) in profiles.into_iter().filter(|(id, _)| !known.contains(id)) {
+                        for (id, profile) in
+                            profiles.into_iter().filter(|(id, _)| !known.contains(id))
+                        {
                             let email = profile.email.clone();
-                            if let Err(error) =
-                                this.live.update(cx, |live, cx| live.add_profile(id, profile, cx))
+                            if let Err(error) = this
+                                .live
+                                .update(cx, |live, cx| live.add_profile(id, profile, cx))
                             {
                                 failures.push(format!("{email}: {error}"));
                             }
@@ -3583,7 +3673,6 @@ impl MailApp {
             .custom(sidebar_button_variant(cx, palette, dark, selected))
             .small()
             .selected(selected)
-            .disabled(self.composer.is_some())
             .w_full()
             .h(px(zeron_style::NAV_ROW_MIN_HEIGHT))
             .rounded(px(4.))
@@ -3600,6 +3689,8 @@ impl MailApp {
                 this.live
                     .update(cx, |live, cx| live.select_folder(path.clone(), cx));
                 this.list_scroll = UniformListScrollHandle::new();
+                this.comfort.outbox_open = false;
+                this.comfort.filter = None;
                 this.view = View::Mailbox;
                 cx.notify();
             }))
@@ -3691,7 +3782,6 @@ impl MailApp {
             .custom(sidebar_button_variant(cx, palette, dark, selected))
             .small()
             .selected(selected)
-            .disabled(self.composer.is_some() || snapshot.pending_send)
             .w_full()
             .h(px(
                 zeron_style::ACCOUNT_TRIGGER_HEIGHT + zeron_style::ACCOUNT_DETAIL_LINE_HEIGHT
@@ -3706,6 +3796,8 @@ impl MailApp {
                 this.live
                     .update(cx, |live, cx| live.switch_account(account_id, cx));
                 this.list_scroll = UniformListScrollHandle::new();
+                this.comfort.outbox_open = false;
+                this.comfort.filter = None;
                 this.view = View::Mailbox;
                 cx.notify();
             }))
@@ -3895,7 +3987,11 @@ impl MailApp {
                             .w_full()
                             .h(px(32.))
                             .icon(Icon::new(IconName::PenLine).size(px(14.)))
-                            .label("New message")
+                            .label(if self.composer.is_some() {
+                                "Resume draft"
+                            } else {
+                                "New message"
+                            })
                             .disabled(
                                 !self
                                     .action_state(cx)
@@ -3919,6 +4015,7 @@ impl MailApp {
                     .gap_1()
                     .child(self.recovery_panel(palette, cx))
                     .child(self.unified_button(snapshot, palette, dark, false, cx))
+                    .child(self.shared_folders(snapshot, palette, cx))
                     .children(primary.into_iter().map(|folder| {
                         self.folder_button(folder, snapshot, palette, dark, false, cx)
                     }))
@@ -4025,7 +4122,8 @@ impl MailApp {
         collapsed: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let selected = snapshot.scope == MailboxScope::Unified;
+        let selected = snapshot.scope == MailboxScope::Unified
+            && snapshot.unified_kind == Some(FolderKind::Inbox);
         Button::new(if collapsed {
             "unified-compact"
         } else {
@@ -4034,7 +4132,6 @@ impl MailApp {
         .custom(sidebar_button_variant(cx, palette, dark, selected))
         .small()
         .selected(selected)
-        .disabled(self.composer.is_some())
         .w_full()
         .h(px(32.))
         .rounded(px(4.))
@@ -4159,7 +4256,7 @@ impl MailApp {
         palette: Palette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        if snapshot.page.is_empty() {
+        if self.list_rows.is_empty() {
             let recovery = snapshot.current_folder_path.is_none()
                 && (snapshot.error.is_some()
                     || self.startup_error.is_some()
@@ -4170,12 +4267,14 @@ impl MailApp {
                 "Saved accounts need attention"
             } else if snapshot.loading {
                 "Loading messages…"
+            } else if self.comfort.filter.is_some() {
+                "No conversations in this work state"
             } else if snapshot.filter != MessageFilter::All {
                 "No messages match this filter"
             } else if snapshot.search_query.is_empty() {
                 "This folder is empty"
             } else {
-                "No matches in loaded mail"
+                "No matches in this search scope"
             };
             return v_flex()
                 .flex_1()
@@ -4203,9 +4302,9 @@ impl MailApp {
                     } else if snapshot.filter != MessageFilter::All {
                         "Choose All or load more messages to broaden this view."
                     } else if snapshot.search_query.is_empty() {
-                        "New mail will appear here when this account syncs."
+                        if self.comfort.filter.is_some() { "Choose All work states or load more results to broaden this view." } else { "New mail will appear here when this account syncs." }
                     } else {
-                        "Try another search or load more messages."
+                        "Try another search or choose All local mail in Search scope."
                     },
                 ))
                 .into_any_element();
@@ -4219,6 +4318,16 @@ impl MailApp {
         };
         let expanded = self.expanded_conversations.clone();
         let labels = snapshot.account_labels.clone();
+        let own_addresses: Vec<_> = snapshot
+            .accounts
+            .iter()
+            .map(|a| a.email.to_lowercase())
+            .chain(
+                self.profiles
+                    .iter()
+                    .flat_map(|(_, p)| p.aliases.iter().map(|a| a.address().to_lowercase())),
+            )
+            .collect();
         let unified = snapshot.scope == MailboxScope::Unified;
         let owner = cx.entity().downgrade();
         let bulk_open = self.triage.open;
@@ -4254,6 +4363,19 @@ impl MailApp {
                                 },
                             )
                     };
+                    if own_addresses
+                        .iter()
+                        .any(|a| a.eq_ignore_ascii_case(&display_message.from_addr))
+                    {
+                        display_message.from_name = format!(
+                            "You → {}",
+                            if display_message.to.is_empty() {
+                                "Recipients"
+                            } else {
+                                &display_message.to
+                            }
+                        );
+                    }
                     if let Some(thread) = conversation.as_ref().filter(|_| !bulk_open) {
                         display_message.starred =
                             thread.members.iter().any(|member| member.message.starred);
@@ -4618,6 +4740,7 @@ impl MailApp {
                             )
                             .child(self.filter_menu(snapshot, palette, cx)),
                     )
+                    .child(self.mail_controls(snapshot, palette, cx))
                     .when_some(snapshot.search_error.clone(), |row, error| {
                         row.child(error_banner("Search", &error, cx, palette))
                     })
@@ -4691,11 +4814,7 @@ impl MailApp {
                     .child(snapshot.filter.label())
                     .child(format!(
                         "{} shown · {} loaded",
-                        if self.preferences.group_conversations {
-                            snapshot.conversations.len()
-                        } else {
-                            snapshot.page.len()
-                        },
+                        self.list_rows.iter().filter(|r| !r.child).count(),
                         snapshot.loaded_count
                     )),
             )
@@ -4798,11 +4917,12 @@ impl MailApp {
                         div()
                             .text_size(px(10.))
                             .text_color(palette.muted)
-                            .child(format!("{} queued", snapshot.outbox.len())),
+                            .child(format!("{} retained · all accounts", snapshot.outbox.len())),
                     ),
             )
             .children(snapshot.outbox.iter().map(|item| {
                 let id = item.id;
+                let owning_account = item.account_id;
                 let subject = if item.subject.trim().is_empty() {
                     "No subject".to_owned()
                 } else {
@@ -4825,6 +4945,8 @@ impl MailApp {
                                     .font_weight(FontWeight::MEDIUM)
                                     .child(subject),
                             )
+                            .child(div().text_size(px(11.)).text_color(palette.muted).child(snapshot.accounts.iter().find(|a| a.id == owning_account).map_or_else(|| "Saved account".into(), |a| a.email.clone())),
+                            )
                             .child(
                                 div()
                                     .truncate()
@@ -4839,16 +4961,16 @@ impl MailApp {
                     )
                     .when_some(item.send_at.filter(|at| *at > megamail_core::datefmt::now()), |el, at| el
                         .child(div().text_size(px(11.)).child(format!("Scheduled {}", megamail_core::datefmt::date_time(at))))
-                        .when_some(snapshot.current_account_id.and_then(|account| self.live.read(cx).schedule_session(account).map(|session| (account, session))), |el, (account, session)| {
+                        .when_some(self.live.read(cx).schedule_session(owning_account).map(|session| (owning_account, session)), |el, (account, session)| {
                             let request = worker::QueuedCancelRequest { id, send_at: Some(at), session };
-                            el.child(Button::new(SharedString::from(format!("cancel-schedule-{id}"))).ghost().small()
+                            el.child(Button::new(SharedString::from(format!("cancel-schedule-{owning_account}-{id}"))).ghost().small()
                                 .label(if self.queue_cancel_confirmation == Some((account, request)) { "Confirm cancellation" } else { "Cancel scheduled send" })
                                 .disabled(item.phase != megamail_core::models::OutboxPhase::Ready || !snapshot.pending_queue_cancels.is_empty())
                                 .tooltip("Cancel only if this message is still scheduled and transmission has not started.")
                                 .on_click(cx.listener(move |this, _, _, cx| this.cancel_queued_item(account, request, cx))))
                         }))
-                    .when_some(snapshot.current_account_id, |el, account| el.child(
-                        Button::new(SharedString::from(format!("review-outbox-{id}")))
+                    .when_some(Some(owning_account), |el, account| el.child(
+                        Button::new(SharedString::from(format!("review-outbox-{owning_account}-{id}")))
                             .secondary().small().label("Delivery details")
                             .accessibility_label(format!("Review delivery of {subject_for_accessibility}"))
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -4856,9 +4978,9 @@ impl MailApp {
                                 cx.notify();
                             }))
                     ))
-                    .when(item.send_at.is_none(), |el| el.when_some(snapshot.current_account_id.and_then(|account| self.live.read(cx).schedule_session(account).map(|session| (account, session))), |el, (account, session)| {
+                    .when(item.send_at.is_none(), |el| el.when_some(self.live.read(cx).schedule_session(owning_account).map(|session| (owning_account, session)), |el, (account, session)| {
                         let request = worker::QueuedCancelRequest { id, send_at: None, session };
-                        el.child(Button::new(SharedString::from(format!("discard-ready-outbox-{id}"))).ghost().small().icon(Icon::new(IconName::Trash))
+                        el.child(Button::new(SharedString::from(format!("discard-ready-outbox-{owning_account}-{id}"))).ghost().small().icon(Icon::new(IconName::Trash))
                             .label(if self.queue_cancel_confirmation == Some((account, request)) { "Confirm discard" } else { "Discard unsent copy" })
                             .disabled(item.phase != megamail_core::models::OutboxPhase::Ready || !snapshot.pending_queue_cancels.is_empty())
                             .tooltip("Remove only an unclaimed local Outbox copy. Held or already submitted mail requires manual review.")
@@ -5230,13 +5352,24 @@ impl MailApp {
         palette: Palette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if self.comfort.outbox_open {
+            return v_flex().h_full().flex_1().min_w_0().bg(palette.background).p_5().gap_3()
+                .child(div().text_size(px(22.)).font_weight(FontWeight::SEMIBOLD).child("Outbox · all accounts"))
+                .child(div().text_size(px(13.)).text_color(palette.muted).child("Queued, scheduled and held messages. Server acceptance is separate from delivery; uncertain outcomes need review."))
+                 .when(!snapshot.outbox.is_empty(), |el| el.child(self.outbox_panel(snapshot, palette, cx)))
+                .when(snapshot.outbox.is_empty(), |el| el.child(div().child("No messages are queued or held.")))
+                .child(Button::new("close-outbox-view").secondary().small().self_start().label("Back to messages").on_click(cx.listener(|this, _, _, cx| { this.comfort.outbox_open = false; cx.notify(); })))
+                .into_any_element();
+        }
         let Some(row) = snapshot.selected_message.clone() else {
             return v_flex()
                 .h_full()
                 .flex_1()
                 .min_w_0()
                 .bg(self.pane_surface(palette.background, 0.05))
-                .child(self.outbox_panel(snapshot, palette, cx))
+                .when(!snapshot.outbox.is_empty(), |el| {
+                    el.child(self.outbox_panel(snapshot, palette, cx))
+                })
                 .child(
                     v_flex()
                         .flex_1()
@@ -5450,7 +5583,7 @@ impl MailApp {
                             ),
                     ),
             )
-            .child(self.outbox_panel(snapshot, palette, cx))
+             .when(!snapshot.outbox.is_empty(), |el| el.child(self.outbox_panel(snapshot, palette, cx)))
             .when_some(self.draft_open_error.clone(), |row, error| {
                 row.child(error_banner("Could not open draft", &error, cx, palette))
             })
@@ -5501,7 +5634,9 @@ impl MailApp {
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(palette.text),
                             )
-                            .child(self.conversation_content(snapshot, &row, palette, cx)),
+                            .child(self.work_controls(snapshot, palette, cx))
+                            .child(self.conversation_content(snapshot, &row, palette, cx))
+                            .child(self.outgoing_cards(snapshot, palette)),
                     ),
             )
             .into_any_element()
@@ -5569,7 +5704,14 @@ impl MailApp {
             })
             .children(members.iter().map(|row| {
                 let key = row.key.clone();
-                let open = (key == selected.key || self.expanded_messages.contains(&key))
+                let newest = members.last().is_some_and(|m| m.key == key);
+                let newest_sent = conversation
+                    .and_then(|t| t.latest_sent.as_ref())
+                    .is_some_and(|m| m.key == key);
+                let open = (key == selected.key
+                    || newest
+                    || newest_sent
+                    || self.expanded_messages.contains(&key))
                     && !self.collapsed_messages.contains(&key);
                 let selected_here = key == selected.key;
                 let cached = self.reader_bodies.iter().find(|cached| cached.key == key);
@@ -5674,7 +5816,7 @@ impl MailApp {
                         .into_any_element()
                 };
                 let body_element = if selected_here {
-                    let content = if plain {
+                    let content = if plain || (has_quote && !quote_visible) {
                         body_element
                     } else {
                         self.styled_body(snapshot, cx).unwrap_or(body_element)
@@ -5688,12 +5830,17 @@ impl MailApp {
                 } else {
                     body_element
                 };
-                let sender = snapshot
-                    .accounts
-                    .iter()
-                    .find(|account| account.id == key.account_id)
-                    .filter(|account| account.email.eq_ignore_ascii_case(&row.message.from_addr))
-                    .map_or_else(|| message_sender(&row.message), |_| "You".to_owned());
+                let own = self.own_message(&row.message, snapshot);
+                let sender = if own {
+                    "You · sent".to_owned()
+                } else {
+                    message_sender(&row.message)
+                };
+                let sender_color = if own {
+                    palette.accent
+                } else {
+                    comfort::identity_color(&row.message.from_addr, self.dark)
+                };
                 let header = Button::new(SharedString::from(format!(
                     "reader-message-{}-{}-{}",
                     key.account_id, key.folder_path, key.uid
@@ -5735,8 +5882,8 @@ impl MailApp {
                                 .flex_shrink_0()
                                 .size(px(28.))
                                 .rounded_full()
-                                .bg(palette.accent_wash)
-                                .text_color(palette.accent)
+                                .bg(sender_color.opacity(if self.dark { 0.14 } else { 0.09 }))
+                                .text_color(sender_color)
                                 .text_size(px(11.))
                                 .items_center()
                                 .justify_center()
@@ -5752,6 +5899,7 @@ impl MailApp {
                                         .text_size(px(13.))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .whitespace_normal()
+                                        .text_color(sender_color)
                                         .child(sender),
                                 )
                                 .child(
@@ -5759,12 +5907,16 @@ impl MailApp {
                                         .text_size(px(12.))
                                         .text_color(palette.muted)
                                         .whitespace_normal()
-                                        .child(if open {
-                                            row.message.from_addr.clone()
-                                        } else {
-                                            row.message.preview.clone()
-                                        }),
-                                ),
+                                        .child(row.message.from_addr.clone()),
+                                )
+                                .when(!open, |el| {
+                                    el.child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .text_color(palette.muted)
+                                            .child(row.message.preview.clone()),
+                                    )
+                                }),
                         )
                         .child(
                             div()
@@ -5793,7 +5945,13 @@ impl MailApp {
                     .min_w_0()
                     .border_t_1()
                     .border_color(palette.border)
-                    .pt_2()
+                    .p_4()
+                    .rounded(px(8.))
+                    .bg(if own {
+                        palette.accent_wash
+                    } else {
+                        palette.surface
+                    })
                     .gap_3()
                     .when(selected_here, |el| {
                         el.anchor_scroll(Some(self.reader_anchor.clone()))
@@ -5805,45 +5963,78 @@ impl MailApp {
                                 .w_full()
                                 .min_w_0()
                                 .gap_2()
-                                .child(reader_recipient(
-                                    &row.key,
-                                    "From",
-                                    &if row.message.from_name.is_empty() {
-                                        row.message.from_addr.clone()
+                                .child(
+                                    Button::new(SharedString::from(format!(
+                                        "message-details-{}-{}-{}",
+                                        row.key.account_id, row.key.folder_path, row.key.uid
+                                    )))
+                                    .ghost()
+                                    .small()
+                                    .self_start()
+                                    .label(if self.comfort.details.contains(&row.key) {
+                                        "Hide details"
                                     } else {
-                                        format!(
-                                            "{} <{}>",
-                                            row.message.from_name, row.message.from_addr
-                                        )
-                                    },
-                                    palette,
-                                ))
-                                .child(reader_recipient(&row.key, "To", &row.message.to, palette))
-                                .child(reader_recipient(
-                                    &row.key,
-                                    "Date",
-                                    &row.message.datetime_full(),
-                                    palette,
-                                ))
-                                .when(
-                                    !row.message.reply_to.is_empty()
-                                        && row.message.reply_to != row.message.from_addr,
-                                    |el| {
-                                        el.child(reader_recipient(
-                                            &row.key,
-                                            "Reply to",
-                                            &row.message.reply_to,
-                                            palette,
-                                        ))
-                                    },
+                                        "Message details"
+                                    })
+                                    .on_click({
+                                        let key = row.key.clone();
+                                        cx.listener(move |this, _, _, cx| {
+                                            if !this.comfort.details.remove(&key) {
+                                                this.comfort.details.insert(key.clone());
+                                            }
+                                            cx.notify();
+                                        })
+                                    }),
                                 )
-                                .when(!row.message.cc.is_empty(), |el| {
+                                .when(self.comfort.details.contains(&row.key), |el| {
                                     el.child(reader_recipient(
                                         &row.key,
-                                        "Cc",
-                                        &row.message.cc,
+                                        "From",
+                                        &if row.message.from_name.is_empty() {
+                                            row.message.from_addr.clone()
+                                        } else {
+                                            format!(
+                                                "{} <{}>",
+                                                row.message.from_name, row.message.from_addr
+                                            )
+                                        },
                                         palette,
                                     ))
+                                    .child(reader_recipient(
+                                        &row.key,
+                                        "To",
+                                        &row.message.to,
+                                        palette,
+                                    ))
+                                    .child(reader_recipient(
+                                        &row.key,
+                                        "Date",
+                                        &row.message.datetime_full(),
+                                        palette,
+                                    ))
+                                    .when(
+                                        !row.message.reply_to.is_empty()
+                                            && row.message.reply_to != row.message.from_addr,
+                                        |el| {
+                                            el.child(reader_recipient(
+                                                &row.key,
+                                                "Reply to",
+                                                &row.message.reply_to,
+                                                palette,
+                                            ))
+                                        },
+                                    )
+                                    .when(
+                                        !row.message.cc.is_empty(),
+                                        |el| {
+                                            el.child(reader_recipient(
+                                                &row.key,
+                                                "Cc",
+                                                &row.message.cc,
+                                                palette,
+                                            ))
+                                        },
+                                    )
                                 }),
                         )
                         .when(selected_here, |el| {
@@ -6707,6 +6898,7 @@ impl MailApp {
                             )
                             .child(from_control),
                     )
+                    .child(Button::new("browse-while-composing").ghost().small().label("Back to mail · keep draft").on_click(cx.listener(|this, _, _, cx| { this.capture_recovery(cx); this.view = View::Mailbox; cx.notify(); })))
                     .child(
                         Button::new("close-composer")
                             .ghost()
@@ -6793,6 +6985,7 @@ impl MailApp {
                                     .disabled(!composer.can_edit()),
                                 palette,
                             ))
+                            .child(self.markup_controls(palette, cx))
                             .child(
                                 Textarea::new(&composer.body)
                                     .h(px(360.))
@@ -7086,6 +7279,24 @@ impl MailApp {
     }
 
     fn send_current_message(&mut self, cx: &mut Context<Self>) {
+        if let Some(composer) = self
+            .composer
+            .as_mut()
+            .filter(|c| c.can_edit() && c.message.client_message_id.is_none())
+        {
+            match megamail_core::rng::token(24) {
+                Ok(token) => {
+                    composer.message.client_message_id =
+                        Some(format!("megamail-{token}@client.invalid"))
+                }
+                Err(_) => {
+                    composer.error =
+                        Some("Could not create a safe send identity. Nothing was sent.".into());
+                    cx.notify();
+                    return;
+                }
+            }
+        }
         self.capture_recovery(cx);
         let Some(composer) = self.composer.as_mut() else {
             return;
@@ -7096,6 +7307,18 @@ impl MailApp {
             return;
         }
         if !composer.can_edit() {
+            return;
+        }
+        if composer.markup.enabled
+            && (composer.markup.busy
+                || composer.markup.error.is_some()
+                || composer.markup.ready_source != composer.body.read(cx).value().as_ref())
+        {
+            composer.error = Some(
+                "Wait for the formatting preview to finish before sending, or choose Plain text."
+                    .into(),
+            );
+            cx.notify();
             return;
         }
         if composer.recovery.restored_hold {
@@ -7141,10 +7364,23 @@ impl MailApp {
         }
         composer.error = None;
         composer.send_queued = false;
+        let outgoing_card = (!message.in_reply_to.is_empty()).then(|| comfort::OutgoingCard {
+            account: message.from_account_id,
+            request: 0,
+            parent: comfort::normalized_id(&message.in_reply_to),
+            message_id: message.client_message_id.clone().unwrap_or_default(),
+            body: message.body.clone(),
+            to: message.to.clone(),
+            status: "Sending…",
+        });
         let request_id = self
             .live
             .update(cx, |live, cx| live.send_message(message, cx));
         if let Some(request_id) = request_id {
+            if let Some(mut card) = outgoing_card {
+                card.request = request_id;
+                self.comfort.outgoing.push(card);
+            }
             if let Some(composer) = self.composer.as_mut() {
                 composer.send_request_id = Some(request_id);
                 composer.send_generation = Some(composer.recovery.generation);
@@ -7817,6 +8053,27 @@ fn message_row(
                         .min_w_0()
                         .items_center()
                         .gap_2()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_shrink_0()
+                                .size(px(20.))
+                                .rounded_full()
+                                .items_center()
+                                .justify_center()
+                                .text_size(px(9.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .bg(comfort::identity_color(
+                                    &message.from_addr,
+                                    palette.background.l < 0.5,
+                                )
+                                .opacity(0.12))
+                                .text_color(comfort::identity_color(
+                                    &message.from_addr,
+                                    palette.background.l < 0.5,
+                                ))
+                                .child(initials(&message_sender(message))),
+                        )
                         .when(unread, |row| {
                             row.child(div().w(px(6.)).h(px(6.)).rounded_full().bg(palette.accent))
                         })
@@ -7830,7 +8087,10 @@ fn message_row(
                                 } else {
                                     FontWeight::MEDIUM
                                 })
-                                .text_color(palette.text)
+                                .text_color(comfort::identity_color(
+                                    &message.from_addr,
+                                    palette.background.l < 0.5,
+                                ))
                                 .child(message_sender(message)),
                         ),
                 )

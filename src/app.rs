@@ -19971,6 +19971,7 @@ impl AppModel {
             }
         };
         let out = crate::worker::OutgoingMessage {
+            client_message_id: None,
             from_account_id: message.account_id,
             from_alias,
             to: organizer,
@@ -20260,6 +20261,7 @@ impl AppModel {
         };
         let (from_alias, _) = self.unsubscribe_from(&message);
         let out = crate::worker::OutgoingMessage {
+            client_message_id: None,
             from_account_id: message.account_id,
             from_alias,
             to: target.to,

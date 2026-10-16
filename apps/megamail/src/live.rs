@@ -101,6 +101,7 @@ impl MessageFilter {
 
 #[derive(Debug, Clone)]
 pub struct OutboxSummary {
+    pub account_id: u32,
     pub id: u32,
     pub recipients: String,
     pub subject: String,
@@ -173,6 +174,8 @@ pub struct DirectBodyVersion {
 pub struct MailboxSnapshot {
     pub accounts: Vec<Account>,
     pub scope: MailboxScope,
+    pub unified_kind: Option<FolderKind>,
+    pub last_synced: HashMap<u32, i64>,
     pub title: String,
     pub account_labels: HashMap<u32, String>,
     pub account_loading: HashMap<u32, bool>,
@@ -450,6 +453,8 @@ pub struct LiveMailbox {
     current_account_id: Option<u32>,
     current_folder_path: Option<String>,
     scope: MailboxScope,
+    unified_kind: Option<FolderKind>,
+    last_synced: HashMap<u32, i64>,
     messages: Vec<Message>,
     visible_indices: Vec<usize>,
     truncated: bool,
@@ -628,6 +633,8 @@ impl LiveMailbox {
             current_account_id,
             current_folder_path: None,
             scope: MailboxScope::Account,
+            unified_kind: Some(FolderKind::Inbox),
+            last_synced: HashMap::new(),
             messages: Vec::new(),
             visible_indices: Vec::new(),
             truncated: false,
@@ -732,11 +739,23 @@ impl LiveMailbox {
             .and_then(|conversation| self.conversation_errors.get(&conversation.key).cloned());
         let conversation_warning = selected_conversation
             .and_then(|conversation| self.conversation_warnings.get(&conversation.key).cloned());
-        let outbox = current_account_id
-            .and_then(|id| self.outbox_by_account.get(&id))
-            .into_iter()
-            .flatten()
-            .cloned()
+        let outbox = self
+            .outbox_by_account
+            .iter()
+            .flat_map(|(account_id, items)| {
+                items.iter().map(move |item| OutboxSummary {
+                    account_id: *account_id,
+                    id: item.id,
+                    recipients: item.recipients.clone(),
+                    subject: item.subject.clone(),
+                    preview: item.preview.clone(),
+                    queued_at: item.queued_at,
+                    attempts: item.attempts,
+                    last_error: item.last_error.clone(),
+                    send_at: item.send_at,
+                    phase: item.phase,
+                })
+            })
             .collect();
         let page_states = self.active_page_keys();
         let has_more = page_states.iter().any(|key| {
@@ -759,7 +778,7 @@ impl LiveMailbox {
                 .folders_by_account
                 .values()
                 .flatten()
-                .filter(|folder| folder.kind == FolderKind::Inbox)
+                .filter(|folder| self.unified_folder_matches(folder.kind))
                 .map(|folder| folder.unread)
                 .sum(),
         };
@@ -781,6 +800,8 @@ impl LiveMailbox {
         MailboxSnapshot {
             accounts: self.accounts.clone(),
             scope: self.scope,
+            unified_kind: self.unified_kind,
+            last_synced: self.last_synced.clone(),
             title,
             account_labels,
             account_loading,
@@ -1368,31 +1389,29 @@ impl LiveMailbox {
     }
 
     pub fn select_unified(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.scope == MailboxScope::Unified {
+        self.select_unified_kind(Some(FolderKind::Inbox), cx)
+    }
+
+    /// Unified folder roles; None searches locally indexed mail across folders.
+    pub fn select_unified_kind(
+        &mut self,
+        kind: Option<FolderKind>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.scope == MailboxScope::Unified && self.unified_kind == kind {
             return false;
         }
         self.scope = MailboxScope::Unified;
+        self.unified_kind = kind;
         self.current_folder_path = None;
         self.clear_selection();
-        self.loading = (self.accounts.is_empty() && !self.request_senders.is_empty())
-            || self.accounts.iter().any(|account| {
-                self.folders_by_account
-                    .get(&account.id)
-                    .is_none_or(|folders| {
-                        !folders
-                            .iter()
-                            .any(|folder| folder.kind == FolderKind::Inbox)
-                    })
-            });
+        self.loading = self.accounts.is_empty() && !self.request_senders.is_empty();
         for key in self.active_page_keys() {
-            if let Some(state) = self.page_states.get(&key) {
-                if state.pending_generation.is_none() {
-                    self.request_page_for(&key, None, false, cx);
-                }
-            } else {
-                self.request_page_for(&key, None, false, cx);
+            self.request_page_for(&key, None, false, cx);
+            // All-local search never fans network requests across every folder.
+            if kind.is_some() {
+                self.request_current_folder_for(key.account_id, &key.folder_path, cx);
             }
-            self.request_current_folder_for(key.account_id, &key.folder_path, cx);
         }
         self.rebuild_visible();
         self.ensure_visible_selection(cx);
@@ -1453,7 +1472,9 @@ impl LiveMailbox {
         else {
             return false;
         };
-        if self.current_folder_path.as_deref() == Some(path.as_str()) {
+        if self.scope == MailboxScope::Account
+            && self.current_folder_path.as_deref() == Some(path.as_str())
+        {
             return false;
         }
         self.scope = MailboxScope::Account;
@@ -2714,33 +2735,28 @@ impl LiveMailbox {
                         .and_then(|old| old.iter().find(|folder| &folder.path == path))
                         .map(|folder| folder.id)
                 });
-                let old_inbox_id = self
-                    .folders_by_account
-                    .get(&account_id)
-                    .and_then(|old| old.iter().find(|folder| folder.kind == FolderKind::Inbox))
-                    .map(|folder| folder.id);
                 self.folders_by_account.insert(account_id, folders.clone());
                 if self.scope == MailboxScope::Unified {
-                    if let Some(inbox) = folders
+                    for folder in folders
                         .iter()
-                        .find(|folder| folder.kind == FolderKind::Inbox)
+                        .filter(|f| self.unified_folder_matches(f.kind))
+                        .cloned()
+                        .collect::<Vec<_>>()
                     {
-                        if old_selected
-                            .as_ref()
-                            .is_none_or(|path| !folders.iter().any(|folder| &folder.path == path))
-                        {
-                            self.selected_folder_by_account
-                                .insert(account_id, inbox.path.clone());
-                        }
                         let key = PageKey {
                             account_id,
-                            folder_path: inbox.path.clone(),
+                            folder_path: folder.path.clone(),
                         };
-                        let changed_id = old_inbox_id != Some(inbox.id);
-                        if changed_id || !self.page_states.contains_key(&key) {
+                        let changed_id = self
+                            .page_states
+                            .get(&key)
+                            .is_none_or(|state| state.folder_id != folder.id);
+                        if changed_id {
                             self.request_page_for(&key, None, false, cx);
                         }
-                        self.request_current_folder_for(account_id, &inbox.path, cx);
+                        if self.unified_kind.is_some() {
+                            self.request_current_folder_for(account_id, &folder.path, cx);
+                        }
                     }
                     if self.current_account_id.is_none() {
                         self.current_account_id = Some(account_id);
@@ -3229,6 +3245,9 @@ impl LiveMailbox {
                     set_folder_unread(&mut self.folders_by_account, account_id, &path, unread);
             }
             WorkerMailboxEvent::FolderSynced { folder_id } => {
+                self.last_synced
+                    .insert(account_id, megamail_core::datefmt::now());
+                changed = true;
                 if let Some(path) = self.path_for_folder(account_id, folder_id) {
                     let key = PageKey {
                         account_id,
@@ -3261,7 +3280,7 @@ impl LiveMailbox {
                 if let Some(result) = self.record_send_completion(account_id, &event) {
                     let outcome = result.outcome;
                     if outcome == SendOutcome::Sent {
-                        self.invalidate_conversation_cache(account_id);
+                        self.thread_summary_requests.remove(&account_id);
                         if self.thunderbird_accounts.contains(&account_id) {
                             self.request_thread_summaries(cx);
                         } else {
@@ -4774,7 +4793,7 @@ impl LiveMailbox {
                         .get(&account.id)
                         .into_iter()
                         .flatten()
-                        .filter(|folder| folder.kind == FolderKind::Inbox)
+                        .filter(|folder| self.unified_folder_matches(folder.kind))
                         .map(|folder| PageKey {
                             account_id: account.id,
                             folder_path: folder.path.clone(),
@@ -4843,9 +4862,26 @@ impl LiveMailbox {
             .collect()
     }
 
+    fn unified_folder_matches(&self, kind: FolderKind) -> bool {
+        self.unified_kind.map_or(
+            !matches!(
+                kind,
+                FolderKind::Trash | FolderKind::Junk | FolderKind::Templates
+            ),
+            |wanted| kind == wanted,
+        )
+    }
+
     fn scope_title(&self) -> String {
         if self.scope == MailboxScope::Unified {
-            return "Unified Inbox".into();
+            return match self.unified_kind {
+                Some(FolderKind::Sent) => "All sent",
+                Some(FolderKind::Drafts) => "All drafts",
+                Some(FolderKind::Archive) => "All archived",
+                None => "All local mail",
+                _ => "Unified Inbox",
+            }
+            .into();
         }
         self.current_folder_path
             .as_ref()

@@ -407,7 +407,9 @@ impl MailApp {
                 if (width, scale) != current {
                     cx.defer(move |cx| {
                         let _ = owner.update(cx, |this, cx| {
-                            if (this.styled_reader.width, this.styled_reader.scale) == (width, scale) {
+                            if (this.styled_reader.width, this.styled_reader.scale)
+                                == (width, scale)
+                            {
                                 return;
                             }
                             this.styled_reader.width = width;
@@ -596,7 +598,11 @@ mod tests {
     #[test]
     fn forged_frames_and_policy_downgrades_are_rejected() {
         assert!(
-            parse_frame(br#"{"version":1,"event":"frame","token":"forged","png":""}"#, 1).is_err()
+            parse_frame(
+                br#"{"version":1,"event":"frame","token":"forged","png":""}"#,
+                1
+            )
+            .is_err()
         );
         assert!(parse_frame(br#"{"version":1,"event":"ready","token":"0123456789abcdef0123456789abcdef","policy":"test-only:no-csp"}"#, 1).is_err());
         assert!(parse_frame(&vec![0; WIRE_MAX as usize + 1], 1).is_err());

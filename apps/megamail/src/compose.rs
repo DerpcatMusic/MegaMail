@@ -477,6 +477,7 @@ fn safe_attachment_filename(name: &str) -> String {
 /// generate the MIME alternative and add reply threading headers.
 pub fn new_message(account_id: u32) -> OutgoingMessage {
     OutgoingMessage {
+        client_message_id: None,
         from_account_id: account_id,
         from_alias: None,
         to: String::new(),

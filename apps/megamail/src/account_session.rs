@@ -83,7 +83,11 @@ fn migrate_legacy_thunderbird() -> Vec<String> {
     let Ok(store) = read_store() else {
         return Vec::new();
     };
-    if store.profiles.iter().all(|profile| profile.accounts.is_empty()) {
+    if store
+        .profiles
+        .iter()
+        .all(|profile| profile.accounts.is_empty())
+    {
         return Vec::new();
     }
     let profiles = megamail_core::thunderbird::discover_profiles().unwrap_or_default();
@@ -91,10 +95,17 @@ fn migrate_legacy_thunderbird() -> Vec<String> {
     let mut failures = Vec::new();
     for stored in &store.profiles {
         let Some(profile) = profiles.iter().find(|p| p.path == stored.path) else {
-            failures.push(format!("Thunderbird profile {} is gone.", stored.path.display()));
+            failures.push(format!(
+                "Thunderbird profile {} is gone.",
+                stored.path.display()
+            ));
             continue;
         };
-        let ids: Vec<String> = stored.accounts.iter().map(|a| a.source_id.clone()).collect();
+        let ids: Vec<String> = stored
+            .accounts
+            .iter()
+            .map(|a| a.source_id.clone())
+            .collect();
         match megamail_core::thunderbird_migrate::convert_profile(profile, &ids) {
             Ok(results) => {
                 for (label, result) in results {
