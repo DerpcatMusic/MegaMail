@@ -5920,14 +5920,20 @@ impl MailApp {
                 };
                 let own = self.own_message(&row.message, snapshot);
                 let sender = if own {
-                    "You · sent".to_owned()
+                    comfort::own_label(
+                        snapshot
+                            .folder_kinds
+                            .get(&(row.key.account_id, row.message.folder_id))
+                            .copied(),
+                    )
+                    .to_owned()
                 } else {
                     message_sender(&row.message)
                 };
                 let sender_color = if own {
                     palette.accent
                 } else {
-                    comfort::identity_color(&row.message.from_addr, self.dark)
+                    comfort::identity_color(&row.message.from_addr, palette)
                 };
                 let header = Button::new(SharedString::from(format!(
                     "reader-message-{}-{}-{}",
@@ -8194,15 +8200,9 @@ fn message_row(
                                 .justify_center()
                                 .text_size(px(9.))
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .bg(comfort::identity_color(
-                                    &message.from_addr,
-                                    palette.background.l < 0.5,
-                                )
-                                .opacity(0.12))
-                                .text_color(comfort::identity_color(
-                                    &message.from_addr,
-                                    palette.background.l < 0.5,
-                                ))
+                                .bg(comfort::identity_color(&message.from_addr, palette)
+                                    .opacity(0.12))
+                                .text_color(comfort::identity_color(&message.from_addr, palette))
                                 .child(initials(&message_sender(message))),
                         )
                         .when(unread, |row| {
@@ -8218,10 +8218,7 @@ fn message_row(
                                 } else {
                                     FontWeight::MEDIUM
                                 })
-                                .text_color(comfort::identity_color(
-                                    &message.from_addr,
-                                    palette.background.l < 0.5,
-                                ))
+                                .text_color(comfort::identity_color(&message.from_addr, palette))
                                 .child(message_sender(message)),
                         ),
                 )

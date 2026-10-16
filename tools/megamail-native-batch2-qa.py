@@ -245,7 +245,7 @@ def inside(args: argparse.Namespace) -> int:
         run(["xdotool", "windowmove", "--sync", window, "0", "0"])
         pause()
         capture("startup")
-        # Only non-destructive focus/navigation keys; no pixel clicks/URLs/f5/send.
+        # Only non-destructive focus/navigation keys; no URLs/f5/send.
         for label, keys in (("select-next", ["ctrl+alt+l", "Down"]),
                             ("select-previous", ["ctrl+alt+l", "Up"]),
                             ("reader-focus", ["ctrl+alt+r"]),
@@ -270,6 +270,27 @@ def inside(args: argparse.Namespace) -> int:
         run(["xdotool", "key", "--clearmodifiers", "ctrl+n"])
         pause()
         capture("compose-request")
+        # Fictional text and known coordinates from the reviewed 1520x900 capture.
+        # All clicks target this isolated owned window; demo cannot send/save mail.
+        def click(x: int, y: int) -> None:
+            if int(run(["xdotool", "getwindowpid", window])) != app.pid:
+                raise RuntimeError("refusing click outside the owned demo")
+            run(["xdotool", "mousemove", "--window", window, str(x), str(y), "click", "1"])
+        click(850, 398)
+        run(["xdotool", "type", "--clearmodifiers", "--delay", "1", "Fictional QA retained draft"])
+        click(850, 500)
+        run(["xdotool", "type", "--clearmodifiers", "--delay", "1", "**Fictional formatted draft** - retained while browsing."])
+        click(860, 438)
+        pause()
+        click(1000, 438)
+        pause()
+        capture("formatted-compose")
+        click(90, 191)
+        pause()
+        capture("draft-retained-in-sent")
+        click(110, 331)
+        pause()
+        capture("draft-resumed")
         observations.append(result("interaction_observations", "not_run", "Inputs delivered; inspect captures manually. No field/model assertion."))
         returncode = 0
         if args.developer_helper_preview:

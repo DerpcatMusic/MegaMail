@@ -182,6 +182,7 @@ pub struct MailboxSnapshot {
     pub account_errors: HashMap<u32, String>,
     pub current_account_id: Option<u32>,
     pub folders: Vec<Folder>,
+    pub folder_kinds: HashMap<(u32, u32), FolderKind>,
     pub current_folder_path: Option<String>,
     pub page: Arc<Vec<Arc<MessageRow>>>,
     pub conversations: Arc<Vec<ConversationRow>>,
@@ -814,6 +815,15 @@ impl LiveMailbox {
             account_errors,
             current_account_id,
             folders,
+            folder_kinds: self
+                .folders_by_account
+                .iter()
+                .flat_map(|(account, folders)| {
+                    folders
+                        .iter()
+                        .map(move |folder| ((*account, folder.id), folder.kind))
+                })
+                .collect(),
             current_folder_path,
             page: self.page_rows.clone(),
             conversations: self.conversation_rows.clone(),

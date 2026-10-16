@@ -73,7 +73,39 @@ pub(crate) fn ids<'a>(messages: impl Iterator<Item = &'a Message>) -> Vec<String
     ids
 }
 /// Stable colors distinguish participants; explicit labels carry the same meaning.
-pub(crate) fn identity_color(address: &str, dark: bool) -> gpui_kit::Hsla {
+fn luminance(color: gpui_kit::Hsla, base: gpui_kit::Hsla) -> f32 {
+    let color = color.to_rgb();
+    let base = base.to_rgb();
+    let linear = |v: f32| {
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * linear(color.r * color.a + base.r * (1. - color.a))
+        + 0.7152 * linear(color.g * color.a + base.g * (1. - color.a))
+        + 0.0722 * linear(color.b * color.a + base.b * (1. - color.a))
+}
+fn identity_contrast(color: gpui_kit::Hsla, palette: Palette) -> f32 {
+    let ink = luminance(color, palette.background);
+    [
+        palette.list,
+        palette.surface,
+        palette.selected,
+        palette.hover,
+        palette.accent_wash,
+    ]
+    .into_iter()
+    .flat_map(|surface| {
+        let background = luminance(surface, palette.background);
+        let avatar = luminance(color.opacity(0.12), surface);
+        [background, avatar]
+    })
+    .map(|background| (ink.max(background) + 0.05) / (ink.min(background) + 0.05))
+    .fold(f32::INFINITY, f32::min)
+}
+pub(crate) fn identity_color(address: &str, palette: Palette) -> gpui_kit::Hsla {
     let hash = address
         .trim()
         .to_lowercase()
@@ -81,12 +113,35 @@ pub(crate) fn identity_color(address: &str, dark: bool) -> gpui_kit::Hsla {
         .fold(2166136261u32, |h, b| {
             (h ^ u32::from(b)).wrapping_mul(16777619)
         });
-    gpui_kit::hsla(
+    let dark = palette.background.l < 0.5;
+    let mut color = gpui_kit::hsla(
         (hash % 360) as f32 / 360.,
         if dark { 0.63 } else { 0.72 },
         if dark { 0.76 } else { 0.33 },
         1.,
-    )
+    );
+    // Match the actual selected/hover/reader surfaces, including avatar tint.
+    for _ in 0..=100 {
+        if identity_contrast(color, palette) >= 4.6 {
+            break;
+        }
+        color.l = (color.l + if dark { 0.01 } else { -0.01 }).clamp(0., 1.);
+    }
+    color
+}
+pub(crate) fn own_label(role: Option<FolderKind>) -> &'static str {
+    match role {
+        Some(FolderKind::Drafts) => "You · draft",
+        Some(FolderKind::Sent) => "You · sent",
+        _ => "You",
+    }
+}
+pub(crate) fn inferred_work(own: bool, role: Option<FolderKind>) -> Status {
+    if own && role == Some(FolderKind::Sent) {
+        Status::Waiting
+    } else {
+        Status::Review
+    }
 }
 pub(crate) fn latest(row: &ListRow) -> &Message {
     row.conversation
@@ -131,21 +186,37 @@ impl MailApp {
         row: &MessageRow,
         snapshot: &MailboxSnapshot,
     ) -> (Vec<String>, i64, bool) {
-        let messages: Vec<_> = thread.map_or_else(
-            || vec![&row.message],
-            |t| t.members.iter().map(|m| &m.message).collect(),
+        let rows: Vec<&MessageRow> = thread.map_or_else(
+            || vec![row],
+            |t| t.members.iter().map(|m| m.as_ref()).collect(),
         );
-        let incoming = messages
-            .iter()
-            .filter(|m| !self.own_message(m, snapshot))
-            .map(|m| m.timestamp)
+        let role = |row: &MessageRow| {
+            snapshot
+                .folder_kinds
+                .get(&(row.key.account_id, row.message.folder_id))
+                .copied()
+        };
+        let active = || {
+            rows.iter().copied().filter(|row| {
+                !matches!(role(row), Some(FolderKind::Drafts | FolderKind::Templates))
+            })
+        };
+        let incoming = active()
+            .filter(|row| !self.own_message(&row.message, snapshot))
+            .map(|row| row.message.timestamp)
             .max()
             .unwrap_or(0);
-        let own_latest = messages
-            .iter()
-            .max_by_key(|m| m.timestamp)
-            .is_some_and(|m| self.own_message(m, snapshot));
-        (ids(messages.into_iter()), incoming, own_latest)
+        let own_sent_latest = active()
+            .max_by_key(|row| row.message.timestamp)
+            .is_some_and(|row| {
+                inferred_work(self.own_message(&row.message, snapshot), role(row))
+                    == Status::Waiting
+            });
+        (
+            ids(rows.iter().map(|row| &row.message)),
+            incoming,
+            own_sent_latest,
+        )
     }
     pub(crate) fn work_status(
         &self,
@@ -235,6 +306,23 @@ impl MailApp {
             .iter()
             .find(|t| t.members.iter().any(|m| m.key == row.key));
         let status = self.work_status(thread, row, snapshot);
+        let (ids, _, suggested_waiting) = self.work_identity(thread, row, snapshot);
+        let saved = self.comfort.ledger.find(row.key.account_id, &ids).is_some();
+        let feedback = if self.comfort.busy {
+            "Saving on this device…"
+        } else if self.comfort.error.is_some() {
+            "Work state unavailable · see details below"
+        } else if !self.comfort.loaded {
+            "Loading local work states…"
+        } else if self.demo {
+            "Demo · session only"
+        } else if saved {
+            "Your work · saved on this device"
+        } else if suggested_waiting {
+            "Suggested from Sent · choose a work state"
+        } else {
+            "Choose a work state · independent of unread"
+        };
         let owner = cx.entity().downgrade();
         let label = if self.comfort.busy {
             "Saving…"
@@ -282,7 +370,7 @@ impl MailApp {
                         div()
                             .text_size(px(11.))
                             .text_color(palette.muted)
-                            .child("Your work · saved on this device"),
+                            .child(feedback),
                     )
                     .child(
                         Button::new("expand-conversation")
@@ -650,5 +738,40 @@ impl MailApp {
                     }),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod comfort_tests {
+    use super::*;
+    #[test]
+    fn ownership_never_turns_an_unsent_draft_into_a_sent_or_waiting_message() {
+        assert_eq!(own_label(Some(FolderKind::Drafts)), "You · draft");
+        assert_eq!(
+            inferred_work(true, Some(FolderKind::Drafts)),
+            Status::Review
+        );
+        assert_eq!(
+            inferred_work(true, Some(FolderKind::Templates)),
+            Status::Review
+        );
+        assert_eq!(inferred_work(true, None), Status::Review);
+        assert_eq!(inferred_work(true, Some(FolderKind::Inbox)), Status::Review);
+        assert_eq!(inferred_work(true, Some(FolderKind::Sent)), Status::Waiting);
+        assert_eq!(inferred_work(false, Some(FolderKind::Sent)), Status::Review);
+    }
+    #[test]
+    fn participant_colors_remain_readable_on_reader_selected_and_avatar_surfaces() {
+        for dark in [false, true] {
+            let mut palette = Palette::new(dark);
+            palette.surface = gpui_kit::rgb(if dark { 0x343437 } else { 0xececee }).into();
+            for i in 0..1500 {
+                let color = identity_color(&format!("participant{i}@example.test"), palette);
+                assert!(
+                    identity_contrast(color, palette) >= 4.5,
+                    "participant {i}, dark={dark}"
+                );
+            }
+        }
     }
 }
