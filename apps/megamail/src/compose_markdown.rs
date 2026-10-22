@@ -12,6 +12,30 @@ pub(crate) struct Markup {
     pub error: Option<String>,
 }
 impl MailApp {
+    /// Wrap the selection (or the caret) in Markdown markers, or prefix each
+    /// selected line when `close` is empty. Only used in Formatted mode.
+    pub(crate) fn format_body(&mut self, open: &'static str, close: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(c) = self.composer.as_mut().filter(|c| c.markup.enabled && c.can_edit()) else { return; };
+        let body = c.body.clone();
+        let range = body.read(cx).selected_range();
+        let text = body.read(cx).value().to_string();
+        let (start, end) = (range.start.min(text.len()), range.end.min(text.len()));
+        let Some(selected) = text.get(start..end) else { return; };
+        let wrapped = if close.is_empty() {
+            let lines: Vec<String> = selected.split('\n').map(|l| format!("{open}{l}")).collect();
+            lines.join("\n")
+        } else {
+            format!("{open}{selected}{close}")
+        };
+        let caret = start + open.len() + if selected.is_empty() { 0 } else { selected.len() + close.len() };
+        body.update(cx, |body, cx| {
+            body.insert(wrapped, window, cx);
+            if selected.is_empty() { body.set_selected_range(caret..caret, cx); }
+        });
+        c.recovery.dirty_input = true;
+        cx.notify();
+    }
+
     pub(crate) fn refresh_markdown(&mut self, cx: &mut Context<Self>) {
         let Some(c) = self.composer.as_mut().filter(|c| c.markup.enabled) else {
             return;
@@ -55,6 +79,12 @@ impl MailApp {
                 .child(Button::new("compose-markdown").ghost().small().label("Formatted").tooltip("Write with Markdown: **bold**, *italic*, lists and links. Sends HTML with a plain-text copy.").selected(c.markup.enabled).disabled(!c.can_edit())
                     .on_click(cx.listener(|this, _, _, cx| { if let Some(c) = &mut this.composer { c.markup.enabled = true; } this.refresh_markdown(cx); })))
                 .when(c.markup.enabled, |el| el.child(Button::new("preview-compose-markdown").secondary().small().label(if c.markup.preview { "Hide preview" } else { "Show preview" }).on_click(cx.listener(|this, _, _, cx| { if let Some(c) = &mut this.composer { c.markup.preview = !c.markup.preview; } cx.notify(); })))))
+            .when(c.markup.enabled, |el| el.child(h_flex().gap_1()
+                .child(Button::new("fmt-bold").ghost().small().label("Bold").tooltip("Bold · wraps the selection in **").on_click(cx.listener(|this, _, w, cx| this.format_body("**", "**", w, cx))))
+                .child(Button::new("fmt-italic").ghost().small().label("Italic").on_click(cx.listener(|this, _, w, cx| this.format_body("*", "*", w, cx))))
+                .child(Button::new("fmt-link").ghost().small().label("Link").tooltip("Turns the selection into a link; paste the address over “url”").on_click(cx.listener(|this, _, w, cx| this.format_body("[", "](url)", w, cx))))
+                .child(Button::new("fmt-list").ghost().small().label("List").on_click(cx.listener(|this, _, w, cx| this.format_body("- ", "", w, cx))))
+                .child(Button::new("fmt-quote").ghost().small().label("Quote").on_click(cx.listener(|this, _, w, cx| this.format_body("> ", "", w, cx))))))
             .when(c.markup.enabled, |el| el.child(div().text_size(px(12.)).text_color(palette.muted).child(if c.markup.busy { "Updating formatting…" } else { "Markdown works here: **bold**, *italic*, lists, headings and links." })))
             .when_some(c.markup.error.clone(), |el, error| el.child(div().child(error)))
             .when(c.markup.enabled && c.markup.preview && !c.markup.semantic.is_empty(), |el| el.child(div().p_4().rounded(px(8.)).bg(palette.surface).child(gpui_kit::component::text::TextView::html("compose-markdown-preview", c.markup.semantic.clone()).selectable(true).w_full().text_size(px(14.)).line_height(relative(1.6)))))

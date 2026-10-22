@@ -1723,6 +1723,11 @@ impl LiveMailbox {
         self.move_selected_to(FolderKind::Trash, cx)
     }
 
+    /// Queue a move to the account's Junk folder.
+    pub fn junk_selected(&mut self, cx: &mut Context<Self>) -> bool {
+        self.move_selected_to(FolderKind::Junk, cx)
+    }
+
     pub fn set_selected_unread(&mut self, unread: bool, cx: &mut Context<Self>) -> bool {
         if self.demo_mode {
             self.set_action_error("Message actions are disabled in the local demo.");
@@ -2242,6 +2247,7 @@ impl LiveMailbox {
             let label = match kind {
                 FolderKind::Archive => "Archive",
                 FolderKind::Trash => "Trash",
+                FolderKind::Junk => "Junk",
                 _ => "Inbox",
             };
             self.set_action_error(format!("This account has no {label} folder."));

@@ -922,3 +922,32 @@ mod tests {
         path
     }
 }
+
+/// Put the account's plain-text signature below the caret position, above any
+/// quoted history, using the conventional `-- ` separator. Idempotent.
+pub(crate) fn with_signature(body: &str, signature: &str) -> String {
+    let signature = signature.trim_end();
+    if signature.is_empty() || body.contains(signature) {
+        return body.to_owned();
+    }
+    let rest = body.trim_start_matches('\n');
+    if rest.is_empty() {
+        format!("\n\n-- \n{signature}")
+    } else {
+        format!("\n\n-- \n{signature}\n\n{rest}")
+    }
+}
+
+#[cfg(test)]
+mod signature_tests {
+    use super::with_signature;
+
+    #[test]
+    fn signs_once_above_quote() {
+        let once = with_signature("On Mon, A wrote:\n> hi", "Dan");
+        assert_eq!(once, "\n\n-- \nDan\n\nOn Mon, A wrote:\n> hi");
+        assert_eq!(with_signature(&once, "Dan"), once);
+        assert_eq!(with_signature("", "Dan"), "\n\n-- \nDan");
+        assert_eq!(with_signature("x", ""), "x");
+    }
+}

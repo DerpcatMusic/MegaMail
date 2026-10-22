@@ -84,7 +84,7 @@ mod zeron_background;
 mod zeron_style;
 
 use action::{
-    AllDrafts, AllSent, ComposeMessage, FindInMessage, FocusMessages, FocusReader, FocusSearch,
+    AllDrafts, AllSent, ArchiveMessage, ComposeMessage, JunkMessage, TrashMessage, FindInMessage, FocusMessages, FocusReader, FocusSearch,
     NextMessage, PreviousMessage, RefreshMail, ReplyAll, ReplyMessage, SortSender, UnifiedInbox,
 };
 
@@ -132,6 +132,7 @@ gpui_kit::assets::icon_assets!(
         RefreshCw,
         Search,
         Send,
+        Trash,
         Settings2,
         Star,
         StarFill,
@@ -956,6 +957,7 @@ struct MailApp {
     surface_treatment: zeron_theme::SurfaceTreatment,
     _theme_subscription: Subscription,
     wallpaper_animating: bool,
+    window_title: String,
     wallpaper_restore_generation: u64,
     preferences: MailPreferences,
     preferences_busy: bool,
@@ -968,6 +970,8 @@ struct MailApp {
     hidden_quotes: std::collections::HashSet<MessageKey>,
     plain_messages: std::collections::HashSet<MessageKey>,
     link_details: std::collections::HashSet<MessageKey>,
+    /// A clicked link that looks deceptive and awaits an explicit choice.
+    pending_link: Option<String>,
     reader_bodies: std::collections::VecDeque<ReaderBody>,
     reader_mailbox_epochs: std::collections::HashMap<(u32, String), live::NativeMailboxEpoch>,
     list_rows: Arc<Vec<ListRow>>,
@@ -1133,6 +1137,7 @@ impl MailApp {
             surface_treatment: zeron_theme::SurfaceTreatment::Frosted,
             _theme_subscription: theme_subscription,
             wallpaper_animating: false,
+            window_title: String::new(),
             wallpaper_restore_generation: 0,
             preferences: MailPreferences::default(),
             preferences_busy: false,
@@ -1145,6 +1150,7 @@ impl MailApp {
             hidden_quotes: std::collections::HashSet::new(),
             plain_messages: std::collections::HashSet::new(),
             link_details: std::collections::HashSet::new(),
+            pending_link: None,
             reader_bodies: std::collections::VecDeque::new(),
             reader_mailbox_epochs: std::collections::HashMap::new(),
             list_rows: Arc::new(Vec::new()),
@@ -3017,11 +3023,26 @@ impl MailApp {
         if !self.can_replace_composer(cx) {
             return;
         }
-        let mut composer = Composer::new(compose::new_message(account_id), window, cx);
+        let mut composer = Composer::new(self.signed(compose::new_message(account_id)), window, cx);
         composer.recovery.retention = draft_recovery::Retention::Ordinary;
         self.composer = Some(composer);
         self.view = View::Compose;
         cx.notify();
+    }
+
+    /// Add the sending account's plain-text signature to a fresh composition.
+    fn signed(&self, mut message: OutgoingMessage) -> OutgoingMessage {
+        let signature = self
+            .profiles
+            .iter()
+            .find(|(id, _)| *id == message.from_account_id)
+            .map(|(_, profile)| profile)
+            .filter(|profile| !profile.signature_html)
+            .and_then(|profile| profile.signature.as_deref());
+        if let Some(signature) = signature.filter(|_| message.html.is_empty()) {
+            message.body = compose::with_signature(&message.body, signature);
+        }
+        message
     }
 
     fn open_reply(&mut self, message: Message, window: &mut Window, cx: &mut Context<Self>) {
@@ -3035,16 +3056,13 @@ impl MailApp {
             return;
         }
         let account_id = message.account_id;
-        self.composer = Some(Composer::new(
-            compose::reply_for_account(
-                account_id,
-                &message,
-                &self.own_addresses(account_id, cx),
-                false,
-            ),
-            window,
-            cx,
+        let reply = self.signed(compose::reply_for_account(
+            account_id,
+            &message,
+            &self.own_addresses(account_id, cx),
+            false,
         ));
+        self.composer = Some(Composer::new(reply, window, cx));
         self.view = View::Compose;
         cx.notify();
     }
@@ -3086,16 +3104,13 @@ impl MailApp {
             return;
         }
         let account_id = message.account_id;
-        self.composer = Some(Composer::new(
-            compose::reply_for_account(
-                account_id,
-                &message,
-                &self.own_addresses(account_id, cx),
-                true,
-            ),
-            window,
-            cx,
+        let reply = self.signed(compose::reply_for_account(
+            account_id,
+            &message,
+            &self.own_addresses(account_id, cx),
+            true,
         ));
+        self.composer = Some(Composer::new(reply, window, cx));
         self.view = View::Compose;
         cx.notify();
     }
@@ -3106,8 +3121,9 @@ impl MailApp {
         }
         let account_id = message.account_id;
         let prepared = compose::prepare_forward(account_id, &message);
+        let forwarded = self.signed(prepared.message);
         self.composer = Some(Composer::new_prepared_draft(
-            prepared.message,
+            forwarded,
             prepared.temporary_attachment_paths,
             prepared.notice,
             prepared.attachment_lease,
@@ -5476,6 +5492,7 @@ impl MailApp {
                     "Save for printing…",
                     "Preview mail rules",
                     "Open original formatting…",
+                    "Move to Junk",
                 ]
                 .into_iter()
                 .enumerate()
@@ -5490,6 +5507,7 @@ impl MailApp {
                                 4..=5 => !body_loaded,
                                 6..=7 => !body_loaded || export_busy,
                                 8 => demo || !body_loaded || rules_busy,
+                                10 => demo,
                                 _ => !body_loaded,
                             })
                             .on_click(move |_, window, cx| {
@@ -5526,6 +5544,9 @@ impl MailApp {
                                     6 => this.save_readable_text(cx),
                                     7 => this.save_printable_html(cx),
                                     8 => this.preview_saved_rules(cx),
+                                    10 => {
+                                        this.live.update(cx, |live, cx| live.junk_selected(cx));
+                                    }
                                     _ => this.open_original_formatting(cx),
                                 });
                             }),
@@ -5748,6 +5769,18 @@ impl MailApp {
                             })
                             .child(self.message_actions(snapshot, palette, cx))
                             .child(
+                                Button::new("trash-message")
+                                    .ghost()
+                                    .small()
+                                    .icon(Icon::new(IconName::Trash))
+                                    .tooltip("Move to Trash · #")
+                                    .accessibility_label("Move this message to Trash")
+                                    .disabled(snapshot.is_demo)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.live.update(cx, |live, cx| live.trash_selected(cx));
+                                    })),
+                            )
+                            .child(
                                 Button::new("archive-message")
                                     .ghost()
                                     .small()
@@ -5833,6 +5866,17 @@ impl MailApp {
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(palette.text),
                             )
+                            .when_some(self.pending_link.clone(), |el, url| {
+                                let target = url.clone();
+                                el.child(
+                                    v_flex().w_full().gap_2().p_3().rounded(px(8.)).border_1().border_color(palette.border).bg(palette.surface)
+                                        .child(div().text_size(px(12.)).font_weight(FontWeight::MEDIUM).child("This link may not go where it appears to"))
+                                        .child(div().text_size(px(12.)).text_color(palette.muted).child(url))
+                                        .child(h_flex().gap_2()
+                                            .child(Button::new("open-pending-link").secondary().small().label("Open anyway").on_click(cx.listener(move |this, _, _, cx| { cx.open_url(&target); this.pending_link = None; cx.notify(); })))
+                                            .child(Button::new("cancel-pending-link").ghost().small().label("Cancel").on_click(cx.listener(|this, _, _, cx| { this.pending_link = None; cx.notify(); })))),
+                                )
+                            })
                             .child(self.work_controls(snapshot, palette, cx))
                             .child(self.conversation_content(snapshot, &row, palette, cx))
                             .child(self.outgoing_cards(snapshot, palette)),
@@ -5958,10 +6002,9 @@ impl MailApp {
                         .selectable(true)
                         .w_full()
                         .min_w_0()
-                        .on_link_click(|url, _, _, cx| {
-                            if megamail_core::mail_text::safe_browser_url(url) {
-                                cx.open_url(url);
-                            }
+                        .on_link_click({
+                            let owner = cx.entity().downgrade();
+                            move |url, _, _, cx| open_mail_link(&owner, url, cx)
                         })
                         .style(gpui_kit::component::text::TextViewStyle {
                             paragraph_gap: gpui_kit::rems(
@@ -6281,7 +6324,7 @@ impl MailApp {
                                     .child(gpui_kit::component::text::TextView::new(if plain { cached.plain_quote_state.as_ref().unwrap() } else { cached.quote_state.as_ref().unwrap() })
                                         .selectable(true).w_full().min_w_0().text_size(px(14.)).line_height(relative(1.6))
                                         .text_color(palette.muted)
-                                        .on_link_click(|url, _, _, cx| { if megamail_core::mail_text::safe_browser_url(url) { cx.open_url(url); } })))
+                                        .on_link_click({ let owner = cx.entity().downgrade(); move |url, _, _, cx| open_mail_link(&owner, url, cx) })))
                             } else { el }
                         })
                         .when(
@@ -7033,6 +7076,9 @@ impl MailApp {
             .size_full()
             .min_w_0()
             .bg(self.pane_surface(palette.background, 0.24))
+            .on_drop(cx.listener(|this, paths: &gpui_kit::ExternalPaths, _, cx| {
+                this.drop_attachments(paths.paths().to_vec(), cx)
+            }))
             .child(
                 h_flex()
                     .h(px(44.))
@@ -7782,21 +7828,41 @@ impl MailApp {
             let validation = cx
                 .background_spawn(async move { validate_attachment_paths(&existing, selected) })
                 .await;
-            let _ = this.update(cx, |this, cx| {
-                if let Some(composer) = this.composer.as_mut() {
-                    composer.selecting_attachments = false;
-                    match validation {
-                        Ok(paths) => {
-                            composer.message.attachments.extend(paths);
-                            composer.recovery.dirty_input = true;
-                            composer.draft_saved = None;
-                            composer.attachment_error = None;
-                        }
-                        Err(error) => composer.attachment_error = Some(error),
-                    }
+            let _ = this.update(cx, |this, cx| this.finish_attachments(validation, cx));
+        })
+        .detach();
+    }
+
+    fn finish_attachments(&mut self, validation: Result<Vec<String>, String>, cx: &mut Context<Self>) {
+        if let Some(composer) = self.composer.as_mut() {
+            composer.selecting_attachments = false;
+            match validation {
+                Ok(paths) => {
+                    composer.message.attachments.extend(paths);
+                    composer.recovery.dirty_input = true;
+                    composer.draft_saved = None;
+                    composer.attachment_error = None;
                 }
-                cx.notify();
-            });
+                Err(error) => composer.attachment_error = Some(error),
+            }
+        }
+        cx.notify();
+    }
+
+    /// Files dropped onto the composer take the same validation path as the picker.
+    fn drop_attachments(&mut self, dropped: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let Some(composer) = self.composer.as_mut().filter(|c| c.can_edit()) else {
+            return;
+        };
+        composer.selecting_attachments = true;
+        composer.attachment_error = None;
+        let existing = composer.message.attachments.clone();
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let validation = cx
+                .background_spawn(async move { validate_attachment_paths(&existing, dropped) })
+                .await;
+            let _ = this.update(cx, |this, cx| this.finish_attachments(validation, cx));
         })
         .detach();
     }
@@ -7894,6 +7960,37 @@ fn safe_attachment_filename(name: &str) -> String {
     }
 }
 
+/// Open a link from mail. Ordinary links open at once; ones that commonly
+/// disguise their destination wait for an explicit choice in the reader.
+fn open_mail_link(owner: &gpui_kit::WeakEntity<MailApp>, url: &str, cx: &mut App) {
+    if !megamail_core::mail_text::safe_browser_url(url) {
+        return;
+    }
+    if suspicious_link(url) {
+        let url = url.to_owned();
+        let _ = owner.update(cx, |this, cx| {
+            this.pending_link = Some(url);
+            cx.notify();
+        });
+    } else {
+        cx.open_url(url);
+    }
+}
+
+/// Plain http, credentials before the host, a raw IP address, or punycode.
+fn suspicious_link(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    let Some(rest) = lower.strip_prefix("https://") else {
+        return true;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = authority.rsplit('@').next().unwrap_or("");
+    let host = host.split(':').next().unwrap_or("");
+    authority.contains('@')
+        || host.split('.').any(|label| label.starts_with("xn--"))
+        || (!host.is_empty() && host.chars().all(|c| c.is_ascii_digit() || c == '.'))
+}
+
 fn validate_attachment_paths(
     existing: &[String],
     selected: Vec<PathBuf>,
@@ -7951,6 +8048,17 @@ impl Render for MailApp {
         let dark = cx.theme().is_dark();
         let palette = self.palette;
         let snapshot = self.live.read(cx).snapshot();
+        let title = if self.demo {
+            "MegaMail · Local demo".to_owned()
+        } else if snapshot.unread_count > 0 {
+            format!("({}) MegaMail", snapshot.unread_count)
+        } else {
+            "MegaMail".to_owned()
+        };
+        if title != self.window_title {
+            window.set_window_title(&title);
+            self.window_title = title;
+        }
         let available_width = f32::from(window.viewport_size().width);
         let pane_scale = ((available_width - 1000.) / 280.).clamp(0., 1.);
         let rail_width = px(192. + 40. * pane_scale);
@@ -8260,6 +8368,21 @@ impl Render for MailApp {
                         if let Some(row) = snapshot.selected_message {
                             this.open_reply_all(row.message.clone(), window, cx);
                         }
+                    }
+                }))
+                .on_action(cx.listener(|this, _: &ArchiveMessage, _, cx| {
+                    if this.view == View::Mailbox && this.composer.is_none() {
+                        this.live.update(cx, |live, cx| live.archive_selected(cx));
+                    }
+                }))
+                .on_action(cx.listener(|this, _: &TrashMessage, _, cx| {
+                    if this.view == View::Mailbox && this.composer.is_none() {
+                        this.live.update(cx, |live, cx| live.trash_selected(cx));
+                    }
+                }))
+                .on_action(cx.listener(|this, _: &JunkMessage, _, cx| {
+                    if this.view == View::Mailbox && this.composer.is_none() {
+                        this.live.update(cx, |live, cx| live.junk_selected(cx));
                     }
                 }))
                 .on_action(cx.listener(|this, _: &FindInMessage, window, cx| {
@@ -9579,4 +9702,18 @@ fn main() {
     // still consume attachments/Outbox. The next start verifies stale sockets.
     // This is not graceful worker/socket shutdown or a recovery flush receipt.
     std::mem::forget(activation);
+}
+
+#[cfg(test)]
+mod link_tests {
+    use super::suspicious_link;
+
+    #[test]
+    fn flags_deceptive_links_only() {
+        assert!(!suspicious_link("https://github.com/a?b=1"));
+        assert!(suspicious_link("http://github.com"));
+        assert!(suspicious_link("https://github.com@evil.test/"));
+        assert!(suspicious_link("https://192.168.0.1/login"));
+        assert!(suspicious_link("https://xn--pple-43d.com/"));
+    }
 }
