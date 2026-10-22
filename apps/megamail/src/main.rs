@@ -898,6 +898,10 @@ struct MailApp {
     profiles: Vec<(u32, AccountConfig)>,
     comfort: comfort::State,
     search: Entity<InputState>,
+    sig_input: Entity<TextareaState>,
+    sig_account: Option<u32>,
+    sig_busy: bool,
+    sig_status: Option<String>,
     message_focus: FocusHandle,
     mailbox_focus: FocusHandle,
     mailbox_focus_admitted: bool,
@@ -1075,6 +1079,10 @@ impl MailApp {
             profiles: Vec::new(),
             comfort: comfort::State::default(),
             search,
+            sig_input: cx.new(|cx| TextareaState::new(window, cx)),
+            sig_account: None,
+            sig_busy: false,
+            sig_status: None,
             message_focus,
             mailbox_focus: cx.focus_handle().tab_stop(true),
             mailbox_focus_admitted: false,
@@ -7680,6 +7688,60 @@ impl MailApp {
                         })))
             }))
             .into_any_element()
+    }
+
+    /// Show `account`'s saved signature in the Settings editor.
+    fn edit_signature_for(&mut self, account: u32, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self
+            .profiles
+            .iter()
+            .find(|(id, _)| *id == account)
+            .and_then(|(_, p)| p.signature.clone())
+            .unwrap_or_default();
+        self.sig_account = Some(account);
+        self.sig_status = None;
+        self.sig_input.update(cx, |input, cx| input.set_value(text, window, cx));
+        cx.notify();
+    }
+
+    /// Persist the edited signature through the same roster writer account setup uses.
+    fn save_signature(&mut self, cx: &mut Context<Self>) {
+        if self.demo {
+            self.sig_status = Some("Signatures cannot be saved in the local demo.".into());
+            cx.notify();
+            return;
+        }
+        let Some(account) = self.sig_account.filter(|_| !self.sig_busy) else { return };
+        let text = self.sig_input.read(cx).value().to_string();
+        let text = text.trim_end().to_owned();
+        if text.len() > 4096 {
+            self.sig_status = Some("Signatures are limited to 4,096 characters.".into());
+            cx.notify();
+            return;
+        }
+        let mut configs: Vec<AccountConfig> = self.profiles.iter().map(|(_, p)| p.clone()).collect();
+        let Some(index) = self.profiles.iter().position(|(id, _)| *id == account) else { return };
+        configs[index].signature = (!text.is_empty()).then_some(text);
+        configs[index].signature_html = false;
+        self.sig_busy = true;
+        self.sig_status = Some("Saving…".into());
+        cx.notify();
+        let task = cx.background_spawn(async move { account_registry::save_direct(&configs) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                this.sig_busy = false;
+                match result {
+                    Ok(profiles) => {
+                        this.profiles = profiles;
+                        this.sig_status = Some("Saved. New messages from this account use it.".into());
+                    }
+                    Err(error) => this.sig_status = Some(error),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn accept_recipient(

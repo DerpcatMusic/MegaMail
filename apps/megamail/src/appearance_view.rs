@@ -365,6 +365,33 @@ pub(crate) fn render(app: &MailApp, palette: Palette, cx: &mut Context<MailApp>)
                 .on_click(cx.listener(|this, _, window, cx| this.open_setup(window, cx))),
             palette,
         ));
+    let signature = {
+        let editing = app.sig_account;
+        let mut section = v_flex().w_full().gap_2()
+            .child(section_heading("Signature", palette))
+            .child(div().text_size(px(12.)).text_color(palette.muted)
+                .child("Added below your cursor on new messages, replies and forwards, above quoted text. Plain text only."))
+            .child(h_flex().flex_wrap().gap_1().children(app.profiles.iter().map(|(id, profile)| {
+                let id = *id;
+                Button::new(SharedString::from(format!("signature-account-{id}")))
+                    .custom(super::floating_button_variant(cx, palette, dark))
+                    .small()
+                    .selected(editing == Some(id))
+                    .label(profile.email.clone())
+                    .on_click(cx.listener(move |this, _, window, cx| this.edit_signature_for(id, window, cx)))
+            })));
+        if let Some(id) = editing {
+            let html = app.profiles.iter().find(|(p, _)| *p == id).is_some_and(|(_, p)| p.signature_html && p.signature.as_ref().is_some_and(|s| !s.is_empty()));
+            section = section
+                .child(gpui_kit::component::input::Textarea::new(&app.sig_input).h(px(110.)).aria_label("Signature text").disabled(app.sig_busy))
+                .when(html, |el| el.child(div().text_size(px(12.)).text_color(palette.muted).child("This account has an HTML signature. Saving replaces it with the plain text above.")))
+                .child(h_flex().items_center().gap_2()
+                    .child(Button::new("save-signature").secondary().small().label("Save signature").disabled(app.sig_busy)
+                        .on_click(cx.listener(|this, _, _, cx| this.save_signature(cx))))
+                    .when_some(app.sig_status.clone(), |row, status| row.child(div().text_size(px(12.)).text_color(palette.muted).child(status))));
+        }
+        section
+    };
     let shortcuts = v_flex()
         .w_full()
         .child(section_heading("Keyboard shortcuts", palette))
@@ -435,6 +462,7 @@ pub(crate) fn render(app: &MailApp, palette: Palette, cx: &mut Context<MailApp>)
         .child(theme_controls)
         .child(background_controls)
         .child(accounts)
+        .child(signature)
         .child(shortcuts)
         .when_some(app.theme_error.clone(), |column, error| {
             column.child(super::error_banner("Theme update", &error, cx, palette))
