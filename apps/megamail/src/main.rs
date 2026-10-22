@@ -74,6 +74,7 @@ mod rules_editor;
 mod rules_preview;
 mod rules_ui;
 mod scheduling;
+mod sender_card;
 mod spell;
 mod sender_photos;
 mod theme;
@@ -6202,7 +6203,7 @@ impl MailApp {
                                     .label(if self.comfort.details.contains(&row.key) {
                                         "Hide details"
                                     } else {
-                                        "Message details"
+                                        "Details and sender"
                                     })
                                     .on_click({
                                         let key = row.key.clone();
@@ -6233,9 +6234,14 @@ impl MailApp {
                                             std::iter::once(check.summary.as_str()).chain(check.findings.iter().map(String::as_str)).collect::<Vec<_>>().join("\n")
                                         }).unwrap_or_else(|| "Authentication results unavailable for this message.".to_owned())
                                     } else { "Open this message to view its authentication results.".to_owned() }, palette))
-                                    .child(Button::new(SharedString::from(format!("sender-photo-{}-{}-{}", row.key.account_id, row.key.folder_path, row.key.uid)))
-                                        .ghost().small().self_start().label(if self.sender_photos.busy() { "Choosing photo…" } else { "Choose local photo…" }).disabled(self.sender_photos.busy())
-                                        .on_click({ let email = row.message.from_addr.clone(); cx.listener(move |this, _, _, cx| this.choose_sender_photo(email.clone(), cx)) }))
+                                    .child(h_flex().flex_wrap().gap_1()
+                                        .child({ let (account, name, addr) = (row.key.account_id, row.message.from_name.clone(), row.message.from_addr.clone()); Button::new(SharedString::from(format!("sender-save-{}-{}-{}", row.key.account_id, row.key.folder_path, row.key.uid))).ghost().small().label("Save to contacts").tooltip("Adds this address to your private local contacts").on_click(cx.listener(move |this, _, _, cx| this.save_sender_contact(account, name.clone(), addr.clone(), cx))) })
+                                        .child({ let (account, name, addr) = (row.key.account_id, row.message.from_name.clone(), row.message.from_addr.clone()); Button::new(SharedString::from(format!("sender-write-{}-{}-{}", row.key.account_id, row.key.folder_path, row.key.uid))).ghost().small().label("Write to").on_click(cx.listener(move |this, _, window, cx| this.compose_to(account, &name, &addr, window, cx))) })
+                                        .child({ let addr = row.message.from_addr.clone(); Button::new(SharedString::from(format!("sender-search-{}-{}-{}", row.key.account_id, row.key.folder_path, row.key.uid))).ghost().small().label("Mail from sender").on_click(cx.listener(move |this, _, window, cx| this.search_from(&addr, window, cx))) })
+                                        .child({ let addr = row.message.from_addr.clone(); Button::new(SharedString::from(format!("sender-copy-{}-{}-{}", row.key.account_id, row.key.folder_path, row.key.uid))).ghost().small().label("Copy address").on_click(cx.listener(move |_, _, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(addr.clone())))) })
+                                        .child(Button::new(SharedString::from(format!("sender-photo-{}-{}-{}", row.key.account_id, row.key.folder_path, row.key.uid)))
+                                            .ghost().small().label(if self.sender_photos.busy() { "Choosing photo…" } else { "Choose photo…" }).disabled(self.sender_photos.busy())
+                                            .on_click({ let email = row.message.from_addr.clone(); cx.listener(move |this, _, _, cx| this.choose_sender_photo(email.clone(), cx)) })))
                                     .child(reader_recipient(
                                         &row.key,
                                         "To",
