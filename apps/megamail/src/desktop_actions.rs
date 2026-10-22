@@ -58,6 +58,14 @@ pub(crate) fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("down", NextMessage, Some(MESSAGES_CONTEXT)),
         KeyBinding::new("up", PreviousMessage, Some(MESSAGES_CONTEXT)),
+        // Single keys only while the message list itself has focus, so typing
+        // in search or the composer never triggers them.
+        KeyBinding::new("j", NextMessage, Some(MESSAGES_CONTEXT)),
+        KeyBinding::new("k", PreviousMessage, Some(MESSAGES_CONTEXT)),
+        KeyBinding::new("r", ReplyMessage, Some(MESSAGES_CONTEXT)),
+        KeyBinding::new("a", ReplyAll, Some(MESSAGES_CONTEXT)),
+        KeyBinding::new("c", ComposeMessage, Some(MESSAGES_CONTEXT)),
+        KeyBinding::new("/", FocusSearch, Some(MESSAGES_CONTEXT)),
         KeyBinding::new("ctrl-n", ComposeMessage, Some(MAILBOX_CONTEXT)),
         KeyBinding::new("ctrl-r", ReplyMessage, Some(MAILBOX_CONTEXT)),
         KeyBinding::new("ctrl-shift-r", ReplyAll, Some(MAILBOX_CONTEXT)),

@@ -364,7 +364,8 @@ pub(crate) fn render(app: &MailApp, palette: Palette, cx: &mut Context<MailApp>)
                 ("Search mail", "Ctrl+F"),
                 ("All inboxes", "Ctrl+Shift+L"),
                 ("Refresh mail", "F5"),
-                ("Move through the message list", "↑ / ↓"),
+                ("Move through the message list", "↑ / ↓  or  J / K"),
+                ("With the list focused: compose, reply, reply all, search", "C · R · A · /"),
             ]
             .into_iter()
             .map(|(name, key)| {

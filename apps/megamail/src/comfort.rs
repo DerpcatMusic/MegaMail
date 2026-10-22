@@ -397,7 +397,7 @@ impl MailApp {
                         Button::new("collapse-conversation")
                             .ghost()
                             .small()
-                            .label("Collapse history")
+                            .label("Collapse conversations")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.expanded_messages.clear();
                                 this.collapsed_messages.clear();
@@ -467,12 +467,17 @@ impl MailApp {
                         Button::new("reverse-sort")
                             .ghost()
                             .small()
-                            .label(if self.comfort.reverse {
-                                "Reverse"
+                            .icon(Icon::new(if self.comfort.reverse {
+                                IconName::ChevronUp
                             } else {
-                                "Default order"
+                                IconName::ChevronDown
+                            }))
+                            .accessibility_label("Reverse sort order")
+                            .tooltip(if self.comfort.reverse {
+                                "Reversed. Click to restore the usual order."
+                            } else {
+                                "Click to reverse the sort order"
                             })
-                            .tooltip("Reverse the current sort order")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.comfort.reverse = !this.comfort.reverse;
                                 this.apply_mail_sort(cx);
@@ -484,11 +489,11 @@ impl MailApp {
                         Button::new("work-filter")
                             .ghost()
                             .small()
-                            .label(self.comfort.filter.map_or("All work states", Status::label))
+                            .label(self.comfort.filter.map_or("All statuses", Status::label))
                             .dropdown_menu(move |menu, _, _| {
                                 let clear = work_owner.clone();
                                 let mut menu = menu.item(
-                                    PopupMenuItem::element(|_, _| div().child("All work states"))
+                                    PopupMenuItem::element(|_, _| div().child("All statuses"))
                                         .on_click(move |_, _, cx| {
                                             let _ = clear.update(cx, |this, cx| {
                                                 this.comfort.filter = None;
@@ -521,60 +526,17 @@ impl MailApp {
                                 }
                                 menu
                             }),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .flex_wrap()
-                    .gap_1()
-                    .child(
-                        Button::new("search-scope")
-                            .ghost()
-                            .small()
-                            .label("Search scope")
-                            .dropdown_menu(move |menu, _, _| {
-                                let owner = scope_owner.clone();
-                                let other = scope_owner.clone();
-                                menu.item(
-                                    PopupMenuItem::element(|_, _| {
-                                        div().child("All inboxes · every account")
-                                    })
-                                    .on_click(
-                                        move |_, _, cx| {
-                                            let _ = owner.update(cx, |this, cx| {
-                                                this.comfort.filter = None;
-                                                this.live
-                                                    .update(cx, |live, cx| live.select_unified(cx));
-                                            });
-                                        },
-                                    ),
-                                )
-                                .item(
-                                    PopupMenuItem::element(|_, _| {
-                                        div().child("All local mail · every account")
-                                    })
-                                    .on_click(
-                                        move |_, _, cx| {
-                                            let _ = other.update(cx, |this, cx| {
-                                                this.comfort.filter = None;
-                                                this.live.update(cx, |live, cx| {
-                                                    live.select_unified_kind(None, cx)
-                                                });
-                                            });
-                                        },
-                                    ),
-                                )
-                            }),
                     )
                     .child(
                         Button::new("connection-health")
                             .ghost()
                             .small()
                             .label(if snapshot.account_errors.is_empty() {
-                                "Sync details"
+                                "Sync"
                             } else {
-                                "Connection needs attention"
+                                "Needs attention"
                             })
+                            .tooltip("Per-account connection and folder sync details")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.comfort.health_open = !this.comfort.health_open;
                                 cx.notify();
@@ -583,9 +545,9 @@ impl MailApp {
             )
             .child(div().text_size(px(11.)).text_color(palette.muted).child(
                 if snapshot.is_thunderbird_account {
-                    "Search: loaded headers. Try from: or subject:"
+                    "Searches loaded messages. Try from: or subject:"
                 } else {
-                    "Search: cached mail in this view. body: covers downloaded bodies only."
+                    "Searches this view. body: only finds messages already downloaded."
                 },
             ))
             .when(self.comfort.health_open, |el| {
@@ -614,67 +576,98 @@ impl MailApp {
         palette: Palette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let dark = cx.theme().is_dark();
+        let row = |id: SharedString, icon: IconName, label: String, selected: bool| {
+            Button::new(id)
+                .custom(sidebar_button_variant(cx, palette, dark, selected))
+                .small()
+                .selected(selected)
+                .w_full()
+                .h(px(zeron_style::NAV_ROW_MIN_HEIGHT))
+                .rounded(px(4.))
+                .px_2()
+                .child(
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .gap_2()
+                        .child(Icon::new(icon).size(px(14.)).text_color(if selected {
+                            palette.text
+                        } else {
+                            palette.muted
+                        }))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(zeron_style::NAV_ROW_TEXT_SIZE))
+                                .text_color(if selected { palette.text } else { palette.muted })
+                                .child(label),
+                        ),
+                )
+        };
         v_flex()
             .gap_1()
+            .child(
+                div()
+                    .px_2()
+                    .pt_2()
+                    .text_size(px(11.))
+                    .text_color(palette.faint)
+                    .child(if snapshot.accounts.len() > 1 { "All accounts" } else { "Elsewhere" }),
+            )
             .children(
                 [
-                    (Some(FolderKind::Sent), "All sent", IconName::Mail),
-                    (Some(FolderKind::Drafts), "All drafts", IconName::FileText),
-                    (Some(FolderKind::Archive), "All archived", IconName::Archive),
-                    (None, "All local mail", IconName::Search),
+                    (Some(FolderKind::Sent), "Sent", IconName::Send),
+                    (Some(FolderKind::Drafts), "Drafts", IconName::FileText),
+                    (Some(FolderKind::Archive), "Archive", IconName::Archive),
+                    (None, "Everything", IconName::Search),
                 ]
                 .into_iter()
+                .filter(|(kind, _, _)| kind.is_none() || snapshot.accounts.len() > 1)
                 .map(|(kind, label, icon)| {
-                    Button::new(SharedString::from(format!("shared-folder-{label}")))
-                        .ghost()
-                        .small()
-                        .w_full()
-                        .justify_start()
-                        .icon(Icon::new(icon).size(px(14.)))
-                        .label(label)
-                        .selected(
-                            snapshot.scope == MailboxScope::Unified
-                                && snapshot.unified_kind == kind,
-                        )
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.mailbox_focus.focus(window, cx);
-                            this.comfort.filter = None;
-                            this.comfort.outbox_open = false;
-                            this.live
-                                .update(cx, |live, cx| live.select_unified_kind(kind, cx));
-                            this.view = View::Mailbox;
-                            this.list_scroll = UniformListScrollHandle::new();
-                            cx.notify();
-                        }))
+                    let selected =
+                        snapshot.scope == MailboxScope::Unified && snapshot.unified_kind == kind;
+                    row(
+                        SharedString::from(format!("shared-folder-{label}")),
+                        icon,
+                        label.to_owned(),
+                        selected,
+                    )
+                    .tooltip(match kind {
+                        Some(_) => format!("{label} from every account"),
+                        None => "Everything saved on this device, except Trash, Junk and Templates".to_owned(),
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.mailbox_focus.focus(window, cx);
+                        this.comfort.filter = None;
+                        this.comfort.outbox_open = false;
+                        this.live
+                            .update(cx, |live, cx| live.select_unified_kind(kind, cx));
+                        this.view = View::Mailbox;
+                        this.list_scroll = UniformListScrollHandle::new();
+                        cx.notify();
+                    }))
                 }),
             )
             .child(
-                Button::new("all-outbox")
-                    .ghost()
-                    .small()
-                    .w_full()
-                    .justify_start()
-                    .icon(Icon::new(IconName::Mail).size(px(14.)))
-                    .label(format!("Outbox · {}", snapshot.outbox.len()))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.mailbox_focus.focus(window, cx);
-                        this.comfort.outbox_open = true;
-                        this.view = View::Mailbox;
-                        cx.notify();
-                    })),
-            )
-            .when(self.composer.is_some(), |el| {
-                el.child(
-                    Button::new("resume-retained-draft")
-                        .secondary()
-                        .small()
-                        .label("Resume your draft")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.view = View::Compose;
-                            cx.notify();
-                        })),
+                row(
+                    "all-outbox".into(),
+                    IconName::Send,
+                    if snapshot.outbox.is_empty() {
+                        "Outbox".to_owned()
+                    } else {
+                        format!("Outbox · {}", snapshot.outbox.len())
+                    },
+                    self.comfort.outbox_open,
                 )
-            })
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.mailbox_focus.focus(window, cx);
+                    this.comfort.outbox_open = true;
+                    this.view = View::Mailbox;
+                    cx.notify();
+                })),
+            )
             .into_any_element()
     }
     pub(crate) fn outgoing_cards(

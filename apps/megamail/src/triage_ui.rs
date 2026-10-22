@@ -696,7 +696,7 @@ impl MailApp {
                 .child(Button::new("cancel-bulk-pending").ghost().small().label("Cancel pending work").disabled(!busy)
                     .tooltip("Already submitted work waits for its own receipt; cancel stops only items not yet submitted.")
                     .on_click(cx.listener(|this, _, _, cx| { if let Some(batch) = &mut this.triage.batch { batch.cancel(); } this.pump_triage(cx); cx.notify(); })))
-                .child(Button::new("undo-last-flag-batch").ghost().small().label("Undo last confirmed flag changes").disabled(busy || self.triage.undo.is_empty())
+                .child(Button::new("undo-last-flag-batch").ghost().small().label("Undo last change").disabled(busy || self.triage.undo.is_empty())
                     .tooltip("Only confirmed flag changes can be undone. Moves have no destination identity receipt and require manual review.")
                     .on_click(cx.listener(|this, _, _, cx| this.undo_triage(cx))))
             )

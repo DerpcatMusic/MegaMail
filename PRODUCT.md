@@ -128,9 +128,7 @@ VS Code JSON/JSONC or extension-package theme import. Imported themes can be
 removed; Reset restores preferences while retaining the theme library. Aurora,
 Midnight, Paper, and custom wallpaper support Original, Dither, ASCII,
 Halftone, and Scanlines, 0–100% treatment strength and wallpaper opacity, blur
-values 0/10/16, and bottom fade. Cached wallpaper crossfades over 240 ms below
-opaque navigation, message-list, reader and task surfaces. Wallpaper remains
-behind the workspace without showing through mail content. This does not include
+values 0/10/16, and bottom fade. Cached wallpaper crossfades over 240 ms behind frosted navigation, message-list, reader and composer panes. Each pane lets the wallpaper show through by a fixed share (rail 52%, list 36%, reader and composer 24%), capped by the image's measured contrast-safe opacity so text stays legible. This does not include
 Zeron's renderer-level backdrop blur or per-primitive edge fade.
 
 ## Brand Commitments

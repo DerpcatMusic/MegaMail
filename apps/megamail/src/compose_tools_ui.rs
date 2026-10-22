@@ -28,6 +28,9 @@ impl Recipient {
 /// Retained inputs and immutable worker-produced data; never serialized with mail.
 pub(crate) struct Tools {
     open: bool,
+    /// Contacts & snippets panel is expanded; `open` only means a read was requested.
+    pub(crate) show: bool,
+    pub(crate) autoloaded: bool,
     revision: u64,
     query: Entity<InputState>,
     name: Entity<InputState>,
@@ -49,9 +52,14 @@ pub(crate) struct Tools {
     status: String,
 }
 impl Tools {
+    pub(crate) fn book(&self) -> Option<Arc<contacts::ContactSnapshot>> {
+        self.snapshot.as_ref()?.contacts.clone()
+    }
     pub fn new(window: &mut Window, cx: &mut Context<MailApp>) -> Self {
         Self {
             open: false,
+            show: false,
+            autoloaded: false,
             revision: 0,
             query: new_input(window, cx, "Name or address prefix"),
             name: new_input(window, cx, "Contact display name"),
@@ -166,7 +174,7 @@ fn read_snapshot(
     match signature {
         Some(Ok(Some(signature))) => items.insert(0, signature),
         Some(Err(error)) => {
-            let signature_error = format!("Configured signature rejected: {error:?}");
+            let signature_error = "This account's signature cannot be used in plain text. Edit it in account settings.".to_owned();
             text_error = Some(text_error.map_or(signature_error.clone(), |previous| {
                 format!("{previous}; {signature_error}")
             }));
@@ -355,7 +363,7 @@ impl MailApp {
             revision,
         })
     }
-    fn read_compose_tools(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn read_compose_tools(&mut self, cx: &mut Context<Self>) {
         let Some(envelope) = self.tools_request(cx) else {
             return;
         };
@@ -1143,12 +1151,20 @@ impl MailApp {
                 .is_some_and(|s| s.contacts.is_some());
         v_flex().w_full().gap_2()
             .child(Button::new("read-compose-tools").ghost().small()
-                .label(if self.compose_tools_busy { "Local tools busy…" } else { "Read local contacts & literal text" })
-                .disabled(!enabled)
-                .tooltip("Account-scoped private local plaintext, not encrypted at rest. No system contacts, DAV or network lookup.")
-                .on_click(cx.listener(|this, _, _, cx| this.read_compose_tools(cx))))
-            .when(!usable, |el| el.child(div().text_size(px(11.)).text_color(palette.muted).child("Local tools require this composer's usable owning account; demo and dormant accounts cannot open storage.")))
-            .when(tools.open, |el| {
+                .icon(Icon::new(if tools.show { IconName::ChevronDown } else { IconName::ChevronRight }))
+                .label(if self.compose_tools_busy { "Loading contacts…" } else if tools.show { "Hide contacts & snippets" } else { "Contacts & snippets" })
+                .disabled(!enabled && !tools.show)
+                .tooltip("Saved contacts, signatures and reusable text. Stored privately on this device; nothing is looked up online.")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    let Some(composer) = &mut this.composer else { return };
+                    composer.tools.show = !composer.tools.show;
+                    if composer.tools.show && composer.tools.snapshot.is_none() {
+                        this.read_compose_tools(cx);
+                    }
+                    cx.notify();
+                })))
+            .when(!usable, |el| el.child(div().text_size(px(11.)).text_color(palette.muted).child("Contacts and snippets need a connected account, so they are unavailable here.")))
+            .when(tools.show, |el| {
                 let mut panel = v_flex().w_full().gap_2()
                     .child(div().text_size(px(11.)).text_color(palette.muted).child(format!("Private local plaintext • account {} • {}", composer.message.from_account_id, self.tools_stamp(cx).map_or("unavailable".into(), |s| s.address))))
                     .child(div().text_size(px(11.)).text_color(palette.muted).child(tools.status.clone()))
@@ -1180,11 +1196,11 @@ impl MailApp {
                     .child(div().text_size(px(11.)).text_color(palette.muted).child("Literal items insert at the body caret, keeping selected text and subject. HTML alternatives and missing variables block insertion. Save snippets, templates and signatures below."));
                 panel = panel.child(Textarea::new(&tools.notes).h(px(80.)).aria_label("Local contact notes").disabled(!enabled || !contacts_ready))
                     .child(h_flex().gap_2()
-                        .child(Button::new("export-local-contacts").ghost().small().label("Export vCard")
+                        .child(Button::new("export-local-contacts").ghost().small().label("Export contacts")
                             .disabled(!enabled || !contacts_ready)
                             .tooltip("Export this account's local contacts as a private vCard file. Choose a new filename.")
                             .on_click(cx.listener(|this, _, _, cx| this.export_local_contacts(cx))))
-                        .child(Button::new("import-local-contacts").ghost().small().label("Import vCard")
+                        .child(Button::new("import-local-contacts").ghost().small().label("Import contacts")
                             .disabled(!enabled || !contacts_ready)
                             .on_click(cx.listener(|this, _, _, cx| this.import_local_contacts(cx))))
                         .child(Button::new("new-local-contact").ghost().small().label("New contact").disabled(!enabled || !contacts_ready)

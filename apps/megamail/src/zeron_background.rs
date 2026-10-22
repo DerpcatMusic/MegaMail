@@ -95,15 +95,22 @@ pub(crate) fn reader_surface(state: &AppearanceState, dark: bool) -> Hsla {
 }
 
 fn surface(state: &AppearanceState, color: u32, nominal_bleed: f32) -> Hsla {
+    translucent(state, rgb(color).into(), nominal_bleed)
+}
+
+/// Let the wallpaper show through `color` by `nominal_bleed`, never beyond the
+/// measured contrast-safe opacity for the current image.
+pub(crate) fn translucent(state: &AppearanceState, color: Hsla, nominal_bleed: f32) -> Hsla {
     let wallpaper_opacity = state.visual_wallpaper_opacity().clamp(0.0, 1.0);
     let maximum_bleed = if state.has_cached_image() && wallpaper_opacity > 0.001 {
         (state.safe_opacity() / wallpaper_opacity).clamp(0.0, 1.0)
     } else {
         1.0
     };
-    let alpha = 1.0 - nominal_bleed.min(maximum_bleed);
-    let color: Hsla = rgb(color).into();
-    Hsla { a: alpha, ..color }
+    Hsla {
+        a: 1.0 - nominal_bleed.min(maximum_bleed),
+        ..color
+    }
 }
 
 fn aurora(dark: bool, accent: Hsla) -> Div {

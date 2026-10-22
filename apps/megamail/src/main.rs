@@ -64,6 +64,7 @@ mod onboarding;
 mod outbox_review;
 mod preferences;
 mod provider_setup;
+mod recipient_suggest;
 mod reader_actions;
 mod reader_document;
 mod reader_find;
@@ -485,6 +486,10 @@ struct Composer {
     body: Entity<TextareaState>,
     tools: compose_tools_ui::Tools,
     schedule: Entity<InputState>,
+    show_cc_bcc: bool,
+    show_schedule: bool,
+    /// Which recipient field (0 To, 1 Cc, 2 Bcc) was edited last; owns the suggestion list.
+    last_recipient: usize,
     error: Option<String>,
     send_request_id: Option<u64>,
     send_uncertain: bool,
@@ -528,6 +533,9 @@ impl Composer {
                     .and_then(megamail_core::datefmt::editable_send_time)
                     .unwrap_or_default(),
             ),
+            show_cc_bcc: !message.cc.is_empty() || !message.bcc.is_empty(),
+            show_schedule: message.send_at.is_some(),
+            last_recipient: 0,
             message,
             error: None,
             send_request_id: None,
@@ -546,13 +554,19 @@ impl Composer {
             draft_save_completed: false,
             _input_subscriptions: Vec::new(),
         };
-        for input in [&composer.to, &composer.cc, &composer.bcc, &composer.subject] {
+        for (index, input) in [&composer.to, &composer.cc, &composer.bcc, &composer.subject]
+            .into_iter()
+            .enumerate()
+        {
             composer._input_subscriptions.push(cx.subscribe(
                 input,
-                |this, _, event: &InputEvent, cx| {
+                move |this, _, event: &InputEvent, cx| {
                     if matches!(event, InputEvent::Change) {
                         if let Some(composer) = &mut this.composer {
                             composer.recovery.dirty_input = true;
+                            if index < 3 {
+                                composer.last_recipient = index;
+                            }
                         }
                         cx.notify();
                     }
@@ -2384,7 +2398,7 @@ impl MailApp {
         if let Err(error) =
             compose_productivity::choose_sender(&mut composer.message, account_id, profile, &choice)
         {
-            composer.error = Some(format!("Sender choice rejected: {error:?}"));
+            composer.error = Some("That sender address could not be used. Pick another From address.".to_owned());
             cx.notify();
             return;
         }
@@ -2478,8 +2492,10 @@ impl MailApp {
         cx.notify();
     }
 
-    fn pane_surface(&self, color: gpui_kit::Hsla, _bleed: f32) -> gpui_kit::Hsla {
-        gpui_kit::Hsla { a: 1.0, ..color }
+    /// Frosted pane material: the wallpaper shows through by `bleed`, capped by
+    /// the image's measured contrast-safe opacity so text stays legible.
+    fn pane_surface(&self, color: gpui_kit::Hsla, bleed: f32) -> gpui_kit::Hsla {
+        zeron_background::translucent(&self.appearance, color, bleed)
     }
 
     fn activate_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -4051,7 +4067,7 @@ impl MailApp {
             .h_full()
             .min_h_0()
             .flex_shrink_0()
-            .bg(self.pane_surface(palette.sidebar, 0.24))
+            .bg(self.pane_surface(palette.sidebar, 0.52))
             .border_r_1()
             .border_color(palette.border)
             .child(
@@ -4159,10 +4175,10 @@ impl MailApp {
                     .gap_1()
                     .child(self.recovery_panel(palette, cx))
                     .child(self.unified_button(snapshot, palette, dark, false, cx))
-                    .child(self.shared_folders(snapshot, palette, cx))
                     .children(primary.into_iter().map(|folder| {
                         self.folder_button(folder, snapshot, palette, dark, false, cx)
                     }))
+                    .child(self.shared_folders(snapshot, palette, cx))
                     .when(!other.is_empty(), |column| {
                         column.child(
                             v_flex()
@@ -4280,8 +4296,26 @@ impl MailApp {
         .h(px(32.))
         .rounded(px(4.))
         .px_2()
-        .icon(Icon::new(IconName::Inbox).size(px(14.)))
-        .when(!collapsed, |el| el.label("All inboxes"))
+        .when(collapsed, |el| el.icon(Icon::new(IconName::Inbox).size(px(14.))))
+        .when(!collapsed, |el| {
+            el.child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .gap_2()
+                    .child(Icon::new(IconName::Inbox).size(px(14.)).text_color(if selected {
+                        palette.text
+                    } else {
+                        palette.muted
+                    }))
+                    .child(
+                        div()
+                            .text_size(px(zeron_style::NAV_ROW_TEXT_SIZE))
+                            .font_weight(if selected { FontWeight::MEDIUM } else { FontWeight::NORMAL })
+                            .child("All inboxes"),
+                    ),
+            )
+        })
         .tooltip("Inbox mail from every account")
         .accessibility_label("All inboxes from every account")
         .on_click(cx.listener(|this, _, window, cx| {
@@ -4322,7 +4356,7 @@ impl MailApp {
             .h_full()
             .min_h_0()
             .flex_shrink_0()
-            .bg(self.pane_surface(palette.sidebar, 0.24))
+            .bg(self.pane_surface(palette.sidebar, 0.52))
             .border_r_1()
             .border_color(palette.border)
             .child(
@@ -4451,7 +4485,7 @@ impl MailApp {
                     } else if snapshot.search_query.is_empty() {
                         if self.comfort.filter.is_some() { "Choose All work states or load more results to broaden this view." } else { "New mail will appear here when this account syncs." }
                     } else {
-                        "Try another search or choose All local mail in Search scope."
+                        "Try another search, or choose Everything in the sidebar to search all saved mail."
                     },
                 ))
                 .into_any_element();
@@ -4710,7 +4744,7 @@ impl MailApp {
             .tooltip(format!("Mailbox options · {}", selected.label()))
             .accessibility_label("Mailbox filters and options")
             .dropdown_menu(move |mut menu, _, _| {
-                menu = menu.label("Loaded messages");
+                menu = menu.label("Messages on screen");
                 for filter in MessageFilter::ALL {
                     let owner = owner.clone();
                     menu = menu.item(
@@ -4779,7 +4813,7 @@ impl MailApp {
             .min_w_0()
             .flex_shrink_0()
             .min_h_0()
-            .bg(self.pane_surface(palette.list, 0.10))
+            .bg(self.pane_surface(palette.list, 0.36))
             .border_r_1()
             .border_color(palette.border)
             .child(
@@ -5434,9 +5468,9 @@ impl MailApp {
                     "Copy message text",
                     "Find in message",
                     if plain {
-                        "Use native formatting"
+                        "Show simplified view"
                     } else {
-                        "Read as text"
+                        "Show plain text"
                     },
                     "Save message text…",
                     "Save for printing…",
@@ -5509,7 +5543,7 @@ impl MailApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if self.comfort.outbox_open {
-            return v_flex().h_full().flex_1().min_w_0().bg(palette.background).p_5().gap_3()
+            return v_flex().h_full().flex_1().min_w_0().bg(self.pane_surface(palette.background, 0.24)).p_5().gap_3()
                 .child(div().text_size(px(22.)).font_weight(FontWeight::SEMIBOLD).child("Outbox · all accounts"))
                 .child(div().text_size(px(13.)).text_color(palette.muted).child("Queued, scheduled and held messages. Server acceptance is separate from delivery; uncertain outcomes need review."))
                  .when(!snapshot.outbox.is_empty(), |el| el.child(self.outbox_panel(snapshot, palette, cx)))
@@ -5522,7 +5556,7 @@ impl MailApp {
                 .h_full()
                 .flex_1()
                 .min_w_0()
-                .bg(self.pane_surface(palette.background, 0.05))
+                .bg(self.pane_surface(palette.background, 0.24))
                 .when(!snapshot.outbox.is_empty(), |el| {
                     el.child(self.outbox_panel(snapshot, palette, cx))
                 })
@@ -5600,7 +5634,7 @@ impl MailApp {
             .h_full()
             .flex_1()
             .min_w_0()
-            .bg(self.pane_surface(palette.background, 0.05))
+            .bg(self.pane_surface(palette.background, 0.24))
             .child(
                 h_flex()
                     .min_h(px(44.))
@@ -5661,7 +5695,7 @@ impl MailApp {
                                     Button::new("reply-all-message")
                                         .ghost()
                                         .small()
-                                        .label("All")
+                                        .label("Reply all")
                                         .disabled(!self.action_state(cx).allows(desktop_actions::MailboxAction::ReplyAll))
                                         .tooltip("Reply all · Ctrl+Shift+R")
                                         .accessibility_label("Reply to all recipients")
@@ -5678,6 +5712,7 @@ impl MailApp {
                                         .ghost()
                                         .small()
                                         .icon(Icon::new(IconName::CornerUpRight))
+                                        .label("Forward")
                                         .disabled(snapshot.pending_send)
                                         .accessibility_label("Forward message")
                                         .tooltip("Forward message")
@@ -5714,9 +5749,10 @@ impl MailApp {
                             .child(self.message_actions(snapshot, palette, cx))
                             .child(
                                 Button::new("archive-message")
-                                    .secondary()
+                                    .ghost()
                                     .small()
                                     .icon(Icon::new(archive_icon))
+                                    .label(archive_label)
                                     .tooltip(archive_label)
                                     .disabled(
                                         snapshot.is_demo
@@ -5762,7 +5798,7 @@ impl MailApp {
                             .max_w(px(680.))
                             .gap_4()
                             .child(h_flex().gap_2()
-                                .child(Button::new("open-original-formatting").ghost().small().label("Original formatting…")
+                                .child(Button::new("open-original-formatting").ghost().small().label("Show original formatting")
                                     .disabled(!snapshot.body_loaded)
                                     .tooltip("Open the sender’s original layout in a separate window")
                                     .on_click(cx.listener(|this, _, _, cx| this.open_original_formatting(cx))))
@@ -6431,7 +6467,7 @@ impl MailApp {
         v_flex()
             .flex_1()
             .min_h_0()
-            .bg(self.pane_surface(palette.background, 0.05))
+            .bg(self.pane_surface(palette.background, 0.24))
             .child(
                 v_flex()
                     .id("setup-scroll")
@@ -6939,6 +6975,7 @@ impl MailApp {
         &self,
         snapshot: &MailboxSnapshot,
         palette: Palette,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some(composer) = self.composer.as_ref() else {
@@ -6995,7 +7032,7 @@ impl MailApp {
         v_flex()
             .size_full()
             .min_w_0()
-            .bg(palette.background)
+            .bg(self.pane_surface(palette.background, 0.24))
             .child(
                 h_flex()
                     .h(px(44.))
@@ -7017,7 +7054,7 @@ impl MailApp {
                             )
                             .child(from_control),
                     )
-                    .child(Button::new("browse-while-composing").ghost().small().label("Back to mail · keep draft").on_click(cx.listener(|this, _, window, cx| { this.capture_recovery(cx); this.mailbox_focus.focus(window, cx); this.view = View::Mailbox; cx.notify(); })))
+                    .child(Button::new("browse-while-composing").ghost().small().label("Back to mail").tooltip("Return to your mailbox. This draft stays open under Resume draft.").on_click(cx.listener(|this, _, window, cx| { this.capture_recovery(cx); this.mailbox_focus.focus(window, cx); this.view = View::Mailbox; cx.notify(); })))
                     .child(
                         Button::new("close-composer")
                             .ghost()
@@ -7069,41 +7106,30 @@ impl MailApp {
                             .w_full()
                             .max_w(px(680.))
                             .gap_3()
-                            .child(labeled_input(
-                                "To",
-                                Input::new(&composer.to)
-                                    .aria_label("To")
-                                    .disabled(!composer.can_edit()),
-                                palette,
-                            ))
-                            .child(labeled_input(
-                                "Cc",
-                                Input::new(&composer.cc)
-                                    .aria_label("Cc")
-                                    .disabled(!composer.can_edit()),
-                                palette,
-                            ))
-                            .child(labeled_input(
-                                "Bcc",
-                                Input::new(&composer.bcc)
-                                    .aria_label("Bcc")
-                                    .disabled(!composer.can_edit()),
-                                palette,
-                            ))
-                            .child(self.compose_tools_view(palette, cx))
-                            .when(self.live.read(cx).schedule_session(composer.message.from_account_id).is_some(), |el| el
-                                .child(labeled_input("Send Later", Input::new(&composer.schedule).aria_label("Scheduled date, time and numeric UTC offset").disabled(!composer.can_edit()), palette))
-                                .child(h_flex().flex_wrap().gap_2()
-                                    .child(Button::new("apply-send-time").ghost().small().label("Set time").disabled(!composer.can_edit()).on_click(cx.listener(|this, _, window, cx| this.set_compose_schedule(false, window, cx))))
-                                    .child(Button::new("clear-send-time").ghost().small().label("Send now instead").disabled(!composer.can_edit() || composer.message.send_at.is_none()).on_click(cx.listener(|this, _, window, cx| this.set_compose_schedule(true, window, cx)))))
-                                .child(div().text_size(px(11.)).text_color(palette.muted).child("Local scheduling requires MegaMail running and connected. When closed, delivery resumes after the next launch.")))
-                            .child(labeled_input(
-                                "Subject",
-                                Input::new(&composer.subject)
-                                    .aria_label("Subject")
-                                    .disabled(!composer.can_edit()),
-                                palette,
-                            ))
+                            .child(self.recipient_row(0, "To", snapshot, palette, window, cx))
+                            .when(composer.show_cc_bcc, |el| el
+                                .child(self.recipient_row(1, "Cc", snapshot, palette, window, cx))
+                                .child(self.recipient_row(2, "Bcc", snapshot, palette, window, cx)))
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .items_center()
+                                    .gap_3()
+                                    .child(div().w(px(44.)).flex_shrink_0().text_size(px(12.)).text_color(palette.muted).child("Subject"))
+                                    .child(Input::new(&composer.subject).aria_label("Subject").disabled(!composer.can_edit()).flex_1().min_w_0()),
+                            )
+                            .when(
+                                self.live.read(cx).schedule_session(composer.message.from_account_id).is_some() && composer.show_schedule,
+                                |el| el.child(
+                                    v_flex().w_full().gap_2().p_3().rounded(px(8.)).bg(palette.surface)
+                                        .child(div().text_size(px(12.)).font_weight(FontWeight::MEDIUM).child("Send later"))
+                                        .child(Input::new(&composer.schedule).aria_label("Scheduled date, time and numeric UTC offset").disabled(!composer.can_edit()))
+                                        .child(h_flex().flex_wrap().items_center().gap_2()
+                                            .child(Button::new("apply-send-time").secondary().small().label("Schedule").disabled(!composer.can_edit()).on_click(cx.listener(|this, _, window, cx| this.set_compose_schedule(false, window, cx))))
+                                            .child(Button::new("clear-send-time").ghost().small().label("Send now instead").disabled(!composer.can_edit() || composer.message.send_at.is_none()).on_click(cx.listener(|this, _, window, cx| this.set_compose_schedule(true, window, cx)))))
+                                        .child(div().text_size(px(11.)).text_color(palette.muted).child("Use a date, time and UTC offset, for example 2026-10-23 09:00 +02:00. MegaMail must be running at that time; if it is closed, the message sends after the next launch.")),
+                                ),
+                            )
                             .child(self.markup_controls(palette, cx))
                             .child(
                                 Textarea::new(&composer.body)
@@ -7119,7 +7145,7 @@ impl MailApp {
                                         Button::new("add-attachments")
                                             .secondary()
                                             .small()
-                                            .icon(Icon::new(IconName::FileText))
+                                            .icon(Icon::new(IconName::Paperclip))
                                             .label(if composer.selecting_attachments {
                                                 "Choosing files…"
                                             } else {
@@ -7133,7 +7159,7 @@ impl MailApp {
                                     .child(
                                         div().text_size(px(11.)).text_color(palette.muted).child(
                                             if composer.message.attachments.is_empty() {
-                                                "No files attached".to_owned()
+                                                String::new()
                                             } else {
                                                 format!(
                                                     "{} file{} attached",
@@ -7202,15 +7228,16 @@ impl MailApp {
                             .when_some(composer.attachment_error.clone(), |row, error| {
                                 row.child(error_banner("Attachment", &error, cx, palette))
                             })
-                            .child(div().text_size(px(11.)).text_color(palette.muted).child(composer.recovery.status.clone()))
+                            .child(self.compose_tools_view(palette, cx))
+                            .child(div().text_size(px(11.)).text_color(palette.faint).child(composer.recovery.status.clone()))
                             .when_some(self.recovery_error.clone(), |el, error| el.child(error_banner("Local recovery", &error, cx, palette)))
-                            .child(Button::new("retry-local-recovery").ghost().small().label(if composer.sent_complete { "Retry recovery cleanup" } else { "Retry local recovery" }).disabled(composer.operation_pending() || if composer.sent_complete { composer.recovery.cleanup_in_flight || composer.recovery.retired == Some(composer.recovery.generation) } else { composer.recovery.in_flight.is_some() || composer.recovery.acknowledged == composer.recovery.generation }).on_click(cx.listener(|this, _, _, cx| this.retry_native_recovery(cx))))
+                            .when(composer.sent_complete || composer.recovery.in_flight.is_none() && composer.recovery.acknowledged != composer.recovery.generation, |el| el.child(Button::new("retry-local-recovery").ghost().small().label(if composer.sent_complete { "Retry recovery cleanup" } else { "Retry saving local copy" }).disabled(composer.operation_pending() || if composer.sent_complete { composer.recovery.cleanup_in_flight || composer.recovery.retired == Some(composer.recovery.generation) } else { composer.recovery.in_flight.is_some() || composer.recovery.acknowledged == composer.recovery.generation }).on_click(cx.listener(|this, _, _, cx| this.retry_native_recovery(cx)))))
                             .when(!composer.message.html.is_empty(), |el| el.child(Button::new("convert-recovered-html").ghost().small().label("Discard HTML alternative and edit plain text").disabled(composer.operation_pending()).on_click(cx.listener(|this, _, _, cx| {
                                 if let Some(composer) = &mut this.composer { if !composer.operation_pending() { composer.message.html.clear(); composer.recovery.dirty_input = true; composer.notice = Some("HTML was discarded explicitly. Only the recovered plain-text alternative will be edited/sent.".into()); } }
                                 this.capture_recovery(cx); cx.notify();
                             }))))
                             .when(composer.message.draft_origin.is_some() && self.live.read(cx).server_draft_retirement_unavailable(composer.message.from_account_id), |row| {
-                                row.child(div().text_size(px(11.)).text_color(palette.muted).child("IMAP Send/Save draft uses a separate copy. The original server draft is retained for manual review: generation-qualified retirement is unavailable. No automatic deletion or EXPUNGE is authorized by this composer."))
+                                row.child(div().text_size(px(11.)).text_color(palette.muted).child("Saving creates a new draft copy. The earlier version stays in Drafts; delete it there once you no longer need it."))
                             })
                             .when_some(composer.notice.clone(), |row, notice| {
                                 row.child(
@@ -7343,10 +7370,14 @@ impl MailApp {
                             .items_center()
                             .justify_between()
                             .child(
-                                div()
-                                    .text_size(px(11.))
-                                    .text_color(palette.faint)
-                                    .child(if composer.markup.enabled { "Formatted Markdown · HTML + plain text" } else if !composer.message.html.is_empty() { "Original HTML retained" } else { "Plain-text message" }),
+                                h_flex().items_center().gap_2()
+                                    .when(self.live.read(cx).schedule_session(composer.message.from_account_id).is_some(), |row| row.child(
+                                        Button::new("toggle-send-later").ghost().small()
+                                            .label(if composer.message.send_at.is_some() { "Scheduled" } else { "Send later" })
+                                            .selected(composer.show_schedule || composer.message.send_at.is_some())
+                                            .disabled(!composer.can_edit())
+                                            .on_click(cx.listener(|this, _, _, cx| { if let Some(c) = &mut this.composer { c.show_schedule = !c.show_schedule; } cx.notify(); }))))
+                                    .child(div().text_size(px(11.)).text_color(palette.faint).child(if composer.markup.enabled { "Formatted · HTML with plain-text fallback" } else if !composer.message.html.is_empty() { "Original HTML kept" } else { "Plain text" })),
                             )
                             .child(
                                 h_flex()
@@ -7395,6 +7426,125 @@ impl MailApp {
                     ),
             )
             .into_any_element()
+    }
+
+    /// One recipient line: label, input, Cc/Bcc reveal on To, and an inline
+    /// suggestion list under the field being typed in.
+    fn recipient_row(
+        &self,
+        index: usize,
+        label: &'static str,
+        snapshot: &MailboxSnapshot,
+        palette: Palette,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(composer) = self.composer.as_ref() else {
+            return div().into_any_element();
+        };
+        let input = [&composer.to, &composer.cc, &composer.bcc][index];
+        let editing_elsewhere = composer.subject.read(cx).focus_handle(cx).is_focused(window)
+            || composer.body.read(cx).focus_handle(cx).is_focused(window);
+        let suggestions = if composer.last_recipient == index && composer.can_edit() && !editing_elsewhere {
+            let own = self.own_addresses(composer.message.from_account_id, cx);
+            let seen: Vec<(String, String)> = snapshot
+                .page
+                .iter()
+                .map(|row| (row.message.from_name.clone(), row.message.from_addr.clone()))
+                .filter(|(_, addr)| !own.iter().any(|o| o.eq_ignore_ascii_case(addr)))
+                .take(400)
+                .collect();
+            let (to, cc, bcc) = (
+                composer.to.read(cx).value(),
+                composer.cc.read(cx).value(),
+                composer.bcc.read(cx).value(),
+            );
+            recipient_suggest::suggest(
+                &input.read(cx).value(),
+                &[to.as_ref(), cc.as_ref(), bcc.as_ref()],
+                composer.tools.book().as_deref(),
+                &seen,
+                5,
+            )
+        } else {
+            Vec::new()
+        };
+        v_flex()
+            .w_full()
+            .gap_1()
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .gap_3()
+                    .child(div().w(px(44.)).flex_shrink_0().text_size(px(12.)).text_color(palette.muted).child(label))
+                    .child(
+                        Input::new(input)
+                            .aria_label(label)
+                            .disabled(!composer.can_edit())
+                            .flex_1()
+                            .min_w_0(),
+                    )
+                    .when(index == 0 && !composer.show_cc_bcc, |row| {
+                        row.child(
+                            Button::new("show-cc-bcc")
+                                .ghost()
+                                .small()
+                                .label("Cc / Bcc")
+                                .tooltip("Add copy and blind-copy recipients")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some(c) = &mut this.composer {
+                                        c.show_cc_bcc = true;
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                    }),
+            )
+            .when(!suggestions.is_empty(), |el| {
+                el.child(
+                    v_flex()
+                        .ml(px(56.))
+                        .p_1()
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(palette.border)
+                        .bg(palette.surface)
+                        .children(suggestions.into_iter().enumerate().map(|(n, choice)| {
+                            let text = if choice.name.trim().is_empty() || choice.name == choice.email {
+                                choice.email.clone()
+                            } else {
+                                format!("{} · {}", choice.name, choice.email)
+                            };
+                            Button::new(SharedString::from(format!("suggest-{index}-{n}")))
+                                .ghost()
+                                .small()
+                                .label(text)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.accept_recipient(index, &choice, window, cx)
+                                }))
+                        })),
+                )
+            })
+            .into_any_element()
+    }
+
+    fn accept_recipient(
+        &mut self,
+        index: usize,
+        choice: &recipient_suggest::Suggestion,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(composer) = self.composer.as_mut().filter(|c| c.can_edit()) else {
+            return;
+        };
+        let input = [&composer.to, &composer.cc, &composer.bcc][index].clone();
+        let value = recipient_suggest::accept(&input.read(cx).value(), choice);
+        input.update(cx, |input, cx| input.set_value(value, window, cx));
+        composer.recovery.dirty_input = true;
+        composer.draft_saved = None;
+        cx.notify();
     }
 
     fn send_current_message(&mut self, cx: &mut Context<Self>) {
@@ -7838,6 +7988,21 @@ impl Render for MailApp {
         } else if !admit {
             self.mailbox_focus_admitted = false;
         }
+        // Load saved contacts once per composer so recipient completion works
+        // without opening the contacts panel.
+        if self.view == View::Compose
+            && self
+                .composer
+                .as_ref()
+                .is_some_and(|c| !c.tools.autoloaded && c.can_edit())
+        {
+            cx.on_next_frame(window, |this, _, cx| {
+                if let Some(c) = this.composer.as_mut().filter(|c| !c.tools.autoloaded) {
+                    c.tools.autoloaded = true;
+                    this.read_compose_tools(cx);
+                }
+            });
+        }
         if self.reader_should_focus && self.view == View::Mailbox {
             self.reader_should_focus = false;
             if self.reader_follow_selection && snapshot.selected_key.is_some() {
@@ -7869,7 +8034,6 @@ impl Render for MailApp {
         let toolbar = h_flex()
             .w_full()
             .h(px(38.))
-            .bg(palette.background)
             .px_4()
             .items_center()
             .justify_between()
@@ -8058,7 +8222,7 @@ impl Render for MailApp {
                         gpui_kit::component::resizable::resizable_panel()
                             .size_range(px(300.)..gpui_kit::Pixels::MAX)
                             .child(if self.view == View::Compose {
-                                self.composer_view(&snapshot, palette, cx)
+                                self.composer_view(&snapshot, palette, window, cx)
                             } else {
                                 self.reader(&snapshot, palette, cx)
                             }),
