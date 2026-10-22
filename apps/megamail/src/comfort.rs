@@ -32,6 +32,7 @@ pub(crate) struct State {
     pub reverse: bool,
     pub health_open: bool,
     pub confirm_mark_read: bool,
+    pub snooze_pick: bool,
     pub last_minute: i64,
     pub outbox_open: bool,
     pub details: HashSet<MessageKey>,
@@ -237,6 +238,10 @@ impl MailApp {
         )
     }
     pub(crate) fn mark_work(&mut self, status: Status, cx: &mut Context<Self>) {
+        self.mark_work_until(status, None, cx);
+    }
+    /// Like `mark_work`; `until` is the wake-up time for Snoozed (default one day).
+    pub(crate) fn mark_work_until(&mut self, status: Status, until: Option<i64>, cx: &mut Context<Self>) {
         if self.comfort.busy || !self.comfort.loaded {
             return;
         }
@@ -255,7 +260,7 @@ impl MailApp {
             ids,
             status,
             observed_inbound: incoming,
-            snooze_until: (status == Status::Snoozed).then_some(now + 86400),
+            snooze_until: (status == Status::Snoozed).then_some(until.unwrap_or(now + 86400)),
             updated: now,
         };
         let next = match self.comfort.ledger.with_record(record) {
@@ -310,20 +315,22 @@ impl MailApp {
         let status = self.work_status(thread, row, snapshot);
         let (ids, _, suggested_waiting) = self.work_identity(thread, row, snapshot);
         let saved = self.comfort.ledger.find(row.key.account_id, &ids).is_some();
-        let feedback = if self.comfort.busy {
-            "Saving on this device…"
+        let feedback: String = if self.comfort.busy {
+            "Saving on this device…".into()
         } else if self.comfort.error.is_some() {
-            "Work state unavailable · see details below"
+            "Work state unavailable · see details below".into()
         } else if !self.comfort.loaded {
-            "Loading local work states…"
+            "Loading local work states…".into()
         } else if self.demo {
-            "Demo · session only"
+            "Demo · session only".into()
+        } else if let (Status::Snoozed, Some(until)) = (status, self.comfort.ledger.find(row.key.account_id, &ids).and_then(|r| r.snooze_until)) {
+            format!("Snoozed until {}", megamail_core::datefmt::date_time(until))
         } else if saved {
-            "Your work · saved on this device"
+            "Your work · saved on this device".into()
         } else if suggested_waiting {
-            "Suggested from Sent · choose a work state"
+            "Suggested from Sent · choose a work state".into()
         } else {
-            "Choose a work state · independent of unread"
+            "Choose a work state · independent of unread".into()
         };
         let owner = cx.entity().downgrade();
         let label = if self.comfort.busy {
@@ -347,27 +354,51 @@ impl MailApp {
                             .tooltip("Local work state, independent of read/unread and delivery")
                             .dropdown_menu(move |menu, _, _| {
                                 let mut menu = menu;
-                                for state in Status::ALL {
+                                for state in Status::ALL.into_iter().filter(|s| *s != Status::Snoozed) {
                                     let owner = owner.clone();
-                                    menu =
-                                        menu.item(
-                                            PopupMenuItem::element(move |_, _| {
-                                                div().child(if state == Status::Snoozed {
-                                                    "Snooze for 1 day"
-                                                } else {
-                                                    state.label()
-                                                })
-                                            })
+                                    menu = menu.item(
+                                        PopupMenuItem::element(move |_, _| div().child(state.label()))
                                             .on_click(move |_, _, cx| {
-                                                let _ = owner.update(cx, |this, cx| {
-                                                    this.mark_work(state, cx)
-                                                });
+                                                let _ = owner.update(cx, |this, cx| this.mark_work(state, cx));
                                             }),
-                                        );
+                                    );
                                 }
+                                menu = menu.separator().label("Snooze until");
+                                for (name, at) in snooze_presets() {
+                                    let owner = owner.clone();
+                                    menu = menu.item(
+                                        PopupMenuItem::element(move |_, _| div().child(name))
+                                            .on_click(move |_, _, cx| {
+                                                let _ = owner.update(cx, |this, cx| this.mark_work_until(Status::Snoozed, Some(at), cx));
+                                            }),
+                                    );
+                                }
+                                let owner = owner.clone();
+                                menu = menu.item(
+                                    PopupMenuItem::element(|_, _| div().child("Pick date and time…"))
+                                        .on_click(move |_, _, cx| {
+                                            let _ = owner.update(cx, |this, cx| { this.comfort.snooze_pick = true; cx.notify(); });
+                                        }),
+                                );
                                 menu
                             }),
                     )
+                    .when(self.comfort.snooze_pick, |row| row.child(
+                        h_flex().items_center().gap_1()
+                            .child(Input::new(&self.snooze_input).aria_label("Snooze until, local date and time").w(px(170.)))
+                            .child(Button::new("snooze-pick-ok").secondary().small().label("Snooze").on_click(cx.listener(|this, _, _, cx| {
+                                let text = this.snooze_input.read(cx).value().to_string();
+                                match megamail_core::datefmt::parse_local_datetime(&text) {
+                                    Some(at) if at > megamail_core::datefmt::now() => {
+                                        this.comfort.snooze_pick = false;
+                                        this.comfort.error = None;
+                                        this.mark_work_until(Status::Snoozed, Some(at), cx);
+                                    }
+                                    _ => { this.comfort.error = Some("Enter a future date and time as YYYY-MM-DD HH:MM, for example 2026-10-30 08:00.".into()); cx.notify(); }
+                                }
+                            })))
+                            .child(Button::new("snooze-pick-cancel").ghost().small().label("Cancel").on_click(cx.listener(|this, _, _, cx| { this.comfort.snooze_pick = false; cx.notify(); }))),
+                    ))
                     .child(
                         div()
                             .text_size(px(11.))
@@ -781,5 +812,47 @@ mod comfort_tests {
                 );
             }
         }
+    }
+}
+
+/// Gmail-style presets from the local clock; ones that already passed are dropped.
+fn snooze_presets() -> Vec<(&'static str, i64)> {
+    use megamail_core::datefmt::{days_until_weekday, local_day_at, now};
+    let now = now();
+    let mut out = Vec::new();
+    // Later today: the later of 18:00 and three hours from now, only while still today.
+    if let (Some(evening), Some(midnight)) = (local_day_at(0, 18, 0), local_day_at(1, 0, 0)) {
+        let at = evening.max(now + 3 * 3600);
+        if at < midnight {
+            out.push(("Later today", at));
+        }
+    }
+    if let Some(at) = local_day_at(1, 8, 0) {
+        out.push(("Tomorrow, 8:00", at));
+    }
+    if let Some(at) = days_until_weekday(6).and_then(|d| local_day_at(d, 8, 0)) {
+        out.push(("This weekend, Saturday 8:00", at));
+    }
+    if let Some(at) = days_until_weekday(1).and_then(|d| local_day_at(d, 8, 0)) {
+        out.push(("Next week, Monday 8:00", at));
+    }
+    out.retain(|(_, at)| *at > now);
+    out
+}
+
+#[cfg(test)]
+mod snooze_tests {
+    use super::snooze_presets;
+    use megamail_core::datefmt::{now, parse_local_datetime};
+
+    #[test]
+    fn presets_are_future_and_typed_dates_parse() {
+        let now = now();
+        let presets = snooze_presets();
+        assert!(presets.iter().any(|(n, _)| n.starts_with("Tomorrow")));
+        assert!(presets.iter().all(|(_, at)| *at > now));
+        assert!(parse_local_datetime("2030-01-02 08:30").is_some());
+        assert!(parse_local_datetime("2030-13-02 08:30").is_none());
+        assert!(parse_local_datetime("tomorrow").is_none());
     }
 }

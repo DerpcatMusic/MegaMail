@@ -51,6 +51,36 @@ fn local(ts: i64) -> Option<glib::DateTime> {
     glib::DateTime::from_unix_local(ts).ok()
 }
 
+/// Unix time for `days` from today at `hour:minute` local time, if it exists.
+pub fn local_day_at(days: i32, hour: i32, minute: i32) -> Option<i64> {
+    let day = glib::DateTime::now_local().ok()?.add_days(days).ok()?;
+    glib::DateTime::from_local(day.year(), day.month(), day.day_of_month(), hour, minute, 0.0)
+        .ok()
+        .map(|d| d.to_unix())
+}
+
+/// Days from today to the next given weekday (1 = Monday .. 7 = Sunday), 1..=7.
+pub fn days_until_weekday(target: i32) -> Option<i32> {
+    let today = glib::DateTime::now_local().ok()?.day_of_week();
+    Some(((target - today + 6) % 7) + 1)
+}
+
+/// Parse a local `YYYY-MM-DD HH:MM` into a unix time.
+pub fn parse_local_datetime(value: &str) -> Option<i64> {
+    let (date, time) = value.trim().split_once(' ')?;
+    let mut d = date.split('-').map(|p| p.parse::<i32>().ok());
+    let (y, m, day) = (d.next()??, d.next()??, d.next()??);
+    if d.next().is_some() {
+        return None;
+    }
+    let (h, mi) = time.trim().split_once(':')?;
+    let (h, mi) = (h.parse::<i32>().ok()?, mi.parse::<i32>().ok()?);
+    if !(1..=12).contains(&m) || !(1..=31).contains(&day) || !(0..24).contains(&h) || !(0..60).contains(&mi) {
+        return None;
+    }
+    glib::DateTime::from_local(y, m, day, h, mi, 0.0).ok().map(|d| d.to_unix())
+}
+
 fn fmt(dt: &glib::DateTime, pattern: &str) -> String {
     let text = dt.format(pattern).map(|s| s.to_string()).unwrap_or_default();
     // Some locales pad a field ("%b" is " 8月" in Japanese), which doubles up
