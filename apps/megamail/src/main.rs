@@ -55,6 +55,7 @@ mod compose_tools_ui;
 mod contacts;
 mod desktop_actions;
 mod draft_recovery;
+mod grammar;
 mod feature_integration;
 mod instance;
 mod invitation;
@@ -496,6 +497,7 @@ struct Composer {
     /// Undo-send window: (generation, seconds left). The message is not sent until it ends.
     send_hold: Option<(u64, u32)>,
     spell: Option<Vec<spell::Misspelling>>,
+    grammar: Option<(String, Vec<grammar::Issue>)>,
     spell_note: Option<String>,
     spell_busy: bool,
     /// Which recipient field (0 To, 1 Cc, 2 Bcc) was edited last; owns the suggestion list.
@@ -548,6 +550,7 @@ impl Composer {
             last_recipient: 0,
             send_hold: None,
             spell: None,
+            grammar: None,
             spell_note: None,
             spell_busy: false,
             message,
@@ -7244,7 +7247,7 @@ impl MailApp {
                                     .aria_label("Message body")
                                     .disabled(!composer.can_edit()),
                             )
-                            .when(composer.spell.is_some() || composer.spell_note.is_some(), |el| el.child(self.spelling_panel(palette, cx)))
+                            .when(composer.spell.is_some() || composer.grammar.is_some() || composer.spell_note.is_some(), |el| el.child(self.spelling_panel(palette, cx)))
                             .child(
                                 h_flex()
                                     .items_center()
@@ -7484,6 +7487,11 @@ impl MailApp {
                                         .disabled(!composer.can_edit() || composer.spell_busy)
                                         .tooltip("Checks the message body with your system's hunspell dictionary")
                                         .on_click(cx.listener(|this, _, _, cx| this.check_spelling(cx))))
+                                    .child(Button::new("check-grammar").ghost().small()
+                                        .label(if composer.spell_busy { "Checking…" } else { "Check grammar" })
+                                        .disabled(!composer.can_edit() || composer.spell_busy)
+                                        .tooltip("English grammar check that runs on this computer; quoted lines, links and the signature are skipped")
+                                        .on_click(cx.listener(|this, _, _, cx| this.check_grammar(cx))))
                                     .when(self.live.read(cx).schedule_session(composer.message.from_account_id).is_some(), |row| row.child(
                                         Button::new("toggle-send-later").ghost().small()
                                             .label(if composer.message.send_at.is_some() { "Scheduled" } else { "Send later" })
@@ -7671,10 +7679,57 @@ impl MailApp {
         .detach();
     }
 
+    fn check_grammar(&mut self, cx: &mut Context<Self>) {
+        let Some(composer) = self.composer.as_mut().filter(|c| c.can_edit() && !c.spell_busy) else { return };
+        let text = composer.body.read(cx).value().to_string();
+        composer.spell_busy = true;
+        composer.spell_note = None;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let (text, found) = cx.background_spawn(async move { let found = grammar::check(&text); (text, found) }).await;
+            let _ = this.update(cx, |this, cx| {
+                if let Some(c) = this.composer.as_mut() {
+                    c.spell_busy = false;
+                    if c.body.read(cx).value().as_ref() != text { c.spell_note = Some("The message changed while checking. Check again.".into()); }
+                    else if found.is_empty() { c.grammar = None; c.spell_note = Some("No grammar issues found.".into()); }
+                    else { c.spell_note = None; c.grammar = Some((text, found)); }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     fn spelling_panel(&self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
         let Some(composer) = self.composer.as_ref() else { return div().into_any_element() };
         v_flex().w_full().gap_1().p_3().rounded(px(8.)).bg(palette.surface)
             .when_some(composer.spell_note.clone(), |el, note| el.child(div().text_size(px(12.)).text_color(palette.muted).child(note)))
+            .children(composer.grammar.iter().flat_map(|(_, list)| list).take(8).enumerate().map(|(row, issue)| {
+                let (range, suggestions) = (issue.range.clone(), issue.suggestions.clone());
+                v_flex().gap_1()
+                    .child(div().text_size(px(12.)).text_color(palette.muted).child(issue.message.clone()))
+                    .child(h_flex().flex_wrap().items_center().gap_1()
+                        .children(suggestions.into_iter().enumerate().map(|(n, suggestion)| {
+                            let range = range.clone();
+                            Button::new(SharedString::from(format!("grammar-{row}-{n}"))).ghost().small().label(if suggestion.trim().is_empty() { "Remove".into() } else { suggestion.clone() })
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    if let Some(c) = this.composer.as_mut().filter(|c| c.can_edit()) {
+                                        if let Some((checked, _)) = c.grammar.take().filter(|(t, _)| t.as_str() == c.body.read(cx).value().as_ref()) {
+                                            let mut fixed = checked;
+                                            fixed.replace_range(range.clone(), &suggestion);
+                                            c.body.update(cx, |body, cx| body.set_value(fixed, window, cx));
+                                            c.recovery.dirty_input = true;
+                                        }
+                                    }
+                                    cx.notify();
+                                }))
+                        }))
+                        .child(Button::new(SharedString::from(format!("grammar-ignore-{row}"))).ghost().small().label("Ignore")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some((_, list)) = this.composer.as_mut().and_then(|c| c.grammar.as_mut()) { if row < list.len() { list.remove(row); } }
+                                cx.notify();
+                            }))))
+            }))
             .children(composer.spell.iter().flatten().take(8).enumerate().map(|(row, miss)| {
                 let word = miss.word.clone();
                 let ignore = miss.word.clone();

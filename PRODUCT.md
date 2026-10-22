@@ -169,9 +169,13 @@ guide and qualification boundaries.
 Recipient completion (saved contacts, then senders visible in the loaded list; nothing is stored),
 8-second undo send for immediate sends, plain-text account signatures on new, reply and forward
 mail, a Markdown formatting strip, file drop onto the composer, opt-in spell check through the
-system `hunspell` (no grammar check), Junk/Trash/Archive keys (J K R A C / E # ! with the list
+system `hunspell`, an opt-in offline English grammar check (Harper; quoted lines, links and
+signatures are skipped), Junk/Trash/Archive keys (J K R A C / E # ! with the list
 focused), Save as .eml and Forward as attachment through the worker's raw export, a warning before
 opening deceptive links, a Mark all read action, Ctrl/Shift-click multi-select, a folder picker for
 bulk moves, desktop notifications for new Inbox mail (`notify-send`; a Settings toggle), and the
-unread count in the window title. There is no in-app signature editor: signatures come from the
-account's saved `signature` setting.
+unread count in the window title. Settings has a per-account signature editor (explicit Save, never
+in demo). The reader's details offer Save to contacts, Write to, Mail from sender and Copy address.
+Snooze has presets and a typed date. Archive, Trash and Junk wait 5 seconds behind an Undo banner
+(Ctrl+Z); the move is deferred, not reversed, so quitting inside the window drops it. Focus rings
+are always visible and F6 cycles panes.
