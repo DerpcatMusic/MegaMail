@@ -403,6 +403,7 @@ pub(crate) fn render(app: &MailApp, palette: Palette, cx: &mut Context<MailApp>)
                 ("Search mail", "Ctrl+F"),
                 ("All inboxes", "Ctrl+Shift+L"),
                 ("Refresh mail", "F5"),
+                ("Switch between list and message", "F6"),
                 ("Move through the message list", "↑ / ↓  or  J / K"),
                 ("With the list focused: compose, reply, reply all, search", "C · R · A · /"),
                 ("With the list focused: archive, trash, junk", "E · # · !"),

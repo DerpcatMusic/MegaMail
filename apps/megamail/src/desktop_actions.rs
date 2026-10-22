@@ -44,6 +44,7 @@ pub(crate) mod action {
             UnifiedInbox,
             FocusMessages,
             FocusReader,
+            CyclePane,
             AllSent,
             AllDrafts,
             SortSender
@@ -81,6 +82,7 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-shift-f", FindInMessage, Some(MAILBOX_CONTEXT)),
         KeyBinding::new("ctrl-shift-l", UnifiedInbox, Some(MAILBOX_CONTEXT)),
         KeyBinding::new("f5", RefreshMail, Some(MAILBOX_CONTEXT)),
+        KeyBinding::new("f6", CyclePane, Some(MAILBOX_CONTEXT)),
         KeyBinding::new("ctrl-alt-l", FocusMessages, Some(MAILBOX_CONTEXT)),
         KeyBinding::new("ctrl-alt-r", FocusReader, Some(MAILBOX_CONTEXT)),
         KeyBinding::new("ctrl-alt-2", AllSent, Some(MAILBOX_CONTEXT)),

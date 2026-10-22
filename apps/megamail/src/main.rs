@@ -86,7 +86,7 @@ mod zeron_background;
 mod zeron_style;
 
 use action::{
-    AllDrafts, AllSent, ArchiveMessage, ComposeMessage, JunkMessage, TrashMessage, FindInMessage, FocusMessages, FocusReader, FocusSearch,
+    AllDrafts, AllSent, ArchiveMessage, ComposeMessage, CyclePane, JunkMessage, TrashMessage, FindInMessage, FocusMessages, FocusReader, FocusSearch,
     NextMessage, PreviousMessage, RefreshMail, ReplyAll, ReplyMessage, SortSender, UnifiedInbox,
 };
 
@@ -295,7 +295,8 @@ fn apply_palette(mode: ThemeMode, palette: Palette, window: &mut Window, cx: &mu
         theme.link = palette.accent;
         theme.popover = palette.surface;
         theme.popover_foreground = palette.text;
-        theme.ring = palette.accent;
+        // gpui draws the ring at half alpha; the text colour keeps it above 3:1 on every surface.
+        theme.ring = palette.text;
         theme.selection = palette.accent.opacity(0.28);
         theme.caret = palette.accent;
         theme.radius = px(6.);
@@ -4645,7 +4646,7 @@ impl MailApp {
                             .h_full()
                             .rounded(px(4.))
                             .px_3()
-                            .tab_stop(true)
+                            .tab_stop(active)
                             .accessibility_label(format!(
                                 "{}: {}",
                                 message_sender(&row.message),
@@ -8604,6 +8605,15 @@ impl Render for MailApp {
                         if let Some(row) = snapshot.selected_message {
                             this.open_reply_all(row.message.clone(), window, cx);
                         }
+                    }
+                }))
+                .on_action(cx.listener(|this, _: &CyclePane, window, cx| {
+                    // F6: list -> reader -> list. Reuses the guarded focus actions.
+                    let in_list = this.message_focus.contains_focused(window, cx);
+                    if in_list {
+                        window.dispatch_action(Box::new(FocusReader), cx);
+                    } else {
+                        window.dispatch_action(Box::new(FocusMessages), cx);
                     }
                 }))
                 .on_action(cx.listener(|this, _: &ArchiveMessage, _, cx| {
