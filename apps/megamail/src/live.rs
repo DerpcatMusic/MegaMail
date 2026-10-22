@@ -2293,14 +2293,19 @@ impl LiveMailbox {
     }
 
     fn move_selected_to(&mut self, kind: FolderKind, cx: &mut Context<Self>) -> bool {
+        let Some(key) = self.selected_key.clone() else {
+            return false;
+        };
+        self.move_key_to(key, kind, cx)
+    }
+
+    /// Move a specific message; the deferred (undoable) moves use the key they captured.
+    pub fn move_key_to(&mut self, key: MessageKey, kind: FolderKind, cx: &mut Context<Self>) -> bool {
         if self.demo_mode {
             self.set_action_error("Message actions are disabled in the local demo.");
             cx.notify();
             return false;
         }
-        let Some(key) = self.selected_key.clone() else {
-            return false;
-        };
         if !self.selectable_key(&key) {
             return false;
         }

@@ -86,7 +86,7 @@ mod zeron_background;
 mod zeron_style;
 
 use action::{
-    AllDrafts, AllSent, ArchiveMessage, ComposeMessage, CyclePane, JunkMessage, TrashMessage, FindInMessage, FocusMessages, FocusReader, FocusSearch,
+    AllDrafts, AllSent, ArchiveMessage, ComposeMessage, CyclePane, UndoMove, JunkMessage, TrashMessage, FindInMessage, FocusMessages, FocusReader, FocusSearch,
     NextMessage, PreviousMessage, RefreshMail, ReplyAll, ReplyMessage, SortSender, UnifiedInbox,
 };
 
@@ -975,6 +975,9 @@ struct MailApp {
     _theme_subscription: Subscription,
     wallpaper_animating: bool,
     window_title: String,
+    /// A move waiting out its undo window: (generation, folder kind, message, seconds left).
+    pending_move: Option<(u64, FolderKind, MessageKey, u32)>,
+    move_generation: u64,
     wallpaper_restore_generation: u64,
     preferences: MailPreferences,
     preferences_busy: bool,
@@ -1159,6 +1162,8 @@ impl MailApp {
             _theme_subscription: theme_subscription,
             wallpaper_animating: false,
             window_title: String::new(),
+            pending_move: None,
+            move_generation: 0,
             wallpaper_restore_generation: 0,
             preferences: MailPreferences::default(),
             preferences_busy: false,
@@ -5569,7 +5574,7 @@ impl MailApp {
                                         });
                                     }
                                     2 => {
-                                        this.live.update(cx, |live, cx| live.trash_selected(cx));
+                                        this.queue_move(FolderKind::Trash, cx);
                                     }
                                     3 => cx.write_to_clipboard(ClipboardItem::new_string(
                                         body.clone(),
@@ -5591,7 +5596,7 @@ impl MailApp {
                                     7 => this.save_printable_html(cx),
                                     8 => this.preview_saved_rules(cx),
                                     10 => {
-                                        this.live.update(cx, |live, cx| live.junk_selected(cx));
+                                        this.queue_move(FolderKind::Junk, cx);
                                     }
                                     11 | 12 => {
                                         if let Some(key) = this.live.read(cx).snapshot().selected_key {
@@ -5828,7 +5833,7 @@ impl MailApp {
                                     .accessibility_label("Move this message to Trash")
                                     .disabled(snapshot.is_demo)
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.live.update(cx, |live, cx| live.trash_selected(cx));
+                                        this.queue_move(FolderKind::Trash, cx);
                                     })),
                             )
                             .child(
@@ -5848,13 +5853,11 @@ impl MailApp {
                                     )
                                     .accessibility_label(format!("{archive_label} this message"))
                                     .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.live.update(cx, |live, cx| {
-                                            if is_archived {
-                                                live.restore_selected(cx);
-                                            } else {
-                                                live.archive_selected(cx);
-                                            }
-                                        });
+                                        if is_archived {
+                                            this.live.update(cx, |live, cx| live.restore_selected(cx));
+                                        } else {
+                                            this.queue_move(FolderKind::Archive, cx);
+                                        }
                                     })),
                             ),
                     ),
@@ -7751,6 +7754,58 @@ impl MailApp {
         .detach();
     }
 
+    /// Archive, trash or junk the selected message after a short undo window.
+    fn queue_move(&mut self, kind: FolderKind, cx: &mut Context<Self>) {
+        const UNDO_SECONDS: u32 = 5;
+        let Some(key) = self.live.read(cx).snapshot().selected_key else { return };
+        if self.demo {
+            self.live.update(cx, |live, cx| live.move_key_to(key, kind, cx));
+            return;
+        }
+        self.flush_pending_move(cx);
+        self.move_generation = self.move_generation.wrapping_add(1);
+        let generation = self.move_generation;
+        self.pending_move = Some((generation, kind, key, UNDO_SECONDS));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let state = this.update(cx, |this, cx| match &mut this.pending_move {
+                    Some((g, _, _, left)) if *g == generation && *left > 1 => {
+                        *left -= 1;
+                        cx.notify();
+                        None
+                    }
+                    Some((g, ..)) if *g == generation => Some(true),
+                    _ => Some(false),
+                });
+                match state {
+                    Ok(None) => continue,
+                    Ok(Some(true)) => {
+                        let _ = this.update(cx, |this, cx| this.flush_pending_move(cx));
+                        return;
+                    }
+                    _ => return,
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Send the waiting move now (undo window over, or another move started).
+    fn flush_pending_move(&mut self, cx: &mut Context<Self>) {
+        if let Some((_, kind, key, _)) = self.pending_move.take() {
+            self.live.update(cx, |live, cx| live.move_key_to(key, kind, cx));
+            cx.notify();
+        }
+    }
+
+    fn undo_pending_move(&mut self, cx: &mut Context<Self>) {
+        if self.pending_move.take().is_some() {
+            cx.notify();
+        }
+    }
+
     fn accept_recipient(
         &mut self,
         index: usize,
@@ -8616,19 +8671,20 @@ impl Render for MailApp {
                         window.dispatch_action(Box::new(FocusMessages), cx);
                     }
                 }))
+                .on_action(cx.listener(|this, _: &UndoMove, _, cx| this.undo_pending_move(cx)))
                 .on_action(cx.listener(|this, _: &ArchiveMessage, _, cx| {
                     if this.view == View::Mailbox && this.composer.is_none() {
-                        this.live.update(cx, |live, cx| live.archive_selected(cx));
+                        this.queue_move(FolderKind::Archive, cx);
                     }
                 }))
                 .on_action(cx.listener(|this, _: &TrashMessage, _, cx| {
                     if this.view == View::Mailbox && this.composer.is_none() {
-                        this.live.update(cx, |live, cx| live.trash_selected(cx));
+                        this.queue_move(FolderKind::Trash, cx);
                     }
                 }))
                 .on_action(cx.listener(|this, _: &JunkMessage, _, cx| {
                     if this.view == View::Mailbox && this.composer.is_none() {
-                        this.live.update(cx, |live, cx| live.junk_selected(cx));
+                        this.queue_move(FolderKind::Junk, cx);
                     }
                 }))
                 .on_action(cx.listener(|this, _: &FindInMessage, window, cx| {
@@ -8735,6 +8791,20 @@ impl Render for MailApp {
                     palette.background,
                 ))
                 .child(chrome)
+                .when_some(self.pending_move.clone(), |el, (_, kind, _, left)| {
+                    let label = match kind {
+                        FolderKind::Trash => "Moving to Trash",
+                        FolderKind::Junk => "Moving to Junk",
+                        _ => "Archiving",
+                    };
+                    el.child(
+                        h_flex().w_full().flex_shrink_0().items_center().justify_center().gap_3().h(px(34.))
+                            .bg(palette.surface).border_b_1().border_color(palette.border)
+                            .child(div().text_size(px(12.)).child(format!("{label} in {left}s")))
+                            .child(Button::new("undo-move").secondary().small().label("Undo · Ctrl+Z")
+                                .on_click(cx.listener(|this, _, _, cx| this.undo_pending_move(cx)))),
+                    )
+                })
                 .child(body),
         )
     }

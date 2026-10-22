@@ -407,6 +407,7 @@ pub(crate) fn render(app: &MailApp, palette: Palette, cx: &mut Context<MailApp>)
                 ("Move through the message list", "↑ / ↓  or  J / K"),
                 ("With the list focused: compose, reply, reply all, search", "C · R · A · /"),
                 ("With the list focused: archive, trash, junk", "E · # · !"),
+                ("Undo an archive, trash or junk within 5 seconds", "Ctrl+Z"),
             ]
             .into_iter()
             .map(|(name, key)| {
