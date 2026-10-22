@@ -48,6 +48,7 @@ mod appearance_view;
 mod attachment_preview;
 mod comfort;
 mod compose;
+mod command_palette;
 mod compose_markdown;
 mod compose_productivity;
 mod compose_session;
@@ -87,7 +88,7 @@ mod zeron_background;
 mod zeron_style;
 
 use action::{
-    AllDrafts, AllSent, ArchiveMessage, ComposeMessage, CyclePane, UndoMove, JunkMessage, TrashMessage, FindInMessage, FocusMessages, FocusReader, FocusSearch,
+    AllDrafts, AllSent, ArchiveMessage, ComposeMessage, CyclePane, UndoMove, StarMessage, ToggleRead, CommandPalette, JunkMessage, TrashMessage, FindInMessage, FocusMessages, FocusReader, FocusSearch,
     NextMessage, PreviousMessage, RefreshMail, ReplyAll, ReplyMessage, SortSender, UnifiedInbox,
 };
 
@@ -1004,6 +1005,10 @@ struct MailApp {
     appearance_busy: bool,
     appearance_error: Option<String>,
     _search_subscription: Subscription,
+    palette_open: bool,
+    palette_sel: usize,
+    palette_input: Entity<InputState>,
+    _palette_subscription: Subscription,
     setup_email_subscription: Option<Subscription>,
 }
 
@@ -1067,6 +1072,10 @@ impl MailApp {
             }
         });
 
+        let palette_input = cx.new(|cx| InputState::new(window, cx).placeholder("Type a command"));
+        let palette_subscription = cx.subscribe_in(&palette_input, window, |this, _, event: &InputEvent, _, cx| {
+            if matches!(event, InputEvent::Change) { this.palette_sel = 0; cx.notify(); }
+        });
         let theme_subscription = cx.observe_window_appearance(window, |this, window, cx| {
             this.system_dark = matches!(
                 window.appearance(),
@@ -1190,6 +1199,10 @@ impl MailApp {
             appearance_busy: false,
             appearance_error: None,
             _search_subscription: search_subscription,
+            palette_open: false,
+            palette_sel: 0,
+            palette_input,
+            _palette_subscription: palette_subscription,
             setup_email_subscription: None,
         };
 
@@ -4788,6 +4801,30 @@ impl MailApp {
                                             .text_color(palette.muted),
                                     )
                                 }),
+                        );
+                    }
+                    if !bulk_open {
+                        let group = SharedString::from(format!("row-{}-{}-{}", row.key.account_id, row.key.folder_path, row.key.uid));
+                        let quick = |id: &'static str, icon: IconName, tip: &'static str, owner: gpui_kit::WeakEntity<MailApp>, key: MessageKey, act: fn(&mut MailApp, &mut Context<MailApp>)| {
+                            Button::new(SharedString::from(format!("{id}-{}-{}-{}", key.account_id, key.folder_path, key.uid)))
+                                .ghost().small().icon(Icon::new(icon).size(px(14.))).tooltip(tip).accessibility_label(tip)
+                                .on_click(move |_, _, cx| {
+                                    let key = key.clone();
+                                    let _ = owner.update(cx, |this, cx| {
+                                        this.live.update(cx, |live, cx| live.select_message(key, cx));
+                                        act(this, cx);
+                                    });
+                                })
+                        };
+                        let k = row.key.clone();
+                        element = element.relative().group(group.clone()).child(
+                            h_flex().absolute().right_2().top(px(row_height / 2. - 14.)).gap_0p5().p_0p5().rounded(px(6.))
+                                .bg(palette.surface).border_1().border_color(palette.border)
+                                .invisible().group_hover(group, |s| s.visible())
+                                .child(quick("q-archive", IconName::Inbox, "Archive", owner.clone(), k.clone(), |t, cx| t.queue_move(FolderKind::Archive, cx)))
+                                .child(quick("q-trash", IconName::Trash, "Move to Trash", owner.clone(), k.clone(), |t, cx| t.queue_move(FolderKind::Trash, cx)))
+                                .child(quick("q-read", IconName::Mail, "Mark read or unread", owner.clone(), k.clone(), |t, cx| t.toggle_selected_read(cx)))
+                                .child(quick("q-star", IconName::Star, "Star or unstar", owner.clone(), k, |t, cx| t.star_selected(cx))),
                         );
                     }
                     element.into_any_element()
@@ -8729,6 +8766,9 @@ impl Render for MailApp {
                     }
                 }))
                 .on_action(cx.listener(|this, _: &UndoMove, _, cx| this.undo_pending_move(cx)))
+                .on_action(cx.listener(|this, _: &StarMessage, _, cx| if this.view == View::Mailbox && this.composer.is_none() { this.star_selected(cx) }))
+                .on_action(cx.listener(|this, _: &ToggleRead, _, cx| if this.view == View::Mailbox && this.composer.is_none() { this.toggle_selected_read(cx) }))
+                .on_action(cx.listener(|this, _: &CommandPalette, window, cx| this.toggle_palette(window, cx)))
                 .on_action(cx.listener(|this, _: &ArchiveMessage, _, cx| {
                     if this.view == View::Mailbox && this.composer.is_none() {
                         this.queue_move(FolderKind::Archive, cx);
@@ -8862,7 +8902,8 @@ impl Render for MailApp {
                                 .on_click(cx.listener(|this, _, _, cx| this.undo_pending_move(cx)))),
                     )
                 })
-                .child(body),
+                .child(body)
+                .when(self.palette_open, |el| el.child(self.palette_overlay(palette, cx))),
         )
     }
 }

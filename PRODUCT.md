@@ -179,3 +179,9 @@ in demo). The reader's details offer Save to contacts, Write to, Mail from sende
 Snooze has presets and a typed date. Archive, Trash and Junk wait 5 seconds behind an Undo banner
 (Ctrl+Z); the move is deferred, not reversed, so quitting inside the window drops it. Focus rings
 are always visible and F6 cycles panes.
+
+## Interaction pass
+
+Ctrl+K (or `?` with the list focused) opens a command palette that lists every mailbox command with its
+shortcut, so it is also the cheat sheet. Rows show Archive, Trash, Mark read and Star on hover; S and U
+star and mark read from the keyboard.
