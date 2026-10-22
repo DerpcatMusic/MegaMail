@@ -1741,6 +1741,23 @@ impl LiveMailbox {
     }
 
     /// Queue a move to the account's Junk folder.
+    /// Mark every message in the open folder as read, then reload it.
+    pub fn mark_folder_read(&mut self, cx: &mut Context<Self>) -> bool {
+        let (Some(account_id), Some(path)) = (self.current_account_id, self.current_folder_path.clone()) else {
+            return false;
+        };
+        let Some(folder_id) = self.folder_id(account_id, &path) else {
+            return false;
+        };
+        let sent = self.send_request(account_id, MailRequest::MarkAllRead { folder_id, path: path.clone() }, cx);
+        if sent {
+            self.pending_message_refresh.insert(PageKey { account_id, folder_path: path.clone() });
+            self.send_request(account_id, MailRequest::LoadMessages { folder_id, path }, cx);
+        }
+        cx.notify();
+        sent
+    }
+
     pub fn junk_selected(&mut self, cx: &mut Context<Self>) -> bool {
         self.move_selected_to(FolderKind::Junk, cx)
     }

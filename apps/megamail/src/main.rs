@@ -74,6 +74,7 @@ mod rules_editor;
 mod rules_preview;
 mod rules_ui;
 mod scheduling;
+mod spell;
 mod sender_photos;
 mod theme;
 mod thunderbird_adapter;
@@ -492,6 +493,9 @@ struct Composer {
     show_schedule: bool,
     /// Undo-send window: (generation, seconds left). The message is not sent until it ends.
     send_hold: Option<(u64, u32)>,
+    spell: Option<Vec<spell::Misspelling>>,
+    spell_note: Option<String>,
+    spell_busy: bool,
     /// Which recipient field (0 To, 1 Cc, 2 Bcc) was edited last; owns the suggestion list.
     last_recipient: usize,
     error: Option<String>,
@@ -541,6 +545,9 @@ impl Composer {
             show_schedule: message.send_at.is_some(),
             last_recipient: 0,
             send_hold: None,
+            spell: None,
+            spell_note: None,
+            spell_busy: false,
             message,
             error: None,
             send_request_id: None,
@@ -7217,6 +7224,7 @@ impl MailApp {
                                     .aria_label("Message body")
                                     .disabled(!composer.can_edit()),
                             )
+                            .when(composer.spell.is_some() || composer.spell_note.is_some(), |el| el.child(self.spelling_panel(palette, cx)))
                             .child(
                                 h_flex()
                                     .items_center()
@@ -7451,6 +7459,11 @@ impl MailApp {
                             .justify_between()
                             .child(
                                 h_flex().items_center().gap_2()
+                                    .child(Button::new("check-spelling").ghost().small()
+                                        .label(if composer.spell_busy { "Checking…" } else { "Check spelling" })
+                                        .disabled(!composer.can_edit() || composer.spell_busy)
+                                        .tooltip("Checks the message body with your system's hunspell dictionary")
+                                        .on_click(cx.listener(|this, _, _, cx| this.check_spelling(cx))))
                                     .when(self.live.read(cx).schedule_session(composer.message.from_account_id).is_some(), |row| row.child(
                                         Button::new("toggle-send-later").ghost().small()
                                             .label(if composer.message.send_at.is_some() { "Scheduled" } else { "Send later" })
@@ -7612,6 +7625,60 @@ impl MailApp {
                         })),
                 )
             })
+            .into_any_element()
+    }
+
+    fn check_spelling(&mut self, cx: &mut Context<Self>) {
+        let Some(composer) = self.composer.as_mut().filter(|c| c.can_edit() && !c.spell_busy) else { return };
+        let text = composer.body.read(cx).value().to_string();
+        composer.spell_busy = true;
+        composer.spell_note = None;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(async move { spell::check(&text) }).await;
+            let _ = this.update(cx, |this, cx| {
+                if let Some(c) = this.composer.as_mut() {
+                    c.spell_busy = false;
+                    match result {
+                        Ok(found) if found.is_empty() => { c.spell = None; c.spell_note = Some("No spelling mistakes found.".into()); }
+                        Ok(found) => { c.spell_note = None; c.spell = Some(found); }
+                        Err(error) => { c.spell = None; c.spell_note = Some(error); }
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn spelling_panel(&self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let Some(composer) = self.composer.as_ref() else { return div().into_any_element() };
+        v_flex().w_full().gap_1().p_3().rounded(px(8.)).bg(palette.surface)
+            .when_some(composer.spell_note.clone(), |el, note| el.child(div().text_size(px(12.)).text_color(palette.muted).child(note)))
+            .children(composer.spell.iter().flatten().take(8).enumerate().map(|(row, miss)| {
+                let word = miss.word.clone();
+                let ignore = miss.word.clone();
+                h_flex().flex_wrap().items_center().gap_1()
+                    .child(div().text_size(px(12.)).font_weight(FontWeight::MEDIUM).min_w(px(90.)).child(miss.word.clone()))
+                    .children(miss.suggestions.iter().enumerate().map(|(n, suggestion)| {
+                        let (word, suggestion) = (word.clone(), suggestion.clone());
+                        Button::new(SharedString::from(format!("spell-{row}-{n}"))).ghost().small().label(suggestion.clone())
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if let Some(c) = this.composer.as_mut().filter(|c| c.can_edit()) {
+                                    let fixed = spell::replace_word(&c.body.read(cx).value(), &word, &suggestion);
+                                    c.body.update(cx, |body, cx| body.set_value(fixed, window, cx));
+                                    if let Some(list) = c.spell.as_mut() { list.retain(|m| m.word != word); }
+                                    c.recovery.dirty_input = true;
+                                }
+                                cx.notify();
+                            }))
+                    }))
+                    .child(Button::new(SharedString::from(format!("spell-ignore-{row}"))).ghost().small().label("Ignore")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(list) = this.composer.as_mut().and_then(|c| c.spell.as_mut()) { list.retain(|m| m.word != ignore); }
+                            cx.notify();
+                        })))
+            }))
             .into_any_element()
     }
 

@@ -31,6 +31,7 @@ pub(crate) struct State {
     pub sort: Sort,
     pub reverse: bool,
     pub health_open: bool,
+    pub confirm_mark_read: bool,
     pub last_minute: i64,
     pub outbox_open: bool,
     pub details: HashSet<MessageKey>,
@@ -527,6 +528,19 @@ impl MailApp {
                                 menu
                             }),
                     )
+                    .when(snapshot.scope == MailboxScope::Account && snapshot.unread_count > 0 && !snapshot.is_demo, |row| row.child(
+                        Button::new("mark-folder-read").ghost().small()
+                            .label(if self.comfort.confirm_mark_read { "Confirm: mark all read" } else { "Mark all read" })
+                            .tooltip("Marks every message in this folder as read")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if this.comfort.confirm_mark_read {
+                                    this.comfort.confirm_mark_read = false;
+                                    this.live.update(cx, |live, cx| live.mark_folder_read(cx));
+                                } else {
+                                    this.comfort.confirm_mark_read = true;
+                                }
+                                cx.notify();
+                            }))))
                     .child(
                         Button::new("connection-health")
                             .ghost()

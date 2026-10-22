@@ -163,3 +163,15 @@ guide and qualification boundaries.
 - Keep disk, network and heavy parsing away from the UI thread.
 - Preserve privacy, data integrity and honest operational states.
 - Measure performance instead of treating the toolkit as proof.
+
+## Added in the composer and reader pass
+
+Recipient completion (saved contacts, then senders visible in the loaded list; nothing is stored),
+8-second undo send for immediate sends, plain-text account signatures on new, reply and forward
+mail, a Markdown formatting strip, file drop onto the composer, opt-in spell check through the
+system `hunspell` (no grammar check), Junk/Trash/Archive keys (J K R A C / E # ! with the list
+focused), Save as .eml and Forward as attachment through the worker's raw export, a warning before
+opening deceptive links, a Mark all read action, Ctrl/Shift-click multi-select, a folder picker for
+bulk moves, desktop notifications for new Inbox mail (`notify-send`; a Settings toggle), and the
+unread count in the window title. There is no in-app signature editor: signatures come from the
+account's saved `signature` setting.
