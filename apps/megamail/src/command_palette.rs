@@ -3,7 +3,7 @@
 use crate::action::*;
 use crate::*;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Cmd {
     Compose,
     Reply,
