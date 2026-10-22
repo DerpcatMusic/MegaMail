@@ -38,6 +38,68 @@ impl MailApp {
     pub(crate) fn save_readable_text(&mut self, cx: &mut Context<Self>) {
         self.export_displayed_text(false, cx);
     }
+    /// A fetched message source arrived: save it, or attach it to a new forward.
+    pub(crate) fn finish_eml(&mut self, export: live::EmlExport, window: &mut Window, cx: &mut Context<Self>) {
+        let raw = match export.raw {
+            Ok(raw) => raw,
+            Err(error) => {
+                self.reader_export_status = Some(format!("Could not fetch the message source: {error}"));
+                cx.notify();
+                return;
+            }
+        };
+        let subject = self
+            .live
+            .read(cx)
+            .snapshot()
+            .selected_message
+            .as_ref()
+            .filter(|row| row.key == export.key)
+            .map(|row| row.message.subject.clone())
+            .unwrap_or_default();
+        if export.forward {
+            if !self.can_replace_composer(cx) {
+                self.reader_export_status = Some("Finish or close the open draft first.".into());
+                cx.notify();
+                return;
+            }
+            let (attachments, temporary) = match compose::stage_eml(&subject, raw.as_ref().clone()) {
+                Ok(staged) => staged,
+                Err(error) => {
+                    self.reader_export_status = Some(error);
+                    cx.notify();
+                    return;
+                }
+            };
+            let mut message = compose::new_message(export.key.account_id);
+            message.subject = format!("Fwd: {subject}");
+            message.attachments = attachments;
+            self.composer = Some(Composer::new_prepared_draft(message, temporary, None, None, window, cx));
+            self.view = View::Compose;
+            cx.notify();
+            return;
+        }
+        let directory = std::env::var_os("XDG_DOWNLOAD_DIR")
+            .or_else(|| std::env::var_os("HOME"))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let picker = cx.prompt_for_new_path(&directory, Some("message.eml"));
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(path))) = picker.await else { return };
+            let result = cx
+                .background_spawn(async move { desktop_actions::write_new_private_file(&path, &raw) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.reader_export_status = Some(match result {
+                    Ok(()) => "Saved the message as an .eml file.".into(),
+                    Err(error) => error,
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     pub(crate) fn save_printable_html(&mut self, cx: &mut Context<Self>) {
         self.export_displayed_text(true, cx);
     }

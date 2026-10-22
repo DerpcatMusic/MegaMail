@@ -951,3 +951,12 @@ mod signature_tests {
         assert_eq!(with_signature("x", ""), "x");
     }
 }
+
+/// Stage a raw message as `<subject>.eml` in a private directory so it can be
+/// attached to a forward.
+pub fn stage_eml(subject: &str, raw: Vec<u8>) -> Result<(Vec<String>, Vec<PathBuf>), String> {
+    let dir = new_draft_attachment_dir()?;
+    let stem = if subject.trim().is_empty() { "message" } else { subject.trim() };
+    let name = format!("{}.eml", safe_attachment_filename(stem));
+    stage_draft_attachments(vec![Attachment { name, data: raw }], &dir)
+}

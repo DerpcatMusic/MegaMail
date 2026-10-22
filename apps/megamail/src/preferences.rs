@@ -42,6 +42,7 @@ pub(crate) struct MailPreferences {
     pub(crate) hide_quoted_text: bool,
     pub(crate) reduced_motion: bool,
     pub(crate) default_unified: bool,
+    pub(crate) notifications: bool,
 }
 
 impl Default for MailPreferences {
@@ -52,6 +53,7 @@ impl Default for MailPreferences {
             hide_quoted_text: true,
             reduced_motion: false,
             default_unified: true,
+            notifications: true,
         }
     }
 }

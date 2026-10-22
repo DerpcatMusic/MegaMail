@@ -146,6 +146,14 @@ pub enum DraftSourceState {
     Prepared(Arc<Result<OutgoingMessage, String>>),
 }
 
+/// Raw RFC 822 bytes fetched for Save as .eml or Forward as attachment.
+#[derive(Debug, Clone)]
+pub struct EmlExport {
+    pub key: MessageKey,
+    pub forward: bool,
+    pub raw: Result<Arc<Vec<u8>>, String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct DraftSourceSnapshot {
     pub key: MessageKey,
@@ -500,6 +508,11 @@ pub struct LiveMailbox {
     thunderbird_notice: Option<String>,
     thunderbird_results: Vec<ThunderbirdAccountOutcome>,
     demo_mode: bool,
+    /// Desktop notification for new Inbox mail; set from preferences.
+    pub notifications: bool,
+    eml_pending: Option<(u64, MessageKey, bool)>,
+    eml_ready: Option<EmlExport>,
+    seen_unread: HashMap<(u32, String), HashSet<u32>>,
 }
 
 impl LiveMailbox {
@@ -684,6 +697,10 @@ impl LiveMailbox {
             thunderbird_notice: None,
             thunderbird_results: Vec::new(),
             demo_mode,
+            notifications: true,
+            eml_pending: None,
+            eml_ready: None,
+            seen_unread: HashMap::new(),
         }
     }
 
@@ -2152,6 +2169,39 @@ impl LiveMailbox {
         Some(token)
     }
 
+    /// Fetch the full source of `key` for saving or forwarding as an attachment.
+    pub fn request_eml(&mut self, key: MessageKey, forward: bool, cx: &mut Context<Self>) -> bool {
+        if self.demo_mode || self.eml_pending.is_some() || !self.selectable_key(&key) {
+            return false;
+        }
+        let token = self.next_draft_token;
+        self.next_draft_token = self.next_draft_token.wrapping_add(1).max(1);
+        let sent = self.send_request(
+            key.account_id,
+            MailRequest::ExportRaw {
+                token,
+                path: key.folder_path.clone(),
+                uid: key.uid,
+                for_reader: true,
+                max_bytes: Some(64 * 1024 * 1024),
+            },
+            cx,
+        );
+        if sent {
+            self.eml_pending = Some((token, key, forward));
+        }
+        cx.notify();
+        sent
+    }
+
+    pub fn eml_ready(&self) -> bool {
+        self.eml_ready.is_some()
+    }
+
+    pub fn take_eml(&mut self) -> Option<EmlExport> {
+        self.eml_ready.take()
+    }
+
     /// Publish a MIME-parsed, attachment-staged message produced on a
     /// background executor. A stale conversion is rejected so the caller can
     /// remove any temporary attachment files it created.
@@ -3233,6 +3283,14 @@ impl LiveMailbox {
                     changed = true;
                 }
             }
+            WorkerMailboxEvent::RawExported { token, raw }
+                if self.eml_pending.as_ref().is_some_and(|(t, key, _)| *t == token && key.account_id == account_id) =>
+            {
+                if let Some((_, key, forward)) = self.eml_pending.take() {
+                    self.eml_ready = Some(EmlExport { key, forward, raw });
+                    changed = true;
+                }
+            }
             WorkerMailboxEvent::RawExported { token, raw } => {
                 let matches = self.draft_source.as_ref().is_some_and(|source| {
                     draft_export_matches(
@@ -3634,6 +3692,43 @@ impl LiveMailbox {
         true
     }
 
+    /// Desktop notification for unread Inbox mail that was not in the previous
+    /// load. The first load of a folder only records what is already there.
+    fn notify_new_mail(&mut self, account_id: u32, path: &str, messages: &[Message], append: bool) {
+        let is_inbox = self
+            .folders_by_account
+            .get(&account_id)
+            .and_then(|folders| folders.iter().find(|folder| folder.path == path))
+            .is_some_and(|folder| folder.kind == FolderKind::Inbox);
+        if !is_inbox || self.demo_mode {
+            return;
+        }
+        let seen = self.seen_unread.entry((account_id, path.to_owned()));
+        let first_load = matches!(seen, std::collections::hash_map::Entry::Vacant(_));
+        let seen = seen.or_default();
+        let fresh: Vec<&Message> = messages
+            .iter()
+            .filter(|m| m.unread && !seen.contains(&m.uid))
+            .collect();
+        seen.extend(messages.iter().filter(|m| m.unread).map(|m| m.uid));
+        if first_load || append || fresh.is_empty() || !self.notifications {
+            return;
+        }
+        let (title, body) = match fresh.as_slice() {
+            [one] => (
+                if one.from_name.trim().is_empty() { one.from_addr.clone() } else { one.from_name.clone() },
+                one.subject.clone(),
+            ),
+            many => (format!("{} new messages", many.len()), many.iter().take(3).map(|m| m.subject.as_str()).collect::<Vec<_>>().join("\n")),
+        };
+        // ponytail: shells out to notify-send; swap for a D-Bus client if it must work without libnotify-bin.
+        std::thread::spawn(move || {
+            let _ = std::process::Command::new("notify-send")
+                .args(["--app-name=MegaMail", "--icon=mail-unread", "--", &title, &body])
+                .status();
+        });
+    }
+
     fn handle_page_result(&mut self, result: PageResult, cx: &mut Context<Self>) {
         let page_ready = matches!(&result.status, PageStatus::Ready);
         let key = PageKey {
@@ -3690,6 +3785,7 @@ impl LiveMailbox {
                         ))
                 });
                 self.messages.extend(messages.iter().cloned());
+                self.notify_new_mail(result.account_id, &result.folder_path, &messages, append);
                 if !append {
                     self.page_keys.retain(|message_key| {
                         message_key.account_id != result.account_id

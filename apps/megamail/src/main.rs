@@ -326,6 +326,7 @@ enum PreferenceChange {
     HideQuotedText(bool),
     ReducedMotion(bool),
     DefaultUnified(bool),
+    Notifications(bool),
 }
 
 #[derive(Clone, Copy)]
@@ -489,6 +490,8 @@ struct Composer {
     schedule: Entity<InputState>,
     show_cc_bcc: bool,
     show_schedule: bool,
+    /// Undo-send window: (generation, seconds left). The message is not sent until it ends.
+    send_hold: Option<(u64, u32)>,
     /// Which recipient field (0 To, 1 Cc, 2 Bcc) was edited last; owns the suggestion list.
     last_recipient: usize,
     error: Option<String>,
@@ -537,6 +540,7 @@ impl Composer {
             show_cc_bcc: !message.cc.is_empty() || !message.bcc.is_empty(),
             show_schedule: message.send_at.is_some(),
             last_recipient: 0,
+            send_hold: None,
             message,
             error: None,
             send_request_id: None,
@@ -630,7 +634,7 @@ impl Composer {
     fn operation_pending(&self) -> bool {
         composer_operation_pending(
             self.selecting_attachments,
-            self.send_request_id.is_some(),
+            self.send_request_id.is_some() || self.send_hold.is_some(),
             self.draft_pending.is_some(),
             self.send_uncertain,
         )
@@ -641,7 +645,7 @@ impl Composer {
             && self.message.html.is_empty()
             && composer_can_edit(
                 self.selecting_attachments,
-                self.send_request_id.is_some(),
+                self.send_request_id.is_some() || self.send_hold.is_some(),
                 self.draft_pending.is_some(),
                 self.send_queued,
                 self.send_uncertain,
@@ -651,7 +655,7 @@ impl Composer {
     fn can_close(&self) -> bool {
         composer_can_close(
             self.selecting_attachments,
-            self.send_request_id.is_some(),
+            self.send_request_id.is_some() || self.send_hold.is_some(),
             self.draft_pending.is_some(),
             self.send_uncertain,
         )
@@ -1184,7 +1188,11 @@ impl MailApp {
                     Err(error) => this.theme_error = Some(error),
                 }
                 match loaded.2 {
-                    Ok(preferences) => this.preferences = preferences,
+                    Ok(preferences) => {
+                        this.preferences = preferences;
+                        let on = this.preferences.notifications;
+                        this.live.update(cx, |live, _| live.notifications = on);
+                    }
                     Err(error) => this.preferences_error = Some(error),
                 }
                 match loaded.3 {
@@ -2691,6 +2699,7 @@ impl MailApp {
             PreferenceChange::HideQuotedText(value) => proposed.hide_quoted_text = value,
             PreferenceChange::ReducedMotion(value) => proposed.reduced_motion = value,
             PreferenceChange::DefaultUnified(value) => proposed.default_unified = value,
+            PreferenceChange::Notifications(value) => proposed.notifications = value,
         }
         self.preferences_busy = true;
         self.preferences_error = None;
@@ -2702,6 +2711,8 @@ impl MailApp {
                 match result {
                     Ok(preferences) => {
                         this.preferences = preferences;
+                        let on = this.preferences.notifications;
+                        this.live.update(cx, |live, _| live.notifications = on);
                         this.list_scroll = UniformListScrollHandle::new();
                         let snapshot = this.live.read(cx).snapshot();
                         this.rebuild_list_rows(&snapshot, cx);
@@ -4624,8 +4635,24 @@ impl MailApp {
                                 message_sender(&row.message),
                                 row.message.subject
                             ))
-                            .on_click(move |_, _, cx| {
+                            .on_click(move |event, _, cx| {
+                                let modifiers = event.modifiers();
+                                let multi = modifiers.control || modifiers.platform || modifiers.shift;
                                 let _ = owner_select.update(cx, |this, cx| {
+                                    if multi && this.composer.is_none() {
+                                        // Ctrl toggles, Shift extends: start selecting without a separate mode switch.
+                                        this.triage.open = true;
+                                        let focused = this.live.read(cx).snapshot().selected_key;
+                                        if modifiers.shift {
+                                            this.edit_triage_selection(Some(key.clone()), false, true, cx);
+                                        } else {
+                                            if let Some(first) = focused.filter(|f| *f != key && this.triage.selection.is_empty()) {
+                                                this.edit_triage_selection(Some(first), false, false, cx);
+                                            }
+                                            this.edit_triage_selection(Some(key.clone()), false, false, cx);
+                                        }
+                                        return;
+                                    }
                                     this.draft_open_error = None;
                                     this.live.update(cx, |live, cx| {
                                         live.select_message(key.clone(), cx)
@@ -5493,6 +5520,8 @@ impl MailApp {
                     "Preview mail rules",
                     "Open original formatting…",
                     "Move to Junk",
+                    "Save as .eml…",
+                    "Forward as attachment",
                 ]
                 .into_iter()
                 .enumerate()
@@ -5507,7 +5536,7 @@ impl MailApp {
                                 4..=5 => !body_loaded,
                                 6..=7 => !body_loaded || export_busy,
                                 8 => demo || !body_loaded || rules_busy,
-                                10 => demo,
+                                10..=12 => demo,
                                 _ => !body_loaded,
                             })
                             .on_click(move |_, window, cx| {
@@ -5546,6 +5575,11 @@ impl MailApp {
                                     8 => this.preview_saved_rules(cx),
                                     10 => {
                                         this.live.update(cx, |live, cx| live.junk_selected(cx));
+                                    }
+                                    11 | 12 => {
+                                        if let Some(key) = this.live.read(cx).snapshot().selected_key {
+                                            this.live.update(cx, |live, cx| live.request_eml(key, index == 12, cx));
+                                        }
                                     }
                                     _ => this.open_original_formatting(cx),
                                 });
@@ -7449,6 +7483,12 @@ impl MailApp {
                                                 this.save_current_draft(cx)
                                             })),
                                     )
+                                    .when_some(composer.send_hold, |row, (_, left)| row.child(
+                                        Button::new("undo-send").secondary().small().label(format!("Undo · sending in {left}s"))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                if let Some(c) = &mut this.composer { c.send_hold = None; c.notice = Some("Send cancelled. Your message is still here.".into()); }
+                                                cx.notify();
+                                            }))))
                                     .child(
                                         Button::new("send-message")
                                             .primary()
@@ -7463,7 +7503,7 @@ impl MailApp {
                                             } else {
                                                 "Send"
                                             })
-                                            .disabled(self.demo || !composer.can_edit() || composer.recovery.restored_hold)
+                                            .disabled(self.demo || !composer.can_edit() || composer.recovery.restored_hold || composer.send_hold.is_some())
                                             .on_click(cx.listener(|this, _, _, cx| {
                                                 this.send_current_message(cx)
                                             })),
@@ -7593,7 +7633,61 @@ impl MailApp {
         cx.notify();
     }
 
+    /// Send with a short undo window. Scheduled sends, empty recipients and the
+    /// demo skip the wait so their errors and state appear immediately.
     fn send_current_message(&mut self, cx: &mut Context<Self>) {
+        const UNDO_SECONDS: u32 = 8;
+        let hold = self.composer.as_ref().is_some_and(|c| {
+            c.can_edit()
+                && !c.recovery.restored_hold
+                && c.message.send_at.is_none()
+                && !self.demo
+                && !c.to.read(cx).value().trim().is_empty()
+                && !c.subject.read(cx).value().trim().is_empty()
+        });
+        if !hold {
+            self.dispatch_send(cx);
+            return;
+        }
+        self.capture_recovery(cx);
+        let Some(composer) = self.composer.as_mut() else { return };
+        let generation = composer.send_hold.map_or(1, |(g, _)| g.wrapping_add(1));
+        composer.send_hold = Some((generation, UNDO_SECONDS));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let done = this
+                    .update(cx, |this, cx| {
+                        let Some(c) = this.composer.as_mut() else { return Some(false) };
+                        match c.send_hold {
+                            Some((g, left)) if g == generation && left > 1 => {
+                                c.send_hold = Some((g, left - 1));
+                                cx.notify();
+                                None
+                            }
+                            Some((g, _)) if g == generation => {
+                                c.send_hold = None;
+                                Some(true)
+                            }
+                            _ => Some(false),
+                        }
+                    })
+                    .unwrap_or(Some(false));
+                match done {
+                    None => continue,
+                    Some(true) => {
+                        let _ = this.update(cx, |this, cx| this.dispatch_send(cx));
+                        return;
+                    }
+                    Some(false) => return,
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn dispatch_send(&mut self, cx: &mut Context<Self>) {
         if let Some(composer) = self
             .composer
             .as_mut()
@@ -8108,6 +8202,13 @@ impl Render for MailApp {
                 if let Some(c) = this.composer.as_mut().filter(|c| !c.tools.autoloaded) {
                     c.tools.autoloaded = true;
                     this.read_compose_tools(cx);
+                }
+            });
+        }
+        if self.live.read(cx).eml_ready() {
+            cx.on_next_frame(window, |this, window, cx| {
+                if let Some(export) = this.live.update(cx, |live, _| live.take_eml()) {
+                    this.finish_eml(export, window, cx);
                 }
             });
         }

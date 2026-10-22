@@ -106,6 +106,18 @@ pub(crate) fn render(app: &MailApp, palette: Palette, cx: &mut Context<MailApp>)
             |this, value, cx| this.change_preference(PreferenceChange::HideQuotedText(value), cx),
         ))
         .child(choice_row(
+            "New mail notifications",
+            Some("Show a desktop notification when new mail reaches an Inbox."),
+            (if preferences.notifications { "On" } else { "Off" }).to_owned(),
+            bool_choices(preferences.notifications),
+            !preferences_disabled,
+            "mail-notifications",
+            palette,
+            dark,
+            cx,
+            |this, value, cx| this.change_preference(PreferenceChange::Notifications(value), cx),
+        ))
+        .child(choice_row(
             "Reduced motion",
             Some("Reduce motion in menus and transitions."),
             (if preferences.reduced_motion {
