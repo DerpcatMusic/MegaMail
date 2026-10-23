@@ -266,7 +266,9 @@ impl MailApp {
                 Button::new("close-reader-find")
                     .ghost()
                     .small()
-                    .label("Close find")
+                    .icon(Icon::new(IconName::Close).size(px(14.)))
+                    .tooltip("Close find")
+                    .accessibility_label("Close find")
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.reader_find.clear();
                         cx.notify();

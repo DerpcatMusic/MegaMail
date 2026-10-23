@@ -68,26 +68,22 @@ impl MailApp {
         }).detach();
         cx.notify();
     }
+    /// Formatting strip and preview; only rendered while Formatted is on.
     pub(crate) fn markup_controls(&self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
         let Some(c) = &self.composer else {
             return div().into_any_element();
         };
         v_flex().gap_2()
-            .child(h_flex().flex_wrap().gap_2()
-                .child(Button::new("compose-plain-text").ghost().small().label("Plain text").selected(!c.markup.enabled).disabled(!c.can_edit())
-                    .on_click(cx.listener(|this, _, _, cx| { if let Some(c) = &mut this.composer { c.markup.enabled = false; c.markup.preview = false; c.markup.generation = c.markup.generation.wrapping_add(1); c.recovery.dirty_input = true; } this.capture_recovery(cx); cx.notify(); })))
-                .child(Button::new("compose-markdown").ghost().small().label("Formatted").tooltip("Write with Markdown: **bold**, *italic*, lists and links. Sends HTML with a plain-text copy.").selected(c.markup.enabled).disabled(!c.can_edit())
-                    .on_click(cx.listener(|this, _, _, cx| { if let Some(c) = &mut this.composer { c.markup.enabled = true; } this.refresh_markdown(cx); })))
-                .when(c.markup.enabled, |el| el.child(Button::new("preview-compose-markdown").secondary().small().label(if c.markup.preview { "Hide preview" } else { "Show preview" }).on_click(cx.listener(|this, _, _, cx| { if let Some(c) = &mut this.composer { c.markup.preview = !c.markup.preview; } cx.notify(); })))))
-            .when(c.markup.enabled, |el| el.child(h_flex().gap_1()
-                .child(Button::new("fmt-bold").ghost().small().label("Bold").tooltip("Bold · wraps the selection in **").on_click(cx.listener(|this, _, w, cx| this.format_body("**", "**", w, cx))))
-                .child(Button::new("fmt-italic").ghost().small().label("Italic").on_click(cx.listener(|this, _, w, cx| this.format_body("*", "*", w, cx))))
-                .child(Button::new("fmt-link").ghost().small().label("Link").tooltip("Turns the selection into a link; paste the address over “url”").on_click(cx.listener(|this, _, w, cx| this.format_body("[", "](url)", w, cx))))
-                .child(Button::new("fmt-list").ghost().small().label("List").on_click(cx.listener(|this, _, w, cx| this.format_body("- ", "", w, cx))))
-                .child(Button::new("fmt-quote").ghost().small().label("Quote").on_click(cx.listener(|this, _, w, cx| this.format_body("> ", "", w, cx))))))
-            .when(c.markup.enabled, |el| el.child(div().text_size(px(12.)).text_color(palette.muted).child(if c.markup.busy { "Updating formatting…" } else { "Markdown works here: **bold**, *italic*, lists, headings and links." })))
-            .when_some(c.markup.error.clone(), |el, error| el.child(div().child(error)))
-            .when(c.markup.enabled && c.markup.preview && !c.markup.semantic.is_empty(), |el| el.child(div().p_4().rounded(px(8.)).bg(palette.surface).child(gpui_kit::component::text::TextView::html("compose-markdown-preview", c.markup.semantic.clone()).selectable(true).w_full().text_size(px(14.)).line_height(relative(1.6)))))
+            .child(h_flex().flex_wrap().items_center().gap_1()
+                .child(Button::new("fmt-bold").ghost().small().icon(Icon::new(IconName::Bold).size(px(16.))).accessibility_label("Bold").tooltip("Bold · wraps the selection in **").on_click(cx.listener(|this, _, w, cx| this.format_body("**", "**", w, cx))))
+                .child(Button::new("fmt-italic").ghost().small().icon(Icon::new(IconName::Italic).size(px(16.))).accessibility_label("Italic").tooltip("Italic").on_click(cx.listener(|this, _, w, cx| this.format_body("*", "*", w, cx))))
+                .child(Button::new("fmt-link").ghost().small().icon(Icon::new(IconName::Link).size(px(16.))).accessibility_label("Link").tooltip("Turns the selection into a link; paste the address over “url”").on_click(cx.listener(|this, _, w, cx| this.format_body("[", "](url)", w, cx))))
+                .child(Button::new("fmt-list").ghost().small().icon(Icon::new(IconName::List).size(px(16.))).accessibility_label("Bulleted list").tooltip("Bulleted list").on_click(cx.listener(|this, _, w, cx| this.format_body("- ", "", w, cx))))
+                .child(Button::new("fmt-quote").ghost().small().icon(Icon::new(IconName::Quote).size(px(16.))).accessibility_label("Quote").tooltip("Quote").on_click(cx.listener(|this, _, w, cx| this.format_body("> ", "", w, cx))))
+                .child(div().flex_1())
+                .child(Button::new("preview-compose-markdown").ghost().small().label(if c.markup.preview { "Hide preview" } else { "Show preview" }).on_click(cx.listener(|this, _, _, cx| { if let Some(c) = &mut this.composer { c.markup.preview = !c.markup.preview; } cx.notify(); }))))
+            .when_some(c.markup.error.clone(), |el, error| el.child(div().text_size(px(12.)).text_color(palette.muted).child(error)))
+            .when(c.markup.preview && !c.markup.semantic.is_empty(), |el| el.child(div().p_4().rounded(px(8.)).border_1().border_color(palette.border).bg(palette.surface).child(gpui_kit::component::text::TextView::html("compose-markdown-preview", c.markup.semantic.clone()).selectable(true).w_full().text_size(px(14.)).line_height(relative(1.6)))))
             .into_any_element()
     }
 }

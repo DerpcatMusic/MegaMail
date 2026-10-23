@@ -1129,6 +1129,16 @@ impl MailApp {
         cx.notify();
     }
 
+    /// Footer contacts button: show or hide the panel, loading contacts on first open.
+    pub(crate) fn toggle_compose_tools(&mut self, cx: &mut Context<Self>) {
+        let Some(composer) = &mut self.composer else { return };
+        composer.tools.show = !composer.tools.show;
+        if composer.tools.show && composer.tools.snapshot.is_none() {
+            self.read_compose_tools(cx);
+        }
+        cx.notify();
+    }
+
     pub(crate) fn compose_tools_view(
         &self,
         palette: Palette,
@@ -1150,19 +1160,6 @@ impl MailApp {
                 .as_ref()
                 .is_some_and(|s| s.contacts.is_some());
         v_flex().w_full().gap_2()
-            .child(Button::new("read-compose-tools").ghost().small()
-                .icon(Icon::new(if tools.show { IconName::ChevronDown } else { IconName::ChevronRight }))
-                .label(if self.compose_tools_busy { "Loading contacts…" } else if tools.show { "Hide contacts & snippets" } else { "Contacts & snippets" })
-                .disabled(!enabled && !tools.show)
-                .tooltip("Saved contacts, signatures and reusable text. Stored privately on this device; nothing is looked up online.")
-                .on_click(cx.listener(|this, _, _, cx| {
-                    let Some(composer) = &mut this.composer else { return };
-                    composer.tools.show = !composer.tools.show;
-                    if composer.tools.show && composer.tools.snapshot.is_none() {
-                        this.read_compose_tools(cx);
-                    }
-                    cx.notify();
-                })))
             .when(!usable, |el| el.child(div().text_size(px(11.)).text_color(palette.muted).child("Contacts and snippets need a connected account, so they are unavailable here.")))
             .when(tools.show, |el| {
                 let mut panel = v_flex().w_full().gap_2()

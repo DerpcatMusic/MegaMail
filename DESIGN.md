@@ -295,3 +295,7 @@ Settings manages accounts and mail preferences, and displays MegaMail’s active
 - **Don't** add idle decorative animation or copy Zeron icons without their license and attribution.
 
 Incoming HTML mail uses stable selectable native semantic formatting by default. Original authored styling is available only through an explicit separate isolated window for complete source. Message headers sit within authored blocks, with selectable sender names, addresses and wrapping recipient lines outside the message disclosure button. Find, view switching, exports and rule previews live in the message menu. Selection and mail rules live in the mailbox menu; show their controls only while the corresponding task is open.
+
+## Layout contract (2026-10 pass)
+
+Spacing is 4/8/12/16/24. Every pane has a 44px header with 16px side padding and a hairline below. Repeated actions are ghost icon buttons with tooltips; text labels are kept for the one primary action per region (New message, Reply, Send). Reader messages are separated by hairlines, not nested cards.

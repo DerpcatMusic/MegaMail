@@ -672,26 +672,25 @@ impl MailApp {
             .batch
             .as_ref()
             .is_some_and(Batch::requires_confirmation);
-        v_flex().w_full().gap_2()
-            .child(Button::new("open-bulk-selection").ghost().small().label(if self.triage.open { "Hide selection controls" } else { "Select messages" })
-                .disabled(self.demo || self.composer.is_some())
-                .on_click(cx.listener(|this, _, _, cx| { this.triage.open = !this.triage.open; cx.notify(); })))
-            .when(self.triage.open, |el| el
-                .child(div().text_size(px(11.)).text_color(palette.muted).child("Tick messages, or Ctrl-click and Shift-click rows. Up to 500 at a time. A collapsed conversation counts as its newest message."))
-                .child(h_flex().flex_wrap().gap_2()
-                    .child(Button::new("select-all-loaded").ghost().small().label("Select all on screen").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.edit_triage_selection(None, true, false, cx))))
-                    .child(Button::new("select-range-loaded").ghost().small().label("Select up to current").disabled(busy).on_click(cx.listener(|this, _, _, cx| { let key = this.live.read(cx).snapshot().selected_key; this.edit_triage_selection(key, false, true, cx); })))
-                    .child(Button::new("clear-bulk-selection").ghost().small().label("Clear selection").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.edit_triage_selection(None, false, false, cx)))))
-                .child(h_flex().flex_wrap().gap_2().children([
-                    ("bulk-read", "Mark read", Choice::Unread(false)), ("bulk-unread", "Mark unread", Choice::Unread(true)),
-                    ("bulk-star", "Star", Choice::Starred(true)), ("bulk-unstar", "Remove stars", Choice::Starred(false)),
-                    ("bulk-archive", "Archive", Choice::Role(FolderKind::Archive)), ("bulk-junk", "Junk", Choice::Role(FolderKind::Junk)), ("bulk-trash", "Trash", Choice::Role(FolderKind::Trash))
-                ].into_iter().map(|(id, label, choice)| Button::new(id).ghost().small().label(label).disabled(disabled)
-                    .on_click(cx.listener(move |this, _, _, cx| this.begin_triage(choice.clone(), cx))))))
+        // One compact row of icon actions; labels live in tooltips and accessibility names.
+        v_flex().w_full().gap_1()
+            .child(h_flex().flex_wrap().items_center().gap_0p5()
+                .child(div().id("bulk-selection-count").mr_1().text_size(px(11.)).text_color(palette.muted)
+                    .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new("Tick messages, or Ctrl-click and Shift-click rows. Up to 500 at a time. A collapsed conversation counts as its newest message.").build(window, cx))
+                    .child(format!("{} selected", self.triage.selection.len())))
+                .child(Button::new("select-all-loaded").ghost().small().icon(Icon::new(IconName::CheckCheck).size(px(14.))).tooltip("Select all on screen").accessibility_label("Select all on screen").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.edit_triage_selection(None, true, false, cx))))
+                .child(Button::new("select-range-loaded").ghost().small().icon(Icon::new(IconName::ArrowUpToLine).size(px(14.))).tooltip("Select up to current").accessibility_label("Select up to current").disabled(busy).on_click(cx.listener(|this, _, _, cx| { let key = this.live.read(cx).snapshot().selected_key; this.edit_triage_selection(key, false, true, cx); })))
+                .child(Button::new("clear-bulk-selection").ghost().small().icon(Icon::new(IconName::X).size(px(14.))).tooltip("Clear selection").accessibility_label("Clear selection").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.edit_triage_selection(None, false, false, cx))))
+                .children([
+                    ("bulk-read", IconName::MailOpen, "Mark read", Choice::Unread(false)), ("bulk-unread", IconName::Mail, "Mark unread", Choice::Unread(true)),
+                    ("bulk-star", IconName::Star, "Star", Choice::Starred(true)), ("bulk-unstar", IconName::StarOff, "Remove stars", Choice::Starred(false)),
+                    ("bulk-archive", IconName::Archive, "Archive", Choice::Role(FolderKind::Archive)), ("bulk-junk", IconName::Ban, "Junk", Choice::Role(FolderKind::Junk)), ("bulk-trash", IconName::Trash, "Trash", Choice::Role(FolderKind::Trash))
+                ].into_iter().map(|(id, icon, label, choice)| Button::new(id).ghost().small().icon(Icon::new(icon).size(px(14.))).tooltip(label).accessibility_label(label).disabled(disabled)
+                    .on_click(cx.listener(move |this, _, _, cx| this.begin_triage(choice.clone(), cx)))))
                 .child({
                     let owner = cx.entity().downgrade();
                     let folders: Vec<(String, String)> = self.live.read(cx).snapshot().folders.iter().map(|f| (f.name.clone(), f.path.clone())).collect();
-                    Button::new("bulk-move-folder").ghost().small().label("Move to folder…").disabled(disabled || folders.is_empty())
+                    Button::new("bulk-move-folder").ghost().small().icon(Icon::new(IconName::FolderInput).size(px(14.))).tooltip("Move to folder").accessibility_label("Move to folder").disabled(disabled || folders.is_empty())
                         .dropdown_menu(move |mut menu, _, _| {
                             for (name, path) in folders.clone() {
                                 let owner = owner.clone();
@@ -703,15 +702,14 @@ impl MailApp {
                             menu
                         })
                 })
+                .child(Button::new("undo-last-flag-batch").ghost().small().icon(Icon::new(IconName::Undo2).size(px(14.))).accessibility_label("Undo last change").disabled(busy || self.triage.undo.is_empty())
+                    .tooltip("Undo last change. Undoes read and star changes; moved messages must be moved back by hand.")
+                    .on_click(cx.listener(|this, _, _, cx| this.undo_triage(cx))))
                 .when(confirmed, |el| el.child(Button::new("confirm-bulk-move").secondary().small().label("Confirm these moves")
                     .on_click(cx.listener(|this, _, _, cx| { if let Some(batch) = &mut this.triage.batch { batch.confirm_destructive(); } this.pump_triage(cx); cx.notify(); }))))
-                .child(Button::new("cancel-bulk-pending").ghost().small().label("Cancel pending work").disabled(!busy)
+                .when(busy, |el| el.child(Button::new("cancel-bulk-pending").ghost().small().label("Cancel pending")
                     .tooltip("Already submitted work waits for its own receipt; cancel stops only items not yet submitted.")
-                    .on_click(cx.listener(|this, _, _, cx| { if let Some(batch) = &mut this.triage.batch { batch.cancel(); } this.pump_triage(cx); cx.notify(); })))
-                .child(Button::new("undo-last-flag-batch").ghost().small().label("Undo last change").disabled(busy || self.triage.undo.is_empty())
-                    .tooltip("Undoes read and star changes. Moved messages must be moved back by hand.")
-                    .on_click(cx.listener(|this, _, _, cx| this.undo_triage(cx))))
-            )
+                    .on_click(cx.listener(|this, _, _, cx| { if let Some(batch) = &mut this.triage.batch { batch.cancel(); } this.pump_triage(cx); cx.notify(); })))))
             .when(!self.triage.notice.is_empty(), |el| el.child(div().text_size(px(11.)).text_color(palette.muted).child(self.triage.notice.clone())))
             .when(!self.triage.plans.is_empty(), |el| el.child(div().id("bulk-move-plan").max_h(px(160.)).overflow_y_scroll()
                 .children(self.triage.plans.iter().cloned().map(|line| div().text_size(px(11.)).child(line)))))
