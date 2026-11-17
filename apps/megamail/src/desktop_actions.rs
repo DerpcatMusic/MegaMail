@@ -65,7 +65,8 @@ pub(crate) mod action {
             ScreenerAllow,
             ScreenerBlock,
             Unsubscribe,
-            UndoSend
+            UndoSend,
+            ToggleSenderColors
         ]
     );
 }
@@ -112,6 +113,7 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("n", ScreenerBlock, Some(MESSAGES_CONTEXT)),
         KeyBinding::new("ctrl-u", Unsubscribe, Some(MAILBOX_CONTEXT)),
         KeyBinding::new("z", UndoSend, Some(MESSAGES_CONTEXT)),
+        KeyBinding::new("shift-v", ToggleSenderColors, Some(MESSAGES_CONTEXT)),
         KeyBinding::new("u", ToggleUnread, Some(MESSAGES_CONTEXT)),
         KeyBinding::new("r", ReplyMessage, Some(MESSAGES_CONTEXT)),
         KeyBinding::new("a", ReplyAll, Some(MESSAGES_CONTEXT)),

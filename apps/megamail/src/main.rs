@@ -4391,7 +4391,7 @@ impl MailApp {
                 .relative()
                 .gap_2()
                 .child(measure_canvas)
-                .when(rendered.blocked_remote > 0 || (dark && (rendered.recolored || state.original_colors)), |el| {
+                .when(rendered.blocked_remote > 0, |el| {
                     el.child(
                         h_flex()
                             .gap_2()
@@ -4415,18 +4415,7 @@ impl MailApp {
                                         })),
                                 )
                             })
-                            .when(dark && (rendered.recolored || state.original_colors), |row| {
-                                row.child(
-                                    Button::new("original-colors")
-                                        .ghost()
-                                        .xsmall()
-                                        .label(if state.original_colors { "Theme colors" } else { "Sender's colors" })
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            let current = this.original.as_ref().is_some_and(|s| s.original_colors);
-                                            this.set_original_policy(None, Some(!current), cx)
-                                        })),
-                                )
-                            }),
+,
                     )
                 })
                 .child(
@@ -7373,10 +7362,29 @@ impl MailApp {
                                     .small()
                                     .self_start()
                                     .xsmall()
-                                    .label(if self.comfort.details.contains(&row.key) {
-                                        "Hide details"
+                                    // Gmail-style "to me ▾": who it went to, a click for the rest.
+                                    .text_color(palette.muted)
+                                    .icon(Icon::new(if self.comfort.details.contains(&row.key) {
+                                        IconName::ChevronUp
                                     } else {
-                                        "Details"
+                                        IconName::ChevronDown
+                                    }))
+                                    .label({
+                                        let to = row.message.to.trim();
+                                        let first = to.split(',').next().unwrap_or("").trim();
+                                        let first = first
+                                            .split('<')
+                                            .next()
+                                            .map(str::trim)
+                                            .filter(|name| !name.is_empty())
+                                            .unwrap_or(first)
+                                            .trim_matches('"');
+                                        let more = to.split(',').count().saturating_sub(1);
+                                        match (first.is_empty(), more) {
+                                            (true, _) => "Details".to_owned(),
+                                            (false, 0) => format!("to {first}"),
+                                            (false, n) => format!("to {first} +{n}"),
+                                        }
                                     })
                                     .on_click({
                                         let key = row.key.clone();
@@ -9561,6 +9569,10 @@ impl Render for MailApp {
                 .on_action(cx.listener(|this, _: &ScreenerBlock, _, cx| this.screen_sender(false, cx)))
                 .on_action(cx.listener(|this, _: &Unsubscribe, window, cx| this.unsubscribe_selected(window, cx)))
                 .on_action(cx.listener(|this, _: &UndoSend, window, cx| this.undo_last_send(window, cx)))
+                .on_action(cx.listener(|this, _: &ToggleSenderColors, _, cx| {
+                    let current = this.original.as_ref().is_some_and(|s| s.original_colors);
+                    this.set_original_policy(None, Some(!current), cx)
+                }))
                 .on_action(cx.listener(|this, _: &ToggleTheme, window, cx| {
                     this.toggle_theme(window, cx)
                 }))
