@@ -51,10 +51,47 @@ automatically. Rich HTML composition, inline reply, all-folder/body search,
 and bulk triage are not ported.
 
 The native **Settings** view also manages saved accounts and mail display
-preferences. It lists MegaMail's current key bindings: Up/Down select a message,
-Ctrl+N composes, Ctrl+R replies, Ctrl+Shift+R replies to all, Ctrl+F focuses
-search, Ctrl+Shift+L opens Unified Inbox, and F5 refreshes mail. The legacy
-[Hylki shortcut reference](docs/KEYBOARD_SHORTCUTS.md) applies to the GTK app.
+preferences. The legacy [Hylki shortcut reference](docs/KEYBOARD_SHORTCUTS.md)
+applies to the GTK app.
+
+### Keyboard-first
+
+MegaMail is driven Superhuman-style from the message list. **Ctrl+K** opens a
+command palette listing every command with its key.
+
+| Key | Action | Key | Action |
+|---|---|---|---|
+| J / K | Next / previous | E | Done (archive) and move on |
+| R | Reply | # or Delete | Trash and move on |
+| A | Reply all | S | Star / unstar |
+| F | Forward | U | Read / unread |
+| C | Compose | / | Search |
+| G I / G S / G T / G D / G E | Inbox / Starred / Sent / Drafts / Archive | Esc | Back to the list |
+| Ctrl+B | Folders sidebar | Ctrl+, | Settings |
+
+Ctrl+N, Ctrl+R, Ctrl+Shift+R, Ctrl+F, Ctrl+Shift+L and F5 keep working.
+
+### Agents (MCP)
+
+`megamail mcp` runs a [Model Context Protocol](https://modelcontextprotocol.io)
+server on stdio. It uses the same saved accounts, keyring credentials, cache
+and mail workers as the app, so agents see every mailbox MegaMail sees without
+a second copy of any password. Tools: `list_accounts`, `list_folders`,
+`list_messages` (omit the account for a unified inbox), `search_messages`,
+`read_message`, `send_message`, `reply`, `forward`, `save_draft` (pass
+`draft_uid` to edit an existing draft) and `update_messages` (read, unread,
+star, archive, trash, spam, move). `megamail mcp --read-only` hides every tool
+that changes mail.
+
+```sh
+claude mcp add megamail -s user -- megamail mcp
+```
+
+For Claude Desktop, add to `claude_desktop_config.json`:
+
+```json
+{ "mcpServers": { "megamail": { "command": "megamail", "args": ["mcp"] } } }
+```
 
 For existing Thunderbird setups, **Find mail accounts** discovers real IMAP
 mailboxes in standard Linux Thunderbird profiles. The import picker groups

@@ -47,6 +47,7 @@ mod appearance;
 mod appearance_view;
 mod attachment_preview;
 mod comfort;
+mod command_palette;
 mod compose;
 mod compose_markdown;
 mod compose_productivity;
@@ -59,6 +60,7 @@ mod feature_integration;
 mod instance;
 mod invitation;
 mod live;
+mod mcp;
 mod newsletter_actions;
 mod onboarding;
 mod outbox_review;
@@ -82,10 +84,7 @@ mod workflow;
 mod zeron_background;
 mod zeron_style;
 
-use action::{
-    AllDrafts, AllSent, ComposeMessage, FindInMessage, FocusMessages, FocusReader, FocusSearch,
-    NextMessage, PreviousMessage, RefreshMail, ReplyAll, ReplyMessage, SortSender, UnifiedInbox,
-};
+use action::*;
 
 fn packed_rgb(color: gpui_kit::Hsla) -> u32 {
     let color = color.to_rgb();
@@ -863,6 +862,12 @@ struct ListRow {
     child: bool,
 }
 
+struct PaletteState {
+    input: Entity<InputState>,
+    index: usize,
+    _subscription: Subscription,
+}
+
 struct MailApp {
     live: Entity<LiveMailbox>,
     sender_photos: sender_photos::State,
@@ -921,6 +926,11 @@ struct MailApp {
     setup_return_view: View,
     appearance_return_view: View,
     sidebar_collapsed: bool,
+    /// Ctrl+K palette, when open.
+    command_palette: Option<PaletteState>,
+    /// Rows archived/trashed from the keyboard: hidden at once, before the
+    /// worker's refresh confirms the move (cleared if an action fails).
+    hidden_rows: HashSet<MessageKey>,
     accounts_expanded: bool,
     other_folders_expanded: bool,
     demo: bool,
@@ -1009,7 +1019,11 @@ impl MailApp {
             {
                 // The old semantic node can disappear during a folder/body update.
                 // Keep shortcuts in the stable mailbox context instead of a retired node.
-                this.mailbox_focus.focus(window, cx);
+                if this.list_rows.is_empty() {
+                    this.mailbox_focus.focus(window, cx);
+                } else {
+                    this.message_focus.focus(window, cx);
+                }
             }
         });
         let message_focus = cx.focus_handle().tab_stop(true);
@@ -1097,7 +1111,9 @@ impl MailApp {
             view: if demo { View::Mailbox } else { View::Setup },
             setup_return_view: View::Mailbox,
             appearance_return_view: View::Mailbox,
-            sidebar_collapsed: false,
+            sidebar_collapsed: true,
+            command_palette: None,
+            hidden_rows: HashSet::new(),
             accounts_expanded: false,
             other_folders_expanded: false,
             demo,
@@ -2730,6 +2746,12 @@ impl MailApp {
                 })
                 .collect()
         };
+        if snapshot.action_error.is_some() {
+            self.hidden_rows.clear();
+        }
+        self.hidden_rows
+            .retain(|key| snapshot.page.iter().any(|row| &row.key == key));
+        parents.retain(|row| !self.hidden_rows.contains(&row.row.key));
         parents.retain(|row| {
             self.comfort.filter.is_none_or(|wanted| {
                 self.work_status(row.conversation.as_ref(), &row.row, snapshot) == wanted
@@ -2972,6 +2994,9 @@ impl MailApp {
     }
 
     fn toggle_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.appearance_busy || self.appearance_loading || self.theme_busy {
+            return;
+        }
         self.change_theme(
             ThemeChange::Mode(if self.dark {
                 theme::ThemeMode::Light
@@ -3747,6 +3772,202 @@ impl MailApp {
         cx.notify();
     }
 
+    fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.view != View::Mailbox {
+            return;
+        }
+        if self.command_palette.is_some() {
+            self.close_palette(window, cx);
+            return;
+        }
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Type a command…"));
+        let subscription = cx.subscribe_in(&input, window, |this, _, event: &InputEvent, _, cx| {
+            if matches!(event, InputEvent::Change) {
+                if let Some(palette) = this.command_palette.as_mut() {
+                    palette.index = 0;
+                }
+                cx.notify();
+            }
+        });
+        input.read(cx).focus_handle(cx).focus(window, cx);
+        self.command_palette = Some(PaletteState { input, index: 0, _subscription: subscription });
+        cx.notify();
+    }
+
+    fn close_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.command_palette = None;
+        if self.list_rows.is_empty() {
+            self.mailbox_focus.focus(window, cx);
+        } else {
+            self.message_focus.focus(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn run_palette_command(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(palette) = self.command_palette.as_ref() else {
+            return;
+        };
+        let query = palette.input.read(cx).value().to_string();
+        let Some(command) = command_palette::filter(&query).into_iter().nth(index) else {
+            return;
+        };
+        self.close_palette(window, cx);
+        window.dispatch_action(command.action(), cx);
+    }
+
+    fn palette_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(palette) = self.command_palette.as_mut() else {
+            return false;
+        };
+        let count = command_palette::filter(&palette.input.read(cx).value()).len();
+        match key {
+            "escape" => self.close_palette(window, cx),
+            "enter" => {
+                let index = palette.index;
+                self.run_palette_command(index, window, cx);
+            }
+            "down" if count > 0 => palette.index = (palette.index + 1) % count,
+            "up" if count > 0 => palette.index = (palette.index + count - 1) % count,
+            _ => return false,
+        }
+        cx.notify();
+        true
+    }
+
+    fn palette_view(&self, palette: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let state = self.command_palette.as_ref()?;
+        let query = state.input.read(cx).value().to_string();
+        let commands = command_palette::filter(&query);
+        let selected = state.index.min(commands.len().saturating_sub(1));
+        let rows = commands.into_iter().enumerate().map(|(index, command)| {
+            let active = index == selected;
+            h_flex()
+                .id(SharedString::from(format!("palette-{index}")))
+                .w_full()
+                .h(px(36.))
+                .px_3()
+                .rounded(px(6.))
+                .items_center()
+                .justify_between()
+                .cursor_pointer()
+                .when(active, |row| row.bg(palette.selected))
+                .hover(|row| row.bg(palette.hover))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.run_palette_command(index, window, cx)
+                }))
+                .child(div().text_size(px(13.)).child(command.label))
+                .child(shortcut_keys(command.keys, palette))
+        });
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .justify_center()
+                .pt(relative(0.14))
+                .bg(gpui_kit::black().opacity(0.35))
+                .occlude()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| this.close_palette(window, cx)),
+                )
+                .child(
+                    v_flex()
+                        .id("command-palette")
+                        .w(px(560.))
+                        .max_h(px(440.))
+                        .rounded(px(12.))
+                        .border_1()
+                        .border_color(palette.border)
+                        .bg(palette.surface)
+                        .shadow_lg()
+                        .overflow_hidden()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .capture_key_down(cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                            if this.palette_key(&event.keystroke.key, window, cx) {
+                                cx.stop_propagation();
+                            }
+                        }))
+                        .child(
+                            div()
+                                .p_2()
+                                .border_b_1()
+                                .border_color(palette.border)
+                                .child(Input::new(&state.input).appearance(false).text_size(px(15.))),
+                        )
+                        .child(
+                            v_flex()
+                                .id("palette-rows")
+                                .p_1()
+                                .gap_px()
+                                .overflow_y_scroll()
+                                .children(rows),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// Archive or trash the selection and move on to the next conversation
+    /// immediately, the way Superhuman's E and # feel.
+    fn triage_selected(&mut self, kind: FolderKind, cx: &mut Context<Self>) {
+        if !self
+            .action_state(cx)
+            .allows(desktop_actions::MailboxAction::NextMessage)
+        {
+            return;
+        }
+        let snapshot = self.live.read(cx).snapshot();
+        let Some(selected) = snapshot.selected_key.clone() else {
+            return;
+        };
+        let position = self.list_rows.iter().position(|row| {
+            row.row.key == selected
+                || row.conversation.as_ref().is_some_and(|thread| {
+                    thread.members.iter().any(|member| member.key == selected)
+                })
+        });
+        let next = position.and_then(|index| {
+            self.list_rows
+                .iter()
+                .skip(index + 1)
+                .find(|row| !row.child)
+                .or_else(|| self.list_rows[..index].iter().rev().find(|row| !row.child))
+                .map(|row| row.row.key.clone())
+        });
+        let hidden = position.map(|index| self.list_rows[index].row.key.clone());
+        let moved = self.live.update(cx, |live, cx| match kind {
+            FolderKind::Trash => live.trash_selected(cx),
+            _ => live.archive_selected(cx),
+        });
+        if !moved {
+            return;
+        }
+        if let Some(key) = hidden {
+            self.hidden_rows.insert(key);
+        }
+        if let Some(key) = next {
+            self.live.update(cx, |live, cx| live.select_message(key, cx));
+        }
+        let snapshot = self.live.read(cx).snapshot();
+        self.rebuild_list_rows(&snapshot, cx);
+        cx.notify();
+    }
+
+    fn go_to_kind(&mut self, kind: FolderKind, window: &mut Window, cx: &mut Context<Self>) {
+        if self.view != View::Mailbox {
+            return;
+        }
+        self.comfort.outbox_open = false;
+        self.comfort.filter = None;
+        self.live
+            .update(cx, |live, cx| live.select_unified_kind(Some(kind), cx));
+        self.list_scroll = UniformListScrollHandle::new();
+        self.message_focus.focus(window, cx);
+        cx.notify();
+    }
+
     fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
         if !self
             .action_state(cx)
@@ -4419,7 +4640,7 @@ impl MailApp {
             } else if snapshot.filter != MessageFilter::All {
                 "No messages match this filter"
             } else if snapshot.search_query.is_empty() {
-                "This folder is empty"
+                "All clear"
             } else {
                 "No matches in this search scope"
             };
@@ -4449,7 +4670,7 @@ impl MailApp {
                     } else if snapshot.filter != MessageFilter::All {
                         "Choose All or load more messages to broaden this view."
                     } else if snapshot.search_query.is_empty() {
-                        if self.comfort.filter.is_some() { "Choose All work states or load more results to broaden this view." } else { "New mail will appear here when this account syncs." }
+                        if self.comfort.filter.is_some() { "Choose All work states or load more results to broaden this view." } else { "You're caught up. New mail lands here as it arrives." }
                     } else {
                         "Try another search or choose All local mail in Search scope."
                     },
@@ -4460,8 +4681,8 @@ impl MailApp {
         let selected = snapshot.selected_key.clone();
         let rows = self.list_rows.clone();
         let row_height = match self.preferences.density {
-            Density::Compact => 64.,
-            Density::Comfortable => 78.,
+            Density::Compact => 50.,
+            Density::Comfortable => 60.,
         };
         let expanded = self.expanded_conversations.clone();
         let labels = snapshot.account_labels.clone();
@@ -4966,9 +5187,8 @@ impl MailApp {
                     .text_color(palette.faint)
                     .child(snapshot.filter.label())
                     .child(format!(
-                        "{} shown · {} loaded",
-                        self.list_rows.iter().filter(|r| !r.child).count(),
-                        snapshot.loaded_count
+                        "{}",
+                        self.list_rows.iter().filter(|r| !r.child).count()
                     )),
             )
             .child(
@@ -5013,6 +5233,14 @@ impl MailApp {
                     } else {
                         format!("{} unread", snapshot.unread_count)
                     })
+                    .child(
+                        h_flex()
+                            .gap_3()
+                            .text_color(palette.faint)
+                            .child(h_flex().gap_1().child(shortcut_keys("E", palette)).child("Done"))
+                            .child(h_flex().gap_1().child(shortcut_keys("R", palette)).child("Reply"))
+                            .child(h_flex().gap_1().child(shortcut_keys("Ctrl K", palette)).child("Commands")),
+                    )
                     .when(snapshot.has_more, |row| {
                         row.child(
                             Button::new("load-more")
@@ -5615,25 +5843,19 @@ impl MailApp {
                     .border_b_1()
                     .border_color(palette.border)
                     .child(
-                        h_flex()
-                            .items_center()
-                            .gap_2()
+                        div()
                             .flex_1()
                             .min_w_0()
-                            .overflow_hidden()
+                            .truncate()
                             .text_size(px(11.))
-                            .text_color(palette.muted)
-                            .child(
+                            .text_color(palette.faint)
+                            .child(if is_draft {
+                                "Draft".to_owned()
+                            } else {
                                 folder
                                     .map(|folder| folder.name.clone())
-                                    .unwrap_or_else(|| "Mail".into()),
-                            )
-                            .child(
-                                Icon::new(IconName::ChevronRight)
-                                    .size(px(12.))
-                                    .text_color(palette.faint),
-                            )
-                            .child(if is_draft { "Draft" } else { "Conversation" }),
+                                    .unwrap_or_default()
+                            }),
                     )
                     .child(
                         h_flex()
@@ -5644,10 +5866,11 @@ impl MailApp {
                             .when(!is_draft, |row| {
                                 row.child(
                                     Button::new("reply-message")
-                                        .secondary()
+                                        .ghost()
                                         .small()
                                         .icon(Icon::new(IconName::CornerUpLeft))
-                                        .label("Reply")
+                                        .tooltip("Reply · R")
+                                        .accessibility_label("Reply")
                                         .disabled(!self.action_state(cx).allows(desktop_actions::MailboxAction::ReplyMessage))
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             this.open_reply(
@@ -5663,7 +5886,7 @@ impl MailApp {
                                         .small()
                                         .label("All")
                                         .disabled(!self.action_state(cx).allows(desktop_actions::MailboxAction::ReplyAll))
-                                        .tooltip("Reply all · Ctrl+Shift+R")
+                                        .tooltip("Reply all · A")
                                         .accessibility_label("Reply to all recipients")
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             this.open_reply_all(
@@ -5680,7 +5903,7 @@ impl MailApp {
                                         .icon(Icon::new(IconName::CornerUpRight))
                                         .disabled(snapshot.pending_send)
                                         .accessibility_label("Forward message")
-                                        .tooltip("Forward message")
+                                        .tooltip("Forward · F")
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             this.open_forward(
                                                 forward_message.message.clone(),
@@ -5714,10 +5937,10 @@ impl MailApp {
                             .child(self.message_actions(snapshot, palette, cx))
                             .child(
                                 Button::new("archive-message")
-                                    .secondary()
+                                    .ghost()
                                     .small()
                                     .icon(Icon::new(archive_icon))
-                                    .tooltip(archive_label)
+                                    .tooltip(if is_archived { "Restore to Inbox" } else { "Done · E" })
                                     .disabled(
                                         snapshot.is_demo
                                             || if is_archived {
@@ -5728,13 +5951,13 @@ impl MailApp {
                                     )
                                     .accessibility_label(format!("{archive_label} this message"))
                                     .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.live.update(cx, |live, cx| {
-                                            if is_archived {
+                                        if is_archived {
+                                            this.live.update(cx, |live, cx| {
                                                 live.restore_selected(cx);
-                                            } else {
-                                                live.archive_selected(cx);
-                                            }
-                                        });
+                                            });
+                                        } else {
+                                            this.triage_selected(FolderKind::Archive, cx);
+                                        }
                                     })),
                             ),
                     ),
@@ -7804,7 +8027,7 @@ impl Render for MailApp {
         let available_width = f32::from(window.viewport_size().width);
         let pane_scale = ((available_width - 1000.) / 280.).clamp(0., 1.);
         let rail_width = px(192. + 40. * pane_scale);
-        let list_width = px(280. + 52. * pane_scale);
+        let list_width = px(380. + 120. * pane_scale);
         let client_decorated = matches!(window.window_decorations(), Decorations::Client { .. });
         // Admission, not a refresh hook: run once after the mailbox root mounts,
         // and once on each Setup/Compose/Settings/modal -> Mailbox transition.
@@ -7934,25 +8157,23 @@ impl Render for MailApp {
                         self.view == View::Mailbox && !snapshot.accounts.is_empty(),
                         |row| {
                             row.child(
-                                Button::new("refresh-mail")
+                                Button::new("open-command-palette")
                                     .ghost()
                                     .small()
-                                    .icon(Icon::new(IconName::RefreshCw))
-                                    .accessibility_label("Refresh mail")
-                                    .tooltip("Refresh mail")
-                                    .disabled(
-                                        !self
-                                            .action_state(cx)
-                                            .allows(desktop_actions::MailboxAction::RefreshMail),
-                                    )
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        if this
-                                            .action_state(cx)
-                                            .allows(desktop_actions::MailboxAction::RefreshMail)
-                                        {
-                                            this.live.update(cx, |live, cx| live.refresh(cx));
-                                        }
-                                    })),
+                                    .accessibility_label("Open command palette")
+                                    .tooltip("All commands and shortcuts")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.open_palette(window, cx)
+                                    }))
+                                    .child(
+                                        h_flex()
+                                            .gap_2()
+                                            .items_center()
+                                            .text_size(px(11.))
+                                            .text_color(palette.muted)
+                                            .child("Commands")
+                                            .child(shortcut_keys("Ctrl K", palette)),
+                                    ),
                             )
                         },
                     )
@@ -7970,28 +8191,7 @@ impl Render for MailApp {
                             .tooltip("Settings")
                             .on_click(cx.listener(|this, _, _, cx| this.open_appearance(cx))),
                     )
-                    .child(
-                        Button::new("toggle-theme")
-                            .ghost()
-                            .small()
-                            .disabled(
-                                self.appearance_busy || self.appearance_loading || self.theme_busy,
-                            )
-                            .icon(Icon::new(if dark { IconName::Sun } else { IconName::Moon }))
-                            .accessibility_label(if dark {
-                                "Switch to light theme"
-                            } else {
-                                "Switch to dark theme"
-                            })
-                            .tooltip(if dark {
-                                "Switch to light theme"
-                            } else {
-                                "Switch to dark theme"
-                            })
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.toggle_theme(window, cx)),
-                            ),
-                    ),
+
             );
         let chrome = if client_decorated {
             TitleBar::new().h(px(38.)).child(toolbar).into_any_element()
@@ -8051,7 +8251,7 @@ impl Render for MailApp {
                     .child(
                         gpui_kit::component::resizable::resizable_panel()
                             .size(list_width)
-                            .size_range(px(240.)..px(680.))
+                            .size_range(px(300.)..px(760.))
                             .child(self.message_pane(&snapshot, palette, cx, px(0.))),
                     )
                     .child(
@@ -8066,6 +8266,7 @@ impl Render for MailApp {
                 )
                 .into_any_element()
         };
+        let palette_overlay = self.palette_view(palette, cx);
         window_border().child(
             v_flex()
                 .size_full()
@@ -8180,6 +8381,68 @@ impl Render for MailApp {
                         cx.notify();
                     }
                 }))
+                .on_action(cx.listener(|this, _: &ArchiveMessage, _, cx| {
+                    this.triage_selected(FolderKind::Archive, cx)
+                }))
+                .on_action(cx.listener(|this, _: &TrashMessage, _, cx| {
+                    this.triage_selected(FolderKind::Trash, cx)
+                }))
+                .on_action(cx.listener(|this, _: &ToggleStar, _, cx| {
+                    let snapshot = this.live.read(cx).snapshot();
+                    if let Some(row) = snapshot.selected_message {
+                        let starred = row.message.starred;
+                        this.live
+                            .update(cx, |live, cx| live.set_selected_starred(!starred, cx));
+                    }
+                }))
+                .on_action(cx.listener(|this, _: &ToggleUnread, _, cx| {
+                    let snapshot = this.live.read(cx).snapshot();
+                    if let Some(row) = snapshot.selected_message {
+                        let unread = row.message.unread;
+                        this.live
+                            .update(cx, |live, cx| live.set_selected_unread(!unread, cx));
+                    }
+                }))
+                .on_action(cx.listener(|this, _: &ForwardMessage, window, cx| {
+                    let snapshot = this.live.read(cx).snapshot();
+                    if this
+                        .action_state(cx)
+                        .allows(desktop_actions::MailboxAction::ReplyMessage)
+                    {
+                        if let Some(row) = snapshot.selected_message {
+                            this.open_forward(row.message.clone(), window, cx);
+                        }
+                    }
+                }))
+                .on_action(cx.listener(|this, _: &GoInbox, window, cx| {
+                    this.go_to_kind(FolderKind::Inbox, window, cx)
+                }))
+                .on_action(cx.listener(|this, _: &GoStarred, window, cx| {
+                    this.go_to_kind(FolderKind::Starred, window, cx)
+                }))
+                .on_action(cx.listener(|this, _: &GoSent, window, cx| {
+                    this.go_to_kind(FolderKind::Sent, window, cx)
+                }))
+                .on_action(cx.listener(|this, _: &GoDrafts, window, cx| {
+                    this.go_to_kind(FolderKind::Drafts, window, cx)
+                }))
+                .on_action(cx.listener(|this, _: &GoArchive, window, cx| {
+                    this.go_to_kind(FolderKind::Archive, window, cx)
+                }))
+                .on_action(cx.listener(|this, _: &CommandPalette, window, cx| {
+                    this.open_palette(window, cx)
+                }))
+                .on_action(cx.listener(|this, _: &ShowShortcuts, window, cx| {
+                    this.open_palette(window, cx)
+                }))
+                .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
+                    this.sidebar_collapsed = !this.sidebar_collapsed;
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &OpenSettings, _, cx| this.open_appearance(cx)))
+                .on_action(cx.listener(|this, _: &ToggleTheme, window, cx| {
+                    this.toggle_theme(window, cx)
+                }))
                 .on_action(cx.listener(|this, _: &UnifiedInbox, window, cx| {
                     if this
                         .action_state(cx)
@@ -8202,7 +8465,8 @@ impl Render for MailApp {
                     palette.background,
                 ))
                 .child(chrome)
-                .child(body),
+                .child(body)
+                .children(palette_overlay),
         )
     }
 }
@@ -8230,126 +8494,138 @@ impl Drop for MailApp {
     }
 }
 
+fn shortcut_keys(keys: &'static str, palette: Palette) -> impl IntoElement {
+    h_flex().gap_1().children(keys.split(' ').filter(|k| !k.is_empty()).map(move |key| {
+        div()
+            .min_w(px(18.))
+            .h(px(18.))
+            .px_1()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(4.))
+            .border_1()
+            .border_color(palette.border)
+            .text_size(px(10.))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(palette.muted)
+            .child(key)
+    }))
+}
+
 fn message_row(
     message: &Message,
     palette: Palette,
     unread: bool,
     account_label: Option<String>,
 ) -> impl IntoElement {
+    // Superhuman-style: no avatars, no colour noise. Unread is carried by a
+    // dot and weight alone; subject and preview share one quiet line.
+    let subject = if message.subject.trim().is_empty() {
+        "(No subject)".to_owned()
+    } else {
+        message.subject.trim().to_owned()
+    };
+    let preview = message.preview.trim().to_owned();
     v_flex()
         .w_full()
-        .gap_1()
+        .gap(px(3.))
         .child(
             h_flex()
+                .w_full()
                 .items_center()
-                .justify_between()
                 .gap_2()
-                .child(
-                    h_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            div()
-                                .flex()
-                                .flex_shrink_0()
-                                .size(px(20.))
-                                .rounded_full()
-                                .items_center()
-                                .justify_center()
-                                .text_size(px(9.))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .bg(comfort::identity_color(&message.from_addr, palette)
-                                    .opacity(0.12))
-                                .text_color(comfort::identity_color(&message.from_addr, palette))
-                                .child(initials(&message_sender(message))),
-                        )
-                        .when(unread, |row| {
-                            row.child(div().w(px(6.)).h(px(6.)).rounded_full().bg(palette.accent))
-                        })
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(px(13.))
-                                .font_weight(if unread {
-                                    FontWeight::SEMIBOLD
-                                } else {
-                                    FontWeight::MEDIUM
-                                })
-                                .text_color(comfort::identity_color(&message.from_addr, palette))
-                                .child(message_sender(message)),
-                        ),
-                )
                 .child(
                     div()
-                        .text_size(px(12.))
-                        .text_color(palette.faint)
-                        .child(message.date.clone()),
-                ),
-        )
-        .child(
-            h_flex()
-                .items_center()
-                .justify_between()
-                .gap_2()
+                        .flex_shrink_0()
+                        .size(px(6.))
+                        .rounded_full()
+                        .when(unread, |dot| dot.bg(palette.accent)),
+                )
                 .child(
                     div()
                         .flex_1()
                         .min_w_0()
                         .truncate()
-                        .text_size(px(12.))
+                        .text_size(px(13.))
                         .font_weight(if unread {
-                            FontWeight::MEDIUM
+                            FontWeight::SEMIBOLD
                         } else {
                             FontWeight::NORMAL
                         })
                         .text_color(if unread { palette.text } else { palette.muted })
-                        .child(if message.subject.trim().is_empty() {
-                            "(No subject)".to_owned()
-                        } else {
-                            message.subject.clone()
-                        }),
+                        .child(message_sender(message)),
                 )
+                .when_some(account_label, |row, label| {
+                    row.child(
+                        div()
+                            .flex_shrink_0()
+                            .max_w(px(96.))
+                            .truncate()
+                            .px_1()
+                            .rounded(px(3.))
+                            .bg(palette.hover)
+                            .text_size(px(10.))
+                            .text_color(palette.faint)
+                            .child(label),
+                    )
+                })
                 .when(message.starred, |row| {
                     row.child(
                         Icon::new(IconName::StarFill)
-                            .size(px(12.))
+                            .size(px(11.))
                             .text_color(palette.accent),
                     )
                 })
                 .when(message.has_attachment, |row| {
                     row.child(
                         Icon::new(IconName::Paperclip)
-                            .size(px(12.))
+                            .size(px(11.))
                             .text_color(palette.faint),
                     )
-                }),
-        )
-        .child(
-            h_flex()
-                .w_full()
-                .gap_2()
+                })
                 .child(
                     div()
-                        .flex_1()
+                        .flex_shrink_0()
+                        .text_size(px(11.))
+                        .text_color(if unread { palette.text } else { palette.faint })
+                        .child(message.date.clone()),
+                ),
+        )
+        .child(
+            div()
+                .w_full()
+                .pl(px(14.))
+                .truncate()
+                .text_size(px(12.))
+                .text_color(palette.faint)
+                .child(
+                    h_flex()
+                        .gap_1()
                         .min_w_0()
-                        .truncate()
-                        .text_size(px(12.))
-                        .text_color(palette.muted)
-                        .child(message.preview.clone()),
-                )
-                .when_some(account_label, |row, label| {
-                    row.child(
-                        div()
-                            .max_w(px(88.))
-                            .truncate()
-                            .text_size(px(12.))
-                            .text_color(palette.faint)
-                            .child(label),
-                    )
-                }),
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .max_w(relative(0.7))
+                                .truncate()
+                                .font_weight(if unread {
+                                    FontWeight::MEDIUM
+                                } else {
+                                    FontWeight::NORMAL
+                                })
+                                .text_color(if unread { palette.text } else { palette.muted })
+                                .child(subject),
+                        )
+                        .when(!preview.is_empty(), |line| {
+                            line.child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(format!("— {preview}")),
+                            )
+                        }),
+                ),
         )
 }
 
@@ -9341,6 +9617,11 @@ fn main() {
         .with_writer(std::io::stderr)
         .init();
     let mut arguments = std::env::args_os().skip(1).peekable();
+    if arguments.peek().map(|arg| arg.as_os_str()) == Some(std::ffi::OsStr::new("mcp")) {
+        arguments.next();
+        let read_only = arguments.any(|arg| arg == "--read-only");
+        std::process::exit(mcp::run(read_only));
+    }
     if arguments.peek().map(|arg| arg.as_os_str())
         == Some(std::ffi::OsStr::new("--thunderbird-host"))
     {

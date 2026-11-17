@@ -43,7 +43,22 @@ pub(crate) mod action {
             FocusReader,
             AllSent,
             AllDrafts,
-            SortSender
+            SortSender,
+            ArchiveMessage,
+            TrashMessage,
+            ToggleStar,
+            ToggleUnread,
+            ForwardMessage,
+            GoInbox,
+            GoStarred,
+            GoSent,
+            GoDrafts,
+            GoArchive,
+            CommandPalette,
+            ShowShortcuts,
+            ToggleSidebar,
+            OpenSettings,
+            ToggleTheme
         ]
     );
 }
@@ -70,6 +85,33 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-alt-2", AllSent, Some(MAILBOX_CONTEXT)),
         KeyBinding::new("ctrl-alt-3", AllDrafts, Some(MAILBOX_CONTEXT)),
         KeyBinding::new("ctrl-alt-s", SortSender, Some(MAILBOX_CONTEXT)),
+        KeyBinding::new("ctrl-k", CommandPalette, Some(MAILBOX_CONTEXT)),
+        KeyBinding::new("escape", FocusMessages, Some(MAILBOX_CONTEXT)),
+        KeyBinding::new("ctrl-b", ToggleSidebar, Some(MAILBOX_CONTEXT)),
+        KeyBinding::new("ctrl-,", OpenSettings, Some(MAILBOX_CONTEXT)),
+        // Superhuman-style single keys. Bound only on the message list so a
+        // focused text field (search, composer, palette) always types.
+        KeyBinding::new("j", NextMessage, Some(MESSAGES_CONTEXT)),
+        KeyBinding::new("k", PreviousMessage, Some(MESSAGES_CONTEXT)),
+        KeyBinding::new("e", ArchiveMessage, Some(MESSAGES_CONTEXT)),
+        KeyBinding::new("#", TrashMessage, Some(MESSAGES_CONTEXT)),
+        KeyBinding::new("shift-3", TrashMessage, Some(MESSAGES_CONTEXT)),
+        KeyBinding::new("delete", TrashMessage, Some(MESSAGES_CONTEXT)),
+        KeyBinding::new("s", ToggleStar, Some(MESSAGES_CONTEXT)),
+        KeyBinding::new("u", ToggleUnread, Some(MESSAGES_CONTEXT)),
+        KeyBinding::new("r", ReplyMessage, Some(MESSAGES_CONTEXT)),
+        KeyBinding::new("a", ReplyAll, Some(MESSAGES_CONTEXT)),
+        KeyBinding::new("f", ForwardMessage, Some(MESSAGES_CONTEXT)),
+        KeyBinding::new("c", ComposeMessage, Some(MESSAGES_CONTEXT)),
+        KeyBinding::new("/", FocusSearch, Some(MESSAGES_CONTEXT)),
+        KeyBinding::new("enter", FocusReader, Some(MESSAGES_CONTEXT)),
+        KeyBinding::new("?", ShowShortcuts, Some(MESSAGES_CONTEXT)),
+        KeyBinding::new("shift-/", ShowShortcuts, Some(MESSAGES_CONTEXT)),
+        KeyBinding::new("g i", GoInbox, Some(MESSAGES_CONTEXT)),
+        KeyBinding::new("g s", GoStarred, Some(MESSAGES_CONTEXT)),
+        KeyBinding::new("g t", GoSent, Some(MESSAGES_CONTEXT)),
+        KeyBinding::new("g d", GoDrafts, Some(MESSAGES_CONTEXT)),
+        KeyBinding::new("g e", GoArchive, Some(MESSAGES_CONTEXT)),
     ]);
 }
 
