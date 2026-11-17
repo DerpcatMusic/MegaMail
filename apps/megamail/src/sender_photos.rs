@@ -17,8 +17,29 @@ impl State {
     pub(crate) fn busy(&self) -> bool {
         self.busy
     }
+    /// Pictures loaded so far, by normalized address (cheap `Arc` clones).
+    pub(crate) fn images(&self) -> HashMap<String, Arc<gpui_kit::RenderImage>> {
+        self.images.clone()
+    }
+    /// Forget lookups for every address on `domain`, so they are tried again
+    /// (after a logo for it was cached, or a preference changed).
+    pub(crate) fn forget_domain(&mut self, domain: Option<&str>) {
+        match domain {
+            Some(domain) => {
+                let matches = |key: &String| {
+                    crate::avatars::organization_domain(key).as_deref() == Some(domain)
+                };
+                self.requested.retain(|key| !matches(key));
+                self.images.retain(|key, _| !matches(key));
+            }
+            None => {
+                self.requested.clear();
+                self.images.clear();
+            }
+        }
+    }
 }
-fn email_key(email: &str) -> Option<String> {
+pub(crate) fn email_key(email: &str) -> Option<String> {
     let key = email.trim().to_lowercase();
     (key.len() <= 254 && key.contains('@') && !key.chars().any(char::is_control)).then_some(key)
 }
@@ -81,8 +102,8 @@ impl MailApp {
         if !self.sender_photos.requested.insert(key.clone()) {
             return;
         }
-        // At most 128 retained thumbnails (8 MiB), including negative lookups.
-        if self.sender_photos.requested.len() > 128 {
+        // At most 512 retained thumbnails, including negative lookups.
+        if self.sender_photos.requested.len() > 512 {
             self.sender_photos.requested.clear();
             self.sender_photos.images.clear();
             self.sender_photos.pending.clear();
@@ -107,12 +128,19 @@ impl MailApp {
         self.sender_photos.active_loads += 1;
         let revision = self.sender_photos.revisions.get(&key).copied().unwrap_or(0);
         let worker_key = key.clone();
+        let internet = self.preferences.internet_avatars;
+        let gravatar = self.preferences.gravatar;
         let task = cx.background_spawn(async move {
-            let local = local_path(&worker_key)?;
-            let pixels = decode(&local).ok().or_else(|| {
-                let name = configured?;
-                decode(&config::data_base()?.join("avatars").join(name)).ok()
-            })?;
+            let local = local_path(&worker_key);
+            let pixels = local
+                .and_then(|local| decode(&local).ok())
+                .or_else(|| {
+                    let name = configured?;
+                    decode(&config::data_base()?.join("avatars").join(name)).ok()
+                })
+                // A brand logo is cached only after that domain was verified.
+                .or_else(|| internet.then(|| crate::avatars::cached_logo(&worker_key)).flatten())
+                .or_else(|| gravatar.then(|| crate::avatars::gravatar(&worker_key)).flatten())?;
             Some(render_image(pixels))
         });
         cx.spawn(async move |this, cx| {
@@ -133,6 +161,36 @@ impl MailApp {
         .detach();
         self.pump_sender_photos(cx);
     }
+    /// After opening a message whose sender passed DMARC, fetch and cache
+    /// that organisation's logo once, then reload pictures for its domain.
+    pub(crate) fn fetch_verified_logo(&mut self, email: &str, cx: &mut Context<Self>) {
+        if !self.preferences.internet_avatars {
+            return;
+        }
+        let Some(domain) = crate::avatars::organization_domain(email) else {
+            return;
+        };
+        if crate::avatars::is_shared_domain(&domain) || !self.logo_attempts.insert(domain.clone()) {
+            return;
+        }
+        let email = email.to_owned();
+        let task = cx.background_spawn(async move { crate::avatars::ensure_verified_logo(&email) });
+        cx.spawn(async move |this, cx| {
+            if task.await {
+                let _ = this.update(cx, |this, cx| {
+                    this.sender_photos.forget_domain(Some(&domain));
+                    let snapshot = this.live.read(cx).snapshot();
+                    this.rebuild_list_rows(&snapshot, cx);
+                    if let Some(row) = snapshot.selected_message.as_ref() {
+                        this.load_sender_photo(&row.message.from_addr.clone(), cx);
+                    }
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
     pub(crate) fn sender_avatar(
         &self,
         email: &str,

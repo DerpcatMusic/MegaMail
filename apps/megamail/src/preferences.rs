@@ -42,6 +42,12 @@ pub(crate) struct MailPreferences {
     pub(crate) hide_quoted_text: bool,
     pub(crate) reduced_motion: bool,
     pub(crate) default_unified: bool,
+    /// Sender pictures in the message list (photo, logo or initials).
+    pub(crate) list_avatars: bool,
+    /// Brand logos (BIMI / site icons) for verified senders, from the internet.
+    pub(crate) internet_avatars: bool,
+    /// Gravatar pictures; sends a hash of the sender's address to Gravatar.
+    pub(crate) gravatar: bool,
 }
 
 impl Default for MailPreferences {
@@ -52,6 +58,9 @@ impl Default for MailPreferences {
             hide_quoted_text: true,
             reduced_motion: false,
             default_unified: true,
+            list_avatars: true,
+            internet_avatars: true,
+            gravatar: false,
         }
     }
 }

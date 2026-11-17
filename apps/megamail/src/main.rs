@@ -46,6 +46,7 @@ mod account_session;
 mod appearance;
 mod appearance_view;
 mod attachment_preview;
+mod avatars;
 mod comfort;
 mod command_palette;
 mod compose;
@@ -324,6 +325,9 @@ enum PreferenceChange {
     HideQuotedText(bool),
     ReducedMotion(bool),
     DefaultUnified(bool),
+    ListAvatars(bool),
+    InternetAvatars(bool),
+    Gravatar(bool),
 }
 
 #[derive(Clone, Copy)]
@@ -910,6 +914,8 @@ struct PaletteState {
 struct MailApp {
     live: Entity<LiveMailbox>,
     sender_photos: sender_photos::State,
+    /// Organisation domains whose verified logo was already looked up.
+    logo_attempts: HashSet<String>,
     mail_panes: Entity<gpui_kit::component::resizable::ResizableState>,
     compact_mail_panes: Entity<gpui_kit::component::resizable::ResizableState>,
     _live_subscription: Subscription,
@@ -1118,6 +1124,7 @@ impl MailApp {
             mail_panes: cx.new(|_| Default::default()),
             compact_mail_panes: cx.new(|_| Default::default()),
             sender_photos: Default::default(),
+            logo_attempts: HashSet::new(),
             reader_text: None,
             rule_preview: Vec::new(),
             newsletter_status: None,
@@ -2054,6 +2061,12 @@ impl MailApp {
         let snapshot = self.live.read(cx).snapshot();
         if let Some(row) = &snapshot.selected_message {
             self.load_sender_photo(&row.message.from_addr, cx);
+            if snapshot.selected_sender_check.as_ref().is_some_and(|check| {
+                check.trust == megamail_core::models::SenderTrust::Pass
+            }) {
+                let email = row.message.from_addr.clone();
+                self.fetch_verified_logo(&email, cx);
+            }
             if let Some(conversation) = snapshot
                 .conversations
                 .iter()
@@ -2744,6 +2757,9 @@ impl MailApp {
             PreferenceChange::HideQuotedText(value) => proposed.hide_quoted_text = value,
             PreferenceChange::ReducedMotion(value) => proposed.reduced_motion = value,
             PreferenceChange::DefaultUnified(value) => proposed.default_unified = value,
+            PreferenceChange::ListAvatars(value) => proposed.list_avatars = value,
+            PreferenceChange::InternetAvatars(value) => proposed.internet_avatars = value,
+            PreferenceChange::Gravatar(value) => proposed.gravatar = value,
         }
         self.preferences_busy = true;
         self.preferences_error = None;
@@ -2754,6 +2770,12 @@ impl MailApp {
                 this.preferences_busy = false;
                 match result {
                     Ok(preferences) => {
+                        if (preferences.internet_avatars, preferences.gravatar)
+                            != (this.preferences.internet_avatars, this.preferences.gravatar)
+                        {
+                            this.sender_photos.forget_domain(None);
+                            this.logo_attempts.clear();
+                        }
                         this.preferences = preferences;
                         this.list_scroll = UniformListScrollHandle::new();
                         let snapshot = this.live.read(cx).snapshot();
@@ -2861,6 +2883,18 @@ impl MailApp {
             }
         }
         self.list_rows = Arc::new(rows);
+        if self.preferences.list_avatars {
+            let senders: Vec<String> = self
+                .list_rows
+                .iter()
+                .filter(|row| !row.child)
+                .take(120)
+                .map(|row| row.row.message.from_addr.clone())
+                .collect();
+            for sender in senders {
+                self.load_sender_photo(&sender, cx);
+            }
+        }
         self.refresh_triage(snapshot, cx);
         self.pump_triage(cx);
     }
@@ -5104,6 +5138,7 @@ impl MailApp {
             .map(|k| k.message.clone())
             .collect();
         let bulk_available = self.triage.available.clone();
+        let photos = self.preferences.list_avatars.then(|| self.sender_photos.images());
         uniform_list("message-rows", rows.len(), move |range, _, _| {
             range
                 .map(|index| {
@@ -5205,6 +5240,10 @@ impl MailApp {
                             .child(message_row(
                                 &display_message,
                                 palette,
+                                photos.as_ref().map(|photos| {
+                                    sender_photos::email_key(&row.message.from_addr)
+                                        .and_then(|key| photos.get(&key).cloned())
+                                }),
                                 unread,
                                 (unified && !child)
                                     .then(|| labels.get(&row.key.account_id).cloned())
@@ -6698,10 +6737,15 @@ impl MailApp {
                             preferences::plain_text_html(&sender))
                             .selectable(true).w_full().min_w_0().text_size(px(13.))
                             .font_weight(FontWeight::SEMIBOLD).text_color(sender_color))
-                        .child(gpui_kit::component::text::TextView::html(
-                            SharedString::from(format!("sender-address-{}-{}-{}", row.key.account_id, row.key.folder_path, row.key.uid)),
-                            preferences::plain_text_html(&row.message.from_addr))
-                            .selectable(true).w_full().min_w_0().text_size(px(12.)).text_color(palette.muted))
+                        .child(h_flex().w_full().min_w_0().gap_2().items_center()
+                            .child(div().flex_1().min_w_0().child(gpui_kit::component::text::TextView::html(
+                                SharedString::from(format!("sender-address-{}-{}-{}", row.key.account_id, row.key.folder_path, row.key.uid)),
+                                preferences::plain_text_html(&row.message.from_addr))
+                                .selectable(true).w_full().min_w_0().text_size(px(12.)).text_color(palette.muted)))
+                            .when_some(
+                                selected_here.then(|| snapshot.selected_sender_check.as_ref()).flatten().and_then(|check| trust_badge(check, palette)),
+                                |el, badge| el.child(badge),
+                            ))
                         .when(!open, |el| el.child(div().text_size(px(12.)).text_color(palette.muted).child(row.message.preview.clone()))))
                     .child(div().max_w(px(110.)).whitespace_normal().text_size(px(11.)).text_color(palette.muted).child(row.message.date.clone()))
                     .child(disclosure);
@@ -6821,6 +6865,13 @@ impl MailApp {
                                     el.child(self.reader_find_panel(palette, cx))
                                 })
                         })
+                        .when_some(
+                            selected_here
+                                .then(|| snapshot.selected_sender_check.as_ref())
+                                .flatten()
+                                .and_then(|check| trust_warning(check, palette)),
+                            |el, warning| el.child(warning),
+                        )
                         .child(body_element)
                         .when(selected_here, |el| {
                             el.when_some(self.reader_export_status.clone(), |el, status| {
@@ -9021,6 +9072,82 @@ impl Drop for MailApp {
     }
 }
 
+fn trust_colors(trust: megamail_core::models::SenderTrust) -> Option<(gpui_kit::Hsla, &'static str, &'static str)> {
+    use megamail_core::models::SenderTrust;
+    match trust {
+        SenderTrust::Pass => Some((gpui_kit::hsla(145. / 360., 0.55, 0.42, 1.), "Verified", "The sender's domain was authenticated by your provider (DMARC / DKIM / SPF)")),
+        SenderTrust::Suspicious => Some((gpui_kit::hsla(38. / 360., 0.9, 0.5, 1.), "Check sender", "Authenticated, but the addressing looks off")),
+        SenderTrust::Fail => Some((gpui_kit::hsla(0., 0.72, 0.52, 1.), "Unverified sender", "Authentication failed: the From address is likely forged")),
+        SenderTrust::Unverified => None,
+    }
+}
+
+/// Small badge beside the sender address.
+fn trust_badge(check: &megamail_core::models::SenderCheck, palette: Palette) -> Option<AnyElement> {
+    let (color, label, tooltip) = trust_colors(check.trust)?;
+    let _ = palette;
+    Some(
+        h_flex()
+            .id("sender-trust-badge")
+            .flex_shrink_0()
+            .gap_1()
+            .items_center()
+            .px_1p5()
+            .py_0p5()
+            .rounded(px(4.))
+            .bg(color.opacity(0.14))
+            .text_color(color)
+            .text_size(px(10.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .child(Icon::new(match check.trust {
+                megamail_core::models::SenderTrust::Pass => IconName::Check,
+                _ => IconName::TriangleAlert,
+            }).size(px(11.)))
+            .child(label)
+            .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tooltip).build(window, cx))
+            .into_any_element(),
+    )
+}
+
+/// A plain-English warning above the body for forged or suspicious mail.
+fn trust_warning(check: &megamail_core::models::SenderCheck, palette: Palette) -> Option<AnyElement> {
+    use megamail_core::models::SenderTrust;
+    if !matches!(check.trust, SenderTrust::Fail | SenderTrust::Suspicious) {
+        return None;
+    }
+    let (color, ..) = trust_colors(check.trust)?;
+    Some(
+        v_flex()
+            .w_full()
+            .gap_1()
+            .px_3()
+            .py_2()
+            .rounded(px(6.))
+            .border_1()
+            .border_color(color.opacity(0.5))
+            .bg(color.opacity(0.08))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .text_size(px(12.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(color)
+                    .child(Icon::new(IconName::TriangleAlert).size(px(14.)))
+                    .child(if check.trust == SenderTrust::Fail {
+                        "This sender could not be verified. Don't click links, open attachments or send money or passwords."
+                    } else {
+                        "Be careful: something about this sender looks off."
+                    }),
+            )
+            .child(div().text_size(px(12.)).text_color(palette.text).child(check.summary.clone()))
+            .children(check.findings.iter().take(3).map(|finding| {
+                div().text_size(px(11.)).text_color(palette.muted).child(finding.clone())
+            }))
+            .into_any_element(),
+    )
+}
+
 fn quoted_html(quoted: &str) -> String {
     let escape = |text: &str| {
         text.replace('&', "&amp;")
@@ -9060,6 +9187,49 @@ fn shortcut_keys(keys: &'static str, palette: Palette) -> impl IntoElement {
 }
 
 fn message_row(
+    message: &Message,
+    palette: Palette,
+    // None: avatars off. Some(None): no picture, show initials.
+    avatar: Option<Option<Arc<gpui_kit::RenderImage>>>,
+    unread: bool,
+    account_label: Option<String>,
+) -> impl IntoElement {
+    use gpui_kit::StyledImage as _;
+    let lines = message_lines(message, palette, unread, account_label);
+    match avatar {
+        None => lines.into_any_element(),
+        Some(picture) => h_flex()
+            .w_full()
+            .min_w_0()
+            .gap_3()
+            .items_center()
+            .child(match picture {
+                Some(image) => gpui_kit::img(image)
+                    .size(px(30.))
+                    .flex_shrink_0()
+                    .rounded_full()
+                    .object_fit(gpui_kit::ObjectFit::Cover)
+                    .into_any_element(),
+                None => div()
+                    .flex()
+                    .flex_shrink_0()
+                    .size(px(30.))
+                    .rounded_full()
+                    .items_center()
+                    .justify_center()
+                    .bg(comfort::identity_color(&message.from_addr, palette).opacity(0.14))
+                    .text_color(comfort::identity_color(&message.from_addr, palette))
+                    .text_size(px(11.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(initials(&message_sender(message)))
+                    .into_any_element(),
+            })
+            .child(div().flex_1().min_w_0().child(lines))
+            .into_any_element(),
+    }
+}
+
+fn message_lines(
     message: &Message,
     palette: Palette,
     unread: bool,

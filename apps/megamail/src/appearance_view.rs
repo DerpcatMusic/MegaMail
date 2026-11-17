@@ -146,6 +146,42 @@ pub(crate) fn render(app: &MailApp, palette: Palette, cx: &mut Context<MailApp>)
             dark,
             cx,
             |this, value, cx| this.change_preference(PreferenceChange::DefaultUnified(value), cx),
+        ))
+        .child(choice_row(
+            "Sender pictures in the list",
+            Some("Show a photo, logo or initials beside each conversation."),
+            (if preferences.list_avatars { "On" } else { "Off" }).to_owned(),
+            bool_choices(preferences.list_avatars),
+            !preferences_disabled,
+            "mail-list-avatars",
+            palette,
+            dark,
+            cx,
+            |this, value, cx| this.change_preference(PreferenceChange::ListAvatars(value), cx),
+        ))
+        .child(choice_row(
+            "Brand logos",
+            Some("For senders your provider verified (DMARC), load the company's BIMI logo or site icon. Only the domain is requested."),
+            (if preferences.internet_avatars { "On" } else { "Off" }).to_owned(),
+            bool_choices(preferences.internet_avatars),
+            !preferences_disabled,
+            "mail-internet-avatars",
+            palette,
+            dark,
+            cx,
+            |this, value, cx| this.change_preference(PreferenceChange::InternetAvatars(value), cx),
+        ))
+        .child(choice_row(
+            "Gravatar",
+            Some("Load people's Gravatar pictures. Sends a hash of each sender's address to Gravatar."),
+            (if preferences.gravatar { "On" } else { "Off" }).to_owned(),
+            bool_choices(preferences.gravatar),
+            !preferences_disabled,
+            "mail-gravatar",
+            palette,
+            dark,
+            cx,
+            |this, value, cx| this.change_preference(PreferenceChange::Gravatar(value), cx),
         ));
 
     let theme_controls = v_flex()
