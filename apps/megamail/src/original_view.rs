@@ -247,6 +247,7 @@ fn render_now(html: &str, params: &Params) -> Result<(HtmlDocument, Rendered), S
     let provider = Arc::new(Provider::new(params.allow_remote));
     let source = defer_stylesheets(&source, &provider);
     let source = tame_div_tables(&source);
+    let source = tame_inline_tags(&source);
     let scheme = if params.theme.dark && !params.original_colors {
         ColorScheme::Dark
     } else {
@@ -545,6 +546,154 @@ fn tame_div_tables(html: &str) -> String {
     }
     out.push_str(&html[last..]);
     out
+}
+
+/// Inline-style patterns Blitz lays out wrong, rewritten per tag:
+/// - `<td style="display:block">` (Meta/Instagram buttons) drops the whole
+///   cell, text included; a plain cell renders what clients show.
+/// - A small fixed-size `<img>` beside a `width:100%` cell gets squeezed to
+///   zero width; `min-width` keeps its column.
+/// - `<img width=24 height=24 style="display:block">` ignores the size
+///   attributes; copying them into the style keeps the box.
+fn tame_inline_tags(html: &str) -> String {
+    let lower = html.to_ascii_lowercase();
+    let mut out = String::with_capacity(html.len() + html.len() / 64);
+    let mut last = 0;
+    let mut i = 0;
+    while let Some(found) = lower[i..].find('<') {
+        let start = i + found;
+        let name_end = lower[start + 1..]
+            .find(|c: char| !c.is_ascii_alphanumeric())
+            .map_or(lower.len(), |e| start + 1 + e);
+        let name = &lower[start + 1..name_end];
+        // Skip raw-text bodies, so CSS or script text is never treated as tags.
+        if name == "style" || name == "script" {
+            i = lower[name_end..].find(&format!("</{name}")).map_or(lower.len(), |e| name_end + e + 1);
+            continue;
+        }
+        let Some(end) = tag_end(&html[start..]).map(|len| start + len) else { break };
+        i = end;
+        if !matches!(name, "img" | "td" | "th") {
+            continue;
+        }
+        let tag = &html[start..end];
+        if let Some(fixed) = tame_tag(name, tag) {
+            out.push_str(&html[last..start]);
+            out.push_str(&fixed);
+            last = end;
+        }
+    }
+    out.push_str(&html[last..]);
+    out
+}
+
+/// The value of `name="…"` (or `'…'`, or bare) in one tag, with its byte span.
+fn attr(tag: &str, name: &str) -> Option<(usize, usize, String)> {
+    let lower = tag.to_ascii_lowercase();
+    let mut from = 0;
+    while let Some(found) = lower[from..].find(name) {
+        let at = from + found;
+        from = at + name.len();
+        let before = lower[..at].chars().next_back();
+        if !before.is_some_and(|c| c.is_ascii_whitespace()) {
+            continue;
+        }
+        let rest = lower[from..].trim_start();
+        if !rest.starts_with('=') {
+            continue;
+        }
+        let value_at = lower.len() - rest[1..].trim_start().len();
+        let bytes = tag.as_bytes();
+        let (open, close) = match bytes.get(value_at) {
+            Some(q @ (b'"' | b'\'')) => {
+                let close = tag[value_at + 1..].find(*q as char)? + value_at + 1;
+                (value_at + 1, close)
+            }
+            _ => {
+                let close = tag[value_at..]
+                    .find(|c: char| c.is_ascii_whitespace() || c == '>' || c == '/')
+                    .map_or(tag.len(), |e| value_at + e);
+                (value_at, close)
+            }
+        };
+        return Some((open, close, tag[open..close].to_owned()));
+    }
+    None
+}
+
+/// A CSS length in px from a declaration list (`width:90px` → 90).
+fn style_px(style: &str, property: &str) -> Option<f32> {
+    style.split(';').find_map(|decl| {
+        let (key, value) = decl.split_once(':')?;
+        (key.trim().eq_ignore_ascii_case(property))
+            .then(|| value.trim().trim_end_matches("!important").trim().strip_suffix("px")?.trim().parse().ok())
+            .flatten()
+    })
+}
+
+fn has_property(style: &str, property: &str) -> bool {
+    style.split(';').any(|decl| decl.split_once(':').is_some_and(|(k, _)| k.trim().eq_ignore_ascii_case(property)))
+}
+
+fn is_display_block(style: &str) -> bool {
+    style.split(';').any(|decl| {
+        decl.split_once(':').is_some_and(|(k, v)| {
+            k.trim().eq_ignore_ascii_case("display") && v.trim().trim_end_matches("!important").trim().eq_ignore_ascii_case("block")
+        })
+    })
+}
+
+fn tame_tag(name: &str, tag: &str) -> Option<String> {
+    let style = attr(tag, "style");
+    let current = style.as_ref().map_or("", |(_, _, s)| s.as_str());
+    let new_style = if name == "img" {
+        let attr_px = |n: &str| attr(tag, n).and_then(|(_, _, v)| v.trim().trim_end_matches("px").parse::<f32>().ok());
+        let width = style_px(current, "width").or_else(|| attr_px("width"));
+        let height = style_px(current, "height").or_else(|| attr_px("height"));
+        let mut add = String::new();
+        if is_display_block(current) {
+            if let (false, Some(w)) = (has_property(current, "width"), width) {
+                add.push_str(&format!("width:{w}px;"));
+            }
+            if let (false, Some(h)) = (has_property(current, "height"), height) {
+                add.push_str(&format!("height:{h}px;"));
+            }
+        }
+        // ponytail: only small images (avatars, icons) get a hard minimum, so
+        // a responsive hero image can still shrink below its declared width.
+        if let Some(w) = width.filter(|w| *w > 0. && *w <= 160.)
+            && !has_property(current, "min-width")
+        {
+            add.push_str(&format!("min-width:{w}px;"));
+        }
+        if add.is_empty() {
+            return None;
+        }
+        let sep = if current.trim().is_empty() || current.trim_end().ends_with(';') { "" } else { ";" };
+        format!("{current}{sep}{add}")
+    } else {
+        if !is_display_block(current) {
+            return None;
+        }
+        current
+            .split(';')
+            .filter(|decl| !decl.split_once(':').is_some_and(|(k, _)| k.trim().eq_ignore_ascii_case("display")))
+            .collect::<Vec<_>>()
+            .join(";")
+    };
+    let escaped = new_style.replace('"', "&quot;");
+    Some(match style {
+        // Rewrite the value in place, always as a double-quoted attribute.
+        Some((open, close, _)) => {
+            let quoted = tag.as_bytes().get(open.wrapping_sub(1)).is_some_and(|b| matches!(b, b'"' | b'\''));
+            let (from, to) = if quoted { (open - 1, close + 1) } else { (open, close) };
+            format!("{}\"{escaped}\"{}", &tag[..from], &tag[to..])
+        }
+        None => {
+            let insert = tag.trim_end_matches('>').trim_end_matches('/').len();
+            format!("{} style=\"{escaped}\"{}", &tag[..insert], &tag[insert..])
+        }
+    })
 }
 
 fn tame_css(css: &str) -> String {
@@ -1036,6 +1185,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn inline_tags_get_layouts_blitz_can_draw() {
+        let html = concat!(
+            r#"<style>td{display:block}</style>"#,
+            r#"<td style="border-radius:12px;display:block;min-width:370px">btn</td>"#,
+            r#"<TD class=x>plain</TD>"#,
+            r#"<img src="a.jpg" style="height:90px;width:90px;border-radius:50%;" />"#,
+            r#"<img width="24" src='b.jpg?a=1>2' height=24 style="display:block;margin-left:18px">"#,
+            r#"<img src="hero.jpg" width="600" style="max-width:100%">"#,
+        );
+        let out = tame_inline_tags(html);
+        assert!(out.starts_with("<style>td{display:block}</style>"), "CSS text untouched: {out}");
+        assert!(out.contains(r#"<td style="border-radius:12px;min-width:370px">btn</td>"#), "{out}");
+        assert!(out.contains("<TD class=x>plain</TD>"));
+        assert!(out.contains(r#"style="height:90px;width:90px;border-radius:50%;min-width:90px;" />"#), "{out}");
+        assert!(out.contains(r#"src='b.jpg?a=1>2' height=24 style="display:block;margin-left:18px;width:24px;height:24px;min-width:24px;">"#), "{out}");
+        assert!(out.contains(r#"<img src="hero.jpg" width="600" style="max-width:100%">"#), "large images stay responsive: {out}");
+    }
+
+    #[test]
     fn light_backgrounds_go_dark_and_dark_text_goes_light() {
         let html = r##"<table bgcolor="#ffffff"><tr><td style="color:#333333;background-color:white;border:1px solid #eeeeee">Hi</td></tr></table><style>.a{color:rgb(0,0,0)} a:hover{color:#000}</style>"##;
         let out = recolor_for_dark(html);
@@ -1140,7 +1308,11 @@ mod tests {
             }
             image::RgbaImage::from_raw(size.width.0 as u32, size.height.0 as u32, bytes)
                 .unwrap()
-                .save(format!("/tmp/render-{}.png", if dark { "dark" } else { "light" }))
+                .save(format!(
+                    "{}/render-{}.png",
+                    std::env::var("MM_OUT").unwrap_or_else(|_| "/tmp".into()),
+                    if dark { "dark" } else { "light" }
+                ))
                 .unwrap();
         }
     }

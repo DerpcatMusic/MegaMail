@@ -56,6 +56,9 @@ update_messages (read/unread/star/archive/trash/spam/move). Uses saved profiles;
   Windows font names aliased to Liberation/DejaVu (`alias_windows_fonts`), fixes spaced Hebrew;
   remote stylesheets deferred until cached (`defer_stylesheets`); remote fetches never block first paint,
   go to a shared cache and trigger a redraw; shared warmed FontContext.
+  `tame_inline_tags`: `<td style=display:block>` → plain cell (Blitz drops it), small `<img>` gets
+  `min-width` (else squeezed to 0 beside a width:100% cell), display:block imgs get their size attrs as CSS.
+  Debug renders: `MM_OUT=<dir>` overrides `/tmp`. Learnings live in `.trail/learnings/` (trail replaced graft).
 - Search: SQLite FTS5 over bodies (`src/cache.rs`, `crates/mail-core/src/search.rs`).
 
 ## Open work, in the owner's priority order
