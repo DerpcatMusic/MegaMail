@@ -45,6 +45,7 @@ pub(crate) fn commands() -> Vec<Command> {
         command!("Unified inbox", "Ctrl Shift L", UnifiedInbox),
         command!("Find in message", "Ctrl Shift F", FindInMessage),
         command!("Read message", "Enter", FocusReader),
+        command!("Clean / plain text view", "V", ToggleReaderMode),
         command!("Refresh mail", "F5", RefreshMail),
         command!("Sort by sender", "Ctrl Alt S", SortSender),
         command!("Toggle folders sidebar", "Ctrl B", ToggleSidebar),

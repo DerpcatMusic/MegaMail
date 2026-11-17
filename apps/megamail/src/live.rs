@@ -500,6 +500,9 @@ pub struct LiveMailbox {
     thunderbird_notice: Option<String>,
     thunderbird_results: Vec<ThunderbirdAccountOutcome>,
     demo_mode: bool,
+    /// Bodies already asked for ahead of selection, so the disk cache is
+    /// warm when the user gets there. Responses are ignored by the reader.
+    prefetched: HashSet<MessageKey>,
 }
 
 impl LiveMailbox {
@@ -684,6 +687,7 @@ impl LiveMailbox {
             thunderbird_notice: None,
             thunderbird_results: Vec::new(),
             demo_mode,
+            prefetched: HashSet::new(),
         }
     }
 
@@ -1641,6 +1645,45 @@ impl LiveMailbox {
         self.ensure_visible_selection(cx);
         cx.notify();
         true
+    }
+
+    /// Warm the worker's body cache for messages the user is likely to open
+    /// next. One batched fetch per folder; messages with attachments are
+    /// skipped so a prefetch never pulls large files. Never touches selection.
+    pub fn prefetch_bodies(&mut self, keys: &[MessageKey], cx: &mut Context<Self>) {
+        if self.demo_mode {
+            return;
+        }
+        if self.prefetched.len() > 4096 {
+            self.prefetched.clear();
+        }
+        let mut batches: HashMap<(u32, String), Vec<(u32, u32)>> = HashMap::new();
+        for key in keys {
+            if self.prefetched.contains(key)
+                || self.thunderbird_accounts.contains(&key.account_id)
+                || self.selected_key.as_ref() == Some(key)
+            {
+                continue;
+            }
+            let Some(message) = self.messages.iter().find(|message| {
+                message.account_id == key.account_id
+                    && message.uid == key.uid
+                    && self.key_for(message).as_ref() == Some(key)
+            }) else {
+                continue;
+            };
+            if message.has_attachment {
+                continue;
+            }
+            self.prefetched.insert(key.clone());
+            batches
+                .entry((key.account_id, key.folder_path.clone()))
+                .or_default()
+                .push((message.id, key.uid));
+        }
+        for ((account_id, path), items) in batches {
+            self.send_request(account_id, MailRequest::LoadBodies { items, path }, cx);
+        }
     }
 
     pub fn load_more(&mut self, cx: &mut Context<Self>) {

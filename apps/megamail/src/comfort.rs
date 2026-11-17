@@ -367,13 +367,15 @@ impl MailApp {
                                 menu
                             }),
                     )
-                    .child(
-                        div()
-                            .text_size(px(11.))
-                            .text_color(palette.muted)
-                            .child(feedback),
-                    )
-                    .child(
+                    .when(self.comfort.busy || self.comfort.error.is_some() || suggested_waiting, |el| {
+                        el.child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(palette.muted)
+                                .child(feedback),
+                        )
+                    })
+                    .when(thread.is_some_and(|t| t.members.len() > 1), |el| el.child(
                         Button::new("expand-conversation")
                             .ghost()
                             .small()
@@ -403,7 +405,7 @@ impl MailApp {
                                 this.collapsed_messages.clear();
                                 cx.notify();
                             })),
-                    ),
+                    ))
             )
             .when_some(self.comfort.error.clone(), |el, error| {
                 el.child(
