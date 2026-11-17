@@ -332,6 +332,7 @@ enum PreferenceChange {
     ListAvatars(bool),
     InternetAvatars(bool),
     Gravatar(bool),
+    LoadRemote(bool),
 }
 
 #[derive(Clone, Copy)]
@@ -2835,6 +2836,7 @@ impl MailApp {
             PreferenceChange::ListAvatars(value) => proposed.list_avatars = value,
             PreferenceChange::InternetAvatars(value) => proposed.internet_avatars = value,
             PreferenceChange::Gravatar(value) => proposed.gravatar = value,
+            PreferenceChange::LoadRemote(value) => proposed.load_remote = value,
         }
         self.preferences_busy = true;
         self.preferences_error = None;
@@ -4240,8 +4242,20 @@ impl MailApp {
         let measured = self.original_measure.get();
         let width = if measured > 100. { measured.min(920.) } else { 640. };
         let same = self.original.as_ref().filter(|state| state.key == key);
+        // Images load on their own, like Gmail, unless the sender failed
+        // authentication or the message sits in Junk/Spam.
+        let untrusted = snapshot.selected_sender_check.as_ref().is_some_and(|check| {
+            matches!(
+                check.trust,
+                megamail_core::models::SenderTrust::Fail | megamail_core::models::SenderTrust::Suspicious
+            )
+        }) || {
+            let folder = key.folder_path.to_ascii_lowercase();
+            folder.contains("spam") || folder.contains("junk")
+        };
+        let default_remote = self.preferences.load_remote && !untrusted;
         let (allow_remote, original_colors) =
-            same.map_or((false, false), |s| (s.allow_remote, s.original_colors));
+            same.map_or((default_remote, false), |s| (s.allow_remote && !untrusted, s.original_colors));
         let hide_history = (self.preferences.hide_quoted_text || self.hidden_quotes.contains(&key))
             && !self.visible_quotes.contains(&key);
         let params = original_view::Params {
@@ -4291,6 +4305,10 @@ impl MailApp {
             let result = rx
                 .await
                 .unwrap_or_else(|_| Err("The original layout renderer stopped.".into()));
+            let mut result = result;
+            // Remote images and styles arrive after the first paint; draw
+            // again once they are in the cache. The current image stays up.
+            let remote = result.as_mut().ok().and_then(|rendered| rendered.remote_done.take());
             let _ = this.update(cx, |this, cx| {
                 if let Some(state) = this.original.as_mut().filter(|s| s.generation == generation) {
                     state.pending = false;
@@ -4299,6 +4317,18 @@ impl MailApp {
                     cx.notify();
                 }
             });
+            if let Some(remote) = remote {
+                if remote.await.is_ok() {
+                    let _ = this.update(cx, |this, cx| {
+                        if let Some(state) = this.original.as_mut().filter(|s| s.generation == generation) {
+                            state.params.width = -1.;
+                            let snapshot = this.live.read(cx).snapshot();
+                            this.ensure_original_render(&snapshot, cx);
+                            cx.notify();
+                        }
+                    });
+                }
+            }
         })
         .detach();
     }
@@ -4329,8 +4359,18 @@ impl MailApp {
                         .into_any_element(),
                 );
             }
-            // Measure even while the Clean fallback shows, so the first render
-            // already has the right width.
+            // While the first render runs (tens of ms), hold the space with
+            // the measuring strip instead of flashing the Clean text first.
+            if state.is_some_and(|state| state.pending) {
+                return Some(
+                    div()
+                        .w_full()
+                        .relative()
+                        .min_h(px(240.))
+                        .child(measure_canvas)
+                        .into_any_element(),
+                );
+            }
             let _ = measure_canvas;
             return None;
         };

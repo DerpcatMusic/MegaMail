@@ -48,6 +48,9 @@ pub(crate) struct MailPreferences {
     pub(crate) internet_avatars: bool,
     /// Gravatar pictures; sends a hash of the sender's address to Gravatar.
     pub(crate) gravatar: bool,
+    /// Load images and styles from the web in the original view, except
+    /// for mail that fails sender checks or sits in Junk.
+    pub(crate) load_remote: bool,
 }
 
 impl Default for MailPreferences {
@@ -61,6 +64,7 @@ impl Default for MailPreferences {
             list_avatars: true,
             internet_avatars: true,
             gravatar: false,
+            load_remote: true,
         }
     }
 }

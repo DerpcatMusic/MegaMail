@@ -59,6 +59,9 @@ pub(crate) struct Rendered {
     /// Displayed size / layout size: below 1 when a fixed-width design was
     /// shrunk to fit the pane, as phone mail apps do.
     pub fit: f32,
+    /// Resolves when web resources requested by this render are cached;
+    /// render again then to show them.
+    pub remote_done: Option<oneshot::Receiver<()>>,
 }
 
 enum Job {
@@ -159,6 +162,20 @@ fn link_in(doc: &HtmlDocument, x: f32, y: f32) -> Option<String> {
     None
 }
 
+thread_local! {
+    static FONTS: blitz_dom::FontContext = {
+        use parley::fontique::{Blob, Collection, CollectionOptions, SourceCache};
+        let mut fonts = blitz_dom::FontContext {
+            source_cache: SourceCache::new_shared(),
+            collection: Collection::new(CollectionOptions { shared: false, system_fonts: true }),
+        };
+        fonts
+            .collection
+            .register_fonts(Blob::new(Arc::new(blitz_dom::BULLET_FONT) as _), None);
+        fonts
+    };
+}
+
 fn render_now(html: &str, params: &Params) -> Result<(HtmlDocument, Rendered), String> {
     let scale = params.scale.clamp(1., 3.);
     let width = params.width.clamp(240., 1600.);
@@ -188,12 +205,13 @@ fn render_now(html: &str, params: &Params) -> Result<(HtmlDocument, Rendered), S
                 scheme,
             )),
             net_provider: Some(provider.clone()),
+            // One warmed font collection for every render: scanning the
+            // system fonts per message cost more than the layout itself.
+            font_ctx: Some(FONTS.with(|fonts| fonts.clone())),
             ..Default::default()
         },
     );
     doc.add_user_agent_stylesheet(&base_css(params, recolor || declares_dark));
-    doc.resolve(0.);
-    provider.finish();
     doc.handle_messages();
     doc.resolve(0.);
 
@@ -245,6 +263,7 @@ fn render_now(html: &str, params: &Params) -> Result<(HtmlDocument, Rendered), S
         blocked_remote: provider.blocked.load(Ordering::Relaxed),
         recolored: recolor,
         fit,
+        remote_done: provider.finish(),
     };
     Ok((doc, rendered))
 }
@@ -278,6 +297,7 @@ fn base_css(params: &Params, themed: bool) -> String {
         // Original colours in a dark theme: the sender's paper, not ours.
         ("#ffffff".into(), "#1f1f23".into(), "#2b59c3".into())
     };
+    let table_css: &str = &TABLE_CSS;
     format!(
         "html, body {{ background-color: {bg}; color: {text}; }}\n\
          body {{ margin: 0; padding: 0; font-family: system-ui, sans-serif; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }}\n\
@@ -285,9 +305,25 @@ fn base_css(params: &Params, themed: bool) -> String {
          img {{ max-width: 100%; height: auto; }}\n\
          td, th {{ box-sizing: border-box; }}\n\
          pre {{ white-space: pre-wrap; }}\n\
-         blockquote {{ margin: 0 0 0 0.8em; padding-left: 0.8em; border-left: 2px solid {link}55; }}\n"
+         blockquote {{ margin: 0 0 0 0.8em; padding-left: 0.8em; border-left: 2px solid {link}55; }}\n\
+         {table_css}"
     )
 }
+
+/// Blitz draws a stray rule around every `border-collapse: collapse` table
+/// (nearly every email sets it) and ignores `cellspacing`/`cellpadding`.
+/// Separate borders with the attribute values mapped in look the same as
+/// in Gmail for layout tables, without the boxes.
+static TABLE_CSS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    let mut css = String::from("table { border-collapse: separate !important; border-spacing: 0; }\n");
+    for n in 0..=24 {
+        css.push_str(&format!("table[cellspacing=\"{n}\"] {{ border-spacing: {n}px; }}\n"));
+        css.push_str(&format!(
+            "table[cellpadding=\"{n}\"] > * > tr > td, table[cellpadding=\"{n}\"] > * > tr > th, table[cellpadding=\"{n}\"] > tr > td {{ padding: {n}px; }}\n"
+        ));
+    }
+    css
+});
 
 /// Mail that brings its own dark styles is shown with them, unaltered.
 fn declares_dark_styles(html: &str) -> bool {
@@ -315,11 +351,60 @@ impl Provider {
         }
     }
 
-    /// Wait for remote fetches the user allowed (each bounded by its timeout).
-    fn finish(&self) {
+    /// Never waits: hands back a signal for when the fetches started by
+    /// this render have landed in the cache.
+    fn finish(&self) -> Option<oneshot::Receiver<()>> {
         let handles = std::mem::take(&mut *self.pending.lock().unwrap_or_else(|e| e.into_inner()));
-        for handle in handles {
-            let _ = handle.join();
+        if handles.is_empty() {
+            return None;
+        }
+        let (tx, rx) = oneshot::channel();
+        std::thread::spawn(move || {
+            for handle in handles {
+                let _ = handle.join();
+            }
+            let _ = tx.send(());
+        });
+        Some(rx)
+    }
+}
+
+/// Web resources already fetched, shared by every render (and kept across
+/// messages), so re-layout and newsletters from the same sender are instant.
+/// Failed fetches are kept as empty entries so they are not retried forever.
+struct RemoteCache {
+    entries: std::collections::HashMap<String, Bytes>,
+    order: VecDeque<String>,
+    bytes: usize,
+}
+
+const REMOTE_CACHE_MAX: usize = 128 * 1024 * 1024;
+
+fn remote_cache() -> &'static Mutex<RemoteCache> {
+    static CACHE: OnceLock<Mutex<RemoteCache>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        Mutex::new(RemoteCache { entries: Default::default(), order: VecDeque::new(), bytes: 0 })
+    })
+}
+
+fn cached(url: &str) -> Option<Bytes> {
+    remote_cache().lock().ok()?.entries.get(url).cloned()
+}
+
+fn store(url: String, bytes: Bytes) {
+    let Ok(mut cache) = remote_cache().lock() else {
+        return;
+    };
+    cache.bytes += bytes.len();
+    if let Some(old) = cache.entries.insert(url.clone(), bytes) {
+        cache.bytes -= old.len();
+    } else {
+        cache.order.push_back(url);
+    }
+    while cache.bytes > REMOTE_CACHE_MAX {
+        let Some(oldest) = cache.order.pop_front() else { break };
+        if let Some(old) = cache.entries.remove(&oldest) {
+            cache.bytes -= old.len();
         }
     }
 }
@@ -334,6 +419,13 @@ impl NetProvider for Provider {
                 }
             }
             "http" | "https" if self.allow_remote => {
+                if let Some(bytes) = cached(url.as_str()) {
+                    handler.bytes(url.to_string(), bytes);
+                    return;
+                }
+                // Answer now so a pending stylesheet never holds up the first
+                // paint; the real bytes go to the cache for the next render.
+                handler.bytes(url.to_string(), Bytes::new());
                 if self.requested.fetch_add(1, Ordering::Relaxed) >= REMOTE_REQUEST_MAX {
                     return;
                 }
@@ -342,19 +434,14 @@ impl NetProvider for Provider {
                         .timeout(Duration::from_secs(8))
                         .redirects(3)
                         .build();
-                    let Ok(response) = agent.get(url.as_str()).call() else {
-                        return;
-                    };
                     let mut bytes = Vec::new();
-                    use std::io::Read as _;
-                    if response
-                        .into_reader()
-                        .take(REMOTE_IMAGE_MAX)
-                        .read_to_end(&mut bytes)
-                        .is_ok()
-                    {
-                        handler.bytes(url.to_string(), Bytes::from(bytes));
+                    if let Ok(response) = agent.get(url.as_str()).call() {
+                        use std::io::Read as _;
+                        if response.into_reader().take(REMOTE_IMAGE_MAX).read_to_end(&mut bytes).is_err() {
+                            bytes.clear();
+                        }
                     }
+                    store(url.to_string(), Bytes::from(bytes));
                 });
                 self.pending
                     .lock()
@@ -363,6 +450,7 @@ impl NetProvider for Provider {
             }
             "http" | "https" => {
                 self.blocked.fetch_add(1, Ordering::Relaxed);
+                handler.bytes(url.to_string(), Bytes::new());
             }
             // file:, cid: (already embedded), and everything else: never.
             _ => {}
@@ -705,6 +793,9 @@ fn named_color(name: &str) -> Option<Rgba> {
 fn transform((rgb, alpha): Rgba, role: Role) -> String {
     let [l, a, b] = srgb_to_lab(rgb);
     let (l, a, b) = match role {
+        // Brand colours (buttons, accent bars) stay recognisable; only
+        // paper-like light, low-chroma fills go dark.
+        Role::Background if (a * a + b * b).sqrt() > 35. => (l.min(64.), a, b),
         Role::Background if l > 40. => (8. + (100. - l) * 0.35, a * 0.6, b * 0.6),
         Role::Foreground if l < 65. => (88. - l * 0.25, a * 0.9, b * 0.9),
         _ => (l, a, b),
@@ -832,5 +923,62 @@ mod tests {
             link_in(&doc, 40., 80. + step as f32 * 5.).as_deref() == Some("https://example.com/go")
         });
         assert!(found, "link not hit");
+    }
+
+    /// Manual check: MM_HTML=mail.html cargo test render_file -- --ignored
+    #[test]
+    #[ignore]
+    fn render_file() {
+        let Ok(path) = std::env::var("MM_HTML") else { return };
+        let html = std::fs::read_to_string(&path).unwrap();
+        for dark in [true, false] {
+            let params = Params {
+                width: 720.,
+                scale: 1.,
+                theme: if dark {
+                    Theme { dark: true, background: [30, 30, 34], text: [230; 3], link: [140, 160, 255] }
+                } else {
+                    Theme { dark: false, background: [255; 3], text: [0; 3], link: [0, 0, 255] }
+                },
+                original_colors: false,
+                allow_remote: false,
+                hide_history: false,
+            };
+            let start = std::time::Instant::now();
+            let (_, rendered) = render_now(&html, &params).expect("rendered");
+            eprintln!("dark={dark} {:?} fit={}", start.elapsed(), rendered.fit);
+            let size = rendered.image.size(0);
+            let mut bytes = rendered.image.as_bytes(0).unwrap().to_vec();
+            for pixel in bytes.chunks_exact_mut(4) {
+                pixel.swap(0, 2);
+            }
+            image::RgbaImage::from_raw(size.width.0 as u32, size.height.0 as u32, bytes)
+                .unwrap()
+                .save(format!("/tmp/render-{}.png", if dark { "dark" } else { "light" }))
+                .unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
+mod timing {
+    #[test]
+    #[ignore]
+    fn render_twice() {
+        let Ok(path) = std::env::var("MM_HTML") else { return };
+        let html = std::fs::read_to_string(&path).unwrap();
+        let params = super::Params {
+            width: 720.,
+            scale: 1.,
+            theme: super::Theme { dark: true, background: [30, 30, 34], text: [230; 3], link: [140, 160, 255] },
+            original_colors: false,
+            allow_remote: false,
+            hide_history: false,
+        };
+        for _ in 0..3 {
+            let start = std::time::Instant::now();
+            let _ = super::render_now(&html, &params).unwrap();
+            eprintln!("render {:?}", start.elapsed());
+        }
     }
 }

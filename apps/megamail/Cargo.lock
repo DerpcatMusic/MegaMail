@@ -4941,6 +4941,7 @@ dependencies = [
  "image",
  "libc",
  "megamail-core",
+ "parley",
  "resvg 0.46.0",
  "serde",
  "serde_json",

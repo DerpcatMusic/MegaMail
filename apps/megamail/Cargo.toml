@@ -27,6 +27,7 @@ blitz-dom = "=0.3.0-alpha.4"
 blitz-html = "=0.3.0-alpha.4"
 blitz-paint = "=0.3.0-alpha.4"
 blitz-traits = "=0.3.0-alpha.4"
+parley = { version = "0.9", default-features = false, features = ["std", "system"] }
 anyrender = "=0.10.0"
 anyrender_vello_cpu = "=0.13.0"
 ureq = { version = "2", default-features = false, features = ["tls"] }

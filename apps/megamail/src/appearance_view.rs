@@ -102,6 +102,16 @@ pub(crate) fn render(app: &MailApp, palette: Palette, cx: &mut Context<MailApp>)
             cx,
             |this, value, cx| this.change_preference(PreferenceChange::ReducedMotion(value), cx),
         ))
+        .child(switch_row(
+            "Load images automatically",
+            Some("Not for senders that fail authentication or mail in Junk."),
+            preferences.load_remote,
+            !preferences_disabled,
+            "mail-load-remote",
+            palette,
+            cx,
+            |this, value, cx| this.change_preference(PreferenceChange::LoadRemote(value), cx),
+        ))
         .child(section_heading("Sender pictures", palette))
         .child(switch_row(
             "Show pictures in the list",
