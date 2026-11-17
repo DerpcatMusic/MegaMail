@@ -16,7 +16,7 @@ use gpui_kit::{
     prelude::FluentBuilder as _, px, relative, rgb,
 };
 
-use crate::preferences::Density;
+use crate::preferences::{Density, PaneLayout};
 use crate::theme::{AccentPreset, AccentSelection, SurfacePreference, ThemeAppearance, ThemeMode};
 use crate::{
     AppearanceChange, MailApp, Palette, PreferenceChange, ThemeChange, appearance, zeron_background,
@@ -56,6 +56,21 @@ pub(crate) fn render(app: &MailApp, palette: Palette, cx: &mut Context<MailApp>)
             dark,
             cx,
             |this, value, cx| this.change_preference(PreferenceChange::Density(value), cx),
+        ))
+        .child(choice_row(
+            "Layout",
+            Some("Where an opened message goes. F8 switches."),
+            preferences.layout.label().to_owned(),
+            [PaneLayout::Full, PaneLayout::Right, PaneLayout::Below]
+                .into_iter()
+                .map(|layout| (layout.label().to_owned(), preferences.layout == layout, layout))
+                .collect(),
+            !preferences_disabled,
+            "mail-layout",
+            palette,
+            dark,
+            cx,
+            |this, value, cx| this.change_preference(PreferenceChange::Layout(value), cx),
         ))
         .child(switch_row(
             "Group conversations",

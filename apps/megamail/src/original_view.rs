@@ -172,8 +172,56 @@ thread_local! {
         fonts
             .collection
             .register_fonts(Blob::new(Arc::new(blitz_dom::BULLET_FONT) as _), None);
+        alias_windows_fonts(&mut fonts);
         fonts
     };
+}
+
+/// Mail asks for Arial, Helvetica, Tahoma… by name. Linux rarely has them, and
+/// an unknown family drops non-Latin text (Hebrew, Arabic) to whatever script
+/// fallback fontconfig picks — often a monospace face, which looked like
+/// letter-spaced text. Point those names at the metric-compatible free fonts.
+fn alias_windows_fonts(fonts: &mut blitz_dom::FontContext) {
+    use parley::fontique::FontInfoOverride;
+    const SANS: &[&str] = &["Liberation Sans", "Arimo", "Noto Sans", "DejaVu Sans"];
+    const SERIF: &[&str] = &["Liberation Serif", "Tinos", "Noto Serif", "DejaVu Serif"];
+    const MONO: &[&str] = &["Liberation Mono", "Cousine", "Noto Sans Mono", "DejaVu Sans Mono"];
+    const ALIASES: &[(&str, &[&str])] = &[
+        ("Arial", SANS),
+        ("Helvetica", SANS),
+        ("Helvetica Neue", SANS),
+        ("Tahoma", SANS),
+        ("Verdana", SANS),
+        ("Segoe UI", SANS),
+        ("Trebuchet MS", SANS),
+        ("Geneva", SANS),
+        ("Lucida Grande", SANS),
+        ("Times New Roman", SERIF),
+        ("Times", SERIF),
+        ("Georgia", SERIF),
+        ("Courier New", MONO),
+        ("Courier", MONO),
+    ];
+    for (alias, candidates) in ALIASES {
+        if fonts.collection.family_id(alias).is_some() {
+            continue;
+        }
+        let Some(family) = candidates.iter().find_map(|name| fonts.collection.family_by_name(name)) else {
+            continue;
+        };
+        let mut seen = std::collections::HashSet::new();
+        for font in family.fonts() {
+            if !seen.insert(font.source().id()) {
+                continue;
+            }
+            if let Some(blob) = font.load(Some(&mut fonts.source_cache)) {
+                fonts.collection.register_fonts(
+                    blob,
+                    Some(FontInfoOverride { family_name: Some(alias), ..Default::default() }),
+                );
+            }
+        }
+    }
 }
 
 fn render_now(html: &str, params: &Params) -> Result<(HtmlDocument, Rendered), String> {
@@ -188,8 +236,17 @@ fn render_now(html: &str, params: &Params) -> Result<(HtmlDocument, Rendered), S
     } else {
         std::borrow::Cow::Borrowed(html)
     };
-    let source = if recolor { recolor_for_dark(&html) } else { html.clone().into_owned() };
+    let mut source = if recolor { recolor_for_dark(&html) } else { html.clone().into_owned() };
+    // Blitz switches to its XML parser for an XHTML doctype (most marketing
+    // mail declares one). Mail is never real XHTML: in XML mode <head>, its
+    // <style> and <title> show up as page text and the styles are lost.
+    // A leading newline keeps the HTML5 parser, which ignores it.
+    if source.starts_with("<!DOCTYPE") || source.starts_with("<?xml") {
+        source.insert(0, '\n');
+    }
     let provider = Arc::new(Provider::new(params.allow_remote));
+    let source = defer_stylesheets(&source, &provider);
+    let source = tame_div_tables(&source);
     let scheme = if params.theme.dark && !params.original_colors {
         ColorScheme::Dark
     } else {
@@ -315,7 +372,7 @@ fn base_css(params: &Params, themed: bool) -> String {
 /// Separate borders with the attribute values mapped in look the same as
 /// in Gmail for layout tables, without the boxes.
 static TABLE_CSS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-    let mut css = String::from("table { border-collapse: separate !important; border-spacing: 0; }\n");
+    let mut css = String::from("* { border-collapse: separate !important; }\ntable { border-spacing: 0; }\n");
     for n in 0..=24 {
         css.push_str(&format!("table[cellspacing=\"{n}\"] {{ border-spacing: {n}px; }}\n"));
         css.push_str(&format!(
@@ -420,12 +477,29 @@ impl NetProvider for Provider {
             }
             "http" | "https" if self.allow_remote => {
                 if let Some(bytes) = cached(url.as_str()) {
-                    handler.bytes(url.to_string(), bytes);
+                    // A cached failure (empty) stays unanswered, like a block.
+                    if !bytes.is_empty() {
+                        handler.bytes(url.to_string(), bytes);
+                    }
                     return;
                 }
-                // Answer now so a pending stylesheet never holds up the first
-                // paint; the real bytes go to the cache for the next render.
-                handler.bytes(url.to_string(), Bytes::new());
+                // Not answered: an unanswered image just isn't drawn (an empty
+                // answer would draw a broken-image box). Stylesheets that are
+                // not cached yet were taken out before parsing (see
+                // `defer_stylesheets`), so nothing holds up the first paint.
+                self.prefetch(url.to_string());
+            }
+            "http" | "https" => {
+                self.blocked.fetch_add(1, Ordering::Relaxed);
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Provider {
+    /// Fetch into the shared cache in the background; the next render uses it.
+    fn prefetch(&self, url: String) {
                 if self.requested.fetch_add(1, Ordering::Relaxed) >= REMOTE_REQUEST_MAX {
                     return;
                 }
@@ -447,15 +521,127 @@ impl NetProvider for Provider {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .push(handle);
+    }
+}
+
+/// MJML/Loops-style mail turns column `<div>`s into `display: table` /
+/// `table-cell` from a stylesheet; Blitz lays those anonymous tables out with
+/// the first column squeezed to its minimum. In rules that don't target real
+/// table elements, fall back to the inline-block columns the mail already
+/// declares inline (what narrow clients see), which Blitz handles well.
+fn tame_div_tables(html: &str) -> String {
+    let lower = html.to_ascii_lowercase();
+    let mut out = String::with_capacity(html.len());
+    let mut last = 0;
+    let mut from = 0;
+    while let Some(found) = lower[from..].find("<style") {
+        let open = from + found;
+        let Some(body) = lower[open..].find('>').map(|e| open + e + 1) else { break };
+        let Some(close) = lower[body..].find("</style").map(|e| body + e) else { break };
+        from = close;
+        out.push_str(&html[last..body]);
+        out.push_str(&tame_css(&html[body..close]));
+        last = close;
+    }
+    out.push_str(&html[last..]);
+    out
+}
+
+fn tame_css(css: &str) -> String {
+    let mut out = String::with_capacity(css.len());
+    let mut selector_start = 0;
+    let mut i = 0;
+    let bytes = css.as_bytes();
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => {
+                let Some(end) = css[i + 1..].find(['{', '}']).map(|e| i + 1 + e) else { break };
+                if bytes[end] == b'{' {
+                    // An @media/@supports block: descend.
+                    out.push_str(&css[selector_start..=i]);
+                    selector_start = i + 1;
+                    i += 1;
+                    continue;
+                }
+                let selector = css[selector_start..i].to_ascii_lowercase();
+                let real_table = selector
+                    .split(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_' && c != '.' && c != '#')
+                    .any(|token| matches!(token, "table" | "td" | "th" | "tr" | "tbody"));
+                out.push_str(&css[selector_start..=i]);
+                let decls = &css[i + 1..end];
+                if real_table {
+                    out.push_str(decls);
+                } else {
+                    let mut tamed = String::with_capacity(decls.len());
+                    for decl in decls.split_inclusive(';') {
+                        let compact: String = decl.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_ascii_lowercase();
+                        if compact.starts_with("display:table-cell") {
+                            tamed.push_str("display:inline-block !important;");
+                        } else if compact.starts_with("display:table") && !compact.starts_with("display:table-") {
+                            tamed.push_str("display:block !important;");
+                        } else if compact.starts_with("table-layout:") {
+                            // dropped with the table display
+                        } else {
+                            tamed.push_str(decl);
+                        }
+                    }
+                    out.push_str(&tamed);
+                }
+                out.push('}');
+                i = end + 1;
+                selector_start = i;
             }
-            "http" | "https" => {
-                self.blocked.fetch_add(1, Ordering::Relaxed);
-                handler.bytes(url.to_string(), Bytes::new());
+            b'}' => {
+                out.push_str(&css[selector_start..=i]);
+                i += 1;
+                selector_start = i;
             }
-            // file:, cid: (already embedded), and everything else: never.
-            _ => {}
+            _ => i += 1,
         }
     }
+    out.push_str(&css[selector_start.min(css.len())..]);
+    out
+}
+
+/// Remote `<link rel=stylesheet>` holds Blitz's first paint until it loads.
+/// Keep only those already cached; fetch the rest (when allowed) for the
+/// redraw that follows.
+fn defer_stylesheets(html: &str, provider: &Provider) -> String {
+    let lower = html.to_ascii_lowercase();
+    let mut out = String::with_capacity(html.len());
+    let mut last = 0;
+    let mut from = 0;
+    while let Some(found) = lower[from..].find("<link") {
+        let start = from + found;
+        let Some(end) = lower[start..].find('>').map(|e| start + e + 1) else { break };
+        from = end;
+        let tag = &lower[start..end];
+        if !tag.contains("stylesheet") {
+            continue;
+        }
+        let href = tag.find("href=").and_then(|i| {
+            let rest = &html[start + i + 5..end];
+            let quote = rest.chars().next()?;
+            if quote == '"' || quote == '\'' {
+                rest[1..].find(quote).map(|j| rest[1..1 + j].replace("&amp;", "&"))
+            } else {
+                Some(rest.split(|c: char| c.is_whitespace() || c == '>').next()?.to_owned())
+            }
+        });
+        let Some(href) = href.filter(|h| h.starts_with("http://") || h.starts_with("https://")) else {
+            continue;
+        };
+        if cached(&href).is_some_and(|bytes| !bytes.is_empty()) {
+            continue;
+        }
+        if provider.allow_remote && cached(&href).is_none() {
+            provider.prefetch(href);
+        }
+        out.push_str(&html[last..start]);
+        last = end;
+    }
+    out.push_str(&html[last..]);
+    out
 }
 
 fn decode_data_url(url: &str) -> Option<Vec<u8>> {

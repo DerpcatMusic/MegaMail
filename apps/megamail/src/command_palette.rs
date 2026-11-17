@@ -42,6 +42,7 @@ pub(crate) fn commands() -> Vec<Command> {
         command!("Screener: allow sender", "Y", ScreenerAllow),
         command!("Screener: block sender", "N", ScreenerBlock),
         command!("Unsubscribe", "Ctrl U", Unsubscribe),
+        command!("Layout: full window / side by side / list on top", "F8", CycleLayout),
         command!("Undo send", "Z", UndoSend),
         command!("Sender's colors / theme colors", "Shift V", ToggleSenderColors),
         command!("Go to Inbox", "G I", GoInbox),

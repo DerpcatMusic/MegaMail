@@ -10,6 +10,35 @@ use serde::{Deserialize, Serialize};
 const PREFERENCES_FILE: &str = "preferences.v1";
 const MAX_PREFERENCES_BYTES: u64 = 4096;
 
+/// Where the open message goes: over the whole window (Superhuman), beside
+/// the list, or below it (Thunderbird's F8 layouts).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum PaneLayout {
+    #[default]
+    Full,
+    Right,
+    Below,
+}
+
+impl PaneLayout {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Full => "Full window",
+            Self::Right => "Side by side",
+            Self::Below => "List on top",
+        }
+    }
+
+    pub(crate) const fn next(self) -> Self {
+        match self {
+            Self::Full => Self::Right,
+            Self::Right => Self::Below,
+            Self::Below => Self::Full,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum Density {
@@ -51,6 +80,7 @@ pub(crate) struct MailPreferences {
     /// Load images and styles from the web in the original view, except
     /// for mail that fails sender checks or sits in Junk.
     pub(crate) load_remote: bool,
+    pub(crate) layout: PaneLayout,
 }
 
 impl Default for MailPreferences {
@@ -65,6 +95,7 @@ impl Default for MailPreferences {
             internet_avatars: true,
             gravatar: false,
             load_remote: true,
+            layout: PaneLayout::Full,
         }
     }
 }

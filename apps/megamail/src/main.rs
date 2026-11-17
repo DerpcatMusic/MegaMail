@@ -344,6 +344,7 @@ enum PreferenceChange {
     InternetAvatars(bool),
     Gravatar(bool),
     LoadRemote(bool),
+    Layout(preferences::PaneLayout),
 }
 
 #[derive(Clone, Copy)]
@@ -936,6 +937,8 @@ struct OriginalState {
     source: Arc<str>,
     params: original_view::Params,
     allow_remote: bool,
+    /// The user pressed Load images: wins over the untrusted-sender block.
+    remote_forced: bool,
     original_colors: bool,
     generation: u64,
     pending: bool,
@@ -971,6 +974,8 @@ struct MailApp {
     /// The folder sidebar is out of the way unless asked for (Ctrl+B).
     sidebar_hidden: bool,
     mail_panes: Entity<gpui_kit::component::resizable::ResizableState>,
+    split_right_panes: Entity<gpui_kit::component::resizable::ResizableState>,
+    split_below_panes: Entity<gpui_kit::component::resizable::ResizableState>,
     compact_mail_panes: Entity<gpui_kit::component::resizable::ResizableState>,
     _live_subscription: Subscription,
     profiles: Vec<(u32, AccountConfig)>,
@@ -1177,6 +1182,8 @@ impl MailApp {
             mailbox_focus_admitted: false,
             compose_tools_busy: false,
             mail_panes: cx.new(|_| Default::default()),
+            split_right_panes: cx.new(|_| Default::default()),
+            split_below_panes: cx.new(|_| Default::default()),
             compact_mail_panes: cx.new(|_| Default::default()),
             sender_photos: Default::default(),
             logo_attempts: HashSet::new(),
@@ -2855,6 +2862,7 @@ impl MailApp {
             PreferenceChange::InternetAvatars(value) => proposed.internet_avatars = value,
             PreferenceChange::Gravatar(value) => proposed.gravatar = value,
             PreferenceChange::LoadRemote(value) => proposed.load_remote = value,
+            PreferenceChange::Layout(value) => proposed.layout = value,
         }
         self.preferences_busy = true;
         self.preferences_error = None;
@@ -4272,8 +4280,10 @@ impl MailApp {
             folder.contains("spam") || folder.contains("junk")
         };
         let default_remote = self.preferences.load_remote && !untrusted;
-        let (allow_remote, original_colors) =
-            same.map_or((default_remote, false), |s| (s.allow_remote && !untrusted, s.original_colors));
+        let remote_forced = same.is_some_and(|s| s.remote_forced);
+        let (allow_remote, original_colors) = same.map_or((default_remote, false), |s| {
+            ((s.allow_remote && !untrusted) || s.remote_forced, s.original_colors)
+        });
         let hide_history = (self.preferences.hide_quoted_text || self.hidden_quotes.contains(&key))
             && !self.visible_quotes.contains(&key);
         let params = original_view::Params {
@@ -4312,6 +4322,7 @@ impl MailApp {
             source: source.clone(),
             params: params.clone(),
             allow_remote,
+            remote_forced,
             original_colors,
             generation,
             pending: true,
@@ -4485,6 +4496,7 @@ impl MailApp {
         if let Some(state) = self.original.as_mut() {
             if let Some(remote) = remote {
                 state.allow_remote = remote;
+                state.remote_forced = remote;
             }
             if let Some(colors) = colors {
                 state.original_colors = colors;
@@ -5539,9 +5551,12 @@ impl MailApp {
 
         let selected = snapshot.selected_key.clone();
         let rows = self.list_rows.clone();
-        let row_height = match self.preferences.density {
-            Density::Compact => 36.,
-            Density::Comfortable => 44.,
+        let two_line = self.preferences.layout == preferences::PaneLayout::Right;
+        let row_height = match (self.preferences.density, two_line) {
+            (Density::Compact, false) => 36.,
+            (Density::Comfortable, false) => 44.,
+            (Density::Compact, true) => 50.,
+            (Density::Comfortable, true) => 60.,
         };
         let expanded = self.expanded_conversations.clone();
         let labels = snapshot.account_labels.clone();
@@ -5791,6 +5806,7 @@ impl MailApp {
                             })
                             .child(message_row(
                                 &display_message,
+                                two_line,
                                 palette,
                                 photos.as_ref().map(|photos| {
                                     sender_photos::email_key(&row.message.from_addr)
@@ -5988,6 +6004,37 @@ impl MailApp {
             .into_any_element()
     }
 
+    /// All · People · Screener · Updates · Newsletters, underlined when active.
+    fn split_tabs(&self, palette: Palette, cx: &mut Context<Self>, height: f32) -> AnyElement {
+        h_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_4()
+                            .children(splits::Split::ALL.iter().enumerate().map(|(index, split)| {
+                                let split = *split;
+                                let unread = self.split_unread[index];
+                                let active = self.split == split;
+                                h_flex()
+                                    .id(SharedString::from(format!("split-{index}")))
+                                    .h(px(height))
+                                    .gap_1()
+                                    .items_center()
+                                    .border_b_2()
+                                    .border_color(if active { palette.accent } else { gpui_kit::transparent_black() })
+                                    .cursor_pointer()
+                                    .text_size(px(13.))
+                                    .text_color(if active { palette.text } else { palette.muted })
+                                    .when(active, |el| el.font_weight(FontWeight::MEDIUM))
+                                    .hover(|s| s.text_color(palette.text))
+                                    .on_click(cx.listener(move |this, _, _, cx| this.set_split(split, cx)))
+                                    .child(split.label())
+                                    .when(unread > 0 && split != splits::Split::All, |el| {
+                                        el.child(div().text_size(px(11.)).text_color(palette.faint).child(unread.to_string()))
+                                    })
+                            }))
+        .into_any_element()
+    }
+
     fn message_pane(
         &self,
         snapshot: &MailboxSnapshot,
@@ -5997,6 +6044,8 @@ impl MailApp {
     ) -> impl IntoElement {
         let title = snapshot.title.clone();
         let unavailable = snapshot.account_errors.len();
+        // Side-by-side: the tabs get their own row under the title.
+        let narrow = self.preferences.layout == preferences::PaneLayout::Right;
         v_flex()
             .map(|el| {
                 if width == px(0.) {
@@ -6033,47 +6082,20 @@ impl MailApp {
                     .child(
                         div()
                             .flex_shrink_0()
-                            .max_w(px(220.))
+                            .max_w(px(if narrow { 140. } else { 220. }))
                             .truncate()
                             .text_size(px(16.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(title),
                     )
-                    .child(
-                        h_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .gap_4()
-                            .children(splits::Split::ALL.iter().enumerate().map(|(index, split)| {
-                                let split = *split;
-                                let unread = self.split_unread[index];
-                                let active = self.split == split;
-                                h_flex()
-                                    .id(SharedString::from(format!("split-{index}")))
-                                    .h(px(56.))
-                                    .gap_1()
-                                    .items_center()
-                                    .border_b_2()
-                                    .border_color(if active { palette.accent } else { gpui_kit::transparent_black() })
-                                    .cursor_pointer()
-                                    .text_size(px(13.))
-                                    .text_color(if active { palette.text } else { palette.muted })
-                                    .when(active, |el| el.font_weight(FontWeight::MEDIUM))
-                                    .hover(|s| s.text_color(palette.text))
-                                    .on_click(cx.listener(move |this, _, _, cx| this.set_split(split, cx)))
-                                    .child(split.label())
-                                    .when(unread > 0 && split != splits::Split::All, |el| {
-                                        el.child(div().text_size(px(11.)).text_color(palette.faint).child(unread.to_string()))
-                                    })
-                            })),
-                    )
+                    .child(if narrow { div().flex_1().into_any_element() } else { self.split_tabs(palette, cx, 56.) })
                     .child(
                         Input::new(&self.search)
                             .prefix(Icon::new(IconName::Search).size(px(14.)).text_color(palette.faint))
                             .cleanable(true)
                             .aria_label("Search mail with field, date and status operators")
-                            .w(px(260.))
-                            .flex_shrink_0(),
+                            .when(narrow, |el| el.flex_1().min_w(px(80.)))
+                            .when(!narrow, |el| el.w(px(260.)).flex_shrink_0()),
                     )
                     .child(self.filter_menu(snapshot, palette, cx))
                     .child(
@@ -6093,12 +6115,15 @@ impl MailApp {
                             .primary()
                             .small()
                             .icon(Icon::new(IconName::Plus))
-                            .label("Compose")
+                            .when(!narrow, |el| el.label("Compose"))
                             .disabled(!self.action_state(cx).allows(desktop_actions::MailboxAction::ComposeMessage))
                             .tooltip("New message · C")
                             .on_click(cx.listener(|this, _, window, cx| this.open_new_message(window, cx))),
                     ),
             )
+            .when(narrow, |el| {
+                el.child(div().h(px(36.)).px_6().flex().items_center().child(self.split_tabs(palette, cx, 36.)))
+            })
             .when(
                 snapshot.scope == MailboxScope::Unified && unavailable > 0,
                 |el| {
@@ -6876,7 +6901,7 @@ impl MailApp {
                             .min_w_0()
                             .gap_2()
                             .items_center()
-                            .child(
+                            .when(self.preferences.layout == preferences::PaneLayout::Full, |el| el.child(
                                 Button::new("conversation-back")
                                     .ghost()
                                     .small()
@@ -6887,7 +6912,7 @@ impl MailApp {
                                         this.message_focus.focus(window, cx);
                                         cx.notify();
                                     })),
-                            )
+                            ))
                             .child(
                                 div()
                                     .min_w_0()
@@ -9507,7 +9532,33 @@ impl Render for MailApp {
                 self.setup_view(palette, cx)
             }
         } else {
-            let main = if self.view == View::Compose {
+            let layout = self.preferences.layout;
+            let main = if layout != preferences::PaneLayout::Full {
+                use gpui_kit::component::resizable::{h_resizable, resizable_panel, v_resizable};
+                let list = self.message_pane(&snapshot, palette, cx, px(0.)).into_any_element();
+                let reader = if self.view == View::Compose {
+                    self.composer_view(&snapshot, palette, cx)
+                } else {
+                    self.reader(&snapshot, palette, cx)
+                };
+                if layout == preferences::PaneLayout::Right {
+                    h_resizable("split-right")
+                        .with_state(&self.split_right_panes)
+                        .child(resizable_panel().size(px(520.)).size_range(px(340.)..px(900.)).child(list))
+                        .child(resizable_panel().size_range(px(360.)..gpui_kit::Pixels::MAX).child(
+                            div().size_full().border_l_1().border_color(palette.border).child(reader),
+                        ))
+                        .into_any_element()
+                } else {
+                    v_resizable("split-below")
+                        .with_state(&self.split_below_panes)
+                        .child(resizable_panel().size(px(320.)).size_range(px(160.)..px(800.)).child(list))
+                        .child(resizable_panel().size_range(px(200.)..gpui_kit::Pixels::MAX).child(
+                            div().size_full().border_t_1().border_color(palette.border).child(reader),
+                        ))
+                        .into_any_element()
+                }
+            } else if self.view == View::Compose {
                 self.composer_view(&snapshot, palette, cx)
             } else if self.comfort.outbox_open
                 || (self.conversation_open && snapshot.selected_message.is_some())
@@ -9762,6 +9813,10 @@ impl Render for MailApp {
                 .on_action(cx.listener(|this, _: &ScreenerBlock, _, cx| this.screen_sender(false, cx)))
                 .on_action(cx.listener(|this, _: &Unsubscribe, window, cx| this.unsubscribe_selected(window, cx)))
                 .on_action(cx.listener(|this, _: &UndoSend, window, cx| this.undo_last_send(window, cx)))
+                .on_action(cx.listener(|this, _: &CycleLayout, _, cx| {
+                    let next = this.preferences.layout.next();
+                    this.change_preference(PreferenceChange::Layout(next), cx);
+                }))
                 .on_action(cx.listener(|this, _: &ToggleSenderColors, _, cx| {
                     let current = this.original.as_ref().is_some_and(|s| s.original_colors);
                     this.set_original_policy(None, Some(!current), cx)
@@ -9912,33 +9967,34 @@ fn trust_warning(check: &megamail_core::models::SenderCheck, palette: Palette) -
         return None;
     }
     let (color, ..) = trust_colors(check.trust)?;
+    // One line, details on hover: a warning, not a wall of text.
+    let details = std::iter::once(check.summary.clone())
+        .chain(check.findings.iter().cloned())
+        .collect::<Vec<_>>()
+        .join("\n");
     Some(
-        v_flex()
+        h_flex()
+            .id("trust-warning")
             .w_full()
-            .gap_1()
+            .gap_2()
+            .items_center()
             .px_3()
-            .py_2()
+            .py(px(6.))
             .rounded(px(6.))
-            .border_1()
-            .border_color(color.opacity(0.5))
-            .bg(color.opacity(0.08))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .text_size(px(12.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(color)
-                    .child(Icon::new(IconName::TriangleAlert).size(px(14.)))
-                    .child(if check.trust == SenderTrust::Fail {
-                        "This sender could not be verified. Don't click links, open attachments or send money or passwords."
-                    } else {
-                        "Be careful: something about this sender looks off."
-                    }),
-            )
-            .child(div().text_size(px(12.)).text_color(palette.text).child(check.summary.clone()))
-            .children(check.findings.iter().take(3).map(|finding| {
-                div().text_size(px(11.)).text_color(palette.muted).child(finding.clone())
+            .bg(color.opacity(0.10))
+            .text_size(px(12.))
+            .text_color(color)
+            .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(details.clone()).build(window, cx))
+            .child(Icon::new(IconName::TriangleAlert).size(px(14.)))
+            .child(div().font_weight(FontWeight::MEDIUM).child(if check.trust == SenderTrust::Fail {
+                "Couldn't verify this sender."
+            } else {
+                "Something about this sender looks off."
+            }))
+            .child(div().text_color(palette.muted).child(if check.trust == SenderTrust::Fail {
+                "Be careful with links, attachments and payment requests."
+            } else {
+                "Hover for details."
             }))
             .into_any_element(),
     )
@@ -9984,6 +10040,7 @@ fn shortcut_keys(keys: &'static str, palette: Palette) -> impl IntoElement {
 
 fn message_row(
     message: &Message,
+    two_line: bool,
     palette: Palette,
     // None: avatars off. Some(None): no picture, show initials.
     avatar: Option<Option<Arc<gpui_kit::RenderImage>>>,
@@ -9991,7 +10048,11 @@ fn message_row(
     account_label: Option<String>,
 ) -> impl IntoElement {
     use gpui_kit::StyledImage as _;
-    let lines = message_lines(message, palette, unread, account_label);
+    let lines = if two_line {
+        message_lines_two(message, palette, unread, account_label).into_any_element()
+    } else {
+        message_lines(message, palette, unread, account_label).into_any_element()
+    };
     match avatar {
         None => lines.into_any_element(),
         Some(picture) => h_flex()
@@ -10111,6 +10172,75 @@ fn message_lines(
                 .text_size(px(12.))
                 .text_color(if unread { palette.text } else { palette.faint })
                 .child(short_date(&message.date)),
+        )
+}
+
+/// Narrow list (side-by-side layout): sender and date on top, subject and
+/// preview underneath.
+fn message_lines_two(
+    message: &Message,
+    palette: Palette,
+    unread: bool,
+    account_label: Option<String>,
+) -> impl IntoElement {
+    let subject = if message.subject.trim().is_empty() {
+        "(No subject)".to_owned()
+    } else {
+        message.subject.trim().to_owned()
+    };
+    let preview = message.preview.trim().to_owned();
+    v_flex()
+        .w_full()
+        .min_w_0()
+        .gap(px(3.))
+        .child(
+            h_flex()
+                .w_full()
+                .items_center()
+                .gap_2()
+                .child(div().flex_shrink_0().size(px(6.)).rounded_full().when(unread, |dot| dot.bg(palette.accent)))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(13.))
+                        .font_weight(if unread { FontWeight::SEMIBOLD } else { FontWeight::NORMAL })
+                        .text_color(if unread { palette.text } else { palette.muted })
+                        .child(message_sender(message)),
+                )
+                .when_some(account_label, |row, label| {
+                    row.child(div().flex_shrink_0().size(px(7.)).rounded_full().bg(comfort::identity_color(&label, palette).opacity(0.8)))
+                })
+                .when(message.starred, |row| row.child(Icon::new(IconName::StarFill).size(px(11.)).text_color(palette.accent)))
+                .when(message.has_attachment, |row| row.child(Icon::new(IconName::Paperclip).size(px(11.)).text_color(palette.faint)))
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .text_size(px(11.))
+                        .text_color(if unread { palette.text } else { palette.faint })
+                        .child(short_date(&message.date)),
+                ),
+        )
+        .child(
+            h_flex()
+                .w_full()
+                .min_w_0()
+                .pl(px(14.))
+                .gap_1()
+                .text_size(px(12.))
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .max_w(relative(0.7))
+                        .truncate()
+                        .font_weight(if unread { FontWeight::MEDIUM } else { FontWeight::NORMAL })
+                        .text_color(if unread { palette.text } else { palette.muted })
+                        .child(subject),
+                )
+                .when(!preview.is_empty(), |line| {
+                    line.child(div().flex_1().min_w_0().truncate().text_color(palette.faint).child(preview))
+                }),
         )
 }
 
