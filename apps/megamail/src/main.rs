@@ -124,6 +124,7 @@ gpui_kit::assets::icon_assets!(
         ListFilter,
         LoaderCircle,
         Mail,
+        MailOpen,
         Moon,
         Palette,
         PanelLeftClose,
@@ -134,6 +135,7 @@ gpui_kit::assets::icon_assets!(
         RefreshCw,
         Search,
         Send,
+        Settings,
         Settings2,
         Star,
         StarFill,
@@ -888,6 +890,18 @@ struct ListRow {
     child: bool,
 }
 
+/// What a hover button, right-click item or swipe does to one row.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RowAction {
+    Archive,
+    Trash,
+    Star,
+    Read,
+}
+
+/// Horizontal travel (px) that commits a trackpad swipe on a row.
+const SWIPE_COMMIT: f32 = 110.;
+
 /// Seconds a sent message waits in the Outbox so Undo can stop it.
 const UNDO_SEND_SECONDS: i64 = 10;
 
@@ -936,6 +950,9 @@ struct MailApp {
     split_unread: [usize; 5],
     /// The message just sent with a short delay, while it can be undone.
     undo_send: Option<PendingUndo>,
+    /// Row being swiped on the trackpad and its horizontal travel.
+    swipe: Option<(MessageKey, f32)>,
+    swipe_generation: u64,
     mail_panes: Entity<gpui_kit::component::resizable::ResizableState>,
     compact_mail_panes: Entity<gpui_kit::component::resizable::ResizableState>,
     _live_subscription: Subscription,
@@ -990,6 +1007,7 @@ struct MailApp {
     view: View,
     setup_return_view: View,
     appearance_return_view: View,
+    settings_section: appearance_view::Section,
     sidebar_collapsed: bool,
     /// Ctrl+K palette, when open.
     command_palette: Option<PaletteState>,
@@ -1150,6 +1168,8 @@ impl MailApp {
             known_senders: HashSet::new(),
             split_unread: [0; 5],
             undo_send: None,
+            swipe: None,
+            swipe_generation: 0,
             reader_text: None,
             rule_preview: Vec::new(),
             newsletter_status: None,
@@ -1194,6 +1214,7 @@ impl MailApp {
             view: if demo { View::Mailbox } else { View::Setup },
             setup_return_view: View::Mailbox,
             appearance_return_view: View::Mailbox,
+            settings_section: Default::default(),
             sidebar_collapsed: true,
             command_palette: None,
             hidden_rows: HashSet::new(),
@@ -4473,6 +4494,66 @@ impl MailApp {
         cx.notify();
     }
 
+    /// Act on one row without opening it first (hover buttons, right-click,
+    /// swipe). `unread` is the state the row showed when it was clicked.
+    fn row_action(&mut self, key: MessageKey, action: RowAction, unread: bool, cx: &mut Context<Self>) {
+        self.live.update(cx, |live, cx| {
+            live.select_message(key, cx);
+        });
+        match action {
+            RowAction::Archive => self.triage_selected(FolderKind::Archive, cx),
+            RowAction::Trash => self.triage_selected(FolderKind::Trash, cx),
+            RowAction::Star => {
+                let starred = self.live.read(cx).snapshot().selected_message.is_some_and(|row| row.message.starred);
+                self.live.update(cx, |live, cx| live.set_selected_starred(!starred, cx));
+            }
+            RowAction::Read => {
+                self.live.update(cx, |live, cx| live.set_selected_unread(!unread, cx));
+            }
+        }
+        cx.notify();
+    }
+
+    /// Two-finger horizontal swipe on a row: left archives, right toggles
+    /// read. The row follows the fingers and snaps back if released early.
+    fn swipe_row(&mut self, key: MessageKey, dx: f32, ended: bool, unread: bool, cx: &mut Context<Self>) {
+        let travel = match &self.swipe {
+            Some((current, travel)) if *current == key => *travel,
+            _ => 0.,
+        };
+        let travel = (travel + dx).clamp(-180., 180.);
+        if ended {
+            self.finish_swipe(unread, cx);
+            return;
+        }
+        self.swipe = Some((key, travel));
+        self.swipe_generation += 1;
+        let generation = self.swipe_generation;
+        // Mice and X11 send no "fingers lifted" event: settle after a pause.
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_millis(220)).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.swipe_generation == generation {
+                    this.finish_swipe(unread, cx);
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn finish_swipe(&mut self, unread: bool, cx: &mut Context<Self>) {
+        let Some((key, travel)) = self.swipe.take() else {
+            return;
+        };
+        if travel <= -SWIPE_COMMIT {
+            self.row_action(key, RowAction::Archive, unread, cx);
+        } else if travel >= SWIPE_COMMIT {
+            self.row_action(key, RowAction::Read, unread, cx);
+        }
+        cx.notify();
+    }
+
     /// Repaint the Undo Send countdown until its window closes.
     fn tick_undo_send(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
@@ -5338,9 +5419,9 @@ impl MailApp {
                             .custom(floating_button_variant(cx, palette, dark))
                             .small()
                             .selected(self.view == View::Appearance)
-                            .icon(Icon::new(IconName::Palette))
-                            .tooltip("Settings")
-                            .accessibility_label("Appearance")
+                            .icon(Icon::new(IconName::Settings))
+                            .tooltip("Settings · Ctrl+,")
+                            .accessibility_label("Settings")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 if this.composer.is_none() {
                                     this.open_appearance(cx);
@@ -5441,7 +5522,8 @@ impl MailApp {
             .collect();
         let bulk_available = self.triage.available.clone();
         let photos = self.preferences.list_avatars.then(|| self.sender_photos.images());
-        uniform_list("message-rows", rows.len(), move |range, _, _| {
+        let swipe = self.swipe.clone();
+        uniform_list("message-rows", rows.len(), move |range, _, cx| {
             range
                 .map(|index| {
                     let ListRow {
@@ -5504,25 +5586,147 @@ impl MailApp {
                             .as_ref()
                             .map_or(row.message.unread, |thread| thread.unread > 0)
                     };
+                    let travel = swipe
+                        .as_ref()
+                        .filter(|(swiped, _)| *swiped == row.key)
+                        .map_or(0., |(_, travel)| *travel);
+                    let row_id = format!("{}-{}-{}-{}", key.account_id, key.folder_path, key.uid, child);
+                    let has_toggle = conversation
+                        .as_ref()
+                        .is_some_and(|thread| thread.count > 1 || thread.replied || thread.forwarded);
+                    let hover_actions = (!bulk_open && !child && travel == 0.).then(|| {
+                        let button = |name: &'static str, icon: IconName, tip: &'static str, action: RowAction| {
+                            let owner = owner.clone();
+                            let key = key.clone();
+                            div()
+                                .id(SharedString::from(format!("row-{name}-{row_id}")))
+                                .size(px(26.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded(px(6.))
+                                .cursor_pointer()
+                                .text_color(palette.muted)
+                                .hover(|s| s.bg(palette.selected).text_color(palette.text))
+                                .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip).build(window, cx))
+                                .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .on_click(move |_, _, cx| {
+                                    cx.stop_propagation();
+                                    let key = key.clone();
+                                    let _ = owner.update(cx, |this, cx| this.row_action(key, action, unread, cx));
+                                })
+                                .child(Icon::new(icon).size(px(15.)))
+                        };
+                        h_flex()
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .right(px(if has_toggle { 52. } else { 6. }))
+                            .items_center()
+                            .gap(px(2.))
+                            .pl_2()
+                            .bg(palette.background.blend(if active { palette.selected } else { palette.hover }))
+                            .invisible()
+                            .group_hover("message-row", |s| s.visible())
+                            .child(button("archive", IconName::Archive, "Done · E", RowAction::Archive))
+                            .child(button("star", IconName::Star, "Star · S", RowAction::Star))
+                            .child(button(
+                                "read",
+                                if unread { IconName::MailOpen } else { IconName::Mail },
+                                if unread { "Mark read · U" } else { "Mark unread · U" },
+                                RowAction::Read,
+                            ))
+                            .child(button("trash", IconName::Trash, "Trash · #", RowAction::Trash))
+                    });
+                    let owner_swipe = owner.clone();
+                    let owner_menu = owner.clone();
+                    let key_swipe = key.clone();
+                    let key_menu = key.clone();
                     let mut element = h_flex()
+                        .id(SharedString::from(format!("row-{row_id}")))
+                        .group("message-row")
+                        .relative()
                         .w_full()
                         .h(px(row_height))
                         .items_center()
                         .rounded(px(4.))
                         .when(active, |el| el.bg(palette.selected))
                         .when(child, |el| el.pl_4())
+                        .on_scroll_wheel(move |event, _, cx| {
+                            let delta = event.delta.pixel_delta(px(16.));
+                            let (dx, dy) = (f32::from(delta.x), f32::from(delta.y));
+                            let ended = matches!(event.touch_phase, gpui_kit::TouchPhase::Ended);
+                            if !ended && dx.abs() <= dy.abs() * 1.5 {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            let key = key_swipe.clone();
+                            let _ = owner_swipe.update(cx, |this, cx| this.swipe_row(key, dx, ended, unread, cx));
+                        })
+                        .on_mouse_down(gpui_kit::MouseButton::Right, move |_, _, cx| {
+                            let key = key_menu.clone();
+                            let _ = owner_menu.update(cx, |this, cx| {
+                                this.live.update(cx, |live, cx| {
+                                    live.select_message(key, cx);
+                                });
+                                cx.notify();
+                            });
+                        })
+                        .when(travel != 0., |el| {
+                            let archive = travel < 0.;
+                            let armed = travel.abs() >= SWIPE_COMMIT;
+                            el.child(
+                                h_flex()
+                                    .absolute()
+                                    .inset_0()
+                                    .rounded(px(4.))
+                                    .px_5()
+                                    .items_center()
+                                    .when(archive, |el| el.justify_end())
+                                    .bg(if armed { palette.accent } else { palette.selected })
+                                    .text_color(if armed { palette.background } else { palette.muted })
+                                    .text_size(px(12.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .gap_2()
+                                    .child(Icon::new(if archive { IconName::Archive } else if unread { IconName::MailOpen } else { IconName::Mail }).size(px(15.)))
+                                    .child(if archive { "Done" } else if unread { "Mark read" } else { "Mark unread" }),
+                            )
+                        })
                         .child(
+                            // The row slides under the fingers on an opaque card.
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .h_full()
+                                .rounded(px(4.))
+                                .when(travel != 0., |el| {
+                                    el.relative().left(px(travel)).bg(palette.background.blend(if active {
+                                        palette.selected
+                                    } else {
+                                        palette.hover
+                                    }))
+                                })
+                                .child(
                             Button::new(SharedString::from(format!(
                                 "message-{}-{}-{}-{}",
                                 key.account_id, key.folder_path, key.uid, child
                             )))
-                            .ghost()
+                            .custom({
+                                // Hover is lighter than selection, so the two never look alike.
+                                let fill = if active { palette.selected } else { palette.hover };
+                                ButtonCustomVariant::new(cx)
+                                    .color(cx.theme().transparent)
+                                    .foreground(palette.text)
+                                    .hover(fill)
+                                    .active(fill)
+                            })
                             .small()
                             .flex_1()
                             .min_w_0()
                             .h_full()
                             .rounded(px(4.))
                             .px_3()
+                            .w_full()
                             .tab_stop(true)
                             .accessibility_label(format!(
                                 "{}: {}",
@@ -5550,7 +5754,7 @@ impl MailApp {
                                 (unified && !child)
                                     .then(|| labels.get(&row.key.account_id).cloned())
                                     .flatten(),
-                            )),
+                            ))),
                         );
                     if bulk_open {
                         let bulk_key = row.key.clone();
@@ -5600,6 +5804,7 @@ impl MailApp {
                                 .items_center()
                                 .gap_1()
                                 .pr_2()
+                                .when(travel != 0., |el| el.invisible())
                                 .child(
                                     Button::new(SharedString::from(format!(
                                         "thread-toggle-{}-{}",
@@ -5645,7 +5850,27 @@ impl MailApp {
                                 }),
                         );
                     }
-                    element.into_any_element()
+                    let owner_menu = owner.clone();
+                    let key_menu = row.key.clone();
+                    use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
+                    element
+                        .children(hover_actions)
+                        .context_menu(move |menu, _, _| {
+                            let item = |label: &'static str, action: RowAction| {
+                                let owner = owner_menu.clone();
+                                let key = key_menu.clone();
+                                PopupMenuItem::new(label).on_click(move |_, _, cx| {
+                                    let key = key.clone();
+                                    let _ = owner.update(cx, |this, cx| this.row_action(key, action, unread, cx));
+                                })
+                            };
+                            menu.item(item("Done    E", RowAction::Archive))
+                                .item(item("Star    S", RowAction::Star))
+                                .item(item(if unread { "Mark read    U" } else { "Mark unread    U" }, RowAction::Read))
+                                .separator()
+                                .item(item("Move to Trash    #", RowAction::Trash))
+                        })
+                        .into_any_element()
                 })
                 .collect()
         })
@@ -6002,6 +6227,8 @@ impl MailApp {
                     .text_color(palette.muted)
                     .child(if snapshot.loading {
                         "Updating mail…".to_owned()
+                    } else if self.demo {
+                        format!("Demo mail · sending off · {} unread", snapshot.unread_count)
                     } else {
                         format!("{} unread", snapshot.unread_count)
                     })
@@ -9012,133 +9239,12 @@ impl Render for MailApp {
                     .set_offset(gpui_kit::point(px(0.), px(0.)));
             }
         }
-        let context = if self.demo {
-            "Local demo · fictional mail · sending disabled".to_owned()
-        } else if self.view == View::Setup {
-            if snapshot.accounts.is_empty() {
-                "Set up a mail account".to_owned()
-            } else {
-                "Account settings".to_owned()
-            }
-        } else if self.view == View::Compose {
-            "Compose".to_owned()
-        } else if self.view == View::Appearance {
-            "Settings".to_owned()
-        } else {
-            snapshot
-                .current_account_id
-                .and_then(|id| snapshot.accounts.iter().find(|account| account.id == id))
-                .map(|account| account.email.clone())
-                .unwrap_or_else(|| "Mail".to_owned())
-        };
-        let toolbar = h_flex()
-            .w_full()
-            .h(px(38.))
-            .bg(palette.background)
-            .px_4()
-            .items_center()
-            .justify_between()
-            .when(client_decorated, |row| {
-                row.child(
-                    h_flex()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            Icon::new(IconName::Mail)
-                                .size(px(15.))
-                                .text_color(palette.accent),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(13.))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child("MegaMail"),
-                        ),
-                )
-            })
-            .child(
-                div()
-                    .text_size(px(10.))
-                    .text_color(palette.muted)
-                    .child(context),
-            )
-            .child(
-                h_flex()
-                    .items_center()
-                    .gap_1()
-                    .when(
-                        !snapshot.accounts.is_empty() && self.view != View::Setup,
-                        |row| {
-                            row.child(
-                                Button::new("toggle-sidebar")
-                                    .custom(floating_button_variant(cx, palette, dark))
-                                    .small()
-                                    .icon(Icon::new(if self.sidebar_collapsed {
-                                        IconName::PanelLeftOpen
-                                    } else {
-                                        IconName::PanelLeftClose
-                                    }))
-                                    .accessibility_label(if self.sidebar_collapsed {
-                                        "Expand navigation sidebar"
-                                    } else {
-                                        "Collapse navigation sidebar"
-                                    })
-                                    .tooltip(if self.sidebar_collapsed {
-                                        "Expand navigation sidebar"
-                                    } else {
-                                        "Collapse navigation sidebar"
-                                    })
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.sidebar_collapsed = !this.sidebar_collapsed;
-                                        cx.notify();
-                                    })),
-                            )
-                        },
-                    )
-                    .when(
-                        self.view == View::Mailbox && !snapshot.accounts.is_empty(),
-                        |row| {
-                            row.child(
-                                Button::new("open-command-palette")
-                                    .ghost()
-                                    .small()
-                                    .accessibility_label("Open command palette")
-                                    .tooltip("All commands and shortcuts")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_palette(window, cx)
-                                    }))
-                                    .child(
-                                        h_flex()
-                                            .gap_2()
-                                            .items_center()
-                                            .text_size(px(11.))
-                                            .text_color(palette.muted)
-                                            .child("Commands")
-                                            .child(shortcut_keys("Ctrl K", palette)),
-                                    ),
-                            )
-                        },
-                    )
-                    .child(
-                        Button::new("toggle-appearance")
-                            .custom(floating_button_variant(cx, palette, dark))
-                            .small()
-                            .selected(self.view == View::Appearance)
-                            .icon(Icon::new(IconName::Palette))
-                            .accessibility_label(if self.view == View::Appearance {
-                                "Return from settings"
-                            } else {
-                                "Open settings"
-                            })
-                            .tooltip("Settings")
-                            .on_click(cx.listener(|this, _, _, cx| this.open_appearance(cx))),
-                    )
-
-            );
+        // No app header: the panes start at the top edge, like Superhuman.
+        // Client-decorated windows still get a bare strip to drag and close.
         let chrome = if client_decorated {
-            TitleBar::new().h(px(38.)).child(toolbar).into_any_element()
+            TitleBar::new().h(px(30.)).into_any_element()
         } else {
-            toolbar.into_any_element()
+            div().into_any_element()
         };
         let body = if self.view == View::Appearance {
             h_flex()
@@ -9262,6 +9368,12 @@ impl Render for MailApp {
                     }
                 }))
                 .on_action(cx.listener(|this, _: &FocusMessages, window, cx| {
+                    if this.view == View::Appearance {
+                        this.view = this.appearance_return_view;
+                        this.message_focus.focus(window, cx);
+                        cx.notify();
+                        return;
+                    }
                     desktop_actions::focus_pane(
                         desktop_actions::MailboxAction::FocusMessages,
                         this.action_state(cx),
