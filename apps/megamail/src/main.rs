@@ -111,6 +111,7 @@ gpui_kit::assets::icon_assets!(
         ChevronRight,
         ChevronUp,
         Close,
+        Columns2,
         Copy,
         CornerUpLeft,
         CornerUpRight,
@@ -133,16 +134,18 @@ gpui_kit::assets::icon_assets!(
         PenLine,
         Plus,
         RefreshCw,
+        Rows2,
         Search,
         Send,
         Settings,
         Settings2,
+        SlidersHorizontal,
         Star,
         StarFill,
         Sun,
         Trash,
         TriangleAlert,
-        X
+        X,
     ]
 );
 
@@ -2667,8 +2670,15 @@ impl MailApp {
         cx.notify();
     }
 
-    fn pane_surface(&self, color: gpui_kit::Hsla, _bleed: f32) -> gpui_kit::Hsla {
-        gpui_kit::Hsla { a: 1.0, ..color }
+    /// Panes are frosted glass over the wallpaper: the (already blurred and
+    /// faded) image shows through in proportion to the wallpaper strength.
+    fn pane_surface(&self, color: gpui_kit::Hsla, bleed: f32) -> gpui_kit::Hsla {
+        if !self.appearance.has_wallpaper() {
+            return gpui_kit::Hsla { a: 1.0, ..color };
+        }
+        let show = self.appearance.visual_wallpaper_opacity().clamp(0.0, 1.0);
+        let alpha = 1.0 - show * (0.38 + bleed.clamp(0.0, 0.3));
+        gpui_kit::Hsla { a: alpha.clamp(0.45, 1.0), ..color }
     }
 
     fn activate_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -4140,10 +4150,32 @@ impl MailApp {
                                 .gap_px()
                                 .overflow_y_scroll()
                                 .children(rows),
-                        ),
+                        )
+                        .map(|card| self.reveal(card, "palette-reveal", 10., 150, cx)),
                 )
                 .into_any_element(),
         )
+    }
+
+    /// Fade in and rise into place; nothing when motion is reduced.
+    fn reveal<E: IntoElement + gpui_kit::Styled + 'static>(
+        &self,
+        element: E,
+        id: impl Into<SharedString>,
+        rise: f32,
+        millis: u64,
+        cx: &App,
+    ) -> AnyElement {
+        if self.preferences.reduced_motion || cx.reduce_motion() {
+            return element.into_any_element();
+        }
+        element
+            .with_animation(
+                gpui_kit::ElementId::Name(id.into()),
+                Animation::new(Duration::from_millis(millis)).with_easing(|t| 1. - (1. - t).powi(4)),
+                move |element, t| element.opacity(t).mt(px(rise * (1. - t))),
+            )
+            .into_any_element()
     }
 
     /// Archive or trash the selection and move on to the next conversation
@@ -4685,8 +4717,7 @@ impl MailApp {
         if left < 0 {
             return None;
         }
-        Some(
-            div()
+        let toast = div()
                 .absolute()
                 .bottom(px(24.))
                 .left_0()
@@ -4715,8 +4746,8 @@ impl MailApp {
                                 .on_click(cx.listener(|this, _, window, cx| this.undo_last_send(window, cx))),
                         ),
                 )
-                .into_any_element(),
-        )
+                ;
+        Some(self.reveal(toast, "undo-toast", -12., 220, cx))
     }
 
     /// One key unsubscribe: RFC 8058 one-click when the sender offers it
@@ -5611,14 +5642,8 @@ impl MailApp {
                         .iter()
                         .any(|a| a.eq_ignore_ascii_case(&display_message.from_addr))
                     {
-                        display_message.from_name = format!(
-                            "You → {}",
-                            if display_message.to.is_empty() {
-                                "Recipients"
-                            } else {
-                                &display_message.to
-                            }
-                        );
+                        // Mail you sent is listed by who it went to.
+                        display_message.from_name = format!("To {}", recipient_names(&display_message.to));
                     }
                     if let Some(thread) = conversation.as_ref().filter(|_| !bulk_open) {
                         display_message.starred =
@@ -6061,24 +6086,11 @@ impl MailApp {
             .bg(self.pane_surface(palette.background, 0.05))
             .child(
                 h_flex()
-                    .h(px(56.))
+                    .h(px(48.))
                     .flex_shrink_0()
                     .items_center()
                     .gap_4()
-                    .pl_3()
-                    .pr_6()
-                    .child(
-                        Button::new("toggle-folders")
-                            .ghost()
-                            .small()
-                            .icon(Icon::new(if self.sidebar_hidden { IconName::PanelLeftOpen } else { IconName::PanelLeftClose }))
-                            .tooltip("Accounts and folders · Ctrl+B")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.sidebar_hidden = !this.sidebar_hidden;
-                                this.sidebar_collapsed = false;
-                                cx.notify();
-                            })),
-                    )
+                    .px_6()
                     .child(
                         div()
                             .flex_shrink_0()
@@ -6088,15 +6100,7 @@ impl MailApp {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(title),
                     )
-                    .child(if narrow { div().flex_1().into_any_element() } else { self.split_tabs(palette, cx, 56.) })
-                    .child(
-                        Input::new(&self.search)
-                            .prefix(Icon::new(IconName::Search).size(px(14.)).text_color(palette.faint))
-                            .cleanable(true)
-                            .aria_label("Search mail with field, date and status operators")
-                            .when(narrow, |el| el.flex_1().min_w(px(80.)))
-                            .when(!narrow, |el| el.w(px(260.)).flex_shrink_0()),
-                    )
+                    .child(if narrow { div().flex_1().into_any_element() } else { self.split_tabs(palette, cx, 48.) })
                     .child(self.filter_menu(snapshot, palette, cx))
                     .child(
                         Button::new("list-options")
@@ -6110,16 +6114,6 @@ impl MailApp {
                                 cx.notify();
                             })),
                     )
-                    .child(
-                        Button::new("compose-new")
-                            .primary()
-                            .small()
-                            .icon(Icon::new(IconName::Plus))
-                            .when(!narrow, |el| el.label("Compose"))
-                            .disabled(!self.action_state(cx).allows(desktop_actions::MailboxAction::ComposeMessage))
-                            .tooltip("New message · C")
-                            .on_click(cx.listener(|this, _, window, cx| this.open_new_message(window, cx))),
-                    ),
             )
             .when(narrow, |el| {
                 el.child(div().h(px(36.)).px_6().flex().items_center().child(self.split_tabs(palette, cx, 36.)))
@@ -7112,7 +7106,97 @@ impl MailApp {
             .key_context("MegaMailMessages")
             .on_action(cx.listener(|this, _: &NextMessage, _, cx| this.move_selection(1, cx)))
             .on_action(cx.listener(|this, _: &PreviousMessage, _, cx| this.move_selection(-1, cx)))
-            .child(self.reader(snapshot, palette, cx))
+            .child({
+                let id = snapshot.selected_key.as_ref().map_or_else(
+                    || "conversation".to_owned(),
+                    |key| format!("conversation-{}-{}-{}", key.account_id, key.folder_path, key.uid),
+                );
+                self.reveal(div().size_full().child(self.reader(snapshot, palette, cx)), id, 12., 200, cx)
+            })
+            .into_any_element()
+    }
+
+    fn app_bar(&self, palette: Palette, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let layout = self.preferences.layout;
+        h_flex()
+            .id("app-bar")
+            .w_full()
+            .h(px(46.))
+            .flex_shrink_0()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .border_b_1()
+            .border_color(palette.border)
+            .bg(self.pane_surface(palette.background, 0.04))
+            .child(
+                Button::new("toggle-folders")
+                    .ghost()
+                    .small()
+                    .icon(Icon::new(if self.sidebar_hidden { IconName::PanelLeftOpen } else { IconName::PanelLeftClose }))
+                    .tooltip("Accounts and folders · Ctrl+B")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.sidebar_hidden = !this.sidebar_hidden;
+                        this.sidebar_collapsed = false;
+                        cx.notify();
+                    })),
+            )
+            .child(div().flex_1())
+            .child(
+                Input::new(&self.search)
+                    .prefix(Icon::new(IconName::Search).size(px(14.)).text_color(palette.faint))
+                    .cleanable(true)
+                    .aria_label("Search mail · /")
+                    .w(px(460.))
+                    .flex_shrink_1()
+                    .min_w(px(160.)),
+            )
+            .child(div().flex_1())
+            .child(
+                Button::new("cycle-layout")
+                    .ghost()
+                    .small()
+                    .icon(Icon::new(match layout {
+                        preferences::PaneLayout::Full => IconName::PanelLeftClose,
+                        preferences::PaneLayout::Right => IconName::Columns2,
+                        preferences::PaneLayout::Below => IconName::Rows2,
+                    }))
+                    .tooltip(format!("Layout: {} · F8", layout.label()))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let next = this.preferences.layout.next();
+                        this.change_preference(PreferenceChange::Layout(next), cx);
+                    })),
+            )
+            .child(
+                Button::new("list-options")
+                    .ghost()
+                    .small()
+                    .icon(Icon::new(IconName::SlidersHorizontal))
+                    .selected(self.list_controls_open)
+                    .tooltip("Sort, work states, search scope, sync")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.list_controls_open = !this.list_controls_open;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("app-bar-settings")
+                    .ghost()
+                    .small()
+                    .icon(Icon::new(IconName::Settings))
+                    .tooltip("Settings · Ctrl+,")
+                    .on_click(cx.listener(|this, _, window, cx| this.open_appearance(cx))),
+            )
+            .child(
+                Button::new("compose-new")
+                    .primary()
+                    .small()
+                    .icon(Icon::new(IconName::PenLine))
+                    .label("Compose")
+                    .disabled(!self.action_state(cx).allows(desktop_actions::MailboxAction::ComposeMessage))
+                    .tooltip("New message · C")
+                    .on_click(cx.listener(|this, _, window, cx| this.open_new_message(window, cx))),
+            )
             .into_any_element()
     }
 
@@ -7202,7 +7286,7 @@ impl MailApp {
             .flex_shrink_0()
             .h_full()
             .overflow_y_scroll()
-            .bg(palette.background)
+            .bg(self.pane_surface(palette.background, 0.08))
             .border_l_1()
             .border_color(palette.border)
             .px_5()
@@ -7328,13 +7412,14 @@ impl MailApp {
                 let newest_sent = conversation
                     .and_then(|t| t.latest_sent.as_ref())
                     .is_some_and(|m| m.key == key);
-                let open = (key == selected.key
-                    || newest
-                    || newest_sent
-                    || self.expanded_messages.contains(&key))
-                    && !self.collapsed_messages.contains(&key);
                 let selected_here = key == selected.key;
                 let cached = self.reader_bodies.iter().find(|cached| cached.key == key);
+                // Only messages whose text is here open by themselves; the rest
+                // stay one-line rows that load when clicked. Never a "Load" button.
+                let open = (selected_here
+                    || ((newest || newest_sent) && cached.is_some())
+                    || self.expanded_messages.contains(&key))
+                    && !self.collapsed_messages.contains(&key);
                 let quote_visible =
                     (!self.preferences.hide_quoted_text || self.visible_quotes.contains(&key)) && !self.hidden_quotes.contains(&key);
                 let plain = self.plain_messages.contains(&key);
@@ -7752,23 +7837,22 @@ impl MailApp {
                             )
                         })
                         .when(cached.is_none() && !selected_here, |el| {
+                            // Expanded but not downloaded yet: fetch it now and show
+                            // the preview meanwhile.
                             let key = row.key.clone();
                             el.child(
-                                Button::new(SharedString::from(format!(
-                                    "load-thread-body-{}-{}-{}",
-                                    key.account_id, key.folder_path, key.uid
-                                )))
-                                .ghost()
-                                .small()
-                                .self_start()
-                                .label("Load message")
-                                .on_click(cx.listener(
-                                    move |this, _, _, cx| {
-                                        this.live.update(cx, |live, cx| {
-                                            live.select_message(key.clone(), cx)
-                                        });
-                                    },
-                                )),
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "thread-preview-{}-{}-{}",
+                                        key.account_id, key.folder_path, key.uid
+                                    )))
+                                    .text_size(px(13.))
+                                    .text_color(palette.muted)
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.live.update(cx, |live, cx| live.select_message(key.clone(), cx));
+                                    }))
+                                    .child(row.message.preview.clone()),
                             )
                         })
                         .when(has_quote, |el| {
@@ -9506,10 +9590,13 @@ impl Render for MailApp {
         }
         // No app header: the panes start at the top edge, like Superhuman.
         // Client-decorated windows still get a bare strip to drag and close.
+        // The app bar: always there, above lists, conversations and settings
+        // alike — folders, search, layout, compose, settings.
+        let bar = self.app_bar(palette, window, cx);
         let chrome = if client_decorated {
-            TitleBar::new().h(px(30.)).into_any_element()
+            TitleBar::new().h(px(46.)).child(bar).into_any_element()
         } else {
-            div().into_any_element()
+            bar
         };
         let body = if self.view == View::Appearance {
             h_flex()
@@ -10939,6 +11026,30 @@ fn tls_label(tls: TlsMode) -> &'static str {
         TlsMode::ImplicitTls => "TLS",
         TlsMode::StartTls => "STARTTLS",
         TlsMode::Plaintext => "Unencrypted",
+    }
+}
+
+/// "Alice Smith <a@x>, bob@y.com" → "Alice Smith, bob"; empty → "(no recipients)".
+fn recipient_names(to: &str) -> String {
+    let names: Vec<String> = to
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let name = part.split('<').next().unwrap_or("").trim().trim_matches('"').trim();
+            if !name.is_empty() && !name.contains('@') {
+                name.to_owned()
+            } else {
+                let address = part.trim_matches(|c| c == '<' || c == '>').trim();
+                let address = address.rsplit('<').next().unwrap_or(address).trim_end_matches('>');
+                address.split('@').next().unwrap_or(address).to_owned()
+            }
+        })
+        .collect();
+    match names.len() {
+        0 => "(no recipients)".to_owned(),
+        1..=2 => names.join(", "),
+        n => format!("{}, {} +{}", names[0], names[1], n - 2),
     }
 }
 

@@ -472,7 +472,13 @@ pub(crate) fn render(app: &MailApp, palette: Palette, cx: &mut Context<MailApp>)
                 .px_8()
                 .pt_6()
                 .pb_8()
-                .child(div().w_full().max_w(px(680.)).child(body)),
+                .child(app.reveal(
+                    div().w_full().max_w(px(680.)).child(body),
+                    format!("settings-{}", section.label()),
+                    8.,
+                    160,
+                    cx,
+                )),
         )
         .into_any_element()
 }

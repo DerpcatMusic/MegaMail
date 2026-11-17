@@ -304,6 +304,17 @@ pub struct Cache {
     conn: Connection,
 }
 
+/// One row of [`Cache::subscription_senders`].
+#[derive(Debug, Clone)]
+pub struct SubscriptionSender {
+    pub address: String,
+    pub name: String,
+    pub account_id: u32,
+    pub count: u32,
+    pub last_ts: i64,
+    pub unsubscribe: Option<String>,
+}
+
 /// The validated remote UID namespace for one account/folder. Generation zero
 /// means unknown legacy/offline identity; it is not online validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2533,6 +2544,39 @@ impl Cache {
             "UPDATE outbox SET attempts = attempts + 1, last_error = ?2 WHERE id = ?1",
             params![id, error],
         );
+    }
+
+    /// Senders who mailed more than once since `since_ts` (inbox-like
+    /// folders only), most frequent first, with the newest unsubscribe handle
+    /// any of their read messages carried (JSON of [`crate::models::Unsubscribe`]).
+    pub fn subscription_senders(&self, since_ts: i64) -> Vec<SubscriptionSender> {
+        let sql = "SELECT lower(m.from_addr), max(m.from_name), max(m.account_id), count(*), max(m.ts), \
+                   (SELECT sc.unsubscribe FROM sender_checks sc JOIN messages m2 \
+                      ON m2.account_id = sc.account_id AND m2.folder_path = sc.folder_path AND m2.uid = sc.uid \
+                    WHERE lower(m2.from_addr) = lower(m.from_addr) AND sc.unsubscribe NOT IN ('', 'null') \
+                    ORDER BY m2.ts DESC LIMIT 1) \
+                   FROM messages m \
+                   WHERE m.ts >= ?1 AND m.from_addr LIKE '%@%' \
+                     AND lower(m.folder_path) NOT LIKE '%sent%' AND lower(m.folder_path) NOT LIKE '%draft%' \
+                     AND lower(m.folder_path) NOT LIKE '%trash%' AND lower(m.folder_path) NOT LIKE '%spam%' \
+                     AND lower(m.folder_path) NOT LIKE '%junk%' AND lower(m.folder_path) NOT LIKE '%outbox%' \
+                   GROUP BY lower(m.from_addr) HAVING count(*) >= 2 \
+                   ORDER BY count(*) DESC LIMIT 400";
+        let Ok(mut stmt) = self.conn.prepare(sql) else {
+            return Vec::new();
+        };
+        stmt.query_map([since_ts], |r| {
+            Ok(SubscriptionSender {
+                address: r.get(0)?,
+                name: r.get::<_, String>(1).unwrap_or_default(),
+                account_id: r.get(2)?,
+                count: r.get(3)?,
+                last_ts: r.get(4)?,
+                unsubscribe: r.get::<_, Option<String>>(5)?,
+            })
+        })
+        .map(|rows| rows.flatten().collect())
+        .unwrap_or_default()
     }
 
     /// Aggregate every address seen in stored mail (senders received +
