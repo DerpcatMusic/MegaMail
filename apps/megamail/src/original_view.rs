@@ -1,0 +1,836 @@
+//! Inline "Original" reader: the sender's HTML and CSS laid out by Blitz
+//! (Stylo + Taffy + Parley) and painted on the CPU into an image, off the UI
+//! thread. No script engine exists in this path; every sub-resource goes
+//! through [`Provider`], which serves `data:` URIs (inline `cid:` images are
+//! already embedded that way by the worker) and refuses the network unless
+//! the user asked to load remote images for this message.
+//!
+//! In a dark theme, mail that declares no dark styles of its own is recoloured
+//! the way Gmail does it: light backgrounds are pushed dark, and text that
+//! would lose contrast is pushed light, in CIELAB so hues survive.
+
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
+use std::time::Duration;
+
+use anyrender::ImageRenderer as _;
+use anyrender_vello_cpu::VelloCpuImageRenderer;
+use blitz_dom::DocumentConfig;
+use blitz_html::HtmlDocument;
+use blitz_traits::net::{Bytes, NetHandler, NetProvider, Request};
+use blitz_traits::shell::{ColorScheme, Viewport};
+use futures::channel::oneshot;
+
+/// Largest image we will hand to the GPU, in device pixels.
+const MAX_DEVICE_HEIGHT: f32 = 16_000.;
+const MAX_DEVICE_BYTES: usize = 160 * 1024 * 1024;
+const REMOTE_IMAGE_MAX: u64 = 6 * 1024 * 1024;
+const REMOTE_REQUEST_MAX: usize = 60;
+const DOCS_KEPT: usize = 6;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Theme {
+    pub dark: bool,
+    pub background: [u8; 3],
+    pub text: [u8; 3],
+    pub link: [u8; 3],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Params {
+    pub width: f32,
+    pub scale: f32,
+    pub theme: Theme,
+    /// Keep the sender's colours even in a dark theme.
+    pub original_colors: bool,
+    pub allow_remote: bool,
+    /// Fold the quoted reply history (shown again with "Show quoted history").
+    pub hide_history: bool,
+}
+
+pub(crate) struct Rendered {
+    pub image: Arc<gpui_kit::RenderImage>,
+    pub width: f32,
+    pub height: f32,
+    /// Remote resources the provider refused; offer "Load images" when > 0.
+    pub blocked_remote: usize,
+    pub recolored: bool,
+    /// Displayed size / layout size: below 1 when a fixed-width design was
+    /// shrunk to fit the pane, as phone mail apps do.
+    pub fit: f32,
+}
+
+enum Job {
+    Render {
+        key: u64,
+        html: Arc<str>,
+        params: Params,
+        reply: oneshot::Sender<Result<Rendered, String>>,
+    },
+    Hit {
+        key: u64,
+        x: f32,
+        y: f32,
+        reply: oneshot::Sender<Option<String>>,
+    },
+}
+
+fn worker() -> &'static Mutex<mpsc::Sender<Job>> {
+    static TX: OnceLock<Mutex<mpsc::Sender<Job>>> = OnceLock::new();
+    TX.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<Job>();
+        std::thread::Builder::new()
+            .name("megamail-original".into())
+            .spawn(move || run(rx))
+            .expect("failed to spawn the original-view renderer");
+        Mutex::new(tx)
+    })
+}
+
+/// Lay out and paint `html` at `params`. `key` identifies the document so a
+/// later [`link_at`] can hit-test the same layout.
+pub(crate) fn render(
+    key: u64,
+    html: Arc<str>,
+    params: Params,
+) -> oneshot::Receiver<Result<Rendered, String>> {
+    let (reply, rx) = oneshot::channel();
+    let _ = worker()
+        .lock()
+        .map(|tx| tx.send(Job::Render { key, html, params, reply }));
+    rx
+}
+
+/// The link under a point of a rendered document, in CSS pixels.
+pub(crate) fn link_at(key: u64, x: f32, y: f32) -> oneshot::Receiver<Option<String>> {
+    let (reply, rx) = oneshot::channel();
+    let _ = worker().lock().map(|tx| tx.send(Job::Hit { key, x, y, reply }));
+    rx
+}
+
+fn run(rx: mpsc::Receiver<Job>) {
+    // (key, document, fit): `fit` maps displayed pixels back to layout pixels.
+    let mut docs: VecDeque<(u64, HtmlDocument, f32)> = VecDeque::new();
+    while let Ok(job) = rx.recv() {
+        match job {
+            Job::Render { key, html, params, reply } => {
+                // Coalesce: a newer render for the same message supersedes this one.
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    render_now(&html, &params)
+                }))
+                .unwrap_or_else(|_| Err("The original layout could not be drawn.".into()));
+                match result {
+                    Ok((doc, rendered)) => {
+                        docs.retain(|(k, ..)| *k != key);
+                        let fit = rendered.fit;
+                        docs.push_front((key, doc, fit));
+                        docs.truncate(DOCS_KEPT);
+                        let _ = reply.send(Ok(rendered));
+                    }
+                    Err(error) => {
+                        let _ = reply.send(Err(error));
+                    }
+                }
+            }
+            Job::Hit { key, x, y, reply } => {
+                let href = docs
+                    .iter()
+                    .find(|(k, ..)| *k == key)
+                    .and_then(|(_, doc, fit)| link_in(doc, x / fit, y / fit));
+                let _ = reply.send(href);
+            }
+        }
+    }
+}
+
+fn link_in(doc: &HtmlDocument, x: f32, y: f32) -> Option<String> {
+    let mut node = doc.get_node(doc.hit(x, y)?.node_id);
+    while let Some(current) = node {
+        if let Some(element) = current.element_data() {
+            if element.name.local.as_ref() == "a" {
+                if let Some(href) = element.attr(blitz_dom::local_name!("href")) {
+                    return Some(href.trim().to_owned());
+                }
+            }
+        }
+        node = current.parent.and_then(|id| doc.get_node(id));
+    }
+    None
+}
+
+fn render_now(html: &str, params: &Params) -> Result<(HtmlDocument, Rendered), String> {
+    let scale = params.scale.clamp(1., 3.);
+    let width = params.width.clamp(240., 1600.);
+    let declares_dark = declares_dark_styles(html);
+    let recolor = params.theme.dark && !params.original_colors && !declares_dark;
+    let html: std::borrow::Cow<str> = if params.hide_history {
+        megamail_core::mail_text::raw_html_without_history(html)
+            .map(std::borrow::Cow::Owned)
+            .unwrap_or(std::borrow::Cow::Borrowed(html))
+    } else {
+        std::borrow::Cow::Borrowed(html)
+    };
+    let source = if recolor { recolor_for_dark(&html) } else { html.clone().into_owned() };
+    let provider = Arc::new(Provider::new(params.allow_remote));
+    let scheme = if params.theme.dark && !params.original_colors {
+        ColorScheme::Dark
+    } else {
+        ColorScheme::Light
+    };
+    let mut doc = HtmlDocument::from_html(
+        &source,
+        DocumentConfig {
+            viewport: Some(Viewport::new(
+                (width * scale) as u32,
+                (800. * scale) as u32,
+                scale,
+                scheme,
+            )),
+            net_provider: Some(provider.clone()),
+            ..Default::default()
+        },
+    );
+    doc.add_user_agent_stylesheet(&base_css(params, recolor || declares_dark));
+    doc.resolve(0.);
+    provider.finish();
+    doc.handle_messages();
+    doc.resolve(0.);
+
+    // Anything that lays out wider than the pane (fixed-width designs, and
+    // table cells whose padding overflows a percentage width) is shown whole,
+    // shrunk to fit, instead of being clipped on the right.
+    let content_width = right_extent(&doc, doc.root_element().id, 0., 0);
+    let fit = if content_width > width + 2. {
+        (width / content_width).max(0.4)
+    } else {
+        1.
+    };
+    let height = doc.root_element().final_layout.size.height.max(1.) * fit;
+    let mut device_scale = scale;
+    while height * device_scale > MAX_DEVICE_HEIGHT && device_scale > 1. {
+        device_scale = (device_scale - 0.5).max(1.);
+    }
+    let device_width = (width * device_scale).ceil() as u32;
+    let device_height = (height * device_scale).min(MAX_DEVICE_HEIGHT).ceil() as u32;
+    if device_width as usize * device_height as usize * 4 > MAX_DEVICE_BYTES {
+        return Err("This message is too large to draw in its original layout.".into());
+    }
+    let mut buffer = Vec::with_capacity(device_width as usize * device_height as usize * 4);
+    let mut renderer = VelloCpuImageRenderer::new(device_width, device_height);
+    renderer.render_to_vec(
+        |scene| {
+            blitz_paint::paint_scene(
+                scene,
+                &mut doc,
+                (device_scale * fit) as f64,
+                device_width,
+                device_height,
+                0,
+                0,
+            )
+        },
+        &mut buffer,
+    );
+    // GPUI images are BGRA.
+    for pixel in buffer.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
+    let image = image::RgbaImage::from_raw(device_width, device_height, buffer)
+        .ok_or("The original layout produced an invalid image.")?;
+    let rendered = Rendered {
+        image: Arc::new(gpui_kit::RenderImage::new(vec![image::Frame::new(image)])),
+        width,
+        height: device_height as f32 / device_scale,
+        blocked_remote: provider.blocked.load(Ordering::Relaxed),
+        recolored: recolor,
+        fit,
+    };
+    Ok((doc, rendered))
+}
+
+/// Rightmost painted edge of the subtree, in layout pixels.
+fn right_extent(doc: &HtmlDocument, id: usize, x: f32, depth: usize) -> f32 {
+    let Some(node) = doc.get_node(id) else {
+        return 0.;
+    };
+    let layout = &node.final_layout;
+    let left = x + layout.location.x;
+    let mut right = left + layout.size.width;
+    if depth < 64 {
+        for &child in &node.children {
+            right = right.max(right_extent(doc, child, left, depth + 1));
+        }
+    }
+    right
+}
+
+fn hex([r, g, b]: [u8; 3]) -> String {
+    format!("#{r:02x}{g:02x}{b:02x}")
+}
+
+/// Lowest-priority defaults: the theme's canvas and text for mail that sets
+/// none, and a readable measure. Author CSS still wins everywhere it speaks.
+fn base_css(params: &Params, themed: bool) -> String {
+    let (bg, text, link) = if themed || !params.theme.dark {
+        (hex(params.theme.background), hex(params.theme.text), hex(params.theme.link))
+    } else {
+        // Original colours in a dark theme: the sender's paper, not ours.
+        ("#ffffff".into(), "#1f1f23".into(), "#2b59c3".into())
+    };
+    format!(
+        "html, body {{ background-color: {bg}; color: {text}; }}\n\
+         body {{ margin: 0; padding: 0; font-family: system-ui, sans-serif; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }}\n\
+         a {{ color: {link}; }}\n\
+         img {{ max-width: 100%; height: auto; }}\n\
+         td, th {{ box-sizing: border-box; }}\n\
+         pre {{ white-space: pre-wrap; }}\n\
+         blockquote {{ margin: 0 0 0 0.8em; padding-left: 0.8em; border-left: 2px solid {link}55; }}\n"
+    )
+}
+
+/// Mail that brings its own dark styles is shown with them, unaltered.
+fn declares_dark_styles(html: &str) -> bool {
+    let lower = html.to_ascii_lowercase();
+    lower.contains("prefers-color-scheme") && lower.contains("dark")
+}
+
+// ---------------------------------------------------------------------------
+// Resources
+
+struct Provider {
+    allow_remote: bool,
+    blocked: AtomicUsize,
+    requested: AtomicUsize,
+    pending: Mutex<Vec<std::thread::JoinHandle<()>>>,
+}
+
+impl Provider {
+    fn new(allow_remote: bool) -> Self {
+        Self {
+            allow_remote,
+            blocked: AtomicUsize::new(0),
+            requested: AtomicUsize::new(0),
+            pending: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Wait for remote fetches the user allowed (each bounded by its timeout).
+    fn finish(&self) {
+        let handles = std::mem::take(&mut *self.pending.lock().unwrap_or_else(|e| e.into_inner()));
+        for handle in handles {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl NetProvider for Provider {
+    fn fetch(&self, _doc_id: usize, request: Request, handler: Box<dyn NetHandler>) {
+        let url = request.url;
+        match url.scheme() {
+            "data" => {
+                if let Some(bytes) = decode_data_url(url.as_str()) {
+                    handler.bytes(url.to_string(), Bytes::from(bytes));
+                }
+            }
+            "http" | "https" if self.allow_remote => {
+                if self.requested.fetch_add(1, Ordering::Relaxed) >= REMOTE_REQUEST_MAX {
+                    return;
+                }
+                let handle = std::thread::spawn(move || {
+                    let agent = ureq::AgentBuilder::new()
+                        .timeout(Duration::from_secs(8))
+                        .redirects(3)
+                        .build();
+                    let Ok(response) = agent.get(url.as_str()).call() else {
+                        return;
+                    };
+                    let mut bytes = Vec::new();
+                    use std::io::Read as _;
+                    if response
+                        .into_reader()
+                        .take(REMOTE_IMAGE_MAX)
+                        .read_to_end(&mut bytes)
+                        .is_ok()
+                    {
+                        handler.bytes(url.to_string(), Bytes::from(bytes));
+                    }
+                });
+                self.pending
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(handle);
+            }
+            "http" | "https" => {
+                self.blocked.fetch_add(1, Ordering::Relaxed);
+            }
+            // file:, cid: (already embedded), and everything else: never.
+            _ => {}
+        }
+    }
+}
+
+fn decode_data_url(url: &str) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+    let rest = url.strip_prefix("data:")?;
+    let (meta, payload) = rest.split_once(',')?;
+    if meta.to_ascii_lowercase().ends_with(";base64") {
+        let cleaned: String = payload.chars().filter(|c| !c.is_whitespace()).collect();
+        let cleaned = percent_decode(&cleaned);
+        base64::engine::general_purpose::STANDARD
+            .decode(cleaned.trim_end_matches('='))
+            .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(cleaned.trim_end_matches('=')))
+            .ok()
+    } else {
+        Some(percent_decode(payload).into_bytes())
+    }
+}
+
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(value) = u8::from_str_radix(&text[i + 1..i + 3], 16) {
+                out.push(value);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+// ---------------------------------------------------------------------------
+// Dark recolouring
+
+#[derive(Clone, Copy, PartialEq)]
+enum Role {
+    Background,
+    Foreground,
+}
+
+/// Rewrite every colour the sender set (inline styles, `<style>` blocks and
+/// legacy attributes) for a dark canvas.
+pub(crate) fn recolor_for_dark(html: &str) -> String {
+    let mut out = String::with_capacity(html.len() + 64);
+    let lower = html.to_ascii_lowercase();
+    let mut i = 0;
+    while let Some(rel) = lower[i..].find('<') {
+        let start = i + rel;
+        out.push_str(&html[i..start]);
+        // <style> … </style>: rewrite declarations inside.
+        if lower[start..].starts_with("<style") {
+            if let Some(open_end) = lower[start..].find('>') {
+                let body_start = start + open_end + 1;
+                let close = lower[body_start..].find("</style").map_or(html.len(), |c| body_start + c);
+                out.push_str(&html[start..body_start]);
+                out.push_str(&recolor_declarations(&html[body_start..close]));
+                i = close;
+                continue;
+            }
+        }
+        // Comments pass through untouched.
+        if lower[start..].starts_with("<!--") {
+            let end = lower[start..].find("-->").map_or(html.len(), |e| start + e + 3);
+            out.push_str(&html[start..end]);
+            i = end;
+            continue;
+        }
+        let Some(tag_len) = tag_end(&html[start..]) else {
+            out.push_str(&html[start..]);
+            return out;
+        };
+        out.push_str(&recolor_tag(&html[start..start + tag_len]));
+        i = start + tag_len;
+    }
+    out.push_str(&html[i..]);
+    out
+}
+
+/// Length of the tag starting at `s[0] == '<'`, honouring quoted attributes.
+fn tag_end(s: &str) -> Option<usize> {
+    let mut quote: Option<u8> = None;
+    for (index, byte) in s.bytes().enumerate().skip(1) {
+        match (quote, byte) {
+            (Some(q), b) if b == q => quote = None,
+            (Some(_), _) => {}
+            (None, b'"' | b'\'') => quote = Some(byte),
+            (None, b'>') => return Some(index + 1),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn recolor_tag(tag: &str) -> String {
+    if tag.starts_with("</") || tag.starts_with("<!") {
+        return tag.to_owned();
+    }
+    let mut out = String::with_capacity(tag.len() + 16);
+    let bytes = tag.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        // Attribute name at a word boundary.
+        if bytes[i].is_ascii_alphabetic() && i > 0 && bytes[i - 1].is_ascii_whitespace() {
+            let name_end = tag[i..]
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+                .map_or(tag.len(), |n| i + n);
+            let name = tag[i..name_end].to_ascii_lowercase();
+            let rest = &tag[name_end..];
+            let trimmed = rest.trim_start();
+            if let Some(after_eq) = trimmed.strip_prefix('=') {
+                let value_start = name_end + (rest.len() - trimmed.len()) + 1;
+                let lead = after_eq.len() - after_eq.trim_start().len();
+                let value_start = value_start + lead;
+                let (value, value_end, quote) = match tag.as_bytes().get(value_start) {
+                    Some(&q @ (b'"' | b'\'')) => {
+                        let close = tag[value_start + 1..]
+                            .find(q as char)
+                            .map_or(tag.len(), |c| value_start + 1 + c);
+                        (&tag[value_start + 1..close], (close + 1).min(tag.len()), Some(q as char))
+                    }
+                    _ => {
+                        let end = tag[value_start..]
+                            .find(|c: char| c.is_ascii_whitespace() || c == '>')
+                            .map_or(tag.len(), |e| value_start + e);
+                        (&tag[value_start..end], end, None)
+                    }
+                };
+                let replaced = match name.as_str() {
+                    "style" => Some(recolor_declarations(value)),
+                    "bgcolor" => Some(recolor_value(value, Role::Background)),
+                    "color" | "text" | "link" | "vlink" | "alink" => {
+                        Some(recolor_value(value, Role::Foreground))
+                    }
+                    _ => None,
+                };
+                if let Some(replaced) = replaced {
+                    out.push_str(&tag[i..value_start]);
+                    match quote {
+                        Some(q) => {
+                            out.push(q);
+                            out.push_str(&replaced.replace(q, if q == '"' { "'" } else { "\"" }));
+                            out.push(q);
+                        }
+                        None => out.push_str(&replaced),
+                    }
+                    i = value_end;
+                    continue;
+                }
+            }
+            out.push_str(&tag[i..name_end]);
+            i = name_end;
+            continue;
+        }
+        let ch = tag[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+/// Rewrite `prop: value` declarations in a style attribute or sheet.
+fn recolor_declarations(css: &str) -> String {
+    let mut out = String::with_capacity(css.len() + 16);
+    let mut rest = css;
+    loop {
+        let Some(colon) = rest.find(':') else {
+            out.push_str(rest);
+            return out;
+        };
+        // Property name: the identifier right before the colon.
+        let before = &rest[..colon];
+        let name_start = before
+            .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+            .map_or(0, |p| p + 1);
+        let property = before[name_start..].to_ascii_lowercase();
+        let value_end = rest[colon + 1..]
+            .find([';', '}', '{'])
+            .map_or(rest.len(), |e| colon + 1 + e);
+        // A selector pseudo-class (`a:hover {`) is not a declaration.
+        let is_selector = rest[colon + 1..value_end].trim().is_empty()
+            || rest[colon + 1..].find('{').is_some_and(|b| colon + 1 + b == value_end);
+        out.push_str(&rest[..colon + 1]);
+        let value = &rest[colon + 1..value_end];
+        let role = match property.as_str() {
+            _ if is_selector => None,
+            "background" | "background-color" => Some(Role::Background),
+            p if p.starts_with("border") || p.starts_with("outline") => Some(Role::Background),
+            "color" | "text-decoration-color" | "caret-color" | "fill" | "stroke" => {
+                Some(Role::Foreground)
+            }
+            _ => None,
+        };
+        match role {
+            Some(role) => out.push_str(&recolor_value(value, role)),
+            None => out.push_str(value),
+        }
+        rest = &rest[value_end..];
+    }
+}
+
+/// Replace every colour token in a CSS value.
+fn recolor_value(value: &str, role: Role) -> String {
+    let mut out = String::with_capacity(value.len());
+    let lower = value.to_ascii_lowercase();
+    let bytes = value.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let rest = &lower[i..];
+        if bytes[i] == b'#' {
+            let len = rest[1..]
+                .find(|c: char| !c.is_ascii_hexdigit())
+                .unwrap_or(rest.len() - 1);
+            if matches!(len, 3 | 4 | 6 | 8) {
+                if let Some(color) = parse_hex(&rest[1..1 + len]) {
+                    out.push_str(&transform(color, role));
+                    i += 1 + len;
+                    continue;
+                }
+            }
+        } else if rest.starts_with("rgb") {
+            if let Some(close) = rest.find(')') {
+                if let Some(color) = parse_rgb_function(&rest[..=close]) {
+                    out.push_str(&transform(color, role));
+                    i += close + 1;
+                    continue;
+                }
+            }
+        } else if bytes[i].is_ascii_alphabetic()
+            && (i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'-'))
+        {
+            let len = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+                .unwrap_or(rest.len());
+            if let Some(color) = named_color(&rest[..len]) {
+                out.push_str(&transform(color, role));
+                i += len;
+                continue;
+            }
+            out.push_str(&value[i..i + len]);
+            i += len;
+            continue;
+        }
+        let ch = value[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+type Rgba = ([f32; 3], f32);
+
+fn parse_hex(hex: &str) -> Option<Rgba> {
+    let digit = |s: &str| u8::from_str_radix(s, 16).ok().map(|v| v as f32 / 255.);
+    let double = |c: &str| digit(&format!("{c}{c}"));
+    match hex.len() {
+        3 | 4 => Some((
+            [double(&hex[0..1])?, double(&hex[1..2])?, double(&hex[2..3])?],
+            if hex.len() == 4 { double(&hex[3..4])? } else { 1. },
+        )),
+        6 | 8 => Some((
+            [digit(&hex[0..2])?, digit(&hex[2..4])?, digit(&hex[4..6])?],
+            if hex.len() == 8 { digit(&hex[6..8])? } else { 1. },
+        )),
+        _ => None,
+    }
+}
+
+fn parse_rgb_function(text: &str) -> Option<Rgba> {
+    let inner = &text[text.find('(')? + 1..text.rfind(')')?];
+    let parts: Vec<&str> = inner
+        .split([',', ' ', '/'])
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect();
+    if parts.len() < 3 {
+        return None;
+    }
+    let channel = |p: &str| -> Option<f32> {
+        if let Some(pct) = p.strip_suffix('%') {
+            pct.parse::<f32>().ok().map(|v| v / 100.)
+        } else {
+            p.parse::<f32>().ok().map(|v| v / 255.)
+        }
+    };
+    let alpha = match parts.get(3) {
+        Some(a) => match a.strip_suffix('%') {
+            Some(pct) => pct.parse::<f32>().ok()? / 100.,
+            None => a.parse::<f32>().ok()?,
+        },
+        None => 1.,
+    };
+    Some(([channel(parts[0])?, channel(parts[1])?, channel(parts[2])?], alpha))
+}
+
+fn named_color(name: &str) -> Option<Rgba> {
+    let hex = match name {
+        "white" => "ffffff",
+        "black" => "000000",
+        "gray" | "grey" => "808080",
+        "silver" => "c0c0c0",
+        "lightgray" | "lightgrey" => "d3d3d3",
+        "gainsboro" => "dcdcdc",
+        "whitesmoke" => "f5f5f5",
+        "darkgray" | "darkgrey" => "a9a9a9",
+        "dimgray" | "dimgrey" => "696969",
+        "red" => "ff0000",
+        "maroon" => "800000",
+        "green" => "008000",
+        "navy" => "000080",
+        "blue" => "0000ff",
+        "purple" => "800080",
+        "teal" => "008080",
+        "olive" => "808000",
+        "orange" => "ffa500",
+        "beige" => "f5f5dc",
+        "ivory" => "fffff0",
+        "linen" => "faf0e6",
+        "snow" => "fffafa",
+        "aliceblue" => "f0f8ff",
+        "ghostwhite" => "f8f8ff",
+        "floralwhite" => "fffaf0",
+        "lightyellow" => "ffffe0",
+        "lightblue" => "add8e6",
+        "lightgreen" => "90ee90",
+        _ => return None,
+    };
+    parse_hex(hex)
+}
+
+fn transform((rgb, alpha): Rgba, role: Role) -> String {
+    let [l, a, b] = srgb_to_lab(rgb);
+    let (l, a, b) = match role {
+        Role::Background if l > 40. => (8. + (100. - l) * 0.35, a * 0.6, b * 0.6),
+        Role::Foreground if l < 65. => (88. - l * 0.25, a * 0.9, b * 0.9),
+        _ => (l, a, b),
+    };
+    let [r, g, bl] = lab_to_srgb([l, a, b]);
+    let byte = |v: f32| (v.clamp(0., 1.) * 255.).round() as u8;
+    if alpha < 1. {
+        format!("rgba({}, {}, {}, {:.3})", byte(r), byte(g), byte(bl), alpha)
+    } else {
+        format!("#{:02x}{:02x}{:02x}", byte(r), byte(g), byte(bl))
+    }
+}
+
+const WHITE: [f32; 3] = [0.950_47, 1.0, 1.088_83];
+
+fn srgb_to_lab(rgb: [f32; 3]) -> [f32; 3] {
+    let lin = rgb.map(|c| {
+        if c <= 0.040_45 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    });
+    let xyz = [
+        0.4124 * lin[0] + 0.3576 * lin[1] + 0.1805 * lin[2],
+        0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2],
+        0.0193 * lin[0] + 0.1192 * lin[1] + 0.9505 * lin[2],
+    ];
+    let f = |t: f32| if t > 0.008_856 { t.cbrt() } else { 7.787 * t + 16. / 116. };
+    let (fx, fy, fz) = (f(xyz[0] / WHITE[0]), f(xyz[1] / WHITE[1]), f(xyz[2] / WHITE[2]));
+    [116. * fy - 16., 500. * (fx - fy), 200. * (fy - fz)]
+}
+
+fn lab_to_srgb([l, a, b]: [f32; 3]) -> [f32; 3] {
+    let fy = (l + 16.) / 116.;
+    let fx = fy + a / 500.;
+    let fz = fy - b / 200.;
+    let inv = |t: f32| {
+        let cube = t * t * t;
+        if cube > 0.008_856 { cube } else { (t - 16. / 116.) / 7.787 }
+    };
+    let (x, y, z) = (inv(fx) * WHITE[0], inv(fy) * WHITE[1], inv(fz) * WHITE[2]);
+    let lin = [
+        3.2406 * x - 1.5372 * y - 0.4986 * z,
+        -0.9689 * x + 1.8758 * y + 0.0415 * z,
+        0.0557 * x - 0.2040 * y + 1.0570 * z,
+    ];
+    lin.map(|c| {
+        let c = c.clamp(0., 1.);
+        if c <= 0.003_130_8 { 12.92 * c } else { 1.055 * c.powf(1. / 2.4) - 0.055 }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn light_backgrounds_go_dark_and_dark_text_goes_light() {
+        let html = r##"<table bgcolor="#ffffff"><tr><td style="color:#333333;background-color:white;border:1px solid #eeeeee">Hi</td></tr></table><style>.a{color:rgb(0,0,0)} a:hover{color:#000}</style>"##;
+        let out = recolor_for_dark(html);
+        assert!(!out.contains("#ffffff") && !out.contains("white;"), "{out}");
+        assert!(!out.contains("#333333"), "{out}");
+        assert!(out.contains("a:hover{color:"), "selectors survive: {out}");
+        assert!(out.contains(">Hi<"));
+        let [l, ..] = srgb_to_lab(parse_hex(&out[out.find("bgcolor=\"#").unwrap() + 10..][..6]).unwrap().0);
+        assert!(l < 30., "background lightness {l}");
+    }
+
+    #[test]
+    fn text_content_and_urls_are_untouched() {
+        let html = r#"<p>white black #fff</p><a href="https://x.test/#red">red</a>"#;
+        assert_eq!(recolor_for_dark(html), html);
+    }
+
+    #[test]
+    fn wide_fixed_designs_are_shrunk_to_fit() {
+        let html = r#"<table width="900" style="width:900px"><tr><td style="height:300px;background:#eee">wide</td></tr></table>"#;
+        let params = Params {
+            width: 450.,
+            scale: 1.,
+            theme: Theme { dark: false, background: [255; 3], text: [0; 3], link: [0, 0, 255] },
+            original_colors: false,
+            allow_remote: false,
+            hide_history: false,
+        };
+        let (_, rendered) = render_now(html, &params).expect("rendered");
+        assert!(rendered.fit < 0.6, "fit {}", rendered.fit);
+        assert_eq!(rendered.width, 450.);
+    }
+
+    #[test]
+    fn percentage_cells_with_padding_stay_inside_the_table() {
+        let html = r#"<table style="width:100%;border-collapse:collapse"><tr><td style="width:50%;padding:24px">Left panel text that wraps</td><td style="width:50%;padding:24px">Right panel text that wraps</td></tr></table>"#;
+        let params = Params {
+            width: 640.,
+            scale: 1.,
+            theme: Theme { dark: false, background: [255; 3], text: [0; 3], link: [0, 0, 255] },
+            original_colors: false,
+            allow_remote: false,
+            hide_history: false,
+        };
+        let (doc, rendered) = render_now(html, &params).expect("rendered");
+        assert_eq!(rendered.fit, 1., "no overflow, no shrink");
+        assert!(right_extent(&doc, doc.root_element().id, 0., 0) <= 641.);
+    }
+
+    #[test]
+    fn data_urls_decode() {
+        assert_eq!(decode_data_url("data:text/plain;base64,aGk=").unwrap(), b"hi");
+        assert_eq!(decode_data_url("data:text/plain,a%20b").unwrap(), b"a b");
+    }
+
+    #[test]
+    fn renders_a_newsletter_and_finds_its_link() {
+        let html = r#"<html><body><table width="600"><tr><td style="background:#5b43e8;color:#fff;padding:20px"><h1>Digest</h1></td></tr><tr><td style="padding:20px"><a href="https://example.com/go" style="display:block;height:40px">Open</a></td></tr></table></body></html>"#;
+        let params = Params {
+            width: 640.,
+            scale: 1.,
+            theme: Theme { dark: true, background: [13, 13, 13], text: [232, 232, 234], link: [124, 134, 255] },
+            original_colors: false,
+            allow_remote: false,
+            hide_history: false,
+        };
+        let (doc, rendered) = render_now(html, &params).expect("rendered");
+        assert!(rendered.height > 60.);
+        // Somewhere on the link block, the hit test finds the href.
+        let found = (0..20).any(|step| {
+            link_in(&doc, 40., 80. + step as f32 * 5.).as_deref() == Some("https://example.com/go")
+        });
+        assert!(found, "link not hit");
+    }
+}

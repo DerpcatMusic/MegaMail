@@ -587,7 +587,7 @@ impl MailApp {
                 if snapshot.is_thunderbird_account {
                     "Search: loaded headers. Try from: or subject:"
                 } else {
-                    "Search: cached mail in this view. body: covers downloaded bodies only."
+                    "Search: senders, subjects and the text of downloaded mail. body: matches exact text."
                 },
             ))
             .when(self.comfort.health_open, |el| {

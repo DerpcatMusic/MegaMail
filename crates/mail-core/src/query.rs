@@ -187,7 +187,7 @@ fn read_page(
     let request = &pending.request;
     let scope = (request.account_id, request.folder_path.clone());
     let predicate = match crate::search::SearchQuery::parse(&request.query)
-        .and_then(|query| query.sql_predicate(true))
+        .and_then(|query| query.sql_predicate_full_text(true, cache.has_body_index()))
     {
         Ok(predicate) => predicate,
         Err(error) => return failed_result(pending, error.to_string()),
@@ -652,6 +652,58 @@ mod tests {
                 .rows
                 .is_empty()
         );
+        drop(raw);
+        drop(reader);
+        drop(writer);
+        remove_query_fixture(&path);
+    }
+
+    #[test]
+    fn plain_words_find_visible_body_text_through_the_full_text_index() {
+        let path = synthetic_query_path("full-text");
+        let writer = Cache::open_at(&path).unwrap();
+        assert!(writer.has_body_index());
+        let first = synthetic_message(7, 17, 41, "Alice".into(), "Status".into());
+        let mut second = first.clone();
+        second.id = 42;
+        second.uid = 42;
+        writer.upsert_messages(7, "INBOX", &[first, second]);
+        writer.save_body(
+            7,
+            "INBOX",
+            41,
+            "<html><style>.quarterly{color:red}</style><body><p>The Quarterly r\u{e9}sum\u{e9} is attached.</p></body></html>",
+        );
+        writer.save_body(7, "INBOX", 42, "Nothing relevant here.");
+        let reader = writer
+            .read_connection_with(crate::search::register_sql_functions)
+            .unwrap();
+        let mut epochs = HashMap::new();
+        let mut lookup = |query: &str| {
+            let mut r = request(7, "INBOX", 1, None);
+            r.query = query.into();
+            r.limit = 100;
+            read_page(
+                &reader,
+                &PendingPage { request: r, expected_epoch: None, complete: Box::new(|_| {}) },
+                &mut epochs,
+            )
+            .rows
+            .iter()
+            .map(|m| m.uid)
+            .collect::<Vec<_>>()
+        };
+        // Word prefix, case and accents folded; markup and CSS are not indexed.
+        assert_eq!(lookup("quarter"), [41]);
+        assert_eq!(lookup("resume attached"), [41]);
+        assert!(lookup("color").is_empty());
+        assert_eq!(lookup("-quarterly"), [42]);
+        // Header matches still work alongside the index.
+        assert_eq!(lookup("status").len(), 2);
+        // Signed/encrypted bodies stay out of search.
+        let raw = rusqlite::Connection::open(&path).unwrap();
+        raw.execute("INSERT INTO sender_checks(account_id,folder_path,uid,trust,summary,findings,pgp) VALUES(7,'INBOX',41,'','','','encrypted')", []).unwrap();
+        assert!(lookup("quarterly").is_empty());
         drop(raw);
         drop(reader);
         drop(writer);

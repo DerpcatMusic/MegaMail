@@ -720,6 +720,7 @@ impl Cache {
             )?;
         }
         tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        ensure_body_index(&tx);
         tx.commit()
     }
 
@@ -1777,13 +1778,27 @@ impl Cache {
         );
     }
 
+    /// Whether this cache has the full-text body index (SQLite with FTS5).
+    pub fn has_body_index(&self) -> bool {
+        self.conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'body_fts'",
+                [],
+                |_| Ok(()),
+            )
+            .is_ok()
+    }
+
     pub fn save_body(&self, account_id: u32, folder_path: &str, uid: u32, body: &str) {
         if let Err(e) = self.conn.execute(
             "INSERT OR REPLACE INTO bodies (account_id, folder_path, uid, body) VALUES (?1, ?2, ?3, ?4)",
             params![account_id, folder_path, uid, body],
         ) {
             tracing::warn!("cache save_body failed: {e}");
+            return;
         }
+        let rowid = self.conn.last_insert_rowid();
+        index_body_text(&self.conn, rowid, body);
     }
 
     /// The cached sender-authentication verdict for a message, if one was stored
@@ -4776,6 +4791,71 @@ mod tests {
             ids,
             vec!["new-reply@x", "old-reply@x", "root@x"],
             "all three, any age"
+        );
+    }
+}
+
+/// Full-text index of each cached body's visible text, keyed by the
+/// `bodies` rowid. Optional: a SQLite without FTS5 simply has no index and
+/// search keeps its exact substring scan. Stale rows are harmless — every
+/// lookup joins back through `bodies`, and a reused rowid is reindexed on save.
+const BODY_FTS: &str = "CREATE VIRTUAL TABLE IF NOT EXISTS body_fts USING fts5(text, tokenize = 'unicode61 remove_diacritics 2', prefix = '2 3')";
+
+/// Plain-text projection of a cached body for the index (tags, styles and
+/// scripts dropped; the reader's own text conversion).
+fn visible_text(body: &str) -> String {
+    let text = if body.trim_start().starts_with('<') {
+        crate::markdown::plain_text(body)
+    } else {
+        body.to_owned()
+    };
+    text.replace('\0', " ")
+}
+
+fn index_body_text(conn: &Connection, rowid: i64, body: &str) {
+    let has_index = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'body_fts'",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if !has_index {
+        return;
+    }
+    let text = visible_text(body);
+    let _ = conn.execute("DELETE FROM body_fts WHERE rowid = ?1", params![rowid]);
+    if let Err(e) = conn.execute(
+        "INSERT INTO body_fts (rowid, text) VALUES (?1, ?2)",
+        params![rowid, text],
+    ) {
+        tracing::warn!("cache body index failed: {e}");
+    }
+}
+
+/// Create the body index when this SQLite supports FTS5, and fill it once
+/// from bodies cached before it existed.
+fn ensure_body_index(conn: &Connection) {
+    if conn.execute_batch(BODY_FTS).is_err() {
+        return;
+    }
+    let indexed: i64 = conn
+        .query_row("SELECT count(*) FROM body_fts", [], |r| r.get(0))
+        .unwrap_or(0);
+    if indexed > 0 {
+        return;
+    }
+    let rows: Vec<(i64, String)> = match conn.prepare("SELECT rowid, body FROM bodies") {
+        Ok(mut stmt) => stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map(|rows| rows.filter_map(Result::ok).collect())
+            .unwrap_or_default(),
+        Err(_) => return,
+    };
+    for (rowid, body) in rows {
+        let _ = conn.execute(
+            "INSERT INTO body_fts (rowid, text) VALUES (?1, ?2)",
+            params![rowid, visible_text(&body)],
         );
     }
 }

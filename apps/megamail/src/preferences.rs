@@ -194,10 +194,11 @@ pub(crate) fn split_quoted_text(body: &str) -> (&str, Option<&str>) {
     for line in &lines {
         let marker = line_content(line).trim();
         if authored
-            && is_reply_marker(marker)
-            && marker.contains('@')
-            && marker.contains('<')
-            && marker.contains('>')
+            && ((is_reply_marker(marker)
+                && marker.contains('@')
+                && marker.contains('<')
+                && marker.contains('>'))
+                || is_separator_marker(marker))
         {
             return (&body[..offset], Some(&body[offset..]));
         }
@@ -301,13 +302,34 @@ pub(crate) fn plain_text_html(body: &str) -> String {
         .collect()
 }
 
+/// "On … wrote:" in the languages mail clients write it, plus the
+/// "-----Original Message-----" separators (shared with the HTML detector).
 fn is_reply_marker(line: &str) -> bool {
-    line.strip_prefix("On ")
-        .is_some_and(|remainder| remainder.ends_with(" wrote:"))
+    megamail_core::mail_text::is_attribution_line(line)
+}
+
+fn is_separator_marker(line: &str) -> bool {
+    let squashed: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+    squashed.starts_with("-----") && squashed.ends_with("-----") && is_reply_marker(line)
+        || (squashed.len() >= 20 && squashed.chars().all(|c| c == '_'))
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn localized_and_separator_histories_split() {
+        let outlook = "Thanks, done.\n\n-----Original Message-----\nFrom: Bob\nOld text\n";
+        let (reply, quote) = super::split_quoted_text(outlook);
+        assert_eq!(reply.trim(), "Thanks, done.");
+        assert!(quote.unwrap().contains("Old text"));
+        let german = "Passt.\n\nAm Mo., 16. Nov. 2026 um 09:00 schrieb Ada <ada@x.test>:\n> Frage?\n";
+        let (reply, quote) = super::split_quoted_text(german);
+        assert_eq!(reply.trim(), "Passt.");
+        assert!(quote.unwrap().contains("Frage"));
+        let plain = "No history here.\nJust text.";
+        assert!(super::split_quoted_text(plain).1.is_none());
+    }
+
     #[test]
     fn quoted_html_preserves_nested_history_without_repeating_authored_text() {
         let html = "<p>Current reply</p><blockquote dir=\"rtl\"><p>Previous</p><blockquote>Older</blockquote></blockquote>";

@@ -69,7 +69,7 @@ fn hidden_inline_style(style: &str) -> bool {
 /// Only semantic text markup and explicit HTTP(S) links survive. Message CSS,
 /// alignment, dimensions, remote resources, active content, and form controls do not.
 pub fn reader_html(html: &str) -> String {
-    render_reader_html(html, false)
+    render_reader_html(html, Hide::Nothing)
         .ok()
         .flatten()
         .unwrap_or_else(|| READER_HTML_LIMIT_MESSAGE.to_owned())
@@ -77,23 +77,69 @@ pub fn reader_html(html: &str) -> String {
 
 /// Renders a sanitized fragment without its final blockquote, if one is present.
 pub fn reader_html_without_quote(safe_html: &str) -> Option<String> {
-    render_reader_html(safe_html, true).ok().flatten()
+    render_reader_html(safe_html, Hide::TrailingBlockquotes).ok().flatten()
 }
 
-fn render_reader_html(html: &str, hide_trailing_quote: bool) -> Result<Option<String>, ()> {
+/// Sanitized fragment without the quoted reply history, detected on the
+/// sender's raw HTML where client markers still exist (Gmail, Apple Mail,
+/// Outlook, Thunderbird, Yahoo, Proton, Zoho and localized "wrote:" lines).
+/// Everything from the first history marker to the end is folded, the way
+/// Talon and the big clients do; `None` when there is no history, or when it
+/// would leave nothing (a bare forward).
+pub fn reader_html_without_history(raw_html: &str) -> Option<String> {
+    render_reader_html(raw_html, Hide::History).ok().flatten()
+}
+
+/// The sender's raw HTML with the quoted history removed (for the original
+/// layout renderer, which shows mail unsanitized but without script or network).
+pub fn raw_html_without_history(raw_html: &str) -> Option<String> {
+    if raw_html.len() > MAX_READER_HTML_BYTES {
+        return None;
+    }
+    let dom = html5ever::parse_document(RcDom::default(), Default::default()).one(raw_html);
+    let hidden = history_nodes(&dom.document);
+    if hidden.is_empty() {
+        return None;
+    }
+    let mut stack = vec![dom.document.clone()];
+    while let Some(node) = stack.pop() {
+        node.children
+            .borrow_mut()
+            .retain(|child| !hidden.contains(&(Rc::as_ptr(child) as usize)));
+        stack.extend(node.children.borrow().iter().cloned());
+    }
+    let mut bytes = Vec::new();
+    let document: markup5ever_rcdom::SerializableHandle = dom.document.clone().into();
+    html5ever::serialize(&mut bytes, &document, Default::default()).ok()?;
+    String::from_utf8(bytes).ok()
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Hide {
+    Nothing,
+    TrailingBlockquotes,
+    History,
+}
+
+fn render_reader_html(html: &str, hide: Hide) -> Result<Option<String>, ()> {
     if html.len() > MAX_READER_HTML_BYTES {
         return Err(());
     }
 
     let dom = html5ever::parse_document(RcDom::default(), Default::default()).one(html);
-    let hidden_quotes = if hide_trailing_quote {
-        let quotes = trailing_blockquotes(&dom.document)?;
-        if quotes.is_empty() {
-            return Ok(None);
+    let hidden_quotes = match hide {
+        Hide::Nothing => HashSet::new(),
+        Hide::TrailingBlockquotes | Hide::History => {
+            let quotes = if hide == Hide::History {
+                history_nodes(&dom.document)
+            } else {
+                trailing_blockquotes(&dom.document)?
+            };
+            if quotes.is_empty() {
+                return Ok(None);
+            }
+            quotes
         }
-        quotes
-    } else {
-        HashSet::new()
     };
 
     let mut output = String::new();
@@ -363,6 +409,219 @@ fn is_data_table(table: &Handle) -> bool {
     }
 
     has_header || has_caption || (rows >= 2 && widest_row >= 2)
+}
+
+/// Text of an element, at most `limit` bytes (None when longer).
+fn bounded_text(node: &Handle, limit: usize) -> Option<String> {
+    let mut out = String::new();
+    let mut stack = vec![node.clone()];
+    while let Some(next) = stack.pop() {
+        match &next.data {
+            NodeData::Text { contents } => {
+                out.push_str(&contents.borrow());
+                if out.len() > limit {
+                    return None;
+                }
+            }
+            NodeData::Element { name, .. }
+                if matches!(name.local.as_ref(), "style" | "script" | "head" | "title") => {}
+            _ => {
+                if matches!(&next.data, NodeData::Element { name, .. } if matches!(name.local.as_ref(), "br" | "p" | "div")) {
+                    out.push('\n');
+                }
+                for child in next.children.borrow().iter().rev() {
+                    stack.push(child.clone());
+                }
+            }
+        }
+    }
+    Some(out)
+}
+
+/// The first `limit` bytes of an element's text.
+fn leading_text(node: &Handle, limit: usize) -> String {
+    let mut out = String::new();
+    let mut stack = vec![node.clone()];
+    while let Some(next) = stack.pop() {
+        if out.len() >= limit {
+            break;
+        }
+        match &next.data {
+            NodeData::Text { contents } => out.push_str(&contents.borrow()),
+            NodeData::Element { name, .. }
+                if matches!(name.local.as_ref(), "style" | "script" | "head" | "title") => {}
+            _ => {
+                for child in next.children.borrow().iter().rev() {
+                    stack.push(child.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A localized reply attribution ("On … wrote:") or separator line.
+pub fn is_attribution_line(line: &str) -> bool {
+    let line = line.trim().trim_matches(['\u{200e}', '\u{200f}', '\u{a0}']).trim();
+    if line.is_empty() || line.len() > 400 {
+        return false;
+    }
+    let lower = line.to_lowercase();
+    let squashed: String = lower.chars().filter(|c| !c.is_whitespace()).collect();
+    if squashed.contains("-----originalmessage-----")
+        || squashed.contains("-----ursprünglichenachricht-----")
+        || squashed.contains("-----messaged'origine-----")
+        || squashed.contains("-----mensajeoriginal-----")
+        || squashed.contains("-----הודעהמקורית-----")
+    {
+        return true;
+    }
+    let ends = |suffixes: &[&str]| suffixes.iter().any(|s| lower.trim_end().ends_with(s));
+    (lower.starts_with("on ") && ends(&["wrote:", "wrote :"]))
+        || (lower.starts_with("le ") && ends(&["a écrit :", "a écrit:"]))
+        || (lower.starts_with("am ") && lower.contains("schrieb") && lower.ends_with(':'))
+        || (lower.starts_with("el ") && ends(&["escribió:", "escribió :"]))
+        || (lower.starts_with("il ") && ends(&["ha scritto:", "ha scritto :"]))
+        || (lower.starts_with("op ") && lower.contains("schreef") && lower.ends_with(':'))
+        || (lower.starts_with("em ") && ends(&["escreveu:", "escreveu :"]))
+        || (lower.starts_with("w dniu ") && lower.contains("napisał") && lower.ends_with(':'))
+        || (lower.contains("написал") && lower.ends_with(':'))
+        || ((lower.contains("כתב") || lower.contains("כתבה")) && lower.ends_with(':'))
+        || (lower.contains("كتب") && lower.ends_with(':'))
+        || (lower.contains("のメッセージ") && lower.ends_with(':'))
+}
+
+fn has_class(attrs: &[html5ever::Attribute], wanted: &[&str]) -> bool {
+    attrs.iter().any(|a| {
+        a.name.local.as_ref() == "class"
+            && a.value.split_whitespace().any(|c| wanted.iter().any(|w| c.eq_ignore_ascii_case(w)))
+    })
+}
+
+fn attr_is(attrs: &[html5ever::Attribute], name: &str, wanted: &[&str]) -> bool {
+    attrs.iter().any(|a| {
+        a.name.local.as_ref() == name && wanted.iter().any(|w| a.value.trim().eq_ignore_ascii_case(w))
+    })
+}
+
+/// The quoted history: the first client marker after some authored text,
+/// plus everything that follows it in document order.
+fn history_nodes(root: &Handle) -> HashSet<usize> {
+    // Document-order walk, counting authored text before each element.
+    let mut stack = vec![(root.clone(), 0usize)];
+    let mut authored = 0usize;
+    let mut boundary: Option<Handle> = None;
+    let mut visited = 0usize;
+    while let Some((node, depth)) = stack.pop() {
+        visited += 1;
+        if visited > MAX_READER_DOM_NODES || depth > MAX_READER_DOM_DEPTH {
+            return HashSet::new();
+        }
+        match &node.data {
+            NodeData::Text { contents } => {
+                authored += contents.borrow().trim().chars().count();
+                continue;
+            }
+            NodeData::Element { name, attrs, .. } => {
+                let tag = name.local.as_ref();
+                if matches!(tag, "style" | "script" | "head" | "title") {
+                    continue;
+                }
+                let attrs = attrs.borrow();
+                let marker = has_class(
+                    &attrs,
+                    &[
+                        "gmail_quote",
+                        "gmail_quote_container",
+                        "gmail_attr",
+                        "moz-cite-prefix",
+                        "yahoo_quoted",
+                        "protonmail_quote",
+                        "zmail_extra",
+                        "OutlookMessageHeader",
+                        "x_gmail_quote",
+                        "ms-outlook-mobile-reference-message",
+                    ],
+                ) || attr_is(
+                    &attrs,
+                    "id",
+                    &[
+                        "divRplyFwdMsg",
+                        "x_divRplyFwdMsg",
+                        "appendonsend",
+                        "mail-editor-reference-message-container",
+                        "stopSpelling",
+                    ],
+                ) || (tag == "blockquote" && attr_is(&attrs, "type", &["cite"]))
+                    || (matches!(tag, "div" | "p" | "span" | "font" | "td")
+                        && bounded_text(&node, 400).is_some_and(|text| {
+                            let lines: Vec<&str> =
+                                text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+                            match lines.as_slice() {
+                                [only] => is_attribution_line(only),
+                                [first, rest @ ..] => {
+                                    // Outlook header block: From + Sent/Date + Subject.
+                                    let low = |l: &str| l.to_lowercase();
+                                    let from = ["from:", "von:", "de:", "מאת:", "da:", "van:"]
+                                        .iter()
+                                        .any(|p| low(first).starts_with(p));
+                                    from && rest.iter().any(|l| {
+                                        ["sent:", "date:", "gesendet:", "envoyé:", "enviado:", "נשלח:", "datum:"]
+                                            .iter()
+                                            .any(|p| low(l).starts_with(p))
+                                    }) && rest.iter().any(|l| {
+                                        ["subject:", "betreff:", "objet:", "asunto:", "נושא:", "oggetto:", "onderwerp:"]
+                                            .iter()
+                                            .any(|p| low(l).starts_with(p))
+                                    })
+                                }
+                                _ => false,
+                            }
+                        }));
+                if marker && authored > 0 {
+                    // A forward keeps its content visible.
+                    let lead = leading_text(&node, 300).to_lowercase();
+                    let forward =
+                        lead.contains("forwarded message") || lead.contains("begin forwarded");
+                    if !forward {
+                        boundary = Some(node.clone());
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+        for child in node.children.borrow().iter().rev() {
+            stack.push((child.clone(), depth + 1));
+        }
+    }
+    let Some(boundary) = boundary else {
+        return HashSet::new();
+    };
+    // The boundary, its following siblings, and the following siblings of
+    // every ancestor: the rest of the document.
+    let mut hidden = HashSet::new();
+    hidden.insert(Rc::as_ptr(&boundary) as usize);
+    let mut current = boundary;
+    loop {
+        let parent = current.parent.take();
+        current.parent.set(parent.clone());
+        let Some(parent) = parent.and_then(|weak| weak.upgrade()) else {
+            break;
+        };
+        let children = parent.children.borrow();
+        if let Some(index) = children.iter().position(|child| Rc::ptr_eq(child, &current)) {
+            for sibling in &children[index + 1..] {
+                hidden.insert(Rc::as_ptr(sibling) as usize);
+            }
+        }
+        drop(children);
+        if matches!(&parent.data, NodeData::Document) {
+            break;
+        }
+        current = parent;
+    }
+    hidden
 }
 
 fn trailing_blockquotes(root: &Handle) -> Result<HashSet<usize>, ()> {
@@ -649,6 +908,41 @@ mod tests {
         assert!(without_quote.contains("My reply"));
         assert!(!without_quote.contains("Earlier message"));
         assert!(reader_html_without_quote("<p>No quote</p>").is_none());
+    }
+
+    #[test]
+    fn history_markers_from_major_clients_fold_from_marker_to_end() {
+        let gmail = r#"<div dir="ltr">Sounds good, ship it.</div><br><div class="gmail_quote"><div dir="ltr" class="gmail_attr">On Mon, Nov 16, 2026 at 9:00 AM Ada &lt;ada@x.test&gt; wrote:<br></div><blockquote class="gmail_quote">Can we ship?</blockquote></div>"#;
+        let out = reader_html_without_history(gmail).unwrap();
+        assert!(out.contains("Sounds good") && !out.contains("wrote:") && !out.contains("Can we ship"), "{out}");
+
+        let outlook = r#"<div>Thanks!</div><hr><div id="divRplyFwdMsg"><b>From:</b> Bob<br><b>Sent:</b> Monday<br><b>Subject:</b> Hi</div><div>Old body</div>"#;
+        let out = reader_html_without_history(outlook).unwrap();
+        assert!(out.contains("Thanks") && !out.contains("Old body") && !out.contains("Sent:"), "{out}");
+
+        let apple = r#"<div>Yes.</div><div><br><blockquote type="cite"><div>On 16 Nov 2026, at 09:00, Ada wrote:</div><div>Question?</div></blockquote></div>"#;
+        assert!(!reader_html_without_history(apple).unwrap().contains("Question"));
+
+        let french = r#"<p>D'accord.</p><p>Le lun. 16 nov. 2026 à 09:00, Ada a écrit :</p><blockquote>Question ?</blockquote>"#;
+        let out = reader_html_without_history(french).unwrap();
+        assert!(out.contains("accord") && !out.contains("a écrit") && !out.contains("Question"), "{out}");
+
+        let raw = raw_html_without_history(gmail).unwrap();
+        assert!(raw.contains("Sounds good") && !raw.contains("Can we ship"), "{raw}");
+
+        let desktop = r#"<p>See below.</p><div style="border-top:solid #E1E1E1 1pt"><p><b>From:</b> Bob<br><b>Sent:</b> Mon<br><b>To:</b> Me<br><b>Subject:</b> Plan</p></div><p>Old plan</p>"#;
+        assert!(!reader_html_without_history(desktop).unwrap().contains("Old plan"));
+    }
+
+    #[test]
+    fn forwards_and_messages_without_history_are_left_whole() {
+        assert!(reader_html_without_history("<p>Just a note.</p>").is_none());
+        let bare_forward = r#"<div class="gmail_quote">---------- Forwarded message ---------<br>From: Ada</div><p>Body</p>"#;
+        assert!(reader_html_without_history(bare_forward).is_none());
+        let noted_forward = r#"<p>FYI</p><div class="gmail_quote"><div class="gmail_attr">---------- Forwarded message ---------<br>From: Ada</div><p>Body</p></div>"#;
+        assert!(reader_html_without_history(noted_forward).is_none());
+        // Prose that merely mentions "wrote:" mid-paragraph is not a marker.
+        assert!(reader_html_without_history("<p>Hi</p><p>She wrote: the plan is fine, and more text follows here.</p>").is_none());
 
         let html = reader_html(
             "<p>Reply</p><blockquote>First quote</blockquote><blockquote>Older quote</blockquote>",

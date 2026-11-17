@@ -61,6 +61,7 @@ mod instance;
 mod invitation;
 mod live;
 mod mcp;
+mod original_view;
 mod newsletter_actions;
 mod onboarding;
 mod outbox_review;
@@ -881,6 +882,25 @@ struct ListRow {
     child: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReaderMode {
+    Original,
+    Clean,
+    Text,
+}
+
+struct OriginalState {
+    key: MessageKey,
+    source: Arc<str>,
+    params: original_view::Params,
+    allow_remote: bool,
+    original_colors: bool,
+    generation: u64,
+    pending: bool,
+    doc_id: u64,
+    result: Option<Result<original_view::Rendered, String>>,
+}
+
 struct PaletteState {
     input: Entity<InputState>,
     index: usize,
@@ -952,6 +972,16 @@ struct MailApp {
     hidden_rows: HashSet<MessageKey>,
     /// Sort, work-state, scope and sync controls, folded by default.
     list_controls_open: bool,
+    /// Inline Blitz rendering of the selected message's original HTML.
+    original: Option<OriginalState>,
+    /// The user chose Clean over Original; remembered for this session.
+    prefer_clean: bool,
+    /// Width available to the reader body and where the original image
+    /// was last painted, recorded during paint for layout and hit-testing.
+    original_measure: std::rc::Rc<std::cell::Cell<f32>>,
+    original_bounds: std::rc::Rc<std::cell::Cell<gpui_kit::Bounds<gpui_kit::Pixels>>>,
+    window_scale: f32,
+    original_generation: u64,
     accounts_expanded: bool,
     other_folders_expanded: bool,
     demo: bool,
@@ -1136,6 +1166,12 @@ impl MailApp {
             command_palette: None,
             hidden_rows: HashSet::new(),
             list_controls_open: false,
+            original: None,
+            prefer_clean: false,
+            original_measure: Default::default(),
+            original_bounds: Default::default(),
+            window_scale: 1.,
+            original_generation: 0,
             accounts_expanded: false,
             other_folders_expanded: false,
             demo,
@@ -4017,6 +4053,291 @@ impl MailApp {
         }
     }
 
+    /// Whether the selected message shows in its original layout.
+    fn original_mode(&self, snapshot: &MailboxSnapshot) -> bool {
+        let Some(key) = snapshot.selected_key.as_ref() else {
+            return false;
+        };
+        !self.prefer_clean
+            && !self.plain_messages.contains(key)
+            && snapshot.body_loaded
+            && snapshot
+                .selected_original
+                .as_ref()
+                .is_some_and(|original| original.source.is_some())
+    }
+
+    fn original_theme(&self) -> original_view::Theme {
+        let rgb = |color: gpui_kit::Hsla| {
+            let c = color.to_rgb();
+            [(c.r * 255.) as u8, (c.g * 255.) as u8, (c.b * 255.) as u8]
+        };
+        original_view::Theme {
+            dark: self.dark,
+            background: rgb(self.palette.background),
+            text: rgb(self.palette.text),
+            link: rgb(self.palette.accent),
+        }
+    }
+
+    /// Start (or refresh) the Blitz render of the selected message when its
+    /// source, width, scale, theme or image policy changed. Never blocks.
+    fn ensure_original_render(&mut self, snapshot: &MailboxSnapshot, cx: &mut Context<Self>) {
+        if self.view != View::Mailbox || !self.original_mode(snapshot) {
+            return;
+        }
+        let (Some(key), Some(source)) = (
+            snapshot.selected_key.clone(),
+            snapshot
+                .selected_original
+                .as_ref()
+                .and_then(|original| original.source.clone()),
+        ) else {
+            return;
+        };
+        let measured = self.original_measure.get();
+        let width = if measured > 100. { measured.min(920.) } else { 640. };
+        let same = self.original.as_ref().filter(|state| state.key == key);
+        let (allow_remote, original_colors) =
+            same.map_or((false, false), |s| (s.allow_remote, s.original_colors));
+        let hide_history = (self.preferences.hide_quoted_text || self.hidden_quotes.contains(&key))
+            && !self.visible_quotes.contains(&key);
+        let params = original_view::Params {
+            width,
+            scale: self.window_scale,
+            theme: self.original_theme(),
+            original_colors,
+            allow_remote,
+            hide_history,
+        };
+        if let Some(state) = same {
+            let unchanged = Arc::ptr_eq(&state.source, &source)
+                && (state.params.width - params.width).abs() < 6.
+                && state.params.scale == params.scale
+                && state.params.theme == params.theme
+                && state.params.original_colors == params.original_colors
+                && state.params.allow_remote == params.allow_remote
+                && state.params.hide_history == params.hide_history;
+            if unchanged || state.pending {
+                return;
+            }
+        }
+        self.original_generation += 1;
+        let generation = self.original_generation;
+        let previous = self
+            .original
+            .take()
+            .filter(|state| state.key == key)
+            .and_then(|state| state.result.map(|result| (result, state.doc_id)));
+        let (result, doc_id) = match previous {
+            Some((result, doc_id)) => (Some(result), doc_id),
+            None => (None, 0),
+        };
+        self.original = Some(OriginalState {
+            key,
+            source: source.clone(),
+            params: params.clone(),
+            allow_remote,
+            original_colors,
+            generation,
+            pending: true,
+            doc_id,
+            result,
+        });
+        let rx = original_view::render(generation, source, params);
+        cx.spawn(async move |this, cx| {
+            let result = rx
+                .await
+                .unwrap_or_else(|_| Err("The original layout renderer stopped.".into()));
+            let _ = this.update(cx, |this, cx| {
+                if let Some(state) = this.original.as_mut().filter(|s| s.generation == generation) {
+                    state.pending = false;
+                    state.doc_id = generation;
+                    state.result = Some(result);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// The rendered original, or None to fall back to the Clean view while
+    /// the first render runs (no blank pane).
+    fn original_element(&self, key: &MessageKey, palette: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let measure = self.original_measure.clone();
+        let measure_canvas = gpui_kit::canvas(
+            move |bounds, _, _| measure.set(f32::from(bounds.size.width)),
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .w_full()
+        .h(px(1.));
+        let state = self.original.as_ref().filter(|state| &state.key == key);
+        let Some(Ok(rendered)) = state.and_then(|state| state.result.as_ref()) else {
+            if let Some(Err(error)) = state.and_then(|state| state.result.as_ref()) {
+                return Some(
+                    v_flex()
+                        .w_full()
+                        .relative()
+                        .gap_2()
+                        .child(measure_canvas)
+                        .child(div().text_size(px(12.)).text_color(palette.muted).child(error.clone()))
+                        .into_any_element(),
+                );
+            }
+            // Measure even while the Clean fallback shows, so the first render
+            // already has the right width.
+            let _ = measure_canvas;
+            return None;
+        };
+        let state = state.unwrap();
+        let bounds_cell = self.original_bounds.clone();
+        let bounds_canvas = gpui_kit::canvas(
+            move |bounds, _, _| bounds_cell.set(bounds),
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full();
+        let dark = self.dark;
+        Some(
+            v_flex()
+                .w_full()
+                .relative()
+                .gap_2()
+                .child(measure_canvas)
+                .when(rendered.blocked_remote > 0 || (dark && (rendered.recolored || state.original_colors)), |el| {
+                    el.child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .text_size(px(11.))
+                            .text_color(palette.muted)
+                            .when(rendered.blocked_remote > 0, |row| {
+                                row.child(format!(
+                                    "{} remote image{} blocked",
+                                    rendered.blocked_remote,
+                                    if rendered.blocked_remote == 1 { "" } else { "s" }
+                                ))
+                                .child(
+                                    Button::new("original-load-images")
+                                        .ghost()
+                                        .xsmall()
+                                        .label("Load images")
+                                        .tooltip("Fetch this message's remote images. The sender can see that you opened it.")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.set_original_policy(Some(true), None, cx)
+                                        })),
+                                )
+                            })
+                            .when(dark && (rendered.recolored || state.original_colors), |row| {
+                                row.child(
+                                    Button::new("original-colors")
+                                        .ghost()
+                                        .xsmall()
+                                        .label(if state.original_colors { "Theme colors" } else { "Sender's colors" })
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            let current = this.original.as_ref().is_some_and(|s| s.original_colors);
+                                            this.set_original_policy(None, Some(!current), cx)
+                                        })),
+                                )
+                            }),
+                    )
+                })
+                .child(
+                    div()
+                        .id("original-view")
+                        .relative()
+                        .w(px(rendered.width))
+                        .h(px(rendered.height))
+                        .rounded(px(6.))
+                        .overflow_hidden()
+                        .on_click(cx.listener(|this, event: &gpui_kit::ClickEvent, _, cx| {
+                            this.original_click(event.position(), cx)
+                        }))
+                        .child(
+                            gpui_kit::img(gpui_kit::ImageSource::Render(rendered.image.clone()))
+                                .w(px(rendered.width))
+                                .h(px(rendered.height)),
+                        )
+                        .child(bounds_canvas),
+                )
+                .into_any_element(),
+        )
+    }
+
+    fn original_click(&mut self, position: gpui_kit::Point<gpui_kit::Pixels>, cx: &mut Context<Self>) {
+        let Some(state) = self.original.as_ref() else {
+            return;
+        };
+        let bounds = self.original_bounds.get();
+        let x = f32::from(position.x - bounds.origin.x);
+        let y = f32::from(position.y - bounds.origin.y);
+        if x < 0. || y < 0. {
+            return;
+        }
+        let rx = original_view::link_at(state.doc_id, x, y);
+        cx.spawn(async move |_, cx| {
+            if let Ok(Some(href)) = rx.await {
+                let _ = cx.update(|cx| {
+                    if megamail_core::mail_text::safe_browser_url(&href) {
+                        cx.open_url(&href);
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn set_original_policy(&mut self, remote: Option<bool>, colors: Option<bool>, cx: &mut Context<Self>) {
+        if let Some(state) = self.original.as_mut() {
+            if let Some(remote) = remote {
+                state.allow_remote = remote;
+            }
+            if let Some(colors) = colors {
+                state.original_colors = colors;
+            }
+        }
+        let snapshot = self.live.read(cx).snapshot();
+        self.ensure_original_render(&snapshot, cx);
+        cx.notify();
+    }
+
+    /// Reader mode for the selected message: Original, Clean or Text.
+    fn set_reader_mode(&mut self, mode: ReaderMode, cx: &mut Context<Self>) {
+        let snapshot = self.live.read(cx).snapshot();
+        let Some(key) = snapshot.selected_key.clone() else {
+            return;
+        };
+        match mode {
+            ReaderMode::Original => {
+                self.prefer_clean = false;
+                self.plain_messages.remove(&key);
+            }
+            ReaderMode::Clean => {
+                self.prefer_clean = true;
+                self.plain_messages.remove(&key);
+            }
+            ReaderMode::Text => {
+                self.plain_messages.insert(key);
+            }
+        }
+        self.refresh_reader_text(&snapshot, cx);
+        self.ensure_original_render(&snapshot, cx);
+        cx.notify();
+    }
+
+    fn reader_mode(&self, snapshot: &MailboxSnapshot) -> ReaderMode {
+        match snapshot.selected_key.as_ref() {
+            Some(key) if self.plain_messages.contains(key) => ReaderMode::Text,
+            _ if self.original_mode(snapshot) => ReaderMode::Original,
+            _ => ReaderMode::Clean,
+        }
+    }
+
     fn set_reader_plain(&mut self, plain: bool, cx: &mut Context<Self>) {
         let snapshot = self.live.read(cx).snapshot();
         let Some(key) = snapshot.selected_key.clone() else {
@@ -6076,17 +6397,21 @@ impl MailApp {
                             .max_w(px(680.))
                             .gap_4()
                             .child(h_flex().gap_1()
+                                .when(snapshot.selected_original.as_ref().is_some_and(|o| o.source.is_some()), |el| el.child(Button::new("reader-mode-original").ghost().xsmall().label("Original")
+                                    .selected(self.reader_mode(snapshot) == ReaderMode::Original)
+                                    .tooltip("The sender’s layout, adapted to your theme · V cycles")
+                                    .on_click(cx.listener(|this, _, _, cx| this.set_reader_mode(ReaderMode::Original, cx)))))
                                 .child(Button::new("reader-mode-clean").ghost().xsmall().label("Clean")
-                                    .selected(!self.plain_messages.contains(&row.key))
-                                    .tooltip("Formatted, in your theme · V toggles")
-                                    .on_click(cx.listener(|this, _, _, cx| this.set_reader_plain(false, cx))))
+                                    .selected(self.reader_mode(snapshot) == ReaderMode::Clean)
+                                    .tooltip("Text and structure only, in your theme · V cycles")
+                                    .on_click(cx.listener(|this, _, _, cx| this.set_reader_mode(ReaderMode::Clean, cx))))
                                 .child(Button::new("reader-mode-text").ghost().xsmall().label("Text")
-                                    .selected(self.plain_messages.contains(&row.key))
-                                    .tooltip("Raw plain text · V toggles")
-                                    .on_click(cx.listener(|this, _, _, cx| this.set_reader_plain(true, cx))))
-                                .child(Button::new("open-original-formatting").ghost().xsmall().label("Original ↗")
+                                    .selected(self.reader_mode(snapshot) == ReaderMode::Text)
+                                    .tooltip("Raw plain text · V cycles")
+                                    .on_click(cx.listener(|this, _, _, cx| this.set_reader_mode(ReaderMode::Text, cx))))
+                                .child(Button::new("open-original-formatting").ghost().xsmall().icon(Icon::new(IconName::ArrowRight))
                                     .disabled(!snapshot.body_loaded)
-                                    .tooltip("The sender’s exact layout, in a separate window")
+                                    .tooltip("Open the original in a separate browser-engine window")
                                     .on_click(cx.listener(|this, _, _, cx| this.open_original_formatting(cx))))
                                 .when(self.reader_session.active.is_some(), |el| el.child(Button::new("close-original-formatting").ghost().small().label("Close original")
                                     .on_click(cx.listener(|this, _, _, cx| { this.retire_reader_session(cx); this.reader_session.notice = None; cx.notify(); })))))
@@ -6225,7 +6550,12 @@ impl MailApp {
                             row.message.body.clone().into()
                         }
                     });
-                let body_element: AnyElement = if let Some(cached) =
+                let original_element = (selected_here && self.reader_mode(snapshot) == ReaderMode::Original)
+                    .then(|| self.original_element(&key, palette, cx))
+                    .flatten();
+                let body_element: AnyElement = if let Some(element) = original_element {
+                    element
+                } else if let Some(cached) =
                     cached.filter(|body| !body.text.is_empty() || !body.html.is_empty())
                 {
                     let target = self.reader_text_identity(snapshot).and_then(|identity| {
@@ -8206,6 +8536,8 @@ impl Render for MailApp {
         let palette = self.palette;
         let snapshot = self.live.read(cx).snapshot();
         let available_width = f32::from(window.viewport_size().width);
+        self.window_scale = window.scale_factor();
+        self.ensure_original_render(&snapshot, cx);
         let pane_scale = ((available_width - 1000.) / 280.).clamp(0., 1.);
         let rail_width = px(192. + 40. * pane_scale);
         let list_width = px(380. + 120. * pane_scale);
@@ -8623,10 +8955,17 @@ impl Render for MailApp {
                 .on_action(cx.listener(|this, _: &OpenSettings, _, cx| this.open_appearance(cx)))
                 .on_action(cx.listener(|this, _: &ToggleReaderMode, _, cx| {
                     let snapshot = this.live.read(cx).snapshot();
-                    if let Some(key) = snapshot.selected_key {
-                        let plain = !this.plain_messages.contains(&key);
-                        this.set_reader_plain(plain, cx);
-                    }
+                    let has_original = snapshot
+                        .selected_original
+                        .as_ref()
+                        .is_some_and(|o| o.source.is_some());
+                    let next = match this.reader_mode(&snapshot) {
+                        ReaderMode::Original => ReaderMode::Clean,
+                        ReaderMode::Clean => ReaderMode::Text,
+                        ReaderMode::Text if has_original => ReaderMode::Original,
+                        ReaderMode::Text => ReaderMode::Clean,
+                    };
+                    this.set_reader_mode(next, cx);
                 }))
                 .on_action(cx.listener(|this, _: &ToggleTheme, window, cx| {
                     this.toggle_theme(window, cx)

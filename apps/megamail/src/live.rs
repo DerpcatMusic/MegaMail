@@ -5691,6 +5691,33 @@ pub(super) fn compact_worker_event(
     })
 }
 
+/// An HTML body as readable plain text (html2text): lists keep bullets,
+/// tables keep their columns, links become numbered footnotes, and elements
+/// the sender hid with CSS stay hidden. Lines are not hard-wrapped; the
+/// reader wraps them. Falls back to the cache's simple text conversion.
+pub(crate) fn readable_text(html: &str) -> String {
+    html2text::config::plain_no_decorate()
+        .use_doc_css()
+        .no_table_borders()
+        .no_link_wrapping()
+        .allow_width_overflow()
+        .link_footnotes(true)
+        .string_from_read(html.as_bytes(), 400)
+        .map(|text| {
+            let mut out = String::with_capacity(text.len());
+            let mut blank = 0;
+            for line in text.lines().map(str::trim_end) {
+                blank = if line.is_empty() { blank + 1 } else { 0 };
+                if blank <= 1 {
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+            out.trim().to_owned()
+        })
+        .unwrap_or_else(|_| megamail_core::markdown::plain_text(html))
+}
+
 /// Convert worker HTML off the UI thread; only allowlisted markup crosses the event boundary.
 fn body_content_and_links(body: &str) -> (String, String, Option<String>, Vec<MailLink>) {
     if body.len() > BODY_HTML_CAP {
@@ -5703,9 +5730,12 @@ fn body_content_and_links(body: &str) -> (String, String, Option<String>, Vec<Ma
     }
     let html = body.trim_start().starts_with('<');
     if html {
-        let plain = megamail_core::markdown::plain_text(body);
+        let plain = readable_text(body);
         let safe_html = megamail_core::mail_text::reader_html(body);
-        let html_without_quote = megamail_core::mail_text::reader_html_without_quote(&safe_html);
+        // Client history markers live in the raw HTML (classes, ids, type=cite)
+        // and are gone after sanitizing; fall back to trailing blockquotes.
+        let html_without_quote = megamail_core::mail_text::reader_html_without_history(body)
+            .or_else(|| megamail_core::mail_text::reader_html_without_quote(&safe_html));
         if plain.len() > BODY_HTML_CAP
             || safe_html.len() > BODY_HTML_CAP
             || html_without_quote

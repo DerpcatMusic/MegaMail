@@ -274,66 +274,12 @@ fn blank_message() -> OutgoingMessage {
     }
 }
 
-/// Plain text an agent can read: tags dropped, blocks on their own lines.
+/// Plain text an agent can read (html2text: lists, tables, link footnotes).
 fn html_to_text(body: &str) -> String {
     if !body.contains('<') {
         return truncate(body.trim().to_owned());
     }
-    let mut out = String::with_capacity(body.len() / 2);
-    let mut rest = body;
-    let mut skip_until: Option<&str> = None;
-    while let Some(start) = rest.find('<') {
-        if skip_until.is_none() {
-            out.push_str(&rest[..start]);
-        }
-        let Some(end) = rest[start..].find('>') else { break };
-        let tag = rest[start + 1..start + end].trim().to_ascii_lowercase();
-        let name: String = tag.trim_start_matches('/').chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
-        match skip_until {
-            Some(close) if tag.starts_with('/') && name == close => skip_until = None,
-            Some(_) => {}
-            None if !tag.starts_with('/') && (name == "style" || name == "script" || name == "head" || name == "title") => {
-                skip_until = Some(match name.as_str() { "style" => "style", "script" => "script", "head" => "head", _ => "title" })
-            }
-            None => match name.as_str() {
-                "br" | "p" | "div" | "tr" | "li" | "h1" | "h2" | "h3" | "h4" | "blockquote" | "table" => {
-                    out.push('\n');
-                    if name == "li" && !tag.starts_with('/') {
-                        out.push_str("• ");
-                    }
-                }
-                "td" | "th" => out.push(' '),
-                _ => {}
-            },
-        }
-        rest = &rest[start + end + 1..];
-    }
-    if skip_until.is_none() {
-        out.push_str(rest);
-    }
-    let decoded = out
-        .replace("&nbsp;", " ")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&apos;", "'")
-        .replace("&amp;", "&");
-    let mut text = String::new();
-    let mut blank = 0;
-    for line in decoded.lines().map(str::trim_end) {
-        if line.trim().is_empty() {
-            blank += 1;
-            if blank > 1 {
-                continue;
-            }
-        } else {
-            blank = 0;
-        }
-        text.push_str(line.trim_start_matches(char::is_whitespace));
-        text.push('\n');
-    }
-    truncate(text.trim().to_owned())
+    truncate(crate::live::readable_text(body))
 }
 
 fn truncate(mut text: String) -> String {
@@ -734,8 +680,11 @@ mod tests {
 
     #[test]
     fn html_becomes_readable_text() {
-        let text = html_to_text("<html><head><style>p{}</style></head><body><p>Hi &amp; welcome</p><ul><li>One</li></ul><script>x()</script></body></html>");
-        assert_eq!(text, "Hi & welcome\n\n• One");
+        let text = html_to_text("<html><head><style>p{}</style></head><body><p>Hi &amp; welcome</p><ul><li>One</li></ul><p><a href=\"https://x.test/a\">link</a></p><script>x()</script></body></html>");
+        assert!(text.starts_with("Hi & welcome"), "{text}");
+        assert!(text.contains("* One"), "{text}");
+        assert!(text.contains("https://x.test/a"), "{text}");
+        assert!(!text.contains("x()") && !text.contains("p{}"), "{text}");
     }
 }
 

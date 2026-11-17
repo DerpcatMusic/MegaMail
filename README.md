@@ -54,6 +54,30 @@ The native **Settings** view also manages saved accounts and mail display
 preferences. The legacy [Hylki shortcut reference](docs/KEYBOARD_SHORTCUTS.md)
 applies to the GTK app.
 
+### Reading
+
+HTML mail opens in its **Original** layout inside the reader: the sender's
+HTML and CSS are laid out by [Blitz](https://github.com/DioxusLabs/blitz)
+(Firefox's Stylo CSS engine, Taffy layout, Parley text) and painted on the
+CPU off the UI thread. There is no script engine in this path, inline `cid:`
+images are shown, and remote images stay blocked until **Load images** is
+chosen for that message. In a dark theme, mail without its own dark styles is
+recoloured in CIELAB (light backgrounds darkened, low-contrast text
+lightened); **Sender's colors** shows it untouched. Designs wider than the
+pane shrink to fit. **Clean** (structure only, in your theme) and **Text**
+(html2text) are one key away: V cycles the three. The arrow button still
+opens the separate browser-engine window.
+
+Quoted history is folded in every mode using client markers (Gmail, Apple
+Mail, Outlook web and desktop, Thunderbird, Yahoo, Proton, Zoho) and
+localized "wrote:" lines; forwards stay visible.
+
+Search matches senders, subjects and the visible text of downloaded mail
+through an SQLite FTS5 index (word prefixes, case- and accent-insensitive;
+signed or encrypted bodies are never indexed). `body:` keeps exact matching.
+
+PDF attachments preview their first page inline (hayro, pure Rust).
+
 ### Keyboard-first
 
 MegaMail is driven Superhuman-style from the message list. **Ctrl+K** opens a
@@ -65,6 +89,7 @@ command palette listing every command with its key.
 | R | Reply | # or Delete | Trash and move on |
 | A | Reply all | S | Star / unstar |
 | F | Forward | U | Read / unread |
+| V | Original / Clean / Text | ? | All commands |
 | C | Compose | / | Search |
 | G I / G S / G T / G D / G E | Inbox / Starred / Sent / Drafts / Archive | Esc | Back to the list |
 | Ctrl+B | Folders sidebar | Ctrl+, | Settings |
