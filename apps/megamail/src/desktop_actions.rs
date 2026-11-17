@@ -59,7 +59,13 @@ pub(crate) mod action {
             ToggleSidebar,
             OpenSettings,
             ToggleTheme,
-            ToggleReaderMode
+            ToggleReaderMode,
+            NextSplit,
+            PreviousSplit,
+            ScreenerAllow,
+            ScreenerBlock,
+            Unsubscribe,
+            UndoSend
         ]
     );
 }
@@ -100,6 +106,12 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("delete", TrashMessage, Some(MESSAGES_CONTEXT)),
         KeyBinding::new("s", ToggleStar, Some(MESSAGES_CONTEXT)),
         KeyBinding::new("v", ToggleReaderMode, Some(MESSAGES_CONTEXT)),
+        KeyBinding::new("tab", NextSplit, Some(MESSAGES_CONTEXT)),
+        KeyBinding::new("shift-tab", PreviousSplit, Some(MESSAGES_CONTEXT)),
+        KeyBinding::new("y", ScreenerAllow, Some(MESSAGES_CONTEXT)),
+        KeyBinding::new("n", ScreenerBlock, Some(MESSAGES_CONTEXT)),
+        KeyBinding::new("ctrl-u", Unsubscribe, Some(MAILBOX_CONTEXT)),
+        KeyBinding::new("z", UndoSend, Some(MESSAGES_CONTEXT)),
         KeyBinding::new("u", ToggleUnread, Some(MESSAGES_CONTEXT)),
         KeyBinding::new("r", ReplyMessage, Some(MESSAGES_CONTEXT)),
         KeyBinding::new("a", ReplyAll, Some(MESSAGES_CONTEXT)),

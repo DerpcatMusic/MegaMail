@@ -44,6 +44,7 @@ use desktop_actions::action;
 mod account_registry;
 mod account_session;
 mod appearance;
+mod app_passwords;
 mod appearance_view;
 mod attachment_preview;
 mod avatars;
@@ -78,6 +79,7 @@ mod rules_preview;
 mod rules_ui;
 mod scheduling;
 mod sender_photos;
+mod splits;
 mod theme;
 mod thunderbird_adapter;
 mod triage;
@@ -886,6 +888,16 @@ struct ListRow {
     child: bool,
 }
 
+/// Seconds a sent message waits in the Outbox so Undo can stop it.
+const UNDO_SEND_SECONDS: i64 = 10;
+
+struct PendingUndo {
+    account: u32,
+    send_at: i64,
+    request_id: u64,
+    original: OutgoingMessage,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ReaderMode {
     Original,
@@ -916,6 +928,14 @@ struct MailApp {
     sender_photos: sender_photos::State,
     /// Organisation domains whose verified logo was already looked up.
     logo_attempts: HashSet<String>,
+    /// Split inbox: the active split, screener decisions, the addresses you
+    /// have written to, and unread counts per split for the tabs.
+    split: splits::Split,
+    screener: splits::Screener,
+    known_senders: HashSet<String>,
+    split_unread: [usize; 5],
+    /// The message just sent with a short delay, while it can be undone.
+    undo_send: Option<PendingUndo>,
     mail_panes: Entity<gpui_kit::component::resizable::ResizableState>,
     compact_mail_panes: Entity<gpui_kit::component::resizable::ResizableState>,
     _live_subscription: Subscription,
@@ -1125,6 +1145,11 @@ impl MailApp {
             compact_mail_panes: cx.new(|_| Default::default()),
             sender_photos: Default::default(),
             logo_attempts: HashSet::new(),
+            split: splits::Split::All,
+            screener: splits::Screener::default(),
+            known_senders: HashSet::new(),
+            split_unread: [0; 5],
+            undo_send: None,
             reader_text: None,
             rule_preview: Vec::new(),
             newsletter_status: None,
@@ -1293,6 +1318,30 @@ impl MailApp {
     }
 
     fn start_native_features(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let (screener, known) = cx
+                .background_spawn(async move {
+                    let known: HashSet<String> = megamail_core::cache::Cache::open()
+                        .map(|cache| {
+                            cache
+                                .address_history()
+                                .into_iter()
+                                .map(|(email, _, _)| email.to_ascii_lowercase())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    (splits::Screener::load(), known)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.screener = screener;
+                this.known_senders.extend(known);
+                let snapshot = this.live.read(cx).snapshot();
+                this.rebuild_list_rows(&snapshot, cx);
+                cx.notify();
+            });
+        })
+        .detach();
         cx.spawn(async move |this, cx| {
             let (availability, recovery) = cx
                 .background_spawn(async move {
@@ -2345,6 +2394,11 @@ impl MailApp {
                                 || !composer.recovery.requires_ack
                                 || composer.recovery.retired == Some(composer.recovery.generation);
                         }
+                        SendOutcome::Queued if self.undo_send.as_ref().is_some_and(|u| u.request_id == result.request_id) => {
+                            // Undo Send: the composer closes at once, like a send.
+                            composer.send_queued = true;
+                            close_composer = true;
+                        }
                         SendOutcome::Queued => {
                             composer.send_queued = true;
                             composer.error = Some(
@@ -2833,6 +2887,35 @@ impl MailApp {
         self.hidden_rows
             .retain(|key| snapshot.page.iter().any(|row| &row.key == key));
         parents.retain(|row| !self.hidden_rows.contains(&row.row.key));
+        let mut split_unread = [0usize; 5];
+        let classified: Vec<Option<splits::Split>> = parents
+            .iter()
+            .map(|row| self.split_of(row))
+            .collect();
+        for (row, split) in parents.iter().zip(&classified) {
+            let unread = row
+                .conversation
+                .as_ref()
+                .map_or(row.row.message.unread, |thread| thread.unread > 0);
+            if unread {
+                split_unread[0] += 1;
+                if let Some(split) = split {
+                    if let Some(index) = splits::Split::ALL.iter().position(|s| s == split) {
+                        split_unread[index] += 1;
+                    }
+                }
+            }
+        }
+        self.split_unread = split_unread;
+        if self.split != splits::Split::All {
+            let wanted = Some(self.split);
+            let mut index = 0;
+            parents.retain(|_| {
+                let keep = classified[index] == wanted;
+                index += 1;
+                keep
+            });
+        }
         parents.retain(|row| {
             self.comfort.filter.is_none_or(|wanted| {
                 self.work_status(row.conversation.as_ref(), &row.row, snapshot) == wanted
@@ -3727,9 +3810,13 @@ impl MailApp {
         if !username.trim().is_empty() {
             form.username = username;
         }
-        form.password = setup.inputs.password.read(cx).value().to_string();
+        let guide = app_passwords::guide(
+            &setup.candidate().map(|c| c.incoming.host.clone()).unwrap_or_default(),
+            &form.email,
+        );
+        form.password = app_passwords::clean(guide, &setup.inputs.password.read(cx).value());
         form.smtp_username = setup.inputs.smtp_username.read(cx).value().to_string();
-        form.smtp_password = setup.inputs.smtp_password.read(cx).value().to_string();
+        form.smtp_password = app_passwords::clean(guide, &setup.inputs.smtp_password.read(cx).value());
         if setup.manual || setup.candidate().is_none() {
             let imap_host = setup.inputs.imap_host.read(cx).value().to_string();
             if !imap_host.trim().is_empty() {
@@ -4383,6 +4470,221 @@ impl MailApp {
             self.plain_messages.remove(&key);
         }
         self.refresh_reader_text(&snapshot, cx);
+        cx.notify();
+    }
+
+    /// Repaint the Undo Send countdown until its window closes.
+    fn tick_undo_send(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_millis(500)).await;
+                let open = this
+                    .update(cx, |this, cx| {
+                        let open = this
+                            .undo_send
+                            .as_ref()
+                            .is_some_and(|u| u.send_at >= megamail_core::datefmt::now());
+                        if !open {
+                            this.undo_send = None;
+                        }
+                        cx.notify();
+                        open
+                    })
+                    .unwrap_or(false);
+                if !open {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn undo_last_send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(undo) = self.undo_send.take() else {
+            return;
+        };
+        let snapshot = self.live.read(cx).snapshot();
+        let session = self.live.read(cx).schedule_session(undo.account);
+        let item = snapshot.outbox.iter().find(|item| {
+            item.account_id == undo.account
+                && item.send_at == Some(undo.send_at)
+                && item.phase == megamail_core::models::OutboxPhase::Ready
+        });
+        let canceled = match (item, session) {
+            (Some(item), Some(session)) if undo.send_at > megamail_core::datefmt::now() => {
+                let request = megamail_core::worker::QueuedCancelRequest {
+                    id: item.id,
+                    send_at: Some(undo.send_at),
+                    session,
+                };
+                self.live
+                    .update(cx, |live, cx| live.cancel_queued(undo.account, request, cx))
+            }
+            _ => false,
+        };
+        if !canceled {
+            self.reader_session.notice = Some("Too late to undo: the message has already gone to the server.".into());
+            cx.notify();
+            return;
+        }
+        if self.composer.is_none() {
+            let mut original = undo.original;
+            original.client_message_id = None;
+            let mut composer = Composer::new(original, window, cx);
+            composer.notice = Some("Send undone. Your message is back here.".into());
+            composer.body.read(cx).focus_handle(cx).focus(window, cx);
+            self.composer = Some(composer);
+            self.view = View::Compose;
+        }
+        cx.notify();
+    }
+
+    fn undo_toast(&self, palette: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let undo = self.undo_send.as_ref()?;
+        let left = undo.send_at - megamail_core::datefmt::now();
+        if left < 0 {
+            return None;
+        }
+        Some(
+            div()
+                .absolute()
+                .bottom(px(24.))
+                .left_0()
+                .right_0()
+                .flex()
+                .justify_center()
+                .child(
+                    h_flex()
+                        .gap_3()
+                        .items_center()
+                        .px_4()
+                        .py_2()
+                        .rounded(px(10.))
+                        .bg(palette.text)
+                        .text_color(palette.background)
+                        .shadow_lg()
+                        .child(div().text_size(px(13.)).child(format!(
+                            "Sending “{}” in {left}s",
+                            if undo.original.subject.trim().is_empty() { "(No subject)" } else { undo.original.subject.trim() }
+                        )))
+                        .child(
+                            Button::new("undo-send")
+                                .ghost()
+                                .small()
+                                .label("Undo · Z")
+                                .on_click(cx.listener(|this, _, window, cx| this.undo_last_send(window, cx))),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// One key unsubscribe: RFC 8058 one-click when the sender offers it
+    /// (an HTTPS POST, no browser), otherwise the reviewed email or webpage.
+    fn unsubscribe_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let snapshot = self.live.read(cx).snapshot();
+        let (Some(row), Some(check)) = (snapshot.selected_message.clone(), snapshot.selected_sender_check.clone()) else {
+            return;
+        };
+        let Some(metadata) = check.unsubscribe.clone() else {
+            self.newsletter_status = Some("No unsubscribe option was found in this message.".into());
+            cx.notify();
+            return;
+        };
+        let one_click = metadata
+            .one_click
+            .clone()
+            .filter(|url| metadata.in_headers && url.starts_with("https://") && megamail_core::mail_text::safe_browser_url(url));
+        if let Some(url) = one_click.filter(|_| !self.demo) {
+            let sender = if row.message.from_name.is_empty() { row.message.from_addr.clone() } else { row.message.from_name.clone() };
+            self.newsletter_status = Some(format!("Unsubscribing from {sender}…"));
+            let task = cx.background_spawn(async move {
+                ureq::AgentBuilder::new()
+                    .timeout(Duration::from_secs(10))
+                    .redirects(0)
+                    .build()
+                    .post(&url)
+                    .set("Content-Type", "application/x-www-form-urlencoded")
+                    .send_string("List-Unsubscribe=One-Click")
+                    .map(|response| response.status() < 400)
+                    .unwrap_or(false)
+            });
+            cx.spawn(async move |this, cx| {
+                let ok = task.await;
+                let _ = this.update(cx, |this, cx| {
+                    this.newsletter_status = Some(if ok {
+                        format!("Unsubscribed from {sender}.")
+                    } else {
+                        "One-click unsubscribe failed. Use the email or webpage option below.".into()
+                    });
+                    if ok {
+                        this.triage_selected(FolderKind::Archive, cx);
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+            cx.notify();
+            return;
+        }
+        if metadata.mailto.is_some() || metadata.reply.is_some() {
+            self.open_unsubscribe_draft(&row.key, &metadata, window, cx);
+        } else if let Some(url) = metadata.web.clone() {
+            self.open_unsubscribe_page(&row.key, &url, cx);
+        } else {
+            self.newsletter_status = Some("No supported unsubscribe option was found.".into());
+            cx.notify();
+        }
+    }
+
+    fn split_of(&self, row: &ListRow) -> Option<splits::Split> {
+        let message = &row.row.message;
+        let known = self.known_senders.contains(&message.from_addr.to_ascii_lowercase())
+            || row.conversation.as_ref().is_some_and(|thread| thread.replied);
+        splits::classify(&message.from_addr, &message.from_name, known, &self.screener)
+    }
+
+    fn set_split(&mut self, split: splits::Split, cx: &mut Context<Self>) {
+        self.split = split;
+        self.list_scroll = UniformListScrollHandle::new();
+        let snapshot = self.live.read(cx).snapshot();
+        self.rebuild_list_rows(&snapshot, cx);
+        cx.notify();
+    }
+
+    /// Screener decision for the selected message's sender.
+    fn screen_sender(&mut self, allow: bool, cx: &mut Context<Self>) {
+        let snapshot = self.live.read(cx).snapshot();
+        let Some(row) = snapshot.selected_message.as_ref() else {
+            return;
+        };
+        let address = row.message.from_addr.clone();
+        // Move on first, the way archive does, then hide or promote the sender.
+        let next = self
+            .list_rows
+            .iter()
+            .position(|r| r.row.key == row.key)
+            .and_then(|index| {
+                self.list_rows
+                    .iter()
+                    .skip(index + 1)
+                    .chain(self.list_rows[..index].iter().rev())
+                    .find(|r| !r.child && !r.row.message.from_addr.eq_ignore_ascii_case(&address))
+                    .map(|r| r.row.key.clone())
+            });
+        self.screener.decide(&address, allow);
+        let screener = self.screener.clone();
+        cx.background_spawn(async move {
+            if let Err(error) = screener.save() {
+                tracing::warn!("{error}");
+            }
+        })
+        .detach();
+        if let Some(key) = next {
+            self.live.update(cx, |live, cx| live.select_message(key, cx));
+        }
+        let snapshot = self.live.read(cx).snapshot();
+        self.rebuild_list_rows(&snapshot, cx);
         cx.notify();
     }
 
@@ -5636,7 +5938,26 @@ impl MailApp {
                     .text_size(px(10.))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(palette.faint)
-                    .child(snapshot.filter.label())
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .children(splits::Split::ALL.iter().enumerate().map(|(index, split)| {
+                                let split = *split;
+                                let unread = self.split_unread[index];
+                                let active = self.split == split;
+                                Button::new(SharedString::from(format!("split-{index}")))
+                                    .ghost()
+                                    .xsmall()
+                                    .selected(active)
+                                    .label(if unread > 0 && split != splits::Split::All {
+                                        format!("{} {unread}", split.label())
+                                    } else {
+                                        split.label().to_owned()
+                                    })
+                                    .tooltip("Tab / Shift+Tab switch splits")
+                                    .on_click(cx.listener(move |this, _, _, cx| this.set_split(split, cx)))
+                            })),
+                    )
                     .child(format!(
                         "{}",
                         self.list_rows.iter().filter(|r| !r.child).count()
@@ -6865,6 +7186,45 @@ impl MailApp {
                                     el.child(self.reader_find_panel(palette, cx))
                                 })
                         })
+                        .when(
+                            selected_here
+                                && self.list_rows.iter().find(|r| r.row.key == row.key || r.conversation.as_ref().is_some_and(|t| t.members.iter().any(|m| m.key == row.key)))
+                                    .is_some_and(|r| self.split_of(r) == Some(splits::Split::Screener)),
+                            |el| {
+                                el.child(
+                                    h_flex()
+                                        .w_full()
+                                        .gap_2()
+                                        .items_center()
+                                        .px_3()
+                                        .py_2()
+                                        .rounded(px(6.))
+                                        .bg(palette.accent_wash)
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .text_size(px(12.))
+                                                .child(format!("First email from {}. Let them into People?", row.message.from_addr)),
+                                        )
+                                        .child(
+                                            Button::new("screener-allow")
+                                                .primary()
+                                                .xsmall()
+                                                .label("Allow")
+                                                .tooltip("Y")
+                                                .on_click(cx.listener(|this, _, _, cx| this.screen_sender(true, cx))),
+                                        )
+                                        .child(
+                                            Button::new("screener-block")
+                                                .ghost()
+                                                .xsmall()
+                                                .label("Block")
+                                                .tooltip("Keep this sender out of every split · N")
+                                                .on_click(cx.listener(|this, _, _, cx| this.screen_sender(false, cx))),
+                                        ),
+                                )
+                            },
+                        )
                         .when_some(
                             selected_here
                                 .then(|| snapshot.selected_sender_check.as_ref())
@@ -7127,12 +7487,19 @@ impl MailApp {
             || candidate.is_none()
             || candidate.is_some_and(|candidate| candidate.requires_review());
         let settings_reviewed = setup.review_is_current(cx);
-        let password_label =
-            if candidate.is_some_and(|candidate| candidate.app_password_help.is_some()) {
-                "Google app password"
-            } else {
-                "Password or app password"
-            };
+        let guide = app_passwords::guide(
+            &candidate.map(|c| c.incoming.host.clone()).unwrap_or_default(),
+            &email,
+        );
+        let password_label: &'static str = match guide.filter(|g| g.blocked.is_none()).map(|g| g.provider) {
+            Some("Google") => "Google app password",
+            Some("Yahoo") => "Yahoo app password",
+            Some("AOL") => "AOL app password",
+            Some("iCloud") => "iCloud app-specific password",
+            Some("Fastmail") => "Fastmail app password",
+            Some("Zoho") => "Zoho app password",
+            _ => "Password or app password",
+        };
         let password_accessible_label = password_label.to_owned();
         let username_suggestion = candidate
             .map(|candidate| candidate.incoming.username.default_for(&email))
@@ -7342,25 +7709,16 @@ impl MailApp {
                             })
                             .when_some(candidate, |row, candidate| {
                                 row.child(candidate_summary(candidate, palette))
-                                    .when(candidate.oauth_advertised, |row| {
+                                    .when_some(guide, |row, guide| {
+                                        row.child(app_password_card(guide, palette, cx))
+                                    })
+                                    .when(guide.is_none() && candidate.oauth_advertised, |row| {
                                         row.child(
                                             div()
                                                 .text_size(px(11.))
                                                 .line_height(relative(1.4))
                                                 .text_color(palette.muted)
-                                                .child(if candidate.app_password_help.is_some() {
-                                                    "Google direct OAuth is not configured in MegaMail. Use a Google app password for this IMAP connection."
-                                                } else {
-                                                    "This provider advertises OAuth, but MegaMail does not have its own provider registration yet."
-                                                }),
-                                        )
-                                    })
-                                    .when_some(candidate.app_password_help, |row, url| {
-                                        row.child(
-                                            div()
-                                                .text_size(px(10.))
-                                                .text_color(palette.faint)
-                                                .child(format!("App password help: {url}")),
+                                                .child("This provider prefers browser sign-in. If it also allows app passwords, create one in its security settings and paste it below."),
                                         )
                                     })
                             })
@@ -8274,6 +8632,17 @@ impl MailApp {
         }
         composer.error = None;
         composer.send_queued = false;
+        // Undo Send: an immediate send waits a few seconds in the Outbox,
+        // where Undo can still cancel it (direct IMAP accounts).
+        let mut message = message;
+        let undo_original = (message.send_at.is_none()
+            && self.live.read(cx).schedule_session(message.from_account_id).is_some())
+        .then(|| {
+            let original = message.clone();
+            message.send_at = Some(megamail_core::datefmt::now() + UNDO_SEND_SECONDS);
+            original
+        });
+        let undo_at = message.send_at;
         let outgoing_card = (!message.in_reply_to.is_empty()
             && self
                 .live
@@ -8292,6 +8661,15 @@ impl MailApp {
         let request_id = self
             .live
             .update(cx, |live, cx| live.send_message(message, cx));
+        if let (Some(request_id), Some(original), Some(send_at)) = (request_id, undo_original, undo_at) {
+            self.undo_send = Some(PendingUndo {
+                account: original.from_account_id,
+                send_at,
+                request_id,
+                original,
+            });
+            self.tick_undo_send(cx);
+        }
         if let Some(request_id) = request_id {
             if let Some(mut card) = outgoing_card {
                 card.request = request_id;
@@ -8831,6 +9209,7 @@ impl Render for MailApp {
                 .into_any_element()
         };
         let palette_overlay = self.palette_view(palette, cx);
+        let undo_toast = self.undo_toast(palette, cx);
         window_border().child(
             v_flex()
                 .size_full()
@@ -9018,6 +9397,18 @@ impl Render for MailApp {
                     };
                     this.set_reader_mode(next, cx);
                 }))
+                .on_action(cx.listener(|this, _: &NextSplit, _, cx| {
+                    let next = this.split.next(1);
+                    this.set_split(next, cx)
+                }))
+                .on_action(cx.listener(|this, _: &PreviousSplit, _, cx| {
+                    let next = this.split.next(-1);
+                    this.set_split(next, cx)
+                }))
+                .on_action(cx.listener(|this, _: &ScreenerAllow, _, cx| this.screen_sender(true, cx)))
+                .on_action(cx.listener(|this, _: &ScreenerBlock, _, cx| this.screen_sender(false, cx)))
+                .on_action(cx.listener(|this, _: &Unsubscribe, window, cx| this.unsubscribe_selected(window, cx)))
+                .on_action(cx.listener(|this, _: &UndoSend, window, cx| this.undo_last_send(window, cx)))
                 .on_action(cx.listener(|this, _: &ToggleTheme, window, cx| {
                     this.toggle_theme(window, cx)
                 }))
@@ -9044,6 +9435,7 @@ impl Render for MailApp {
                 ))
                 .child(chrome)
                 .child(body)
+                .children(undo_toast)
                 .children(palette_overlay),
         )
     }
@@ -9070,6 +9462,53 @@ impl Drop for MailApp {
         // Pending request leases retain staging; no fabricated worker retirement
         // or shutdown recovery acknowledgment. Session's Drop cancels its host.
     }
+}
+
+/// "Create an app password" card with the provider's page and steps.
+fn app_password_card(guide: app_passwords::Guide, palette: Palette, cx: &mut Context<MailApp>) -> AnyElement {
+    let url = guide.url;
+    v_flex()
+        .w_full()
+        .gap_2()
+        .p_3()
+        .rounded(px(8.))
+        .border_1()
+        .border_color(palette.border)
+        .bg(palette.surface)
+        .child(
+            div()
+                .text_size(px(12.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(if guide.blocked.is_some() {
+                    format!("{} needs browser sign-in", guide.provider)
+                } else {
+                    format!("{} needs an app password", guide.provider)
+                }),
+        )
+        .when_some(guide.blocked, |el, note| {
+            el.child(div().text_size(px(11.)).line_height(relative(1.4)).text_color(palette.muted).child(note))
+        })
+        .children(guide.steps.iter().enumerate().map(|(index, step)| {
+            h_flex()
+                .gap_2()
+                .items_start()
+                .text_size(px(11.))
+                .line_height(relative(1.4))
+                .child(div().text_color(palette.faint).child(format!("{}.", index + 1)))
+                .child(div().flex_1().text_color(palette.muted).child(*step))
+        }))
+        .when(guide.blocked.is_none(), |el| {
+            el.child(
+                Button::new("open-app-password-page")
+                    .primary()
+                    .small()
+                    .self_start()
+                    .label(format!("Create {} app password", guide.provider))
+                    .tooltip(url)
+                    .on_click(cx.listener(move |_, _, _, cx| cx.open_url(url))),
+            )
+        })
+        .into_any_element()
 }
 
 fn trust_colors(trust: megamail_core::models::SenderTrust) -> Option<(gpui_kit::Hsla, &'static str, &'static str)> {

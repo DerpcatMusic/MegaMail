@@ -52,7 +52,7 @@ fn selected_metadata<'a>(
 }
 
 impl MailApp {
-    fn open_unsubscribe_draft(
+    pub(crate) fn open_unsubscribe_draft(
         &mut self,
         key: &MessageKey,
         expected: &Unsubscribe,
@@ -92,7 +92,7 @@ impl MailApp {
         self.view = View::Compose;
         cx.notify();
     }
-    fn open_unsubscribe_page(&mut self, key: &MessageKey, url: &str, cx: &mut Context<Self>) {
+    pub(crate) fn open_unsubscribe_page(&mut self, key: &MessageKey, url: &str, cx: &mut Context<Self>) {
         if self.view != View::Mailbox || self.composer.is_some() {
             return;
         }
@@ -134,7 +134,9 @@ impl MailApp {
                 .child(div().w_full().min_w_0().truncate().text_size(px(11.)).child(url.clone()))
                 .child(Button::new("review-unsubscribe-page").ghost().small().label("Review unsubscribe webpage").tooltip(url.clone()).disabled(self.composer.is_some())
                     .on_click(cx.listener(move |this, _, _, cx| this.open_unsubscribe_page(&key_web, &url, cx)))))
-            .when(metadata.one_click.is_some(), |el| el.child(div().text_size(px(11.)).text_color(palette.muted).child("Automatic one-click requests are unavailable. Use a reviewed email or webpage option when present.")))
+            .when(metadata.one_click.is_some() && metadata.in_headers, |el| el.child(Button::new("one-click-unsubscribe").ghost().small().label("Unsubscribe · Ctrl+U").tooltip("Sends the sender's one-click unsubscribe request (RFC 8058) and archives this message")
+                .disabled(self.demo)
+                .on_click(cx.listener(|this, _, window, cx| this.unsubscribe_selected(window, cx)))))
             .when_some(self.newsletter_status.clone(), |el, text| el.child(div().text_size(px(11.)).text_color(palette.muted).child(text)))
             .into_any_element()
     }
