@@ -80,6 +80,7 @@ mod rules_ui;
 mod scheduling;
 mod sender_photos;
 mod splits;
+mod subscriptions;
 mod theme;
 mod thunderbird_adapter;
 mod triage;
@@ -1054,6 +1055,7 @@ struct MailApp {
     accounts_expanded: bool,
     other_folders_expanded: bool,
     demo: bool,
+    subscriptions: Option<subscriptions::Screen>,
     thunderbird_auto_open_pending: bool,
     thunderbird_auto_open_seen_loading: bool,
     loading_profiles: bool,
@@ -1257,6 +1259,7 @@ impl MailApp {
             accounts_expanded: false,
             other_folders_expanded: false,
             demo,
+            subscriptions: None,
             thunderbird_auto_open_pending: false,
             thunderbird_auto_open_seen_loading: false,
             loading_profiles: !demo,
@@ -6057,6 +6060,15 @@ impl MailApp {
                                         el.child(div().text_size(px(11.)).text_color(palette.faint).child(unread.to_string()))
                                     })
                             }))
+                            .when(self.split == splits::Split::Newsletters, |el| {
+                                el.child(div().flex_1()).child(
+                                    Button::new("newsletters-manage")
+                                        .ghost()
+                                        .small()
+                                        .label("Unsubscribe in bulk")
+                                        .on_click(cx.listener(|this, _, _, cx| this.open_subscriptions(cx))),
+                                )
+                            })
         .into_any_element()
     }
 
@@ -7178,6 +7190,15 @@ impl MailApp {
                         this.list_controls_open = !this.list_controls_open;
                         cx.notify();
                     })),
+            )
+            .child(
+                Button::new("app-bar-subscriptions")
+                    .ghost()
+                    .small()
+                    .icon(Icon::new(IconName::MailOpen))
+                    .selected(self.subscriptions.is_some())
+                    .tooltip("Subscriptions: mass unsubscribe")
+                    .on_click(cx.listener(|this, _, _, cx| this.open_subscriptions(cx))),
             )
             .child(
                 Button::new("app-bar-settings")
@@ -9605,6 +9626,13 @@ impl Render for MailApp {
                 .child(self.sidebar(&snapshot, palette, cx, rail_width))
                 .child(self.appearance_view(palette, cx))
                 .into_any_element()
+        } else if self.subscriptions.is_some() && self.view == View::Mailbox {
+            h_flex()
+                .flex_1()
+                .min_h_0()
+                .child(self.sidebar(&snapshot, palette, cx, rail_width))
+                .child(self.subscriptions_view(palette, cx))
+                .into_any_element()
         } else if self.view == View::Setup || self.loading_profiles {
             if self.loading_profiles {
                 v_flex()
@@ -9733,6 +9761,10 @@ impl Render for MailApp {
                     }
                 }))
                 .on_action(cx.listener(|this, _: &FocusMessages, window, cx| {
+                    if this.subscriptions.take().is_some() {
+                        cx.notify();
+                        return;
+                    }
                     if this.view == View::Mailbox && (this.conversation_open || this.comfort.outbox_open) {
                         this.conversation_open = false;
                         this.comfort.outbox_open = false;
@@ -9874,6 +9906,7 @@ impl Render for MailApp {
                     cx.notify();
                 }))
                 .on_action(cx.listener(|this, _: &OpenSettings, _, cx| this.open_appearance(cx)))
+                .on_action(cx.listener(|this, _: &ManageSubscriptions, _, cx| this.open_subscriptions(cx)))
                 .on_action(cx.listener(|this, _: &ToggleReaderMode, _, cx| {
                     let snapshot = this.live.read(cx).snapshot();
                     let has_original = snapshot

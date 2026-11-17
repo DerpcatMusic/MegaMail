@@ -7,7 +7,7 @@ use gpui_kit::{
 };
 use megamail_core::{desktop::MailtoIntent, models::Unsubscribe};
 
-fn unsubscribe_intent(metadata: &Unsubscribe) -> Result<MailtoIntent, String> {
+pub(crate) fn unsubscribe_intent(metadata: &Unsubscribe) -> Result<MailtoIntent, String> {
     let intent = if let Some(uri) = &metadata.mailto {
         desktop_actions::external_compose(uri)
             .map_err(|_| "This newsletter's email link is invalid.".to_string())?

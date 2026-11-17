@@ -67,7 +67,8 @@ pub(crate) mod action {
             Unsubscribe,
             UndoSend,
             ToggleSenderColors,
-            CycleLayout
+            CycleLayout,
+            ManageSubscriptions
         ]
     );
 }

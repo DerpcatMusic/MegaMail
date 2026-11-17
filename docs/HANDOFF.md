@@ -59,14 +59,13 @@ update_messages (read/unread/star/archive/trash/spam/move). Uses saved profiles;
 - Search: SQLite FTS5 over bodies (`src/cache.rs`, `crates/mail-core/src/search.rs`).
 
 ## Open work, in the owner's priority order
-1. **Mass unsubscriber.** Query done: `Cache::subscription_senders(since_ts)` in `src/cache.rs`
-   (sender, count, last_ts, newest Unsubscribe JSON = `models::Unsubscribe`). Build the screen:
-   rows sorted by emails/month, method badges (one-click / email / web / none), per-row Unsubscribe / Keep /
-   Defer, multi-select, "Unsubscribe from N" batch. One-click: HTTPS POST `List-Unsubscribe=One-Click`
-   (see `unsubscribe_selected` in `main.rs`). Email: `newsletter_actions::unsubscribe_intent` +
-   `desktop_actions::compose_message` → `live.send_message`. Web: `cx.open_url`. Persist kept/done to
-   `config_base()/subscriptions.v1.json` like `splits::Screener::save`. Entry points: palette command,
-   Newsletters tab, sidebar.
+1. ~~Mass unsubscriber~~ **done** (`src/subscriptions.rs`, apps/megamail). Screen opened from the app bar
+   (MailOpen icon), palette "Subscriptions: unsubscribe in bulk", or "Unsubscribe in bulk" on the Newsletters
+   tab; Esc closes. Rows: unsubscribable senders first, then emails/month over 90 days, method badge,
+   Unsubscribe / Keep / Later (30 days), click to multi-select, "Unsubscribe from N". One-click POSTs only
+   for header-declared https routes; email routes send directly via `live.send_message` (subject defaults to
+   "unsubscribe"); web routes open at most 3 pages per batch. Decisions persist in `subscriptions.v1.json`.
+   Polish left: keyboard nav (j/k/x/u) on the screen, a sender count badge on the Newsletters tab.
 2. **Batch composer.** "Send individually" (one message per recipient, `{first_name}`/`{name}` merge),
    recipient groups, paste a list. Send through `live.send_message` per recipient.
 3. Keep removing vertical clutter in the reader; everything secondary goes into the top bar or the side panel.
