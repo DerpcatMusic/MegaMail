@@ -378,7 +378,8 @@ impl MailApp {
                     .when(thread.is_some_and(|t| t.members.len() > 1), |el| el.child(
                         Button::new("expand-conversation")
                             .ghost()
-                            .small()
+                            .xsmall()
+                            .text_color(palette.muted)
                             .label("Expand all")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 let s = this.live.read(cx).snapshot();
@@ -398,7 +399,8 @@ impl MailApp {
                     .child(
                         Button::new("collapse-conversation")
                             .ghost()
-                            .small()
+                            .xsmall()
+                            .text_color(palette.muted)
                             .label("Collapse history")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.expanded_messages.clear();
@@ -632,8 +634,7 @@ impl MailApp {
                         .small()
                         .w_full()
                         .justify_start()
-                        .icon(Icon::new(icon).size(px(14.)))
-                        .label(label)
+                        .child(nav_content(Icon::new(icon).size(px(14.)), label))
                         .selected(
                             snapshot.scope == MailboxScope::Unified
                                 && snapshot.unified_kind == kind,
@@ -656,8 +657,7 @@ impl MailApp {
                     .small()
                     .w_full()
                     .justify_start()
-                    .icon(Icon::new(IconName::Mail).size(px(14.)))
-                    .label(format!("Outbox · {}", snapshot.outbox.len()))
+                    .child(nav_content(Icon::new(IconName::Mail).size(px(14.)), format!("Outbox · {}", snapshot.outbox.len())))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.mailbox_focus.focus(window, cx);
                         this.comfort.outbox_open = true;
