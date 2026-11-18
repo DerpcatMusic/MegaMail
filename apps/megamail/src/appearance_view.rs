@@ -956,10 +956,27 @@ fn background_row(
         presets
     };
     let weak = cx.entity().downgrade();
+    // A gradient preset hides the imported image, and blur/fade only act on the image.
+    let image_hidden = app.appearance.has_wallpaper() && current != appearance::AppearancePreset::Custom;
     let dropdown = h_flex()
         .items_center()
         .gap_2()
         .child(background_strip(app, palette, dark))
+        .when(image_hidden, |row| {
+            row.child(
+                Button::new("appearance-use-image")
+                    .primary()
+                    .small()
+                    .label("Use my image")
+                    .disabled(!enabled)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.change_appearance(
+                            AppearanceChange::Preset(appearance::AppearancePreset::Custom),
+                            cx,
+                        )
+                    })),
+            )
+        })
         .child(
             Button::new("appearance-background")
                 .custom(super::floating_button_variant(cx, palette, dark))
@@ -988,7 +1005,11 @@ fn background_row(
         );
     settings_row(
         "Background",
-        Some("Select a built-in gradient or your custom image."),
+        Some(if image_hidden {
+            "A gradient is showing. Blur and fade apply to your image only."
+        } else {
+            "Select a built-in gradient or your custom image."
+        }),
         dropdown,
         palette,
     )

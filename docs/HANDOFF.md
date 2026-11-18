@@ -69,8 +69,13 @@ update_messages (read/unread/star/archive/trash/spam/move). Uses saved profiles;
    for header-declared https routes; email routes send directly via `live.send_message` (subject defaults to
    "unsubscribe"); web routes open at most 3 pages per batch. Decisions persist in `subscriptions.v1.json`.
    Polish left: keyboard nav (j/k/x/u) on the screen, a sender count badge on the Newsletters tab.
-2. **Batch composer.** "Send individually" (one message per recipient, `{first_name}`/`{name}` merge),
-   recipient groups, paste a list. Send through `live.send_message` per recipient.
+2. **Batch composer (done, basic).** Composer "Individually" toggle: one private copy per To recipient,
+   `{first_name}`/`{name}`/`{email}` merged into subject/body (`batch_send.rs`); a pasted list split by
+   newline/semicolon/tab works. Left: recipient groups, Undo for batches, per-copy progress (the composer
+   only tracks the last request).
+   Also done: list filter rail (Sort/State/Search-in chips + sort direction), reader toolbar hierarchy
+   (labeled Reply, icon+All, icon expand/collapse), "Use my image" when a gradient hides the custom wallpaper.
+   Icons must be listed in `icon_assets!(MailIcons, …)` in main.rs or they render blank.
 3. Keep removing vertical clutter in the reader; everything secondary goes into the top bar or the side panel.
 4. Squeeze the codebase (main.rs is ~11k lines): move reader, list, app bar into their own modules.
 5. Not built yet: remind-if-no-reply, snooze UI polish, send later UI, read receipts (privacy-safe no).

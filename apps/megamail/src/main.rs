@@ -80,6 +80,7 @@ mod rules_ui;
 mod scheduling;
 mod sender_photos;
 mod splits;
+mod batch_send;
 mod subscriptions;
 mod theme;
 mod thunderbird_adapter;
@@ -104,19 +105,23 @@ gpui_kit::assets::icon_assets!(
     [
         Archive,
         ArchiveRestore,
+        ArrowDown,
         ArrowLeft,
         ArrowRight,
+        ArrowUp,
         Check,
         ChevronDown,
         ChevronLeft,
         ChevronRight,
         ChevronUp,
+        ChevronsUpDown,
         Close,
         Columns2,
         Copy,
         CornerUpLeft,
         CornerUpRight,
         Download,
+        Ellipsis,
         FileText,
         Folder,
         FolderOpen,
@@ -532,6 +537,8 @@ struct Composer {
     show_cc: bool,
     /// Formatting, local contacts and Send Later, folded until asked for.
     show_more: bool,
+    /// Send one personalized copy per To recipient ({name}, {first_name}, {email}).
+    individually: bool,
     _input_subscriptions: Vec<Subscription>,
 }
 
@@ -580,6 +587,7 @@ impl Composer {
             show_quoted: false,
             show_cc: false,
             show_more: false,
+            individually: false,
             _input_subscriptions: Vec::new(),
         };
         composer.show_cc = !composer.message.cc.trim().is_empty()
@@ -6949,9 +6957,10 @@ impl MailApp {
                             .when(!is_draft, |row| {
                                 row.child(
                                     Button::new("reply-message")
-                                        .ghost()
+                                        .secondary()
                                         .small()
                                         .icon(Icon::new(IconName::CornerUpLeft))
+                                        .label("Reply")
                                         .tooltip("Reply · R")
                                         .accessibility_label("Reply")
                                         .disabled(!self.action_state(cx).allows(desktop_actions::MailboxAction::ReplyMessage))
@@ -6967,6 +6976,7 @@ impl MailApp {
                                     Button::new("reply-all-message")
                                         .ghost()
                                         .small()
+                                        .icon(Icon::new(IconName::CornerUpLeft))
                                         .label("All")
                                         .disabled(!self.action_state(cx).allows(desktop_actions::MailboxAction::ReplyAll))
                                         .tooltip("Reply all · A")
@@ -7177,18 +7187,6 @@ impl MailApp {
                     .on_click(cx.listener(|this, _, _, cx| {
                         let next = this.preferences.layout.next();
                         this.change_preference(PreferenceChange::Layout(next), cx);
-                    })),
-            )
-            .child(
-                Button::new("list-options")
-                    .ghost()
-                    .small()
-                    .icon(Icon::new(IconName::SlidersHorizontal))
-                    .selected(self.list_controls_open)
-                    .tooltip("Sort, work states, search scope, sync")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.list_controls_open = !this.list_controls_open;
-                        cx.notify();
                     })),
             )
             .child(
@@ -7809,7 +7807,7 @@ impl MailApp {
                                         )
                                         .child(
                                             Button::new("screener-block")
-                                                .ghost()
+                                                .outline()
                                                 .xsmall()
                                                 .label("Block")
                                                 .tooltip("Keep this sender out of every split · N")
@@ -9107,6 +9105,21 @@ impl MailApp {
                                             })),
                                     )
                                     .child(
+                                        Button::new("send-individually")
+                                            .ghost()
+                                            .small()
+                                            .label("Individually")
+                                            .selected(composer.individually)
+                                            .tooltip("One private copy per To recipient. Use {first_name}, {name} or {email} in the subject and body. Paste a list one per line.")
+                                            .disabled(!composer.can_edit())
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                if let Some(c) = this.composer.as_mut() {
+                                                    c.individually = !c.individually;
+                                                }
+                                                cx.notify();
+                                            })),
+                                    )
+                                    .child(
                                         Button::new("send-message")
                                             .primary()
                                             .small()
@@ -9224,6 +9237,26 @@ impl MailApp {
         }
         composer.error = None;
         composer.send_queued = false;
+        if composer.individually {
+            let copies = batch_send::split(&message);
+            if copies.is_empty() {
+                composer.error = Some("No valid recipient addresses in To.".into());
+                cx.notify();
+                return;
+            }
+            // ponytail: no Undo for batches and the composer tracks only the last
+            // request; earlier failures surface in the Outbox and account errors.
+            let mut last = None;
+            for copy in copies {
+                last = self.live.update(cx, |live, cx| live.send_message(copy, cx)).or(last);
+            }
+            if let (Some(request_id), Some(composer)) = (last, self.composer.as_mut()) {
+                composer.send_request_id = Some(request_id);
+                composer.send_generation = Some(composer.recovery.generation);
+            }
+            cx.notify();
+            return;
+        }
         // Undo Send: an immediate send waits a few seconds in the Outbox,
         // where Undo can still cancel it (direct IMAP accounts).
         let mut message = message;

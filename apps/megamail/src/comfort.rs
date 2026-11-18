@@ -379,8 +379,8 @@ impl MailApp {
                         Button::new("expand-conversation")
                             .ghost()
                             .xsmall()
-                            .text_color(palette.muted)
-                            .label("Expand all")
+                            .icon(Icon::new(IconName::ChevronsUpDown))
+                            .tooltip("Expand all messages")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 let s = this.live.read(cx).snapshot();
                                 for t in s.conversations.iter().filter(|t| {
@@ -400,8 +400,8 @@ impl MailApp {
                         Button::new("collapse-conversation")
                             .ghost()
                             .xsmall()
-                            .text_color(palette.muted)
-                            .label("Collapse history")
+                            .icon(Icon::new(IconName::ChevronUp))
+                            .tooltip("Collapse earlier messages")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.expanded_messages.clear();
                                 this.collapsed_messages.clear();
@@ -428,17 +428,27 @@ impl MailApp {
         let owner = cx.entity().downgrade();
         let work_owner = owner.clone();
         let scope_owner = owner.clone();
+        let chip = |label: &'static str, value: String| {
+            h_flex()
+                .gap_1()
+                .child(div().text_color(palette.muted).child(label))
+                .child(div().text_color(palette.text).font_weight(FontWeight::MEDIUM).child(value))
+        };
+        let attention = !snapshot.account_errors.is_empty();
         v_flex()
             .gap_2()
             .child(
                 h_flex()
-                    .flex_wrap()
-                    .gap_1()
+                    .w_full()
+                    .h(px(36.))
+                    .items_center()
+                    .gap_2()
                     .child(
                         Button::new("mail-sort")
-                            .ghost()
+                            .outline()
                             .small()
-                            .label(format!("Sort: {}", self.comfort.sort.label()))
+                            .dropdown_caret(true)
+                            .child(chip("Sort", self.comfort.sort.label().to_string()))
                             .tooltip(
                                 "Direct accounts sort the local cache before paging. Legacy adapters sort loaded headers.",
                             )
@@ -471,12 +481,9 @@ impl MailApp {
                         Button::new("reverse-sort")
                             .ghost()
                             .small()
-                            .label(if self.comfort.reverse {
-                                "Reverse"
-                            } else {
-                                "Default order"
-                            })
-                            .tooltip("Reverse the current sort order")
+                            .icon(Icon::new(if self.comfort.reverse { IconName::ArrowUp } else { IconName::ArrowDown }))
+                            .selected(self.comfort.reverse)
+                            .tooltip(if self.comfort.reverse { "Oldest / A first · click to flip" } else { "Newest / Z first · click to flip" })
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.comfort.reverse = !this.comfort.reverse;
                                 this.apply_mail_sort(cx);
@@ -486,9 +493,10 @@ impl MailApp {
                     )
                     .child(
                         Button::new("work-filter")
-                            .ghost()
+                            .outline()
                             .small()
-                            .label(self.comfort.filter.map_or("All work states", Status::label))
+                            .dropdown_caret(true)
+                            .child(chip("State", self.comfort.filter.map_or("Any", Status::label).to_string()))
                             .dropdown_menu(move |menu, _, _| {
                                 let clear = work_owner.clone();
                                 let mut menu = menu.item(
@@ -525,17 +533,18 @@ impl MailApp {
                                 }
                                 menu
                             }),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .flex_wrap()
-                    .gap_1()
+                    )
                     .child(
                         Button::new("search-scope")
-                            .ghost()
+                            .outline()
                             .small()
-                            .label("Search scope")
+                            .dropdown_caret(true)
+                            .child(chip("Search in", "All mail".to_string()))
+                            .tooltip(if snapshot.is_thunderbird_account {
+                                "Search: loaded headers. Try from: or subject:"
+                            } else {
+                                "Search: senders, subjects and the text of downloaded mail. body: matches exact text."
+                            })
                             .dropdown_menu(move |menu, _, _| {
                                 let owner = scope_owner.clone();
                                 let other = scope_owner.clone();
@@ -571,27 +580,26 @@ impl MailApp {
                             }),
                     )
                     .child(
+                        div().flex_1(),
+                    )
+                    .child(
                         Button::new("connection-health")
                             .ghost()
                             .small()
-                            .label(if snapshot.account_errors.is_empty() {
-                                "Sync details"
-                            } else {
-                                "Connection needs attention"
-                            })
+                            .child(
+                                h_flex()
+                                    .gap_1p5()
+                                    .items_center()
+                                    .child(div().size(px(7.)).rounded_full().bg(if attention { rgb(0xf59e0b).into() } else { palette.accent }))
+                                    .child(div().text_color(palette.muted).child(if attention { "Needs attention" } else { "Synced" })),
+                            )
+                            .selected(self.comfort.health_open)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.comfort.health_open = !this.comfort.health_open;
                                 cx.notify();
                             })),
                     ),
             )
-            .child(div().text_size(px(11.)).text_color(palette.muted).child(
-                if snapshot.is_thunderbird_account {
-                    "Search: loaded headers. Try from: or subject:"
-                } else {
-                    "Search: senders, subjects and the text of downloaded mail. body: matches exact text."
-                },
-            ))
             .when(self.comfort.health_open, |el| {
                 el.child(self.sync_details(snapshot, palette, cx))
             })
