@@ -16,7 +16,7 @@ use gpui_kit::{
     prelude::FluentBuilder as _, px, relative, rgb,
 };
 
-use crate::preferences::Density;
+use crate::preferences::{Density, PaneLayout};
 use crate::theme::{AccentPreset, AccentSelection, SurfacePreference, ThemeAppearance, ThemeMode};
 use crate::{
     AppearanceChange, MailApp, Palette, PreferenceChange, ThemeChange, appearance, zeron_background,
@@ -31,12 +31,6 @@ pub(crate) fn render(app: &MailApp, palette: Palette, cx: &mut Context<MailApp>)
         can_edit_effect && app.appearance.effect() != appearance::WallpaperEffect::None;
     let preferences = app.preferences;
     let preferences_disabled = app.preferences_busy || app.preferences_loading;
-    let bool_choices = |current| {
-        [("On", true), ("Off", false)]
-            .into_iter()
-            .map(|(label, value)| (label.to_owned(), current == value, value))
-            .collect::<Vec<_>>()
-    };
     // ponytail: ten-point steps keep the native menu compact; use a SliderState if continuous adjustment is needed.
     let fine_steps = (0..=10).map(|step| step as f32 / 10.0).collect::<Vec<_>>();
     let wallpaper_detail = app
@@ -47,20 +41,14 @@ pub(crate) fn render(app: &MailApp, palette: Palette, cx: &mut Context<MailApp>)
 
     let mail_controls = v_flex()
         .w_full()
-        .child(section_heading("Mail", palette))
+        .child(section_heading("Reading", palette))
         .child(choice_row(
             "Message density",
-            Some("Choose the height of each message row."),
+            None,
             preferences.density.label().to_owned(),
             [Density::Comfortable, Density::Compact]
                 .into_iter()
-                .map(|density| {
-                    (
-                        density.label().to_owned(),
-                        preferences.density == density,
-                        density,
-                    )
-                })
+                .map(|density| (density.label().to_owned(), preferences.density == density, density))
                 .collect(),
             !preferences_disabled,
             "mail-density",
@@ -70,75 +58,47 @@ pub(crate) fn render(app: &MailApp, palette: Palette, cx: &mut Context<MailApp>)
             |this, value, cx| this.change_preference(PreferenceChange::Density(value), cx),
         ))
         .child(choice_row(
-            "Group conversations",
-            Some("Show replies together in conversation threads."),
-            (if preferences.group_conversations {
-                "On"
-            } else {
-                "Off"
-            })
-            .to_owned(),
-            bool_choices(preferences.group_conversations),
+            "Layout",
+            Some("Where an opened message goes. F8 switches."),
+            preferences.layout.label().to_owned(),
+            [PaneLayout::Full, PaneLayout::Right, PaneLayout::Below]
+                .into_iter()
+                .map(|layout| (layout.label().to_owned(), preferences.layout == layout, layout))
+                .collect(),
             !preferences_disabled,
-            "mail-group-conversations",
+            "mail-layout",
             palette,
             dark,
             cx,
-            |this, value, cx| {
-                this.change_preference(PreferenceChange::GroupConversations(value), cx)
-            },
+            |this, value, cx| this.change_preference(PreferenceChange::Layout(value), cx),
         ))
-        .child(choice_row(
-            "Hide quoted text",
-            Some("Collapse a trailing quoted reply beneath the new message."),
-            (if preferences.hide_quoted_text {
-                "On"
-            } else {
-                "Off"
-            })
-            .to_owned(),
-            bool_choices(preferences.hide_quoted_text),
+        .child(switch_row(
+            "Group conversations",
+            Some("Show replies together as one thread."),
+            preferences.group_conversations,
+            !preferences_disabled,
+            "mail-group-conversations",
+            palette,
+            cx,
+            |this, value, cx| this.change_preference(PreferenceChange::GroupConversations(value), cx),
+        ))
+        .child(switch_row(
+            "Fold quoted history",
+            Some("Hide earlier messages quoted under a reply."),
+            preferences.hide_quoted_text,
             !preferences_disabled,
             "mail-hide-quoted-text",
             palette,
-            dark,
             cx,
             |this, value, cx| this.change_preference(PreferenceChange::HideQuotedText(value), cx),
         ))
         .child(choice_row(
-            "Reduced motion",
-            Some("Reduce motion in menus and transitions."),
-            (if preferences.reduced_motion {
-                "On"
-            } else {
-                "Off"
-            })
-            .to_owned(),
-            bool_choices(preferences.reduced_motion),
-            !preferences_disabled,
-            "mail-reduced-motion",
-            palette,
-            dark,
-            cx,
-            |this, value, cx| this.change_preference(PreferenceChange::ReducedMotion(value), cx),
-        ))
-        .child(choice_row(
-            "Starting inbox",
-            Some("Choose which inbox opens when MegaMail starts."),
-            if preferences.default_unified {
-                "Unified inbox".to_owned()
-            } else {
-                "Account inbox".to_owned()
-            },
-            [("Unified inbox", true), ("Account inbox", false)]
+            "Open on start",
+            None,
+            if preferences.default_unified { "All inboxes".to_owned() } else { "Last account".to_owned() },
+            [("All inboxes", true), ("Last account", false)]
                 .into_iter()
-                .map(|(label, value)| {
-                    (
-                        label.to_owned(),
-                        preferences.default_unified == value,
-                        value,
-                    )
-                })
+                .map(|(label, value)| (label.to_owned(), preferences.default_unified == value, value))
                 .collect(),
             !preferences_disabled,
             "mail-default-unified",
@@ -146,14 +106,65 @@ pub(crate) fn render(app: &MailApp, palette: Palette, cx: &mut Context<MailApp>)
             dark,
             cx,
             |this, value, cx| this.change_preference(PreferenceChange::DefaultUnified(value), cx),
+        ))
+        .child(switch_row(
+            "Reduce motion",
+            None,
+            preferences.reduced_motion,
+            !preferences_disabled,
+            "mail-reduced-motion",
+            palette,
+            cx,
+            |this, value, cx| this.change_preference(PreferenceChange::ReducedMotion(value), cx),
+        ))
+        .child(switch_row(
+            "Load images automatically",
+            Some("Not for senders that fail authentication or mail in Junk."),
+            preferences.load_remote,
+            !preferences_disabled,
+            "mail-load-remote",
+            palette,
+            cx,
+            |this, value, cx| this.change_preference(PreferenceChange::LoadRemote(value), cx),
+        ))
+        .child(section_heading("Sender pictures", palette))
+        .child(switch_row(
+            "Show pictures in the list",
+            Some("Contact photo, company logo, or initials."),
+            preferences.list_avatars,
+            !preferences_disabled,
+            "mail-list-avatars",
+            palette,
+            cx,
+            |this, value, cx| this.change_preference(PreferenceChange::ListAvatars(value), cx),
+        ))
+        .child(switch_row(
+            "Company logos",
+            Some("Only for senders that pass DMARC. Fetches the logo by domain."),
+            preferences.internet_avatars,
+            !preferences_disabled,
+            "mail-internet-avatars",
+            palette,
+            cx,
+            |this, value, cx| this.change_preference(PreferenceChange::InternetAvatars(value), cx),
+        ))
+        .child(switch_row(
+            "Gravatar",
+            Some("Sends a hash of each sender's address to Gravatar."),
+            preferences.gravatar,
+            !preferences_disabled,
+            "mail-gravatar",
+            palette,
+            cx,
+            |this, value, cx| this.change_preference(PreferenceChange::Gravatar(value), cx),
         ));
 
     let theme_controls = v_flex()
         .w_full()
         .child(section_heading("Theme", palette))
         .child(settings_row(
-            "Appearance",
-            Some("Choose how MegaMail follows light and dark changes."),
+            "Mode",
+            None,
             mode_control(app.theme.mode(), theme_controls_disabled, palette, dark, cx),
             palette,
         ))
@@ -355,168 +366,182 @@ pub(crate) fn render(app: &MailApp, palette: Palette, cx: &mut Context<MailApp>)
         ));
     let shortcuts = v_flex()
         .w_full()
-        .child(section_heading("Keyboard shortcuts", palette))
-        .children(
-            [
-                ("New message", "Ctrl+N"),
-                ("Reply", "Ctrl+R"),
-                ("Reply all", "Ctrl+Shift+R"),
-                ("Search mail", "Ctrl+F"),
-                ("All inboxes", "Ctrl+Shift+L"),
-                ("Refresh mail", "F5"),
-                ("Move through the message list", "↑ / ↓"),
-            ]
-            .into_iter()
-            .map(|(name, key)| {
-                settings_row(
-                    name,
-                    None,
-                    div()
-                        .text_size(px(12.))
-                        .text_color(palette.muted)
-                        .child(key),
-                    palette,
-                )
-            }),
-        );
+        .child(section_heading("Keyboard", palette))
+        .children(crate::command_palette::commands().into_iter().filter(|c| !c.keys.is_empty()).map(|command| {
+            h_flex()
+                .w_full()
+                .h(px(34.))
+                .items_center()
+                .justify_between()
+                .border_b_1()
+                .border_color(palette.border)
+                .child(div().text_size(px(13.)).text_color(palette.text).child(command.label))
+                .child(super::shortcut_keys(command.keys, palette))
+        }));
 
-    let content = v_flex()
-        .w_full()
-        .max_w(px(920.))
-        .gap_5()
+    let section = app.settings_section;
+    let body = match section {
+        Section::Mail => mail_controls
+            .when_some(app.preferences_error.clone(), |column, error| {
+                column.child(super::error_banner("Mail preferences", &error, cx, palette))
+            })
+            .into_any_element(),
+        Section::Appearance => theme_controls
+            .when_some(app.theme_error.clone(), |column, error| {
+                column.child(super::error_banner("Theme update", &error, cx, palette))
+            })
+            .into_any_element(),
+        Section::Background => background_controls
+            .when_some(app.appearance_error.clone(), |column, error| {
+                column.child(super::error_banner("Background update", &error, cx, palette))
+            })
+            .into_any_element(),
+        Section::Accounts => accounts.into_any_element(),
+        Section::Keyboard => shortcuts.into_any_element(),
+    };
+    let busy = if app.preferences_loading || app.appearance_loading {
+        Some("Loading…")
+    } else if app.preferences_busy || app.theme_busy || app.appearance_busy {
+        Some("Saving…")
+    } else {
+        None
+    };
+    let nav = v_flex()
+        .w(px(200.))
+        .flex_shrink_0()
+        .h_full()
+        .px_3()
+        .pt_6()
+        .gap(px(2.))
+        .border_r_1()
+        .border_color(palette.border)
         .child(
-            v_flex()
-                .gap_1()
-                .child(
-                    div()
-                        .text_size(px(22.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("Settings"),
-                )
-                .child(
-                    div()
-                        .text_size(px(12.))
-                        .line_height(relative(1.4))
-                        .text_color(palette.muted)
-                        .child("Mail, themes, backgrounds, and surface materials."),
-                ),
+            div()
+                .px_2()
+                .pb_3()
+                .text_size(px(18.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child("Settings"),
         )
-        .child(mail_controls)
-        .when_some(app.preferences_error.clone(), |column, error| {
-            column.child(super::error_banner("Mail preferences", &error, cx, palette))
-        })
-        .when(app.preferences_busy || app.preferences_loading, |column| {
-            column.child(
-                div()
-                    .py_2()
-                    .text_size(px(12.))
-                    .text_color(palette.muted)
-                    .child(if app.preferences_loading {
-                        "Loading saved mail preferences…"
-                    } else {
-                        "Saving mail preferences…"
-                    }),
-            )
-        })
-        .child(theme_controls)
-        .child(background_controls)
-        .child(accounts)
-        .child(shortcuts)
-        .when_some(app.theme_error.clone(), |column, error| {
-            column.child(super::error_banner("Theme update", &error, cx, palette))
-        })
-        .when_some(app.theme_status.clone(), |column, status| {
-            column.child(
-                h_flex()
-                    .items_center()
-                    .gap_2()
-                    .py_2()
-                    .text_size(px(12.))
-                    .text_color(palette.muted)
-                    .child(gpui_kit::component::Icon::new(
-                        gpui_kit::assets::IconName::Check,
-                    ))
-                    .child(status),
-            )
-        })
-        .when_some(app.appearance_error.clone(), |column, error| {
-            column.child(super::error_banner(
-                "Background update",
-                &error,
-                cx,
-                palette,
-            ))
-        })
-        .when(
-            app.theme_busy || app.appearance_busy || app.appearance_loading,
-            |column| {
-                column.child(
-                    div()
-                        .py_2()
-                        .text_size(px(12.))
-                        .text_color(palette.muted)
-                        .child(if app.appearance_loading {
-                            "Loading saved appearance…"
-                        } else if app.theme_busy {
-                            "Saving theme preferences…"
-                        } else if app.appearance_busy {
-                            "Processing wallpaper…"
-                        } else {
-                            "Saving appearance…"
-                        }),
-                )
-            },
+        .children(Section::ALL.into_iter().map(|item| {
+            let active = item == section;
+            div()
+                .id(SharedString::from(format!("settings-nav-{}", item.label())))
+                .h(px(30.))
+                .px_2()
+                .flex()
+                .items_center()
+                .rounded(px(6.))
+                .text_size(px(13.))
+                .cursor_pointer()
+                .when(active, |el| el.bg(palette.selected).font_weight(FontWeight::MEDIUM))
+                .when(!active, |el| el.text_color(palette.muted).hover(|s| s.bg(palette.selected.opacity(0.5))))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.settings_section = item;
+                    cx.notify();
+                }))
+                .child(item.label())
+        }))
+        .child(div().flex_1())
+        .child(
+            h_flex()
+                .px_2()
+                .pb_4()
+                .gap_2()
+                .items_center()
+                .text_size(px(11.))
+                .text_color(palette.faint)
+                .child(super::shortcut_keys("Esc", palette))
+                .child(busy.unwrap_or("Back to mail")),
         );
 
-    v_flex()
+    h_flex()
         .flex_1()
         .h_full()
         .min_w_0()
         .min_h_0()
         .bg(app.pane_surface(palette.background, 0.05))
+        .child(nav)
         .child(
             v_flex()
                 .id("appearance-scroll")
                 .flex_1()
+                .h_full()
                 .min_h_0()
                 .overflow_y_scroll()
-                .items_center()
-                .px_6()
-                .py_6()
-                .child(content),
-        )
-        .child(
-            h_flex()
-                .flex_shrink_0()
-                .justify_end()
-                .items_center()
-                .border_t_1()
-                .border_color(palette.border)
-                .px_6()
-                .py_3()
-                .child(
-                    Button::new("appearance-done")
-                        .custom(super::floating_button_variant(cx, palette, dark))
-                        .small()
-                        .label("Back to mail")
-                        .disabled(app.appearance_busy || app.appearance_loading || app.theme_busy)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.view = this.appearance_return_view;
-                            cx.notify();
-                        })),
-                ),
+                .px_8()
+                .pt_6()
+                .pb_8()
+                .child(app.reveal(
+                    div().w_full().max_w(px(680.)).child(body),
+                    format!("settings-{}", section.label()),
+                    8.,
+                    160,
+                    cx,
+                )),
         )
         .into_any_element()
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Section {
+    #[default]
+    Mail,
+    Appearance,
+    Background,
+    Accounts,
+    Keyboard,
+}
+
+impl Section {
+    const ALL: [Section; 5] = [
+        Section::Mail,
+        Section::Appearance,
+        Section::Background,
+        Section::Accounts,
+        Section::Keyboard,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Section::Mail => "Mail",
+            Section::Appearance => "Appearance",
+            Section::Background => "Background",
+            Section::Accounts => "Accounts",
+            Section::Keyboard => "Keyboard",
+        }
+    }
+}
+
+fn switch_row(
+    title: &'static str,
+    detail: Option<&'static str>,
+    value: bool,
+    enabled: bool,
+    id: &'static str,
+    palette: Palette,
+    cx: &mut Context<MailApp>,
+    apply: impl Fn(&mut MailApp, bool, &mut Context<MailApp>) + 'static,
+) -> impl IntoElement {
+    let weak = cx.entity().downgrade();
+    let control = gpui_kit::component::switch::Switch::new(id)
+        .checked(value)
+        .disabled(!enabled)
+        .accessibility_label(title)
+        .on_click(move |checked, _, app| {
+            let _ = weak.update(app, |this, cx| apply(this, *checked, cx));
+        });
+    settings_row(title, detail, control, palette)
+}
+
 fn section_heading(label: &'static str, palette: Palette) -> impl IntoElement {
     div()
-        .pt_3()
-        .pb_1()
-        .text_size(px(13.))
+        .pt_6()
+        .pb_2()
+        .text_size(px(11.))
         .font_weight(FontWeight::SEMIBOLD)
-        .text_color(palette.text)
-        .child(label)
+        .text_color(palette.muted)
+        .child(label.to_uppercase())
 }
 
 fn settings_row(
@@ -527,7 +552,7 @@ fn settings_row(
 ) -> gpui_kit::Div {
     h_flex()
         .w_full()
-        .min_h(px(56.))
+        .min_h(px(48.))
         .items_center()
         .justify_between()
         .gap_4()
@@ -541,8 +566,7 @@ fn settings_row(
                 .gap_1()
                 .child(
                     div()
-                        .text_size(px(12.))
-                        .font_weight(FontWeight::MEDIUM)
+                        .text_size(px(13.))
                         .text_color(palette.text)
                         .child(title.into()),
                 )
@@ -563,25 +587,52 @@ fn mode_control(
     current: ThemeMode,
     disabled: bool,
     palette: Palette,
-    dark: bool,
+    _dark: bool,
     cx: &mut Context<MailApp>,
 ) -> impl IntoElement {
-    h_flex().gap_1().children(
-        [ThemeMode::System, ThemeMode::Light, ThemeMode::Dark].map(|mode| {
-            Button::new(SharedString::from(format!(
-                "appearance-mode-{}",
-                mode.label()
-            )))
-            .custom(super::floating_button_variant(cx, palette, dark))
-            .small()
-            .selected(current == mode)
-            .label(mode.label())
-            .disabled(disabled)
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.change_theme(ThemeChange::Mode(mode), window, cx)
-            }))
-        }),
+    segmented(
+        [ThemeMode::System, ThemeMode::Light, ThemeMode::Dark]
+            .map(|mode| (mode.label(), current == mode, mode)),
+        disabled,
+        "appearance-mode",
+        palette,
+        cx,
+        |this, mode, window, cx| this.change_theme(ThemeChange::Mode(mode), window, cx),
     )
+}
+
+/// A pill of mutually exclusive options; the chosen one is raised.
+fn segmented<T: Copy + 'static, const N: usize>(
+    options: [(&'static str, bool, T); N],
+    disabled: bool,
+    id: &'static str,
+    palette: Palette,
+    cx: &mut Context<MailApp>,
+    apply: impl Fn(&mut MailApp, T, &mut gpui_kit::Window, &mut Context<MailApp>) + 'static,
+) -> impl IntoElement {
+    let apply = Rc::new(apply);
+    h_flex()
+        .p(px(2.))
+        .gap(px(2.))
+        .rounded(px(8.))
+        .bg(palette.selected.opacity(0.6))
+        .children(options.into_iter().map(|(label, selected, value)| {
+            let apply = apply.clone();
+            div()
+                .id(SharedString::from(format!("{id}-{label}")))
+                .h(px(26.))
+                .px_3()
+                .flex()
+                .items_center()
+                .rounded(px(6.))
+                .text_size(px(12.))
+                .when(selected, |el| el.bg(palette.background).shadow_sm().font_weight(FontWeight::MEDIUM))
+                .when(!selected, |el| el.text_color(palette.muted))
+                .when(!disabled && !selected, |el| {
+                    el.cursor_pointer().on_click(cx.listener(move |this, _, window, cx| apply(this, value, window, cx)))
+                })
+                .child(label)
+        }))
 }
 
 fn theme_row(
@@ -905,10 +956,27 @@ fn background_row(
         presets
     };
     let weak = cx.entity().downgrade();
+    // A gradient preset hides the imported image, and blur/fade only act on the image.
+    let image_hidden = app.appearance.has_wallpaper() && current != appearance::AppearancePreset::Custom;
     let dropdown = h_flex()
         .items_center()
         .gap_2()
         .child(background_strip(app, palette, dark))
+        .when(image_hidden, |row| {
+            row.child(
+                Button::new("appearance-use-image")
+                    .primary()
+                    .small()
+                    .label("Use my image")
+                    .disabled(!enabled)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.change_appearance(
+                            AppearanceChange::Preset(appearance::AppearancePreset::Custom),
+                            cx,
+                        )
+                    })),
+            )
+        })
         .child(
             Button::new("appearance-background")
                 .custom(super::floating_button_variant(cx, palette, dark))
@@ -937,7 +1005,11 @@ fn background_row(
         );
     settings_row(
         "Background",
-        Some("Select a built-in gradient or your custom image."),
+        Some(if image_hidden {
+            "A gradient is showing. Blur and fade apply to your image only."
+        } else {
+            "Select a built-in gradient or your custom image."
+        }),
         dropdown,
         palette,
     )

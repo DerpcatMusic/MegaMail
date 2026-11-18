@@ -304,6 +304,17 @@ pub struct Cache {
     conn: Connection,
 }
 
+/// One row of [`Cache::subscription_senders`].
+#[derive(Debug, Clone)]
+pub struct SubscriptionSender {
+    pub address: String,
+    pub name: String,
+    pub account_id: u32,
+    pub count: u32,
+    pub last_ts: i64,
+    pub unsubscribe: Option<String>,
+}
+
 /// The validated remote UID namespace for one account/folder. Generation zero
 /// means unknown legacy/offline identity; it is not online validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -720,6 +731,7 @@ impl Cache {
             )?;
         }
         tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        ensure_body_index(&tx);
         tx.commit()
     }
 
@@ -1777,13 +1789,27 @@ impl Cache {
         );
     }
 
+    /// Whether this cache has the full-text body index (SQLite with FTS5).
+    pub fn has_body_index(&self) -> bool {
+        self.conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'body_fts'",
+                [],
+                |_| Ok(()),
+            )
+            .is_ok()
+    }
+
     pub fn save_body(&self, account_id: u32, folder_path: &str, uid: u32, body: &str) {
         if let Err(e) = self.conn.execute(
             "INSERT OR REPLACE INTO bodies (account_id, folder_path, uid, body) VALUES (?1, ?2, ?3, ?4)",
             params![account_id, folder_path, uid, body],
         ) {
             tracing::warn!("cache save_body failed: {e}");
+            return;
         }
+        let rowid = self.conn.last_insert_rowid();
+        index_body_text(&self.conn, rowid, body);
     }
 
     /// The cached sender-authentication verdict for a message, if one was stored
@@ -2518,6 +2544,39 @@ impl Cache {
             "UPDATE outbox SET attempts = attempts + 1, last_error = ?2 WHERE id = ?1",
             params![id, error],
         );
+    }
+
+    /// Senders who mailed more than once since `since_ts` (inbox-like
+    /// folders only), most frequent first, with the newest unsubscribe handle
+    /// any of their read messages carried (JSON of [`crate::models::Unsubscribe`]).
+    pub fn subscription_senders(&self, since_ts: i64) -> Vec<SubscriptionSender> {
+        let sql = "SELECT lower(m.from_addr), max(m.from_name), max(m.account_id), count(*), max(m.ts), \
+                   (SELECT sc.unsubscribe FROM sender_checks sc JOIN messages m2 \
+                      ON m2.account_id = sc.account_id AND m2.folder_path = sc.folder_path AND m2.uid = sc.uid \
+                    WHERE lower(m2.from_addr) = lower(m.from_addr) AND sc.unsubscribe NOT IN ('', 'null') \
+                    ORDER BY m2.ts DESC LIMIT 1) \
+                   FROM messages m \
+                   WHERE m.ts >= ?1 AND m.from_addr LIKE '%@%' \
+                     AND lower(m.folder_path) NOT LIKE '%sent%' AND lower(m.folder_path) NOT LIKE '%draft%' \
+                     AND lower(m.folder_path) NOT LIKE '%trash%' AND lower(m.folder_path) NOT LIKE '%spam%' \
+                     AND lower(m.folder_path) NOT LIKE '%junk%' AND lower(m.folder_path) NOT LIKE '%outbox%' \
+                   GROUP BY lower(m.from_addr) HAVING count(*) >= 2 \
+                   ORDER BY count(*) DESC LIMIT 400";
+        let Ok(mut stmt) = self.conn.prepare(sql) else {
+            return Vec::new();
+        };
+        stmt.query_map([since_ts], |r| {
+            Ok(SubscriptionSender {
+                address: r.get(0)?,
+                name: r.get::<_, String>(1).unwrap_or_default(),
+                account_id: r.get(2)?,
+                count: r.get(3)?,
+                last_ts: r.get(4)?,
+                unsubscribe: r.get::<_, Option<String>>(5)?,
+            })
+        })
+        .map(|rows| rows.flatten().collect())
+        .unwrap_or_default()
     }
 
     /// Aggregate every address seen in stored mail (senders received +
@@ -4776,6 +4835,71 @@ mod tests {
             ids,
             vec!["new-reply@x", "old-reply@x", "root@x"],
             "all three, any age"
+        );
+    }
+}
+
+/// Full-text index of each cached body's visible text, keyed by the
+/// `bodies` rowid. Optional: a SQLite without FTS5 simply has no index and
+/// search keeps its exact substring scan. Stale rows are harmless — every
+/// lookup joins back through `bodies`, and a reused rowid is reindexed on save.
+const BODY_FTS: &str = "CREATE VIRTUAL TABLE IF NOT EXISTS body_fts USING fts5(text, tokenize = 'unicode61 remove_diacritics 2', prefix = '2 3')";
+
+/// Plain-text projection of a cached body for the index (tags, styles and
+/// scripts dropped; the reader's own text conversion).
+fn visible_text(body: &str) -> String {
+    let text = if body.trim_start().starts_with('<') {
+        crate::markdown::plain_text(body)
+    } else {
+        body.to_owned()
+    };
+    text.replace('\0', " ")
+}
+
+fn index_body_text(conn: &Connection, rowid: i64, body: &str) {
+    let has_index = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'body_fts'",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if !has_index {
+        return;
+    }
+    let text = visible_text(body);
+    let _ = conn.execute("DELETE FROM body_fts WHERE rowid = ?1", params![rowid]);
+    if let Err(e) = conn.execute(
+        "INSERT INTO body_fts (rowid, text) VALUES (?1, ?2)",
+        params![rowid, text],
+    ) {
+        tracing::warn!("cache body index failed: {e}");
+    }
+}
+
+/// Create the body index when this SQLite supports FTS5, and fill it once
+/// from bodies cached before it existed.
+fn ensure_body_index(conn: &Connection) {
+    if conn.execute_batch(BODY_FTS).is_err() {
+        return;
+    }
+    let indexed: i64 = conn
+        .query_row("SELECT count(*) FROM body_fts", [], |r| r.get(0))
+        .unwrap_or(0);
+    if indexed > 0 {
+        return;
+    }
+    let rows: Vec<(i64, String)> = match conn.prepare("SELECT rowid, body FROM bodies") {
+        Ok(mut stmt) => stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map(|rows| rows.filter_map(Result::ok).collect())
+            .unwrap_or_default(),
+        Err(_) => return,
+    };
+    for (rowid, body) in rows {
+        let _ = conn.execute(
+            "INSERT INTO body_fts (rowid, text) VALUES (?1, ?2)",
+            params![rowid, visible_text(&body)],
         );
     }
 }

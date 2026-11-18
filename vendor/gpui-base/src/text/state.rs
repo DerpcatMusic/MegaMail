@@ -245,6 +245,13 @@ impl TextViewState {
         self.parsed_content.document.source.clone()
     }
 
+    /// Whether the source has been parsed at least once (synchronously or by
+    /// the background parser), so a view can show a fallback until then
+    /// instead of an empty frame.
+    pub fn is_parsed(&self) -> bool {
+        self.text.is_empty() || self.parsed_error.is_some() || !self.source().is_empty()
+    }
+
     /// Set whether the text is selectable, default false.
     pub fn selectable(mut self, selectable: bool) -> Self {
         self.selectable = selectable;

@@ -51,10 +51,72 @@ automatically. Rich HTML composition, inline reply, all-folder/body search,
 and bulk triage are not ported.
 
 The native **Settings** view also manages saved accounts and mail display
-preferences. It lists MegaMail's current key bindings: Up/Down select a message,
-Ctrl+N composes, Ctrl+R replies, Ctrl+Shift+R replies to all, Ctrl+F focuses
-search, Ctrl+Shift+L opens Unified Inbox, and F5 refreshes mail. The legacy
-[Hylki shortcut reference](docs/KEYBOARD_SHORTCUTS.md) applies to the GTK app.
+preferences. The legacy [Hylki shortcut reference](docs/KEYBOARD_SHORTCUTS.md)
+applies to the GTK app.
+
+### Reading
+
+HTML mail opens in its **Original** layout inside the reader: the sender's
+HTML and CSS are laid out by [Blitz](https://github.com/DioxusLabs/blitz)
+(Firefox's Stylo CSS engine, Taffy layout, Parley text) and painted on the
+CPU off the UI thread. There is no script engine in this path, inline `cid:`
+images are shown, and remote images stay blocked until **Load images** is
+chosen for that message. In a dark theme, mail without its own dark styles is
+recoloured in CIELAB (light backgrounds darkened, low-contrast text
+lightened); **Sender's colors** shows it untouched. Designs wider than the
+pane shrink to fit. **Clean** (structure only, in your theme) and **Text**
+(html2text) are one key away: V cycles the three. The arrow button still
+opens the separate browser-engine window.
+
+Quoted history is folded in every mode using client markers (Gmail, Apple
+Mail, Outlook web and desktop, Thunderbird, Yahoo, Proton, Zoho) and
+localized "wrote:" lines; forwards stay visible.
+
+Search matches senders, subjects and the visible text of downloaded mail
+through an SQLite FTS5 index (word prefixes, case- and accent-insensitive;
+signed or encrypted bodies are never indexed). `body:` keeps exact matching.
+
+PDF attachments preview their first page inline (hayro, pure Rust).
+
+### Keyboard-first
+
+MegaMail is driven Superhuman-style from the message list. **Ctrl+K** opens a
+command palette listing every command with its key.
+
+| Key | Action | Key | Action |
+|---|---|---|---|
+| J / K | Next / previous | E | Done (archive) and move on |
+| R | Reply | # or Delete | Trash and move on |
+| A | Reply all | S | Star / unstar |
+| F | Forward | U | Read / unread |
+| V | Original / Clean / Text | ? | All commands |
+| C | Compose | / | Search |
+| G I / G S / G T / G D / G E | Inbox / Starred / Sent / Drafts / Archive | Esc | Back to the list |
+| Ctrl+B | Folders sidebar | Ctrl+, | Settings |
+
+Ctrl+N, Ctrl+R, Ctrl+Shift+R, Ctrl+F, Ctrl+Shift+L and F5 keep working.
+
+### Agents (MCP)
+
+`megamail mcp` runs a [Model Context Protocol](https://modelcontextprotocol.io)
+server on stdio. It uses the same saved accounts, keyring credentials, cache
+and mail workers as the app, so agents see every mailbox MegaMail sees without
+a second copy of any password. Tools: `list_accounts`, `list_folders`,
+`list_messages` (omit the account for a unified inbox), `search_messages`,
+`read_message`, `send_message`, `reply`, `forward`, `save_draft` (pass
+`draft_uid` to edit an existing draft) and `update_messages` (read, unread,
+star, archive, trash, spam, move). `megamail mcp --read-only` hides every tool
+that changes mail.
+
+```sh
+claude mcp add megamail -s user -- megamail mcp
+```
+
+For Claude Desktop, add to `claude_desktop_config.json`:
+
+```json
+{ "mcpServers": { "megamail": { "command": "megamail", "args": ["mcp"] } } }
+```
 
 For existing Thunderbird setups, **Find mail accounts** discovers real IMAP
 mailboxes in standard Linux Thunderbird profiles. The import picker groups

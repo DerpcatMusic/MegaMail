@@ -589,10 +589,21 @@ fn append_reference(existing: &str, message_id: &str) -> String {
 }
 
 fn quoted_body(message: &Message) -> String {
-    let attribution = if message.date.is_empty() {
-        format!("{} wrote:", message.from_name)
+    let who = match (message.from_name.trim(), message.from_addr.trim()) {
+        ("", addr) => addr.to_owned(),
+        (name, "") => name.to_owned(),
+        (name, addr) => format!("{name} <{addr}>"),
+    };
+    // A real date, not the list's relative label ("Today, 11:26").
+    let when = if message.timestamp > 0 {
+        megamail_core::datefmt::date_time(message.timestamp)
     } else {
-        format!("On {}, {} wrote:", message.date, message.from_name)
+        String::new()
+    };
+    let attribution = if when.is_empty() {
+        format!("{who} wrote:")
+    } else {
+        format!("On {when}, {who} wrote:")
     };
     let quote = message
         .body

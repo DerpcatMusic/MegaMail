@@ -44,9 +44,12 @@ use desktop_actions::action;
 mod account_registry;
 mod account_session;
 mod appearance;
+mod app_passwords;
 mod appearance_view;
 mod attachment_preview;
+mod avatars;
 mod comfort;
+mod command_palette;
 mod compose;
 mod compose_markdown;
 mod compose_productivity;
@@ -59,6 +62,8 @@ mod feature_integration;
 mod instance;
 mod invitation;
 mod live;
+mod mcp;
+mod original_view;
 mod newsletter_actions;
 mod onboarding;
 mod outbox_review;
@@ -74,6 +79,16 @@ mod rules_preview;
 mod rules_ui;
 mod scheduling;
 mod sender_photos;
+mod splits;
+mod batch_send;
+mod composer_ui;
+mod list_ui;
+mod original_ui;
+mod reader_ui;
+mod setup_ui;
+
+mod image_trust;
+mod subscriptions;
 mod theme;
 mod thunderbird_adapter;
 mod triage;
@@ -82,10 +97,7 @@ mod workflow;
 mod zeron_background;
 mod zeron_style;
 
-use action::{
-    AllDrafts, AllSent, ComposeMessage, FindInMessage, FocusMessages, FocusReader, FocusSearch,
-    NextMessage, PreviousMessage, RefreshMail, ReplyAll, ReplyMessage, SortSender, UnifiedInbox,
-};
+use action::*;
 
 fn packed_rgb(color: gpui_kit::Hsla) -> u32 {
     let color = color.to_rgb();
@@ -100,18 +112,23 @@ gpui_kit::assets::icon_assets!(
     [
         Archive,
         ArchiveRestore,
+        ArrowDown,
         ArrowLeft,
         ArrowRight,
+        ArrowUp,
         Check,
         ChevronDown,
         ChevronLeft,
         ChevronRight,
         ChevronUp,
+        ChevronsUpDown,
         Close,
+        Columns2,
         Copy,
         CornerUpLeft,
         CornerUpRight,
         Download,
+        Ellipsis,
         FileText,
         Folder,
         FolderOpen,
@@ -121,6 +138,7 @@ gpui_kit::assets::icon_assets!(
         ListFilter,
         LoaderCircle,
         Mail,
+        MailOpen,
         Moon,
         Palette,
         PanelLeftClose,
@@ -129,15 +147,18 @@ gpui_kit::assets::icon_assets!(
         PenLine,
         Plus,
         RefreshCw,
+        Rows2,
         Search,
         Send,
+        Settings,
         Settings2,
+        SlidersHorizontal,
         Star,
         StarFill,
         Sun,
         Trash,
         TriangleAlert,
-        X
+        X,
     ]
 );
 
@@ -219,6 +240,17 @@ impl Palette {
             }
         }
     }
+}
+
+/// Left-aligned icon + label for sidebar buttons (Button centres its own label).
+fn nav_content(icon: Icon, label: impl Into<SharedString>) -> gpui_kit::Div {
+    h_flex()
+        .w_full()
+        .min_w_0()
+        .items_center()
+        .gap_2()
+        .child(icon)
+        .child(div().min_w_0().truncate().child(label.into()))
 }
 
 fn sidebar_button_variant(
@@ -324,6 +356,11 @@ enum PreferenceChange {
     HideQuotedText(bool),
     ReducedMotion(bool),
     DefaultUnified(bool),
+    ListAvatars(bool),
+    InternetAvatars(bool),
+    Gravatar(bool),
+    LoadRemote(bool),
+    Layout(preferences::PaneLayout),
 }
 
 #[derive(Clone, Copy)]
@@ -500,6 +537,17 @@ struct Composer {
     send_generation: Option<u64>,
     sent_complete: bool,
     draft_save_completed: bool,
+    /// The quoted original of a reply, kept out of the editor and appended
+    /// on send/save, the way Superhuman and Gmail fold it away.
+    quoted: Option<String>,
+    show_quoted: bool,
+    show_cc: bool,
+    /// Formatting, local contacts and Send Later, folded until asked for.
+    show_more: bool,
+    /// Send one personalized copy per To recipient ({name}, {first_name}, {email}).
+    individually: bool,
+    /// Snooze the replied-to conversation for 3 days on send; a reply brings it back.
+    remind: bool,
     _input_subscriptions: Vec<Subscription>,
 }
 
@@ -511,13 +559,15 @@ struct SenderChoice {
 
 impl Composer {
     fn new(message: OutgoingMessage, window: &mut Window, cx: &mut Context<MailApp>) -> Self {
+        let formatted = message.html.is_empty();
         let mut composer = Self {
-            markup: Default::default(),
+            // Formatting is the default; recovered HTML drafts keep their HTML.
+            markup: compose_markdown::Markup { enabled: formatted, ..Default::default() },
             to: new_input_value(window, cx, "recipient@example.com", message.to.clone()),
             cc: new_input_value(window, cx, "Copy to", message.cc.clone()),
             bcc: new_input_value(window, cx, "Blind copy to", message.bcc.clone()),
             subject: new_input_value(window, cx, "Subject", message.subject.clone()),
-            body: cx.new(|cx| TextareaState::new(window, cx).default_value(message.body.clone())),
+            body: cx.new(|cx| TextareaState::new(window, cx).placeholder("Write your message…").default_value(message.body.clone())),
             tools: compose_tools_ui::Tools::new(window, cx),
             schedule: new_input_value(
                 window,
@@ -544,8 +594,16 @@ impl Composer {
             send_generation: None,
             sent_complete: false,
             draft_save_completed: false,
+            quoted: None,
+            show_quoted: false,
+            show_cc: false,
+            show_more: false,
+            individually: false,
+            remind: false,
             _input_subscriptions: Vec::new(),
         };
+        composer.show_cc = !composer.message.cc.trim().is_empty()
+            || !composer.message.bcc.trim().is_empty();
         for input in [&composer.to, &composer.cc, &composer.bcc, &composer.subject] {
             composer._input_subscriptions.push(cx.subscribe(
                 input,
@@ -598,6 +656,12 @@ impl Composer {
         message.body = self.body.read(cx).value().to_string();
         if self.markup.enabled && !self.markup.busy && self.markup.ready_source == message.body {
             message.html = self.markup.html.clone();
+        }
+        if let Some(quoted) = self.quoted.as_deref().filter(|q| !q.trim().is_empty()) {
+            if !message.html.is_empty() {
+                message.html.push_str(&quoted_html(quoted));
+            }
+            message.body = format!("{}\n\n{}", message.body.trim_end(), quoted);
         }
         // Keep recovered HTML unchanged. Editing it requires an explicit
         // plain-text conversion; never silently flatten a restored alternative.
@@ -863,10 +927,79 @@ struct ListRow {
     child: bool,
 }
 
+/// What a hover button, right-click item or swipe does to one row.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RowAction {
+    Archive,
+    Trash,
+    Star,
+    Read,
+}
+
+/// Horizontal travel (px) that commits a trackpad swipe on a row.
+const SWIPE_COMMIT: f32 = 110.;
+
+/// Seconds a sent message waits in the Outbox so Undo can stop it.
+const UNDO_SEND_SECONDS: i64 = 10;
+
+struct PendingUndo {
+    account: u32,
+    send_at: i64,
+    request_id: u64,
+    original: OutgoingMessage,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReaderMode {
+    Original,
+    Clean,
+    Text,
+}
+
+struct OriginalState {
+    key: MessageKey,
+    source: Arc<str>,
+    params: original_view::Params,
+    allow_remote: bool,
+    /// The user pressed Load images: wins over the untrusted-sender block.
+    remote_forced: bool,
+    original_colors: bool,
+    generation: u64,
+    pending: bool,
+    doc_id: u64,
+    result: Option<Result<original_view::Rendered, String>>,
+}
+
+struct PaletteState {
+    input: Entity<InputState>,
+    index: usize,
+    _subscription: Subscription,
+}
+
 struct MailApp {
     live: Entity<LiveMailbox>,
     sender_photos: sender_photos::State,
+    /// Organisation domains whose verified logo was already looked up.
+    logo_attempts: HashSet<String>,
+    /// Split inbox: the active split, screener decisions, the addresses you
+    /// have written to, and unread counts per split for the tabs.
+    split: splits::Split,
+    screener: splits::Screener,
+    known_senders: HashSet<String>,
+    split_unread: [usize; 5],
+    /// The message just sent with a short delay, while it can be undone.
+    undo_send: Option<PendingUndo>,
+    /// Row being swiped on the trackpad and its horizontal travel.
+    swipe: Option<(MessageKey, f32)>,
+    swipe_generation: u64,
+    /// Superhuman layout: the inbox is a full-width list; opening a
+    /// conversation replaces it until Esc.
+    conversation_open: bool,
+    /// The folder sidebar is out of the way unless asked for (Ctrl+B).
+    sidebar_hidden: bool,
     mail_panes: Entity<gpui_kit::component::resizable::ResizableState>,
+    split_right_panes: Entity<gpui_kit::component::resizable::ResizableState>,
+    split_below_panes: Entity<gpui_kit::component::resizable::ResizableState>,
     compact_mail_panes: Entity<gpui_kit::component::resizable::ResizableState>,
     _live_subscription: Subscription,
     profiles: Vec<(u32, AccountConfig)>,
@@ -920,10 +1053,31 @@ struct MailApp {
     view: View,
     setup_return_view: View,
     appearance_return_view: View,
+    settings_section: appearance_view::Section,
     sidebar_collapsed: bool,
+    /// Ctrl+K palette, when open.
+    command_palette: Option<PaletteState>,
+    /// Rows archived/trashed from the keyboard: hidden at once, before the
+    /// worker's refresh confirms the move (cleared if an action fails).
+    hidden_rows: HashSet<MessageKey>,
+    /// Sort, work-state, scope and sync controls, folded by default.
+    list_controls_open: bool,
+    /// Inline Blitz rendering of the selected message's original HTML.
+    original: Option<OriginalState>,
+    /// The user chose Clean over Original; remembered for this session.
+    prefer_clean: bool,
+    /// Width available to the reader body and where the original image
+    /// was last painted, recorded during paint for layout and hit-testing.
+    original_measure: std::rc::Rc<std::cell::Cell<f32>>,
+    original_bounds: std::rc::Rc<std::cell::Cell<gpui_kit::Bounds<gpui_kit::Pixels>>>,
+    window_scale: f32,
+    original_generation: u64,
     accounts_expanded: bool,
     other_folders_expanded: bool,
     demo: bool,
+    /// Senders whose images load despite failed sender checks.
+    image_senders: std::collections::HashSet<String>,
+    subscriptions: Option<subscriptions::Screen>,
     thunderbird_auto_open_pending: bool,
     thunderbird_auto_open_seen_loading: bool,
     loading_profiles: bool,
@@ -1009,7 +1163,11 @@ impl MailApp {
             {
                 // The old semantic node can disappear during a folder/body update.
                 // Keep shortcuts in the stable mailbox context instead of a retired node.
-                this.mailbox_focus.focus(window, cx);
+                if this.list_rows.is_empty() {
+                    this.mailbox_focus.focus(window, cx);
+                } else {
+                    this.message_focus.focus(window, cx);
+                }
             }
         });
         let message_focus = cx.focus_handle().tab_stop(true);
@@ -1051,8 +1209,20 @@ impl MailApp {
             mailbox_focus_admitted: false,
             compose_tools_busy: false,
             mail_panes: cx.new(|_| Default::default()),
+            split_right_panes: cx.new(|_| Default::default()),
+            split_below_panes: cx.new(|_| Default::default()),
             compact_mail_panes: cx.new(|_| Default::default()),
             sender_photos: Default::default(),
+            logo_attempts: HashSet::new(),
+            split: splits::Split::All,
+            screener: splits::Screener::default(),
+            known_senders: HashSet::new(),
+            split_unread: [0; 5],
+            undo_send: None,
+            swipe: None,
+            swipe_generation: 0,
+            conversation_open: false,
+            sidebar_hidden: true,
             reader_text: None,
             rule_preview: Vec::new(),
             newsletter_status: None,
@@ -1097,10 +1267,22 @@ impl MailApp {
             view: if demo { View::Mailbox } else { View::Setup },
             setup_return_view: View::Mailbox,
             appearance_return_view: View::Mailbox,
-            sidebar_collapsed: false,
+            settings_section: Default::default(),
+            sidebar_collapsed: true,
+            command_palette: None,
+            hidden_rows: HashSet::new(),
+            list_controls_open: false,
+            original: None,
+            prefer_clean: false,
+            original_measure: Default::default(),
+            original_bounds: Default::default(),
+            window_scale: 1.,
+            original_generation: 0,
             accounts_expanded: false,
             other_folders_expanded: false,
             demo,
+            subscriptions: None,
+            image_senders: Default::default(),
             thunderbird_auto_open_pending: false,
             thunderbird_auto_open_seen_loading: false,
             loading_profiles: !demo,
@@ -1154,11 +1336,13 @@ impl MailApp {
                         } else {
                             workflow::Ledger::load()
                         },
+                        if demo { Default::default() } else { image_trust::load() },
                     )
                 })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.appearance = loaded.0;
+                this.image_senders = loaded.4;
                 match loaded.1 {
                     Ok(theme) => this.theme = theme,
                     Err(error) => this.theme_error = Some(error),
@@ -1212,6 +1396,30 @@ impl MailApp {
     }
 
     fn start_native_features(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let (screener, known) = cx
+                .background_spawn(async move {
+                    let known: HashSet<String> = megamail_core::cache::Cache::open()
+                        .map(|cache| {
+                            cache
+                                .address_history()
+                                .into_iter()
+                                .map(|(email, _, _)| email.to_ascii_lowercase())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    (splits::Screener::load(), known)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.screener = screener;
+                this.known_senders.extend(known);
+                let snapshot = this.live.read(cx).snapshot();
+                this.rebuild_list_rows(&snapshot, cx);
+                cx.notify();
+            });
+        })
+        .detach();
         cx.spawn(async move |this, cx| {
             let (availability, recovery) = cx
                 .background_spawn(async move {
@@ -1980,6 +2188,12 @@ impl MailApp {
         let snapshot = self.live.read(cx).snapshot();
         if let Some(row) = &snapshot.selected_message {
             self.load_sender_photo(&row.message.from_addr, cx);
+            if snapshot.selected_sender_check.as_ref().is_some_and(|check| {
+                check.trust == megamail_core::models::SenderTrust::Pass
+            }) {
+                let email = row.message.from_addr.clone();
+                self.fetch_verified_logo(&email, cx);
+            }
             if let Some(conversation) = snapshot
                 .conversations
                 .iter()
@@ -2123,6 +2337,7 @@ impl MailApp {
             self.reader_selected_key = snapshot.selected_key.clone();
             self.reader_selected_position = selected_position;
             self.reader_should_focus = true;
+            self.prefetch_around_selection(&snapshot, cx);
         }
         if let Some(row) = snapshot.selected_message.as_ref().filter(|row| {
             snapshot.body_loaded
@@ -2256,6 +2471,11 @@ impl MailApp {
                             close_composer = self.recovery.is_none()
                                 || !composer.recovery.requires_ack
                                 || composer.recovery.retired == Some(composer.recovery.generation);
+                        }
+                        SendOutcome::Queued if self.undo_send.as_ref().is_some_and(|u| u.request_id == result.request_id) => {
+                            // Undo Send: the composer closes at once, like a send.
+                            composer.send_queued = true;
+                            close_composer = true;
                         }
                         SendOutcome::Queued => {
                             composer.send_queued = true;
@@ -2478,8 +2698,15 @@ impl MailApp {
         cx.notify();
     }
 
-    fn pane_surface(&self, color: gpui_kit::Hsla, _bleed: f32) -> gpui_kit::Hsla {
-        gpui_kit::Hsla { a: 1.0, ..color }
+    /// Panes are frosted glass over the wallpaper: the (already blurred and
+    /// faded) image shows through in proportion to the wallpaper strength.
+    fn pane_surface(&self, color: gpui_kit::Hsla, bleed: f32) -> gpui_kit::Hsla {
+        if !self.appearance.has_wallpaper() {
+            return gpui_kit::Hsla { a: 1.0, ..color };
+        }
+        let show = self.appearance.visual_wallpaper_opacity().clamp(0.0, 1.0);
+        let alpha = 1.0 - show * (0.38 + bleed.clamp(0.0, 0.3));
+        gpui_kit::Hsla { a: alpha.clamp(0.45, 1.0), ..color }
     }
 
     fn activate_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2669,6 +2896,11 @@ impl MailApp {
             PreferenceChange::HideQuotedText(value) => proposed.hide_quoted_text = value,
             PreferenceChange::ReducedMotion(value) => proposed.reduced_motion = value,
             PreferenceChange::DefaultUnified(value) => proposed.default_unified = value,
+            PreferenceChange::ListAvatars(value) => proposed.list_avatars = value,
+            PreferenceChange::InternetAvatars(value) => proposed.internet_avatars = value,
+            PreferenceChange::Gravatar(value) => proposed.gravatar = value,
+            PreferenceChange::LoadRemote(value) => proposed.load_remote = value,
+            PreferenceChange::Layout(value) => proposed.layout = value,
         }
         self.preferences_busy = true;
         self.preferences_error = None;
@@ -2679,6 +2911,12 @@ impl MailApp {
                 this.preferences_busy = false;
                 match result {
                     Ok(preferences) => {
+                        if (preferences.internet_avatars, preferences.gravatar)
+                            != (this.preferences.internet_avatars, this.preferences.gravatar)
+                        {
+                            this.sender_photos.forget_domain(None);
+                            this.logo_attempts.clear();
+                        }
                         this.preferences = preferences;
                         this.list_scroll = UniformListScrollHandle::new();
                         let snapshot = this.live.read(cx).snapshot();
@@ -2730,6 +2968,41 @@ impl MailApp {
                 })
                 .collect()
         };
+        if snapshot.action_error.is_some() {
+            self.hidden_rows.clear();
+        }
+        self.hidden_rows
+            .retain(|key| snapshot.page.iter().any(|row| &row.key == key));
+        parents.retain(|row| !self.hidden_rows.contains(&row.row.key));
+        let mut split_unread = [0usize; 5];
+        let classified: Vec<Option<splits::Split>> = parents
+            .iter()
+            .map(|row| self.split_of(row))
+            .collect();
+        for (row, split) in parents.iter().zip(&classified) {
+            let unread = row
+                .conversation
+                .as_ref()
+                .map_or(row.row.message.unread, |thread| thread.unread > 0);
+            if unread {
+                split_unread[0] += 1;
+                if let Some(split) = split {
+                    if let Some(index) = splits::Split::ALL.iter().position(|s| s == split) {
+                        split_unread[index] += 1;
+                    }
+                }
+            }
+        }
+        self.split_unread = split_unread;
+        if self.split != splits::Split::All {
+            let wanted = Some(self.split);
+            let mut index = 0;
+            parents.retain(|_| {
+                let keep = classified[index] == wanted;
+                index += 1;
+                keep
+            });
+        }
         parents.retain(|row| {
             self.comfort.filter.is_none_or(|wanted| {
                 self.work_status(row.conversation.as_ref(), &row.row, snapshot) == wanted
@@ -2780,6 +3053,18 @@ impl MailApp {
             }
         }
         self.list_rows = Arc::new(rows);
+        if self.preferences.list_avatars {
+            let senders: Vec<String> = self
+                .list_rows
+                .iter()
+                .filter(|row| !row.child)
+                .take(120)
+                .map(|row| row.row.message.from_addr.clone())
+                .collect();
+            for sender in senders {
+                self.load_sender_photo(&sender, cx);
+            }
+        }
         self.refresh_triage(snapshot, cx);
         self.pump_triage(cx);
     }
@@ -2972,6 +3257,9 @@ impl MailApp {
     }
 
     fn toggle_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.appearance_busy || self.appearance_loading || self.theme_busy {
+            return;
+        }
         self.change_theme(
             ThemeChange::Mode(if self.dark {
                 theme::ThemeMode::Light
@@ -3019,18 +3307,13 @@ impl MailApp {
             return;
         }
         let account_id = message.account_id;
-        self.composer = Some(Composer::new(
-            compose::reply_for_account(
-                account_id,
-                &message,
-                &self.own_addresses(account_id, cx),
-                false,
-            ),
-            window,
-            cx,
-        ));
-        self.view = View::Compose;
-        cx.notify();
+        let reply = compose::reply_for_account(
+            account_id,
+            &message,
+            &self.own_addresses(account_id, cx),
+            false,
+        );
+        self.open_reply_composer(reply, window, cx);
     }
 
     fn own_addresses(&self, account_id: u32, cx: &App) -> Vec<String> {
@@ -3070,16 +3353,27 @@ impl MailApp {
             return;
         }
         let account_id = message.account_id;
-        self.composer = Some(Composer::new(
-            compose::reply_for_account(
-                account_id,
-                &message,
-                &self.own_addresses(account_id, cx),
-                true,
-            ),
-            window,
-            cx,
-        ));
+        let reply = compose::reply_for_account(
+            account_id,
+            &message,
+            &self.own_addresses(account_id, cx),
+            true,
+        );
+        self.open_reply_composer(reply, window, cx);
+    }
+
+    fn open_reply_composer(
+        &mut self,
+        mut reply: OutgoingMessage,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let quoted = reply.body.trim_start().to_owned();
+        reply.body.clear();
+        let mut composer = Composer::new(reply, window, cx);
+        composer.quoted = (!quoted.is_empty()).then_some(quoted);
+        composer.body.read(cx).focus_handle(cx).focus(window, cx);
+        self.composer = Some(composer);
         self.view = View::Compose;
         cx.notify();
     }
@@ -3603,9 +3897,13 @@ impl MailApp {
         if !username.trim().is_empty() {
             form.username = username;
         }
-        form.password = setup.inputs.password.read(cx).value().to_string();
+        let guide = app_passwords::guide(
+            &setup.candidate().map(|c| c.incoming.host.clone()).unwrap_or_default(),
+            &form.email,
+        );
+        form.password = app_passwords::clean(guide, &setup.inputs.password.read(cx).value());
         form.smtp_username = setup.inputs.smtp_username.read(cx).value().to_string();
-        form.smtp_password = setup.inputs.smtp_password.read(cx).value().to_string();
+        form.smtp_password = app_passwords::clean(guide, &setup.inputs.smtp_password.read(cx).value());
         if setup.manual || setup.candidate().is_none() {
             let imap_host = setup.inputs.imap_host.read(cx).value().to_string();
             if !imap_host.trim().is_empty() {
@@ -3744,6 +4042,546 @@ impl MailApp {
             });
         })
         .detach();
+        cx.notify();
+    }
+
+    fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.view != View::Mailbox {
+            return;
+        }
+        if self.command_palette.is_some() {
+            self.close_palette(window, cx);
+            return;
+        }
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Type a command…"));
+        let subscription = cx.subscribe_in(&input, window, |this, _, event: &InputEvent, _, cx| {
+            if matches!(event, InputEvent::Change) {
+                if let Some(palette) = this.command_palette.as_mut() {
+                    palette.index = 0;
+                }
+                cx.notify();
+            }
+        });
+        input.read(cx).focus_handle(cx).focus(window, cx);
+        self.command_palette = Some(PaletteState { input, index: 0, _subscription: subscription });
+        cx.notify();
+    }
+
+    fn close_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.command_palette = None;
+        if self.list_rows.is_empty() {
+            self.mailbox_focus.focus(window, cx);
+        } else {
+            self.message_focus.focus(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn run_palette_command(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(palette) = self.command_palette.as_ref() else {
+            return;
+        };
+        let query = palette.input.read(cx).value().to_string();
+        let Some(command) = command_palette::filter(&query).into_iter().nth(index) else {
+            return;
+        };
+        self.close_palette(window, cx);
+        window.dispatch_action(command.action(), cx);
+    }
+
+    fn palette_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(palette) = self.command_palette.as_mut() else {
+            return false;
+        };
+        let count = command_palette::filter(&palette.input.read(cx).value()).len();
+        match key {
+            "escape" => self.close_palette(window, cx),
+            "enter" => {
+                let index = palette.index;
+                self.run_palette_command(index, window, cx);
+            }
+            "down" if count > 0 => palette.index = (palette.index + 1) % count,
+            "up" if count > 0 => palette.index = (palette.index + count - 1) % count,
+            _ => return false,
+        }
+        cx.notify();
+        true
+    }
+
+    fn palette_view(&self, palette: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let state = self.command_palette.as_ref()?;
+        let query = state.input.read(cx).value().to_string();
+        let commands = command_palette::filter(&query);
+        let selected = state.index.min(commands.len().saturating_sub(1));
+        let rows = commands.into_iter().enumerate().map(|(index, command)| {
+            let active = index == selected;
+            h_flex()
+                .id(SharedString::from(format!("palette-{index}")))
+                .w_full()
+                .h(px(36.))
+                .px_3()
+                .rounded(px(6.))
+                .items_center()
+                .justify_between()
+                .cursor_pointer()
+                .when(active, |row| row.bg(palette.selected))
+                .hover(|row| row.bg(palette.hover))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.run_palette_command(index, window, cx)
+                }))
+                .child(div().text_size(px(13.)).child(command.label))
+                .child(shortcut_keys(command.keys, palette))
+        });
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .justify_center()
+                .pt(relative(0.14))
+                .bg(gpui_kit::black().opacity(0.35))
+                .occlude()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| this.close_palette(window, cx)),
+                )
+                .child(
+                    v_flex()
+                        .id("command-palette")
+                        .w(px(560.))
+                        .h_auto()
+                        .self_start()
+                        .rounded(px(12.))
+                        .border_1()
+                        .border_color(palette.border)
+                        .bg(palette.surface)
+                        .shadow_lg()
+                        .overflow_hidden()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .capture_key_down(cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                            if this.palette_key(&event.keystroke.key, window, cx) {
+                                cx.stop_propagation();
+                            }
+                        }))
+                        .child(
+                            div()
+                                .p_2()
+                                .border_b_1()
+                                .border_color(palette.border)
+                                .child(Input::new(&state.input).appearance(false).text_size(px(15.))),
+                        )
+                        .child(
+                            v_flex()
+                                .id("palette-rows")
+                                .max_h(px(380.))
+                                .p_1()
+                                .gap_px()
+                                .overflow_y_scroll()
+                                .children(rows),
+                        )
+                        .map(|card| self.reveal(card, "palette-reveal", 10., 150, cx)),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// Fade in and rise into place; nothing when motion is reduced.
+    fn reveal<E: IntoElement + gpui_kit::Styled + 'static>(
+        &self,
+        element: E,
+        id: impl Into<SharedString>,
+        rise: f32,
+        millis: u64,
+        cx: &App,
+    ) -> AnyElement {
+        if self.preferences.reduced_motion || cx.reduce_motion() {
+            return element.into_any_element();
+        }
+        element
+            .with_animation(
+                gpui_kit::ElementId::Name(id.into()),
+                Animation::new(Duration::from_millis(millis)).with_easing(|t| 1. - (1. - t).powi(4)),
+                move |element, t| element.opacity(t).mt(px(rise * (1. - t))),
+            )
+            .into_any_element()
+    }
+
+    /// Archive or trash the selection and move on to the next conversation
+    /// immediately, the way Superhuman's E and # feel.
+    fn triage_selected(&mut self, kind: FolderKind, cx: &mut Context<Self>) {
+        if !self
+            .action_state(cx)
+            .allows(desktop_actions::MailboxAction::NextMessage)
+        {
+            return;
+        }
+        let snapshot = self.live.read(cx).snapshot();
+        let Some(selected) = snapshot.selected_key.clone() else {
+            return;
+        };
+        let position = self.list_rows.iter().position(|row| {
+            row.row.key == selected
+                || row.conversation.as_ref().is_some_and(|thread| {
+                    thread.members.iter().any(|member| member.key == selected)
+                })
+        });
+        let next = position.and_then(|index| {
+            self.list_rows
+                .iter()
+                .skip(index + 1)
+                .find(|row| !row.child)
+                .or_else(|| self.list_rows[..index].iter().rev().find(|row| !row.child))
+                .map(|row| row.row.key.clone())
+        });
+        let hidden = position.map(|index| self.list_rows[index].row.key.clone());
+        let moved = self.live.update(cx, |live, cx| match kind {
+            FolderKind::Trash => live.trash_selected(cx),
+            _ => live.archive_selected(cx),
+        });
+        if !moved {
+            return;
+        }
+        if let Some(key) = hidden {
+            self.hidden_rows.insert(key);
+        }
+        if let Some(key) = next {
+            self.live.update(cx, |live, cx| live.select_message(key, cx));
+        }
+        let snapshot = self.live.read(cx).snapshot();
+        self.rebuild_list_rows(&snapshot, cx);
+        cx.notify();
+    }
+
+    /// Superhuman-style speed: fetch the next few bodies before they are
+    /// opened, so J/K and E land on an already-cached message.
+    fn prefetch_around_selection(&mut self, snapshot: &MailboxSnapshot, cx: &mut Context<Self>) {
+        let Some(selected) = snapshot.selected_key.as_ref() else {
+            return;
+        };
+        let Some(index) = self.list_rows.iter().position(|row| {
+            &row.row.key == selected
+                || row.conversation.as_ref().is_some_and(|thread| {
+                    thread.members.iter().any(|member| &member.key == selected)
+                })
+        }) else {
+            return;
+        };
+        let keys: Vec<MessageKey> = self
+            .list_rows
+            .iter()
+            .skip(index + 1)
+            .filter(|row| !row.child)
+            .take(4)
+            .chain(self.list_rows[..index].iter().rev().filter(|row| !row.child).take(1))
+            .map(|row| row.row.key.clone())
+            .collect();
+        if !keys.is_empty() {
+            let live = self.live.clone();
+            cx.defer(move |cx| {
+                live.update(cx, |live, cx| live.prefetch_bodies(&keys, cx));
+            });
+        }
+    }
+
+
+    fn set_reader_plain(&mut self, plain: bool, cx: &mut Context<Self>) {
+        let snapshot = self.live.read(cx).snapshot();
+        let Some(key) = snapshot.selected_key.clone() else {
+            return;
+        };
+        if plain {
+            self.plain_messages.insert(key);
+        } else {
+            self.plain_messages.remove(&key);
+        }
+        self.refresh_reader_text(&snapshot, cx);
+        cx.notify();
+    }
+
+    /// Act on one row without opening it first (hover buttons, right-click,
+    /// swipe). `unread` is the state the row showed when it was clicked.
+    fn row_action(&mut self, key: MessageKey, action: RowAction, unread: bool, cx: &mut Context<Self>) {
+        self.live.update(cx, |live, cx| {
+            live.select_message(key, cx);
+        });
+        match action {
+            RowAction::Archive => self.triage_selected(FolderKind::Archive, cx),
+            RowAction::Trash => self.triage_selected(FolderKind::Trash, cx),
+            RowAction::Star => {
+                let starred = self.live.read(cx).snapshot().selected_message.is_some_and(|row| row.message.starred);
+                self.live.update(cx, |live, cx| live.set_selected_starred(!starred, cx));
+            }
+            RowAction::Read => {
+                self.live.update(cx, |live, cx| live.set_selected_unread(!unread, cx));
+            }
+        }
+        cx.notify();
+    }
+
+    /// Two-finger horizontal swipe on a row: left archives, right toggles
+    /// read. The row follows the fingers and snaps back if released early.
+    fn swipe_row(&mut self, key: MessageKey, dx: f32, ended: bool, unread: bool, cx: &mut Context<Self>) {
+        let travel = match &self.swipe {
+            Some((current, travel)) if *current == key => *travel,
+            _ => 0.,
+        };
+        let travel = (travel + dx).clamp(-180., 180.);
+        if ended {
+            self.finish_swipe(unread, cx);
+            return;
+        }
+        self.swipe = Some((key, travel));
+        self.swipe_generation += 1;
+        let generation = self.swipe_generation;
+        // Mice and X11 send no "fingers lifted" event: settle after a pause.
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_millis(220)).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.swipe_generation == generation {
+                    this.finish_swipe(unread, cx);
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn finish_swipe(&mut self, unread: bool, cx: &mut Context<Self>) {
+        let Some((key, travel)) = self.swipe.take() else {
+            return;
+        };
+        if travel <= -SWIPE_COMMIT {
+            self.row_action(key, RowAction::Archive, unread, cx);
+        } else if travel >= SWIPE_COMMIT {
+            self.row_action(key, RowAction::Read, unread, cx);
+        }
+        cx.notify();
+    }
+
+    /// Repaint the Undo Send countdown until its window closes.
+    fn tick_undo_send(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_millis(500)).await;
+                let open = this
+                    .update(cx, |this, cx| {
+                        let open = this
+                            .undo_send
+                            .as_ref()
+                            .is_some_and(|u| u.send_at >= megamail_core::datefmt::now());
+                        if !open {
+                            this.undo_send = None;
+                        }
+                        cx.notify();
+                        open
+                    })
+                    .unwrap_or(false);
+                if !open {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn undo_last_send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(undo) = self.undo_send.take() else {
+            return;
+        };
+        let snapshot = self.live.read(cx).snapshot();
+        let session = self.live.read(cx).schedule_session(undo.account);
+        let item = snapshot.outbox.iter().find(|item| {
+            item.account_id == undo.account
+                && item.send_at == Some(undo.send_at)
+                && item.phase == megamail_core::models::OutboxPhase::Ready
+        });
+        let canceled = match (item, session) {
+            (Some(item), Some(session)) if undo.send_at > megamail_core::datefmt::now() => {
+                let request = megamail_core::worker::QueuedCancelRequest {
+                    id: item.id,
+                    send_at: Some(undo.send_at),
+                    session,
+                };
+                self.live
+                    .update(cx, |live, cx| live.cancel_queued(undo.account, request, cx))
+            }
+            _ => false,
+        };
+        if !canceled {
+            self.reader_session.notice = Some("Too late to undo: the message has already gone to the server.".into());
+            cx.notify();
+            return;
+        }
+        if self.composer.is_none() {
+            let mut original = undo.original;
+            original.client_message_id = None;
+            let mut composer = Composer::new(original, window, cx);
+            composer.notice = Some("Send undone. Your message is back here.".into());
+            composer.body.read(cx).focus_handle(cx).focus(window, cx);
+            self.composer = Some(composer);
+            self.view = View::Compose;
+        }
+        cx.notify();
+    }
+
+    fn undo_toast(&self, palette: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let undo = self.undo_send.as_ref()?;
+        let left = undo.send_at - megamail_core::datefmt::now();
+        if left < 0 {
+            return None;
+        }
+        let toast = div()
+                .absolute()
+                .bottom(px(24.))
+                .left_0()
+                .right_0()
+                .flex()
+                .justify_center()
+                .child(
+                    h_flex()
+                        .gap_3()
+                        .items_center()
+                        .px_4()
+                        .py_2()
+                        .rounded(px(10.))
+                        .bg(palette.text)
+                        .text_color(palette.background)
+                        .shadow_lg()
+                        .child(div().text_size(px(13.)).child(format!(
+                            "Sending “{}” in {left}s",
+                            if undo.original.subject.trim().is_empty() { "(No subject)" } else { undo.original.subject.trim() }
+                        )))
+                        .child(
+                            Button::new("undo-send")
+                                .ghost()
+                                .small()
+                                .label("Undo · Z")
+                                .on_click(cx.listener(|this, _, window, cx| this.undo_last_send(window, cx))),
+                        ),
+                )
+                ;
+        Some(self.reveal(toast, "undo-toast", -12., 220, cx))
+    }
+
+    /// One key unsubscribe: RFC 8058 one-click when the sender offers it
+    /// (an HTTPS POST, no browser), otherwise the reviewed email or webpage.
+    fn unsubscribe_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let snapshot = self.live.read(cx).snapshot();
+        let (Some(row), Some(check)) = (snapshot.selected_message.clone(), snapshot.selected_sender_check.clone()) else {
+            return;
+        };
+        let Some(metadata) = check.unsubscribe.clone() else {
+            self.newsletter_status = Some("No unsubscribe option was found in this message.".into());
+            cx.notify();
+            return;
+        };
+        let one_click = metadata
+            .one_click
+            .clone()
+            .filter(|url| metadata.in_headers && url.starts_with("https://") && megamail_core::mail_text::safe_browser_url(url));
+        if let Some(url) = one_click.filter(|_| !self.demo) {
+            let sender = if row.message.from_name.is_empty() { row.message.from_addr.clone() } else { row.message.from_name.clone() };
+            self.newsletter_status = Some(format!("Unsubscribing from {sender}…"));
+            let task = cx.background_spawn(async move {
+                ureq::AgentBuilder::new()
+                    .timeout(Duration::from_secs(10))
+                    .redirects(0)
+                    .build()
+                    .post(&url)
+                    .set("Content-Type", "application/x-www-form-urlencoded")
+                    .send_string("List-Unsubscribe=One-Click")
+                    .map(|response| response.status() < 400)
+                    .unwrap_or(false)
+            });
+            cx.spawn(async move |this, cx| {
+                let ok = task.await;
+                let _ = this.update(cx, |this, cx| {
+                    this.newsletter_status = Some(if ok {
+                        format!("Unsubscribed from {sender}.")
+                    } else {
+                        "One-click unsubscribe failed. Use the email or webpage option below.".into()
+                    });
+                    if ok {
+                        this.triage_selected(FolderKind::Archive, cx);
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+            cx.notify();
+            return;
+        }
+        if metadata.mailto.is_some() || metadata.reply.is_some() {
+            self.open_unsubscribe_draft(&row.key, &metadata, window, cx);
+        } else if let Some(url) = metadata.web.clone() {
+            self.open_unsubscribe_page(&row.key, &url, cx);
+        } else {
+            self.newsletter_status = Some("No supported unsubscribe option was found.".into());
+            cx.notify();
+        }
+    }
+
+    fn split_of(&self, row: &ListRow) -> Option<splits::Split> {
+        let message = &row.row.message;
+        let known = self.known_senders.contains(&message.from_addr.to_ascii_lowercase())
+            || row.conversation.as_ref().is_some_and(|thread| thread.replied);
+        splits::classify(&message.from_addr, &message.from_name, known, &self.screener)
+    }
+
+    fn set_split(&mut self, split: splits::Split, cx: &mut Context<Self>) {
+        self.split = split;
+        self.list_scroll = UniformListScrollHandle::new();
+        let snapshot = self.live.read(cx).snapshot();
+        self.rebuild_list_rows(&snapshot, cx);
+        cx.notify();
+    }
+
+    /// Screener decision for the selected message's sender.
+    fn screen_sender(&mut self, allow: bool, cx: &mut Context<Self>) {
+        let snapshot = self.live.read(cx).snapshot();
+        let Some(row) = snapshot.selected_message.as_ref() else {
+            return;
+        };
+        let address = row.message.from_addr.clone();
+        // Move on first, the way archive does, then hide or promote the sender.
+        let next = self
+            .list_rows
+            .iter()
+            .position(|r| r.row.key == row.key)
+            .and_then(|index| {
+                self.list_rows
+                    .iter()
+                    .skip(index + 1)
+                    .chain(self.list_rows[..index].iter().rev())
+                    .find(|r| !r.child && !r.row.message.from_addr.eq_ignore_ascii_case(&address))
+                    .map(|r| r.row.key.clone())
+            });
+        self.screener.decide(&address, allow);
+        let screener = self.screener.clone();
+        cx.background_spawn(async move {
+            if let Err(error) = screener.save() {
+                tracing::warn!("{error}");
+            }
+        })
+        .detach();
+        if let Some(key) = next {
+            self.live.update(cx, |live, cx| live.select_message(key, cx));
+        }
+        let snapshot = self.live.read(cx).snapshot();
+        self.rebuild_list_rows(&snapshot, cx);
+        cx.notify();
+    }
+
+    fn go_to_kind(&mut self, kind: FolderKind, window: &mut Window, cx: &mut Context<Self>) {
+        if self.view != View::Mailbox {
+            return;
+        }
+        self.comfort.outbox_open = false;
+        self.comfort.filter = None;
+        self.live
+            .update(cx, |live, cx| live.select_unified_kind(Some(kind), cx));
+        self.list_scroll = UniformListScrollHandle::new();
+        self.message_focus.focus(window, cx);
         cx.notify();
     }
 
@@ -3898,3825 +4736,9 @@ impl MailApp {
         button.into_any_element()
     }
 
-    fn account_button(
-        &self,
-        account: &megamail_core::models::Account,
-        selected: bool,
-        palette: Palette,
-        dark: bool,
-        collapsed: bool,
-        snapshot: &MailboxSnapshot,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let account_id = account.id;
-        let title = if account.name.trim().is_empty() {
-            account.email.clone()
-        } else {
-            account.name.clone()
-        };
-        let button = Button::new(SharedString::from(format!("account-{account_id}")))
-            .custom(sidebar_button_variant(cx, palette, dark, selected))
-            .small()
-            .selected(selected)
-            .w_full()
-            .h(px(
-                zeron_style::ACCOUNT_TRIGGER_HEIGHT + zeron_style::ACCOUNT_DETAIL_LINE_HEIGHT
-            ))
-            .rounded(px(4.))
-            .px_2()
-            .when(collapsed, |button| {
-                button.w(px(42.)).px_0().tooltip(account.label.clone())
-            })
-            .accessibility_label(format!("Switch to {}", account.label))
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.mailbox_focus.focus(window, cx);
-                this.live
-                    .update(cx, |live, cx| live.switch_account(account_id, cx));
-                this.list_scroll = UniformListScrollHandle::new();
-                this.comfort.outbox_open = false;
-                this.comfort.filter = None;
-                this.view = View::Mailbox;
-                cx.notify();
-            }))
-            .when(collapsed, |button| {
-                button.child(
-                    div()
-                        .flex()
-                        .size(px(zeron_style::ACCOUNT_AVATAR_SIZE))
-                        .rounded_full()
-                        .bg(palette.accent_wash)
-                        .text_color(palette.accent)
-                        .text_size(px(zeron_style::ACCOUNT_AVATAR_GLYPH_SIZE))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .items_center()
-                        .justify_center()
-                        .child(initials(&title)),
-                )
-            })
-            .when(!collapsed, |button| {
-                button.child(
-                    h_flex()
-                        .w_full()
-                        .items_center()
-                        .gap(px(zeron_style::ACCOUNT_TRIGGER_GAP))
-                        .child(
-                            div()
-                                .flex()
-                                .size(px(zeron_style::ACCOUNT_AVATAR_SIZE))
-                                .rounded_full()
-                                .bg(palette.accent_wash)
-                                .text_color(palette.accent)
-                                .text_size(px(zeron_style::ACCOUNT_AVATAR_GLYPH_SIZE))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .items_center()
-                                .justify_center()
-                                .child(initials(&title)),
-                        )
-                        .child(
-                            v_flex()
-                                .min_w_0()
-                                .flex_1()
-                                .gap_1()
-                                .items_start()
-                                .child(
-                                    div()
-                                        .truncate()
-                                        .text_size(px(zeron_style::ACCOUNT_PRIMARY_TEXT_SIZE))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(zeron_style::text_role_color(
-                                            &palette,
-                                            zeron_style::TextRole::Primary,
-                                        ))
-                                        .child(title.clone()),
-                                )
-                                .child(
-                                    div()
-                                        .truncate()
-                                        .text_size(px(zeron_style::ACCOUNT_DETAIL_TEXT_SIZE))
-                                        .text_color(zeron_style::text_role_color(
-                                            &palette,
-                                            zeron_style::TextRole::Secondary,
-                                        ))
-                                        .child(account.email.clone()),
-                                ),
-                        )
-                        .when(selected, |row| {
-                            row.child(
-                                Icon::new(IconName::Check)
-                                    .size(px(13.))
-                                    .text_color(palette.accent),
-                            )
-                        }),
-                )
-            });
-        button.into_any_element()
-    }
 
-    fn sidebar(
-        &self,
-        snapshot: &MailboxSnapshot,
-        palette: Palette,
-        cx: &mut Context<Self>,
-        width: gpui_kit::Pixels,
-    ) -> AnyElement {
-        let dark = self.dark;
-        if self.sidebar_collapsed {
-            return self.collapsed_sidebar(snapshot, palette, dark, cx);
-        }
-        let current = snapshot.current_account_id;
-        let account = snapshot
-            .accounts
-            .iter()
-            .find(|account| Some(account.id) == current);
-        let mut primary = snapshot
-            .folders
-            .iter()
-            .filter(|folder| primary_folder_rank(folder.kind).is_some())
-            .collect::<Vec<_>>();
-        primary.sort_by_key(|folder| primary_folder_rank(folder.kind).unwrap_or(usize::MAX));
-        let mut other = snapshot
-            .folders
-            .iter()
-            .filter(|folder| primary_folder_rank(folder.kind).is_none())
-            .collect::<Vec<_>>();
-        other.sort_by_key(|folder| folder.name.to_lowercase());
-        v_flex()
-            .map(|el| {
-                if width == px(0.) {
-                    el.w_full()
-                } else {
-                    el.w(width)
-                }
-            })
-            .h_full()
-            .min_h_0()
-            .flex_shrink_0()
-            .bg(self.pane_surface(palette.sidebar, 0.24))
-            .border_r_1()
-            .border_color(palette.border)
-            .child(
-                v_flex()
-                    .flex_shrink_0()
-                    .px_2()
-                    .pt_3()
-                    .pb_2()
-                    .gap_1()
-                    .child(
-                        h_flex()
-                            .items_center()
-                            .justify_between()
-                            .gap_1()
-                            .child(
-                                Button::new("choose-account")
-                                    .custom(floating_button_variant(cx, palette, dark))
-                                    .small()
-                                    .min_w_0()
-                                    .flex_1()
-                                    .h(px(38.))
-                                    .icon(
-                                        Icon::new(if self.accounts_expanded {
-                                            IconName::ChevronDown
-                                        } else {
-                                            IconName::ChevronRight
-                                        })
-                                        .size(px(15.)),
-                                    )
-                                    .label(
-                                        account
-                                            .map(|account| account.email.clone())
-                                            .unwrap_or_else(|| "Mail accounts".into()),
-                                    )
-                                    .tooltip(
-                                        account
-                                            .map(|account| account.email.clone())
-                                            .unwrap_or_else(|| "Choose an account".into()),
-                                    )
-                                    .accessibility_label("Choose mail account")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.accounts_expanded = !this.accounts_expanded;
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                Button::new("add-account")
-                                    .custom(floating_button_variant(cx, palette, dark))
-                                    .small()
-                                    .icon(Icon::new(IconName::Plus).size(px(14.)))
-                                    .disabled(snapshot.pending_send)
-                                    .tooltip("Add mail account")
-                                    .accessibility_label("Add mail account")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_setup(window, cx)
-                                    })),
-                            ),
-                    )
-                    .when(self.accounts_expanded, |column| {
-                        column.children(snapshot.accounts.iter().map(|account| {
-                            self.account_button(
-                                account,
-                                snapshot.scope == MailboxScope::Account
-                                    && Some(account.id) == current,
-                                palette,
-                                dark,
-                                false,
-                                snapshot,
-                                cx,
-                            )
-                        }))
-                    })
-                    .child(
-                        Button::new("sidebar-compose")
-                            .custom(floating_button_variant(cx, palette, dark))
-                            .small()
-                            .w_full()
-                            .h(px(32.))
-                            .icon(Icon::new(IconName::PenLine).size(px(14.)))
-                            .label(if self.composer.is_some() {
-                                "Resume draft"
-                            } else {
-                                "New message"
-                            })
-                            .disabled(
-                                !self
-                                    .action_state(cx)
-                                    .allows(desktop_actions::MailboxAction::ComposeMessage),
-                            )
-                            .on_click(
-                                cx.listener(|this, _, window, cx| {
-                                    this.open_new_message(window, cx)
-                                }),
-                            ),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .id("sidebar-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .px_2()
-                    .py_2()
-                    .gap_1()
-                    .child(self.recovery_panel(palette, cx))
-                    .child(self.unified_button(snapshot, palette, dark, false, cx))
-                    .child(self.shared_folders(snapshot, palette, cx))
-                    .children(primary.into_iter().map(|folder| {
-                        self.folder_button(folder, snapshot, palette, dark, false, cx)
-                    }))
-                    .when(!other.is_empty(), |column| {
-                        column.child(
-                            v_flex()
-                                .mt_3()
-                                .gap_1()
-                                .child(
-                                    Button::new("toggle-other-folders")
-                                        .custom(floating_button_variant(cx, palette, dark))
-                                        .small()
-                                        .w_full()
-                                        .icon(
-                                            Icon::new(if self.other_folders_expanded {
-                                                IconName::ChevronDown
-                                            } else {
-                                                IconName::ChevronRight
-                                            })
-                                            .size(px(13.)),
-                                        )
-                                        .label(format!("Folders · {}", other.len()))
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.other_folders_expanded =
-                                                !this.other_folders_expanded;
-                                            cx.notify();
-                                        })),
-                                )
-                                .when(self.other_folders_expanded, |column| {
-                                    column.children(other.iter().map(|folder| {
-                                        self.folder_button(
-                                            folder, snapshot, palette, dark, false, cx,
-                                        )
-                                    }))
-                                }),
-                        )
-                    }),
-            )
-            .child(
-                v_flex()
-                    .flex_shrink_0()
-                    .px_2()
-                    .py_2()
-                    .gap_1()
-                    .child(
-                        h_flex()
-                            .items_center()
-                            .gap_2()
-                            .px_2()
-                            .h(px(26.))
-                            .child(
-                                Icon::new(if snapshot.loading {
-                                    IconName::RefreshCw
-                                } else {
-                                    IconName::Mail
-                                })
-                                .size(px(12.))
-                                .text_color(palette.muted),
-                            )
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_size(px(11.))
-                                    .text_color(palette.muted)
-                                    .child(if snapshot.loading {
-                                        "Updating mail…".into()
-                                    } else if snapshot.status.is_empty() {
-                                        format!("{} unread", snapshot.unread_count)
-                                    } else {
-                                        snapshot.status.clone()
-                                    }),
-                            ),
-                    )
-                    .when(!snapshot.outbox.is_empty(), |column| {
-                        column.child(
-                            div()
-                                .px_2()
-                                .text_size(px(10.))
-                                .text_color(palette.faint)
-                                .child(format!("{} queued", snapshot.outbox.len())),
-                        )
-                    })
-                    .child(
-                        Button::new("open-appearance")
-                            .custom(floating_button_variant(cx, palette, dark))
-                            .small()
-                            .w_full()
-                            .h(px(32.))
-                            .icon(Icon::new(IconName::Settings2).size(px(14.)))
-                            .label("Settings")
-                            .selected(self.view == View::Appearance)
-                            .on_click(cx.listener(|this, _, _, cx| this.open_appearance(cx))),
-                    ),
-            )
-            .into_any_element()
-    }
 
-    fn unified_button(
-        &self,
-        snapshot: &MailboxSnapshot,
-        palette: Palette,
-        dark: bool,
-        collapsed: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let selected = snapshot.scope == MailboxScope::Unified
-            && snapshot.unified_kind == Some(FolderKind::Inbox);
-        Button::new(if collapsed {
-            "unified-compact"
-        } else {
-            "unified-inbox"
-        })
-        .custom(sidebar_button_variant(cx, palette, dark, selected))
-        .small()
-        .selected(selected)
-        .w_full()
-        .h(px(32.))
-        .rounded(px(4.))
-        .px_2()
-        .icon(Icon::new(IconName::Inbox).size(px(14.)))
-        .when(!collapsed, |el| el.label("All inboxes"))
-        .tooltip("Inbox mail from every account")
-        .accessibility_label("All inboxes from every account")
-        .on_click(cx.listener(|this, _, window, cx| {
-            this.mailbox_focus.focus(window, cx);
-            this.comfort.outbox_open = false;
-            this.comfort.filter = None;
-            this.live.update(cx, |live, cx| live.select_unified(cx));
-            this.list_scroll = UniformListScrollHandle::new();
-            this.view = View::Mailbox;
-            cx.notify();
-        }))
-        .into_any_element()
-    }
 
-    fn collapsed_sidebar(
-        &self,
-        snapshot: &MailboxSnapshot,
-        palette: Palette,
-        dark: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let mut primary_folders = snapshot
-            .folders
-            .iter()
-            .filter(|folder| primary_folder_rank(folder.kind).is_some())
-            .collect::<Vec<_>>();
-        primary_folders
-            .sort_by_key(|folder| primary_folder_rank(folder.kind).unwrap_or(usize::MAX));
-        let mut other_folders = snapshot
-            .folders
-            .iter()
-            .filter(|folder| primary_folder_rank(folder.kind).is_none())
-            .collect::<Vec<_>>();
-        other_folders.sort_by_key(|folder| folder.name.to_lowercase());
-
-        v_flex()
-            .w(px(60.))
-            .h_full()
-            .min_h_0()
-            .flex_shrink_0()
-            .bg(self.pane_surface(palette.sidebar, 0.24))
-            .border_r_1()
-            .border_color(palette.border)
-            .child(
-                v_flex()
-                    .id("sidebar-compact-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .items_center()
-                    .gap_2()
-                    .px_2()
-                    .py_3()
-                    .child(
-                        Button::new("add-account-compact")
-                            .custom(floating_button_variant(cx, palette, dark))
-                            .small()
-                            .icon(Icon::new(IconName::Plus))
-                            .disabled(snapshot.pending_send)
-                            .tooltip("Add a mail account")
-                            .accessibility_label("Add a mail account")
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.open_setup(window, cx)),
-                            ),
-                    )
-                    .children(snapshot.accounts.iter().map(|account| {
-                        self.account_button(
-                            account,
-                            snapshot.current_account_id == Some(account.id),
-                            palette,
-                            dark,
-                            true,
-                            snapshot,
-                            cx,
-                        )
-                    }))
-                    .child(div().w_full().h(px(1.)).my_1().bg(palette.border))
-                    .child(self.unified_button(snapshot, palette, dark, true, cx))
-                    .children(primary_folders.iter().map(|folder| {
-                        self.folder_button(folder, snapshot, palette, dark, true, cx)
-                    }))
-                    .when(!other_folders.is_empty(), |column| {
-                        column
-                            .child(div().w_full().h(px(1.)).my_1().bg(palette.border))
-                            .children(other_folders.iter().map(|folder| {
-                                self.folder_button(folder, snapshot, palette, dark, true, cx)
-                            }))
-                    }),
-            )
-            .child(
-                v_flex()
-                    .flex_shrink_0()
-                    .items_center()
-                    .gap_1()
-                    .border_t_1()
-                    .border_color(palette.border)
-                    .py_2()
-                    .child(
-                        Button::new("open-appearance-compact")
-                            .custom(floating_button_variant(cx, palette, dark))
-                            .small()
-                            .selected(self.view == View::Appearance)
-                            .icon(Icon::new(IconName::Palette))
-                            .tooltip("Settings")
-                            .accessibility_label("Appearance")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if this.composer.is_none() {
-                                    this.open_appearance(cx);
-                                }
-                            })),
-                    ),
-            )
-            .into_any_element()
-    }
-
-    fn message_list(
-        &self,
-        snapshot: &MailboxSnapshot,
-        palette: Palette,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        if self.list_rows.is_empty() {
-            let recovery = snapshot.current_folder_path.is_none()
-                && (snapshot.error.is_some()
-                    || self.startup_error.is_some()
-                    || snapshot.thunderbird_error.is_some());
-            let message = if snapshot.thunderbird_loading {
-                "Reconnecting saved accounts…"
-            } else if recovery {
-                "Saved accounts need attention"
-            } else if snapshot.loading {
-                "Loading messages…"
-            } else if self.comfort.filter.is_some() {
-                "No conversations in this work state"
-            } else if snapshot.filter != MessageFilter::All {
-                "No messages match this filter"
-            } else if snapshot.search_query.is_empty() {
-                "This folder is empty"
-            } else {
-                "No matches in this search scope"
-            };
-            return v_flex()
-                .flex_1()
-                .items_center()
-                .justify_center()
-                .gap_2()
-                .px_5()
-                .text_center()
-                .child(
-                    Icon::new(IconName::Inbox)
-                        .size(px(22.))
-                        .text_color(palette.faint),
-                )
-                .child(
-                    div()
-                        .text_size(px(13.))
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(message),
-                )
-                .child(div().text_size(px(11.)).text_color(palette.muted).child(
-                    if snapshot.thunderbird_loading {
-                        "Your saved accounts are being reconnected. No import is needed."
-                    } else if recovery {
-                        "Use Retry above after resolving the reported problem. Account storage is kept."
-                    } else if snapshot.filter != MessageFilter::All {
-                        "Choose All or load more messages to broaden this view."
-                    } else if snapshot.search_query.is_empty() {
-                        if self.comfort.filter.is_some() { "Choose All work states or load more results to broaden this view." } else { "New mail will appear here when this account syncs." }
-                    } else {
-                        "Try another search or choose All local mail in Search scope."
-                    },
-                ))
-                .into_any_element();
-        }
-
-        let selected = snapshot.selected_key.clone();
-        let rows = self.list_rows.clone();
-        let row_height = match self.preferences.density {
-            Density::Compact => 64.,
-            Density::Comfortable => 78.,
-        };
-        let expanded = self.expanded_conversations.clone();
-        let labels = snapshot.account_labels.clone();
-        let own_addresses: Vec<_> = snapshot
-            .accounts
-            .iter()
-            .map(|a| a.email.to_lowercase())
-            .chain(
-                self.profiles
-                    .iter()
-                    .flat_map(|(_, p)| p.aliases.iter().map(|a| a.address().to_lowercase())),
-            )
-            .collect();
-        let unified = snapshot.scope == MailboxScope::Unified;
-        let owner = cx.entity().downgrade();
-        let bulk_open = self.triage.open;
-        let bulk_busy = self.triage.busy();
-        let bulk_selected: HashSet<_> = self
-            .triage
-            .selection
-            .keys()
-            .map(|k| k.message.clone())
-            .collect();
-        let bulk_available = self.triage.available.clone();
-        uniform_list("message-rows", rows.len(), move |range, _, _| {
-            range
-                .map(|index| {
-                    let ListRow {
-                        row,
-                        conversation,
-                        child,
-                    } = rows[index].clone();
-                    let mut display_message = if bulk_open {
-                        row.message.clone()
-                    } else {
-                        conversation
-                            .as_ref()
-                            .and_then(|thread| thread.latest_sent.as_ref())
-                            .filter(|sent| sent.message.timestamp > row.message.timestamp)
-                            .map_or_else(
-                                || row.message.clone(),
-                                |sent| {
-                                    let mut message = sent.message.clone();
-                                    message.from_name = "You".to_owned();
-                                    message
-                                },
-                            )
-                    };
-                    if own_addresses
-                        .iter()
-                        .any(|a| a.eq_ignore_ascii_case(&display_message.from_addr))
-                    {
-                        display_message.from_name = format!(
-                            "You → {}",
-                            if display_message.to.is_empty() {
-                                "Recipients"
-                            } else {
-                                &display_message.to
-                            }
-                        );
-                    }
-                    if let Some(thread) = conversation.as_ref().filter(|_| !bulk_open) {
-                        display_message.starred =
-                            thread.members.iter().any(|member| member.message.starred);
-                        display_message.has_attachment = thread
-                            .members
-                            .iter()
-                            .any(|member| member.message.has_attachment);
-                    }
-                    let active = if let Some(thread) = &conversation {
-                        !expanded.contains(&thread.key)
-                            && thread
-                                .members
-                                .iter()
-                                .any(|member| selected.as_ref() == Some(&member.key))
-                    } else {
-                        selected.as_ref() == Some(&row.key)
-                    };
-                    let owner_select = owner.clone();
-                    let key = row.key.clone();
-                    let unread = if bulk_open {
-                        row.message.unread
-                    } else {
-                        conversation
-                            .as_ref()
-                            .map_or(row.message.unread, |thread| thread.unread > 0)
-                    };
-                    let mut element = h_flex()
-                        .w_full()
-                        .h(px(row_height))
-                        .items_center()
-                        .rounded(px(4.))
-                        .when(active, |el| el.bg(palette.selected))
-                        .when(child, |el| el.pl_4())
-                        .child(
-                            Button::new(SharedString::from(format!(
-                                "message-{}-{}-{}-{}",
-                                key.account_id, key.folder_path, key.uid, child
-                            )))
-                            .ghost()
-                            .small()
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .rounded(px(4.))
-                            .px_3()
-                            .tab_stop(true)
-                            .accessibility_label(format!(
-                                "{}: {}",
-                                message_sender(&row.message),
-                                row.message.subject
-                            ))
-                            .on_click(move |_, _, cx| {
-                                let _ = owner_select.update(cx, |this, cx| {
-                                    this.draft_open_error = None;
-                                    this.live.update(cx, |live, cx| {
-                                        live.select_message(key.clone(), cx)
-                                    });
-                                    this.view = View::Mailbox;
-                                    cx.notify();
-                                });
-                            })
-                            .child(message_row(
-                                &display_message,
-                                palette,
-                                unread,
-                                (unified && !child)
-                                    .then(|| labels.get(&row.key.account_id).cloned())
-                                    .flatten(),
-                            )),
-                        );
-                    if bulk_open {
-                        let bulk_key = row.key.clone();
-                        let selected = bulk_selected.contains(&bulk_key);
-                        let available = bulk_available.contains(&bulk_key);
-                        debug_assert!(
-                            !available
-                                || (display_message.uid == bulk_key.uid
-                                    && display_message.account_id == bulk_key.account_id)
-                        );
-                        let owner_bulk = owner.clone();
-                        element = element.child(
-                            Button::new(SharedString::from(format!(
-                                "bulk-select-{}-{}-{}-{child}",
-                                bulk_key.account_id, bulk_key.folder_path, bulk_key.uid
-                            )))
-                            .ghost()
-                            .small()
-                            .label(if selected { "Selected" } else { "Select" })
-                            .selected(selected)
-                            .disabled(!available || bulk_busy)
-                            .accessibility_label(format!(
-                                "{} message {}",
-                                if selected { "Deselect" } else { "Select" },
-                                row.message.subject
-                            ))
-                            .on_click(move |_, _, cx| {
-                                let _ = owner_bulk.update(cx, |this, cx| {
-                                    this.edit_triage_selection(
-                                        Some(bulk_key.clone()),
-                                        false,
-                                        false,
-                                        cx,
-                                    )
-                                });
-                            }),
-                        );
-                    }
-                    if let Some(thread) = conversation
-                        .filter(|thread| thread.count > 1 || thread.replied || thread.forwarded)
-                    {
-                        let key = thread.key.clone();
-                        let open = expanded.contains(&key);
-                        let owner_expand = owner.clone();
-                        element = element.child(
-                            v_flex()
-                                .items_center()
-                                .gap_1()
-                                .pr_2()
-                                .child(
-                                    Button::new(SharedString::from(format!(
-                                        "thread-toggle-{}-{}",
-                                        key.account_id, key.anchor
-                                    )))
-                                    .ghost()
-                                    .small()
-                                    .h(px(24.))
-                                    .px_1()
-                                    .icon(Icon::new(IconName::Mail).size(px(12.)))
-                                    .label(thread.count.to_string())
-                                    .tooltip(if open {
-                                        "Collapse replies"
-                                    } else {
-                                        "Expand conversation replies"
-                                    })
-                                    .accessibility_label(format!(
-                                        "{} {} conversation messages",
-                                        if open { "Collapse" } else { "Expand" },
-                                        thread.count
-                                    ))
-                                    .on_click(
-                                        move |_, _, cx| {
-                                            let _ = owner_expand.update(cx, |this, cx| {
-                                                this.toggle_conversation(key.clone(), cx)
-                                            });
-                                        },
-                                    ),
-                                )
-                                .when(thread.replied, |el| {
-                                    el.child(
-                                        Icon::new(IconName::CornerUpLeft)
-                                            .size(px(12.))
-                                            .text_color(palette.muted),
-                                    )
-                                })
-                                .when(thread.forwarded, |el| {
-                                    el.child(
-                                        Icon::new(IconName::CornerUpRight)
-                                            .size(px(12.))
-                                            .text_color(palette.muted),
-                                    )
-                                }),
-                        );
-                    }
-                    element.into_any_element()
-                })
-                .collect()
-        })
-        .size_full()
-        .track_scroll(&self.list_scroll)
-        .into_any_element()
-    }
-
-    fn filter_menu(
-        &self,
-        snapshot: &MailboxSnapshot,
-        palette: Palette,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let owner = cx.entity().downgrade();
-        let selected = snapshot.filter;
-        Button::new("message-filter")
-            .custom(floating_button_variant(cx, palette, self.dark))
-            .small()
-            .icon(Icon::new(IconName::ListFilter).size(px(15.)))
-            .tooltip(format!("Mailbox options · {}", selected.label()))
-            .accessibility_label("Mailbox filters and options")
-            .dropdown_menu(move |mut menu, _, _| {
-                menu = menu.label("Loaded messages");
-                for filter in MessageFilter::ALL {
-                    let owner = owner.clone();
-                    menu = menu.item(
-                        PopupMenuItem::element(move |_, _| div().child(filter.label()))
-                            .checked(filter == selected)
-                            .on_click(move |_, _, cx| {
-                                let _ = owner.update(cx, |this, cx| {
-                                    this.live.update(cx, |live, cx| live.set_filter(filter, cx));
-                                    this.list_scroll = UniformListScrollHandle::new();
-                                    cx.notify();
-                                });
-                            }),
-                    );
-                }
-                let bulk_owner = owner.clone();
-                let rules_owner = owner.clone();
-                let recovery_owner = owner.clone();
-                menu.separator()
-                    .item(
-                        PopupMenuItem::element(|_, _| div().child("Select messages")).on_click(
-                            move |_, _, cx| {
-                                let _ = bulk_owner.update(cx, |this, cx| {
-                                    this.triage.open = !this.triage.open;
-                                    cx.notify();
-                                });
-                            },
-                        ),
-                    )
-                    .item(
-                        PopupMenuItem::element(|_, _| div().child("Mail rules…")).on_click(
-                            move |_, _, cx| {
-                                let _ =
-                                    rules_owner.update(cx, |this, cx| this.load_rule_editor(cx));
-                            },
-                        ),
-                    )
-                    .item(
-                        PopupMenuItem::element(|_, _| div().child("Recover local drafts…"))
-                            .on_click(move |_, _, cx| {
-                                let _ = recovery_owner
-                                    .update(cx, |this, cx| this.list_local_recovery(cx));
-                            }),
-                    )
-            })
-            .into_any_element()
-    }
-
-    fn message_pane(
-        &self,
-        snapshot: &MailboxSnapshot,
-        palette: Palette,
-        cx: &mut Context<Self>,
-        width: gpui_kit::Pixels,
-    ) -> impl IntoElement {
-        let title = snapshot.title.clone();
-        let unavailable = snapshot.account_errors.len();
-        v_flex()
-            .map(|el| {
-                if width == px(0.) {
-                    el.w_full()
-                } else {
-                    el.w(width)
-                }
-            })
-            .h_full()
-            .min_w_0()
-            .flex_shrink_0()
-            .min_h_0()
-            .bg(self.pane_surface(palette.list, 0.10))
-            .border_r_1()
-            .border_color(palette.border)
-            .child(
-                h_flex()
-                    .h(px(44.))
-                    .flex_shrink_0()
-                    .items_center()
-                    .justify_between()
-                    .px_5()
-                    .border_b_1()
-                    .border_color(palette.border)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(px(14.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(title),
-                    )
-                    .child(
-                        Button::new("compose-new")
-                            .ghost()
-                            .small()
-                            .icon(Icon::new(IconName::Mail))
-                            .disabled(
-                                !self
-                                    .action_state(cx)
-                                    .allows(desktop_actions::MailboxAction::ComposeMessage),
-                            )
-                            .accessibility_label("Compose a new message")
-                            .tooltip("Compose a new message")
-                            .on_click(
-                                cx.listener(|this, _, window, cx| {
-                                    this.open_new_message(window, cx)
-                                }),
-                            ),
-                    ),
-            )
-            .when(
-                snapshot.scope == MailboxScope::Unified && unavailable > 0,
-                |el| {
-                    el.child(
-                        Button::new("unified-partial-error")
-                            .ghost()
-                            .small()
-                            .w_full()
-                            .h(px(28.))
-                            .icon(Icon::new(IconName::Info).size(px(14.)))
-                            .label(format!("{unavailable} accounts unavailable · Retry"))
-                            .tooltip(
-                                snapshot
-                                    .account_errors
-                                    .iter()
-                                    .map(|(id, error)| {
-                                        format!(
-                                            "{}: {}",
-                                            snapshot
-                                                .account_labels
-                                                .get(id)
-                                                .cloned()
-                                                .unwrap_or_else(|| id.to_string()),
-                                            error
-                                        )
-                                    })
-                                    .collect::<Vec<_>>()
-                                    .join("\n"),
-                            )
-                            .disabled(
-                                !self
-                                    .action_state(cx)
-                                    .allows(desktop_actions::MailboxAction::RefreshMail),
-                            )
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if this
-                                    .action_state(cx)
-                                    .allows(desktop_actions::MailboxAction::RefreshMail)
-                                {
-                                    this.live.update(cx, |live, cx| live.refresh(cx));
-                                }
-                            })),
-                    )
-                },
-            )
-            .child(
-                v_flex()
-                    .id("mailbox-tools")
-                    .max_h(px(300.))
-                    .overflow_y_scroll()
-                    .flex_shrink_0()
-                    .gap_2()
-                    .px_3()
-                    .py_3()
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .min_w_0()
-                            .items_center()
-                            .gap_1()
-                            .child(
-                                Input::new(&self.search)
-                                    .prefix(
-                                        Icon::new(IconName::Search)
-                                            .size(px(14.))
-                                            .text_color(palette.faint),
-                                    )
-                                    .cleanable(true)
-                                    .aria_label("Search mail with field, date and status operators")
-                                    .flex_1()
-                                    .min_w_0(),
-                            )
-                            .child(self.filter_menu(snapshot, palette, cx)),
-                    )
-                    .child(self.mail_controls(snapshot, palette, cx))
-                    .when_some(snapshot.search_error.clone(), |row, error| {
-                        row.child(error_banner("Search", &error, cx, palette))
-                    })
-                    .when_some(self.startup_error.clone(), |row, error| {
-                        row.child(error_banner("Saved account storage", &error, cx, palette))
-                            .child(
-                                Button::new("retry-account-storage")
-                                    .ghost()
-                                    .small()
-                                    .label("Retry saved accounts")
-                                    .disabled(self.loading_profiles || snapshot.thunderbird_loading)
-                                    .on_click(
-                                        cx.listener(|this, _, _, cx| this.load_saved_accounts(cx)),
-                                    ),
-                            )
-                    })
-                    .when_some(snapshot.thunderbird_error.clone(), |row, error| {
-                        row.child(error_banner("Thunderbird connection", &error, cx, palette))
-                            .child(
-                                Button::new("reconnect-saved-thunderbird")
-                                    .ghost()
-                                    .small()
-                                    .label("Retry saved accounts")
-                                    .disabled(snapshot.thunderbird_loading)
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.load_saved_accounts(cx);
-                                    })),
-                            )
-                    })
-                    .when_some(snapshot.error.clone(), |row, error| {
-                        row.child(error_banner(
-                            "Mail connection needs attention",
-                            &error,
-                            cx,
-                            palette,
-                        ))
-                        .when(snapshot.is_thunderbird_account, |row| {
-                            let target = snapshot.current_account_id;
-                            row.child(
-                                Button::new("retry-selected-saved-account")
-                                    .ghost()
-                                    .small()
-                                    .label("Retry this saved account")
-                                    .disabled(snapshot.thunderbird_loading)
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.live.update(cx, |live, cx| {
-                                            live.retry_thunderbird(target, cx);
-                                        });
-                                    })),
-                            )
-                        })
-                    })
-                    .when_some(snapshot.action_error.clone(), |row, error| {
-                        row.child(error_banner("Mail action failed", &error, cx, palette))
-                    })
-                    .when(self.triage.open, |el| {
-                        el.child(self.triage_panel(palette, cx))
-                    })
-                    .child(self.rule_editor_panel(palette, cx)),
-            )
-            .child(
-                h_flex()
-                    .h(px(28.))
-                    .flex_shrink_0()
-                    .items_center()
-                    .justify_between()
-                    .px_4()
-                    .text_size(px(10.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(palette.faint)
-                    .child(snapshot.filter.label())
-                    .child(format!(
-                        "{} shown · {} loaded",
-                        self.list_rows.iter().filter(|r| !r.child).count(),
-                        snapshot.loaded_count
-                    )),
-            )
-            .child(
-                div()
-                    .id("message-list")
-                    .flex_1()
-                    .min_h_0()
-                    .track_focus(&self.message_focus)
-                    .key_context("MegaMailMessages")
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _, window, cx| this.message_focus.focus(window, cx)),
-                    )
-                    .on_action(cx.listener(|this, _: &NextMessage, _, cx| {
-                        this.move_selection(1, cx);
-                    }))
-                    .on_action(cx.listener(|this, _: &PreviousMessage, _, cx| {
-                        this.move_selection(-1, cx);
-                    }))
-                    .child(
-                        v_flex()
-                            .size_full()
-                            .px_2()
-                            .pb_2()
-                            .child(self.message_list(snapshot, palette, cx)),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .h(px(34.))
-                    .flex_shrink_0()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .px_4()
-                    .border_t_1()
-                    .border_color(palette.border)
-                    .text_size(px(10.))
-                    .text_color(palette.muted)
-                    .child(if snapshot.loading {
-                        "Updating mail…".to_owned()
-                    } else {
-                        format!("{} unread", snapshot.unread_count)
-                    })
-                    .when(snapshot.has_more, |row| {
-                        row.child(
-                            Button::new("load-more")
-                                .ghost()
-                                .small()
-                                .label("Load more")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.live.update(cx, |live, cx| live.load_more(cx));
-                                })),
-                        )
-                    }),
-            )
-            .when(snapshot.display_cap_reached, |row| {
-                row.child(
-                    div()
-                        .px_3()
-                        .pb_2()
-                        .text_size(px(10.))
-                        .text_color(palette.faint)
-                        .child("Showing the newest 5,000 messages."),
-                )
-            })
-    }
-
-    fn outbox_panel(
-        &self,
-        snapshot: &MailboxSnapshot,
-        palette: Palette,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        if snapshot.outbox.is_empty() {
-            return div().into_any_element();
-        }
-        v_flex()
-            .id("native-outbox-panel")
-            .max_h(px(360.))
-            .overflow_y_scroll()
-            .w_full()
-            .border_b_1()
-            .border_color(palette.border)
-            .px_6()
-            .py_3()
-            .gap_2()
-            .child(
-                h_flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .font_weight(FontWeight::MEDIUM)
-                            .child("Outbox"),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(10.))
-                            .text_color(palette.muted)
-                            .child(format!("{} retained · all accounts", snapshot.outbox.len())),
-                    ),
-            )
-            .children(snapshot.outbox.iter().map(|item| {
-                let id = item.id;
-                let owning_account = item.account_id;
-                let subject = if item.subject.trim().is_empty() {
-                    "No subject".to_owned()
-                } else {
-                    item.subject.clone()
-                };
-                let subject_for_accessibility = subject.clone();
-                h_flex()
-                    .w_full()
-                    .items_center()
-                    .gap_3()
-                    .child(
-                        v_flex()
-                            .min_w_0()
-                            .flex_1()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(px(12.))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(subject),
-                            )
-                            .child(div().text_size(px(11.)).text_color(palette.muted).child(snapshot.accounts.iter().find(|a| a.id == owning_account).map_or_else(|| "Saved account".into(), |a| a.email.clone())),
-                            )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(px(11.))
-                                    .text_color(palette.muted)
-                                    .child(if item.last_error.is_empty() {
-                                        item.recipients.clone()
-                                    } else {
-                                        item.last_error.clone()
-                                    }),
-                            ),
-                    )
-                    .when_some(item.send_at.filter(|at| *at > megamail_core::datefmt::now()), |el, at| el
-                        .child(div().text_size(px(11.)).child(format!("Scheduled {}", megamail_core::datefmt::date_time(at))))
-                        .when_some(self.live.read(cx).schedule_session(owning_account).map(|session| (owning_account, session)), |el, (account, session)| {
-                            let request = worker::QueuedCancelRequest { id, send_at: Some(at), session };
-                            el.child(Button::new(SharedString::from(format!("cancel-schedule-{owning_account}-{id}"))).ghost().small()
-                                .label(if self.queue_cancel_confirmation == Some((account, request)) { "Confirm cancellation" } else { "Cancel scheduled send" })
-                                .disabled(item.phase != megamail_core::models::OutboxPhase::Ready || !snapshot.pending_queue_cancels.is_empty())
-                                .tooltip("Cancel only if this message is still scheduled and transmission has not started.")
-                                .on_click(cx.listener(move |this, _, _, cx| this.cancel_queued_item(account, request, cx))))
-                        }))
-                    .when_some(Some(owning_account), |el, account| el.child(
-                        Button::new(SharedString::from(format!("review-outbox-{owning_account}-{id}")))
-                            .secondary().small().label("Delivery details")
-                            .accessibility_label(format!("Review delivery of {subject_for_accessibility}"))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.outbox_review = Some((account, id));
-                                cx.notify();
-                            }))
-                    ))
-                    .when(item.send_at.is_none(), |el| el.when_some(self.live.read(cx).schedule_session(owning_account).map(|session| (owning_account, session)), |el, (account, session)| {
-                        let request = worker::QueuedCancelRequest { id, send_at: None, session };
-                        el.child(Button::new(SharedString::from(format!("discard-ready-outbox-{owning_account}-{id}"))).ghost().small().icon(Icon::new(IconName::Trash))
-                            .label(if self.queue_cancel_confirmation == Some((account, request)) { "Confirm discard" } else { "Discard unsent copy" })
-                            .disabled(item.phase != megamail_core::models::OutboxPhase::Ready || !snapshot.pending_queue_cancels.is_empty())
-                            .tooltip("Remove only an unclaimed local Outbox copy. Held or already submitted mail requires manual review.")
-                            .accessibility_label(format!("Discard unsubmitted copy of {subject_for_accessibility}"))
-                            .on_click(cx.listener(move |this, _, _, cx| this.cancel_queued_item(account, request, cx))))
-                    }))
-            }))
-            .child(self.outbox_review_panel(snapshot, palette, cx))
-            .into_any_element()
-    }
-
-    fn links_panel(
-        &self,
-        snapshot: &MailboxSnapshot,
-        palette: Palette,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        if snapshot.links.is_empty() {
-            return div().into_any_element();
-        }
-        let Some(key) = snapshot.selected_key.clone() else {
-            return div().into_any_element();
-        };
-        let expanded = self.link_details.contains(&key);
-        v_flex()
-            .w_full()
-            .min_w_0()
-            .gap_2()
-            .pt_3()
-            .child(
-                Button::new("reader-link-details")
-                    .ghost()
-                    .small()
-                    .self_start()
-                    .icon(Icon::new(if expanded {
-                        IconName::ChevronDown
-                    } else {
-                        IconName::ChevronRight
-                    }))
-                    .label(format!("Link details · {}", snapshot.links.len()))
-                    .accessibility_label(if expanded {
-                        "Hide link details"
-                    } else {
-                        "Show link details"
-                    })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if !this.link_details.remove(&key) {
-                            this.link_details.insert(key.clone());
-                        }
-                        cx.notify();
-                    })),
-            )
-            .when(expanded, |el| {
-                el.children(snapshot.links.iter().enumerate().map(|(index, link)| {
-                    let url = link.url.clone();
-                    let label = if link.label.trim().is_empty() {
-                        link.url.clone()
-                    } else {
-                        link.label.clone()
-                    };
-                    v_flex()
-                        .w_full()
-                        .min_w_0()
-                        .gap_1()
-                        .child(
-                            Button::new(SharedString::from(format!("message-link-{index}")))
-                                .ghost()
-                                .small()
-                                .w_full()
-                                .min_w_0()
-                                .justify_start()
-                                .child(div().w_full().min_w_0().truncate().child(label.clone()))
-                                .accessibility_label(format!("Open {label} in your browser"))
-                                .tooltip(format!("Open {} in your browser", link.url))
-                                .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url))),
-                        )
-                        .child(
-                            div()
-                                .w_full()
-                                .min_w_0()
-                                .whitespace_normal()
-                                .pl_2()
-                                .text_size(px(10.))
-                                .text_color(palette.faint)
-                                .child(link.url.clone()),
-                        )
-                }))
-            })
-            .into_any_element()
-    }
-
-    fn attachments_panel(
-        &self,
-        snapshot: &MailboxSnapshot,
-        key: MessageKey,
-        palette: Palette,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let action = match &snapshot.attachment_state {
-            AttachmentState::NotLoaded => Some(("Show attachments", false)),
-            AttachmentState::Loading => Some(("Loading attachments…", false)),
-            AttachmentState::DownloadRequired => Some(("Download attachments", true)),
-            AttachmentState::Failed(_) => Some(("Try again", true)),
-            AttachmentState::Ready { .. } => None,
-        };
-        let items: Option<Arc<Vec<crate::live::AttachmentSummary>>> =
-            match &snapshot.attachment_state {
-                AttachmentState::Ready { items, .. } => Some(items.clone()),
-                _ => None,
-            };
-        let warning = match &snapshot.attachment_state {
-            AttachmentState::Ready { warning, .. } => warning.clone(),
-            _ => None,
-        };
-        let failure = match &snapshot.attachment_state {
-            AttachmentState::Failed(error) => Some(error.clone()),
-            _ => None,
-        };
-        if !snapshot
-            .selected_message
-            .as_ref()
-            .is_some_and(|row| row.message.has_attachment)
-        {
-            return div().into_any_element();
-        }
-
-        v_flex()
-            .w_full()
-            .min_w_0()
-            .gap_2()
-            .pt_6()
-            .border_t_1()
-            .border_color(palette.border)
-            .child(
-                h_flex()
-                    .w_full()
-                    .min_w_0()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .font_weight(FontWeight::MEDIUM)
-                            .child("Attachments"),
-                    )
-                    .when_some(action, |row, (label, download)| {
-                        row.child(
-                            Button::new("load-message-attachments")
-                                .secondary()
-                                .small()
-                                .label(label)
-                                .disabled(matches!(
-                                    &snapshot.attachment_state,
-                                    AttachmentState::Loading
-                                ))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.live.update(cx, |live, cx| {
-                                        live.request_attachments(key.clone(), download, cx);
-                                    });
-                                })),
-                        )
-                    }),
-            )
-            .when_some(failure, |row, error| {
-                row.child(error_banner(
-                    "Could not load attachments",
-                    &error,
-                    cx,
-                    palette,
-                ))
-            })
-            .when_some(warning, |row, warning| {
-                row.child(
-                    div()
-                        .text_size(px(11.))
-                        .text_color(palette.muted)
-                        .child(warning),
-                )
-            })
-            .when_some(items, |row, items| {
-                row.children(items.iter().enumerate().map(|(index, attachment)| {
-                    let name = attachment.name.clone();
-                    let content = attachment.content.clone();
-                    let saving = self.attachment_save_pending.as_deref() == Some(name.as_str());
-                    h_flex()
-                        .w_full()
-                        .min_w_0()
-                        .items_center()
-                        .justify_between()
-                        .gap_3()
-                        .px_3()
-                        .py_2()
-                        .rounded(px(8.))
-                        .bg(palette.surface)
-                        .child(
-                            v_flex()
-                                .min_w_0()
-                                .flex_1()
-                                .gap_1()
-                                .child(div().truncate().text_size(px(11.)).child(name.clone()))
-                                .child(
-                                    div()
-                                        .text_size(px(10.))
-                                        .text_color(palette.faint)
-                                        .child(format!("{} bytes", content.len())),
-                                ),
-                        )
-                        .child(attachment_preview::preview_button(
-                            name.clone(),
-                            content.clone(),
-                            index,
-                            self.attachment_preview.busy(),
-                            cx,
-                        ))
-                        .child(
-                            Button::new(SharedString::from(format!(
-                                "save-message-attachment-{index}"
-                            )))
-                            .secondary()
-                            .small()
-                            .label(if saving { "Saving…" } else { "Save as…" })
-                            .disabled(self.attachment_save_pending.is_some())
-                            .on_click(cx.listener(
-                                move |this, _, window, cx| {
-                                    this.save_reader_attachment(
-                                        name.clone(),
-                                        content.clone(),
-                                        window,
-                                        cx,
-                                    )
-                                },
-                            )),
-                        )
-                }))
-            })
-            .child(self.attachment_preview_panel(snapshot, palette, cx))
-            .when_some(self.attachment_save_error.clone(), |row, error| {
-                row.child(error_banner(
-                    "Could not save attachment",
-                    &error,
-                    cx,
-                    palette,
-                ))
-            })
-            .when_some(self.attachment_save_status.clone(), |row, status| {
-                row.child(
-                    div()
-                        .text_size(px(11.))
-                        .text_color(palette.muted)
-                        .child(status),
-                )
-            })
-            .into_any_element()
-    }
-
-    fn message_actions(
-        &self,
-        snapshot: &MailboxSnapshot,
-        palette: Palette,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let owner = cx.entity().downgrade();
-        let selected = snapshot.selected_message.clone();
-        let demo = snapshot.is_demo;
-        let plain = snapshot
-            .selected_key
-            .as_ref()
-            .is_some_and(|key| self.plain_messages.contains(key));
-        let body_loaded = snapshot.body_loaded;
-        let export_busy = self.reader_export_busy;
-        let rules_busy = self.rule_preview_busy;
-        Button::new("message-actions")
-            .custom(floating_button_variant(cx, palette, self.dark))
-            .small()
-            .icon(Icon::new(IconName::ChevronDown).size(px(14.)))
-            .tooltip("More message actions")
-            .accessibility_label("More message actions")
-            .disabled(selected.is_none())
-            .dropdown_menu(move |mut menu, _, _| {
-                let Some(row) = &selected else {
-                    return menu;
-                };
-                let unread = row.message.unread;
-                let starred = row.message.starred;
-                let body = row.message.body.clone();
-                for (index, label) in [
-                    if unread {
-                        "Mark as read"
-                    } else {
-                        "Mark as unread"
-                    },
-                    if starred {
-                        "Remove star"
-                    } else {
-                        "Star message"
-                    },
-                    "Move to Trash",
-                    "Copy message text",
-                    "Find in message",
-                    if plain {
-                        "Use native formatting"
-                    } else {
-                        "Read as text"
-                    },
-                    "Save message text…",
-                    "Save for printing…",
-                    "Preview mail rules",
-                    "Open original formatting…",
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    let owner = owner.clone();
-                    let body = body.clone();
-                    menu = menu.item(
-                        PopupMenuItem::element(move |_, _| div().child(label))
-                            .disabled(match index {
-                                0..=2 => demo,
-                                3 => body.is_empty(),
-                                4..=5 => !body_loaded,
-                                6..=7 => !body_loaded || export_busy,
-                                8 => demo || !body_loaded || rules_busy,
-                                _ => !body_loaded,
-                            })
-                            .on_click(move |_, window, cx| {
-                                let _ = owner.update(cx, |this, cx| match index {
-                                    0 => {
-                                        this.live.update(cx, |live, cx| {
-                                            live.set_selected_unread(!unread, cx)
-                                        });
-                                    }
-                                    1 => {
-                                        this.live.update(cx, |live, cx| {
-                                            live.set_selected_starred(!starred, cx)
-                                        });
-                                    }
-                                    2 => {
-                                        this.live.update(cx, |live, cx| live.trash_selected(cx));
-                                    }
-                                    3 => cx.write_to_clipboard(ClipboardItem::new_string(
-                                        body.clone(),
-                                    )),
-                                    4 => this.focus_reader_find(window, cx),
-                                    5 => {
-                                        if let Some(key) =
-                                            this.live.read(cx).snapshot().selected_key
-                                        {
-                                            if !this.plain_messages.remove(&key) {
-                                                this.plain_messages.insert(key);
-                                            }
-                                            let snapshot = this.live.read(cx).snapshot();
-                                            this.refresh_reader_text(&snapshot, cx);
-                                            cx.notify();
-                                        }
-                                    }
-                                    6 => this.save_readable_text(cx),
-                                    7 => this.save_printable_html(cx),
-                                    8 => this.preview_saved_rules(cx),
-                                    _ => this.open_original_formatting(cx),
-                                });
-                            }),
-                    );
-                }
-                menu
-            })
-            .into_any_element()
-    }
-
-    fn reader(
-        &self,
-        snapshot: &MailboxSnapshot,
-        palette: Palette,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        if self.comfort.outbox_open {
-            return v_flex().h_full().flex_1().min_w_0().bg(palette.background).p_5().gap_3()
-                .child(div().text_size(px(22.)).font_weight(FontWeight::SEMIBOLD).child("Outbox · all accounts"))
-                .child(div().text_size(px(13.)).text_color(palette.muted).child("Queued, scheduled and held messages. Server acceptance is separate from delivery; uncertain outcomes need review."))
-                 .when(!snapshot.outbox.is_empty(), |el| el.child(self.outbox_panel(snapshot, palette, cx)))
-                .when(snapshot.outbox.is_empty(), |el| el.child(div().child("No messages are queued or held.")))
-                .child(Button::new("close-outbox-view").secondary().small().self_start().label("Back to messages").on_click(cx.listener(|this, _, _, cx| { this.comfort.outbox_open = false; cx.notify(); })))
-                .into_any_element();
-        }
-        let Some(row) = snapshot.selected_message.clone() else {
-            return v_flex()
-                .h_full()
-                .flex_1()
-                .min_w_0()
-                .bg(self.pane_surface(palette.background, 0.05))
-                .when(!snapshot.outbox.is_empty(), |el| {
-                    el.child(self.outbox_panel(snapshot, palette, cx))
-                })
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .items_center()
-                        .justify_center()
-                        .gap_3()
-                        .child(
-                            Icon::new(IconName::Mail)
-                                .size(px(26.))
-                                .text_color(palette.faint),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(14.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .child("Select a message"),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(12.))
-                                .text_color(palette.muted)
-                                .child("The message will open here."),
-                        ),
-                )
-                .into_any_element();
-        };
-        let folder = snapshot
-            .folders
-            .iter()
-            .find(|folder| folder.path == row.key.folder_path);
-        let is_archived = folder.is_some_and(|folder| folder.kind == FolderKind::Archive);
-        let is_draft = folder.is_some_and(|folder| folder.kind == FolderKind::Drafts);
-        let draft_opening = snapshot.draft_source.as_ref().is_some_and(|source| {
-            source.key == row.key
-                && matches!(
-                    &source.state,
-                    DraftSourceState::Loading | DraftSourceState::Raw(_)
-                )
-        });
-        let can_archive = snapshot
-            .folders
-            .iter()
-            .any(|folder| folder.kind == FolderKind::Archive);
-        let can_restore = snapshot
-            .folders
-            .iter()
-            .any(|folder| folder.kind == FolderKind::Inbox);
-        let archive_label = if is_archived { "Restore" } else { "Archive" };
-        let archive_icon = if is_archived {
-            IconName::ArchiveRestore
-        } else {
-            IconName::Archive
-        };
-        let reader_subject = snapshot
-            .conversations
-            .iter()
-            .find(|thread| thread.members.iter().any(|member| member.key == row.key))
-            .and_then(|thread| {
-                thread
-                    .members
-                    .iter()
-                    .find(|member| !member.message.subject.is_empty())
-            })
-            .map_or(row.message.subject.as_str(), |member| {
-                member.message.subject.as_str()
-            });
-        let row_for_draft = row.clone();
-        let reply_message = row.clone();
-        let forward_message = row.clone();
-        let reply_all_message = row.clone();
-        v_flex()
-            .h_full()
-            .flex_1()
-            .min_w_0()
-            .bg(self.pane_surface(palette.background, 0.05))
-            .child(
-                h_flex()
-                    .min_h(px(44.))
-                    .py_2()
-                    .flex_wrap()
-                    .gap_2()
-                    .min_w_0()
-                    .flex_shrink_0()
-                    .items_center()
-                    .justify_between()
-                    .px_5()
-                    .border_b_1()
-                    .border_color(palette.border)
-                    .child(
-                        h_flex()
-                            .items_center()
-                            .gap_2()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_size(px(11.))
-                            .text_color(palette.muted)
-                            .child(
-                                folder
-                                    .map(|folder| folder.name.clone())
-                                    .unwrap_or_else(|| "Mail".into()),
-                            )
-                            .child(
-                                Icon::new(IconName::ChevronRight)
-                                    .size(px(12.))
-                                    .text_color(palette.faint),
-                            )
-                            .child(if is_draft { "Draft" } else { "Conversation" }),
-                    )
-                    .child(
-                        h_flex()
-                            .flex_wrap()
-                            .min_w_0()
-                            .items_center()
-                            .gap_1()
-                            .when(!is_draft, |row| {
-                                row.child(
-                                    Button::new("reply-message")
-                                        .secondary()
-                                        .small()
-                                        .icon(Icon::new(IconName::CornerUpLeft))
-                                        .label("Reply")
-                                        .disabled(!self.action_state(cx).allows(desktop_actions::MailboxAction::ReplyMessage))
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.open_reply(
-                                                reply_message.message.clone(),
-                                                window,
-                                                cx,
-                                            )
-                                        })),
-                                )
-                                .child(
-                                    Button::new("reply-all-message")
-                                        .ghost()
-                                        .small()
-                                        .label("All")
-                                        .disabled(!self.action_state(cx).allows(desktop_actions::MailboxAction::ReplyAll))
-                                        .tooltip("Reply all · Ctrl+Shift+R")
-                                        .accessibility_label("Reply to all recipients")
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.open_reply_all(
-                                                reply_all_message.message.clone(),
-                                                window,
-                                                cx,
-                                            )
-                                        })),
-                                )
-                                .child(
-                                    Button::new("forward-message")
-                                        .ghost()
-                                        .small()
-                                        .icon(Icon::new(IconName::CornerUpRight))
-                                        .disabled(snapshot.pending_send)
-                                        .accessibility_label("Forward message")
-                                        .tooltip("Forward message")
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.open_forward(
-                                                forward_message.message.clone(),
-                                                window,
-                                                cx,
-                                            )
-                                        })),
-                                )
-                            })
-                            .when(is_draft, |row| {
-                                row.child(
-                                    Button::new("edit-draft")
-                                        .secondary()
-                                        .small()
-                                        .icon(Icon::new(IconName::FileText))
-                                        .label(if draft_opening {
-                                            "Opening…"
-                                        } else {
-                                            "Edit draft"
-                                        })
-                                        .disabled(snapshot.pending_send || draft_opening)
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.open_draft(
-                                                row_for_draft.as_ref().clone(),
-                                                cx,
-                                                window,
-                                            )
-                                        })),
-                                )
-                            })
-                            .child(self.message_actions(snapshot, palette, cx))
-                            .child(
-                                Button::new("archive-message")
-                                    .secondary()
-                                    .small()
-                                    .icon(Icon::new(archive_icon))
-                                    .tooltip(archive_label)
-                                    .disabled(
-                                        snapshot.is_demo
-                                            || if is_archived {
-                                                !can_restore
-                                            } else {
-                                                !can_archive
-                                            },
-                                    )
-                                    .accessibility_label(format!("{archive_label} this message"))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.live.update(cx, |live, cx| {
-                                            if is_archived {
-                                                live.restore_selected(cx);
-                                            } else {
-                                                live.archive_selected(cx);
-                                            }
-                                        });
-                                    })),
-                            ),
-                    ),
-            )
-             .when(!snapshot.outbox.is_empty(), |el| el.child(self.outbox_panel(snapshot, palette, cx)))
-            .when_some(self.draft_open_error.clone(), |row, error| {
-                row.child(error_banner("Could not open draft", &error, cx, palette))
-            })
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .id("reader-scroll")
-                    .track_scroll(&self.reader_scroll)
-                    .overflow_y_scroll()
-                    .min_w_0()
-                    .overflow_x_hidden()
-                    .px_6()
-                    .pt_5()
-                    .pb_6()
-                    .child(
-                        v_flex()
-                            .w_full()
-                            .min_w_0()
-                            .max_w(px(680.))
-                            .gap_4()
-                            .child(h_flex().gap_2()
-                                .child(Button::new("open-original-formatting").ghost().small().label("Original formatting…")
-                                    .disabled(!snapshot.body_loaded)
-                                    .tooltip("Open the sender’s original layout in a separate window")
-                                    .on_click(cx.listener(|this, _, _, cx| this.open_original_formatting(cx))))
-                                .when(self.reader_session.active.is_some(), |el| el.child(Button::new("close-original-formatting").ghost().small().label("Close original")
-                                    .on_click(cx.listener(|this, _, _, cx| { this.retire_reader_session(cx); this.reader_session.notice = None; cx.notify(); })))))
-                            .when_some(self.reader_session.notice.clone(), |el, notice| el.child(div().text_size(px(11.)).text_color(palette.muted).child(notice)))
-                            .when_some(self.invitation_error.clone(), |el, error| el.child(div().text_size(px(11.)).text_color(palette.muted).child(error)))
-                            .when_some(self.invitation_preview.clone(), |el, invitation| {
-                                el.child(v_flex().gap_1().text_size(px(12.))
-                                    .child(format!("Invitation: {}", invitation.summary))
-                                    .child(format!("Starts: {} · {}", invitation.start.as_ref().map_or_else(|| "unknown".to_owned(), |stamp| format!("{} ({:?})", stamp.value, stamp.zone)), invitation.location))
-                                    .child(match invitation.rsvp {
-                                        invitation::RsvpCapability::NotRequested => "Read-only preview. No response was requested.",
-                                        invitation::RsvpCapability::Cancelled => "Cancelled invitation. No response is sent.",
-                                        invitation::RsvpCapability::CommandTransportUnavailable => "Read-only preview. RSVP transport is unavailable; no acceptance or email is sent.",
-                                    }))
-                            })
-                            .child(
-                                gpui_kit::component::text::TextView::html(
-                                    "reader-subject",
-                                    preferences::plain_text_html(if reader_subject.is_empty() {
-                                        "(No subject)"
-                                    } else {
-                                        reader_subject
-                                    }),
-                                )
-                                .selectable(true)
-                                .w_full()
-                                .min_w_0()
-                                .text_size(px(24.))
-                                .line_height(relative(1.25))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(palette.text),
-                            )
-                            .child(self.work_controls(snapshot, palette, cx))
-                            .child(self.conversation_content(snapshot, &row, palette, cx))
-                            .child(self.outgoing_cards(snapshot, palette)),
-                    ),
-            )
-            .into_any_element()
-    }
-
-    fn conversation_content(
-        &self,
-        snapshot: &MailboxSnapshot,
-        selected: &Arc<MessageRow>,
-        palette: Palette,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let conversation = snapshot.conversations.iter().find(|thread| {
-            thread
-                .members
-                .iter()
-                .any(|member| member.key == selected.key)
-        });
-        let members = conversation
-            .map(|thread| thread.members.clone())
-            .unwrap_or_else(|| Arc::new(vec![selected.clone()]));
-        let content = v_flex()
-            .w_full()
-            .min_w_0()
-            .gap_4()
-            .when(members.len() > 1, |el| {
-                el.child(
-                    h_flex()
-                        .flex_wrap()
-                        .min_w_0()
-                        .items_center()
-                        .gap_2()
-                        .text_size(px(12.))
-                        .text_color(palette.muted)
-                        .child(Icon::new(IconName::Mail).size(px(14.)))
-                        .child(format!("{} messages · oldest first", members.len()))
-                        .when(conversation.is_some_and(|thread| thread.replied), |el| {
-                            el.child(Icon::new(IconName::CornerUpLeft).size(px(14.)))
-                                .child("You replied")
-                        })
-                        .when(conversation.is_some_and(|thread| thread.forwarded), |el| {
-                            el.child(Icon::new(IconName::CornerUpRight).size(px(14.)))
-                                .child("Forwarded")
-                        }),
-                )
-            })
-            .when(snapshot.conversation_loading, |el| {
-                el.child(
-                    div()
-                        .text_size(px(12.))
-                        .text_color(palette.muted)
-                        .child("Finding messages across this account…"),
-                )
-            })
-            .when_some(snapshot.conversation_error.clone(), |el, error| {
-                el.child(error_banner("Conversation", &error, cx, palette))
-            })
-            .when_some(snapshot.conversation_warning.clone(), |el, warning| {
-                el.child(
-                    div()
-                        .text_size(px(12.))
-                        .text_color(palette.muted)
-                        .child(warning),
-                )
-            })
-            .children(members.iter().map(|row| {
-                let key = row.key.clone();
-                let newest = members.last().is_some_and(|m| m.key == key);
-                let newest_sent = conversation
-                    .and_then(|t| t.latest_sent.as_ref())
-                    .is_some_and(|m| m.key == key);
-                let open = (key == selected.key
-                    || newest
-                    || newest_sent
-                    || self.expanded_messages.contains(&key))
-                    && !self.collapsed_messages.contains(&key);
-                let selected_here = key == selected.key;
-                let cached = self.reader_bodies.iter().find(|cached| cached.key == key);
-                let quote_visible =
-                    (!self.preferences.hide_quoted_text || self.visible_quotes.contains(&key)) && !self.hidden_quotes.contains(&key);
-                let plain = self.plain_messages.contains(&key);
-                let has_quote = cached.is_some_and(|cached| {
-                    if plain {
-                        preferences::split_quoted_text(&cached.text).1.is_some()
-                    } else {
-                        cached.has_quote
-                    }
-                });
-                let body: SharedString = cached
-                    .map(|cached| {
-                        if quote_visible {
-                            cached.text.clone()
-                        } else {
-                            cached.without_quote.clone()
-                        }
-                    })
-                    .unwrap_or_else(|| {
-                        if selected_here {
-                            selected.message.body.clone().into()
-                        } else {
-                            row.message.body.clone().into()
-                        }
-                    });
-                let body_element: AnyElement = if let Some(cached) =
-                    cached.filter(|body| !body.text.is_empty() || !body.html.is_empty())
-                {
-                    let target = self.reader_text_identity(snapshot).and_then(|identity| {
-                        self.reader_text
-                            .as_ref()
-                            .filter(|target| selected_here && target.matches(&identity))
-                    });
-                    let text_view = if let Some(target) = target {
-                        gpui_kit::component::text::TextView::new(&target.state)
-                    } else {
-                        gpui_kit::component::text::TextView::new(if plain {
-                            cached.plain_state.as_ref().unwrap()
-                        } else { cached.current_state.as_ref().unwrap() })
-                    };
-                    text_view
-                        .selectable(true)
-                        .w_full()
-                        .min_w_0()
-                        .on_link_click(|url, _, _, cx| {
-                            if megamail_core::mail_text::safe_browser_url(url) {
-                                cx.open_url(url);
-                            }
-                        })
-                        .style(gpui_kit::component::text::TextViewStyle {
-                            paragraph_gap: gpui_kit::rems(
-                                if plain || cached.source_html.is_empty() {
-                                    0.
-                                } else {
-                                    0.75
-                                },
-                            ),
-                            heading_font_size: Some(Arc::new(|level, _| {
-                                px(match level {
-                                    1 => 22.,
-                                    2 => 19.,
-                                    3 => 16.,
-                                    _ => 14.,
-                                })
-                            })),
-                            table: {
-                                let mut style =
-                                    gpui_kit::StyleRefinement::default().bg(palette.surface);
-                                style.overflow.x = Some(gpui_kit::Overflow::Scroll);
-                                style
-                            },
-                            is_dark: cx.theme().is_dark(),
-                            ..Default::default()
-                        })
-                        .text_size(px(14.))
-                        .line_height(relative(1.6))
-                        .text_color(palette.text)
-                        .into_any_element()
-                } else {
-                    div()
-                        .text_size(px(14.))
-                        .line_height(relative(1.6))
-                        .text_color(palette.text)
-                        .child(if body.is_empty() {
-                            if cached.is_some() {
-                                "This message has no body.".into()
-                            } else if snapshot.body_loading && selected_here {
-                                "Loading message body…".into()
-                            } else {
-                                "Open this message to load its body.".into()
-                            }
-                        } else {
-                            body
-                        })
-                        .into_any_element()
-                };
-                let own = self.own_message(&row.message, snapshot);
-                let sender = if own {
-                    comfort::own_label(
-                        snapshot
-                            .folder_kinds
-                            .get(&(row.key.account_id, row.message.folder_id))
-                            .copied(),
-                    )
-                    .to_owned()
-                } else {
-                    message_sender(&row.message)
-                };
-                let sender_color = if own {
-                    palette.accent
-                } else {
-                    comfort::identity_color(&row.message.from_addr, palette)
-                };
-                let disclosure = Button::new(SharedString::from(format!(
-                    "reader-message-{}-{}-{}",
-                    key.account_id, key.folder_path, key.uid
-                )))
-                .ghost()
-                .small()
-                .size(px(32.))
-                .h_auto()
-                .px_0()
-                .rounded(px(4.))
-                .accessibility_label(format!(
-                    "{} message from {sender}",
-                    if open { "Collapse" } else { "Expand" }
-                ))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if open {
-                        this.expanded_messages.remove(&key);
-                        this.collapsed_messages.insert(key.clone());
-                    } else {
-                        this.collapsed_messages.remove(&key);
-                        this.expanded_messages.insert(key.clone());
-                        this.live
-                            .update(cx, |live, cx| live.select_message(key.clone(), cx));
-                    }
-                    let snapshot = this.live.read(cx).snapshot();
-                    this.refresh_reader_text(&snapshot, cx);
-                    cx.notify();
-                }))
-                .icon(Icon::new(if open { IconName::ChevronDown } else { IconName::ChevronRight }).size(px(14.)))
-                .tooltip(if open { "Collapse message" } else { "Expand message" });
-                let header = h_flex().w_full().min_w_0().items_center().gap_3()
-                    .child(self.sender_avatar(&row.message.from_addr, &sender, sender_color, cx))
-                    .child(v_flex().flex_1().min_w_0().gap_1()
-                        .child(gpui_kit::component::text::TextView::html(
-                            SharedString::from(format!("sender-name-{}-{}-{}", row.key.account_id, row.key.folder_path, row.key.uid)),
-                            preferences::plain_text_html(&sender))
-                            .selectable(true).w_full().min_w_0().text_size(px(13.))
-                            .font_weight(FontWeight::SEMIBOLD).text_color(sender_color))
-                        .child(gpui_kit::component::text::TextView::html(
-                            SharedString::from(format!("sender-address-{}-{}-{}", row.key.account_id, row.key.folder_path, row.key.uid)),
-                            preferences::plain_text_html(&row.message.from_addr))
-                            .selectable(true).w_full().min_w_0().text_size(px(12.)).text_color(palette.muted))
-                        .when(!open, |el| el.child(div().text_size(px(12.)).text_color(palette.muted).child(row.message.preview.clone()))))
-                    .child(div().max_w(px(110.)).whitespace_normal().text_size(px(11.)).text_color(palette.muted).child(row.message.date.clone()))
-                    .child(disclosure);
-                v_flex()
-                    .id(SharedString::from(format!(
-                        "reader-anchor-{}-{}-{}",
-                        row.key.account_id, row.key.folder_path, row.key.uid
-                    )))
-                    .w_full()
-                    .min_w_0()
-                    .border_t_1()
-                    .border_color(palette.border)
-                    .p_4()
-                    .rounded(px(8.))
-                    .bg(if own {
-                        palette.accent_wash
-                    } else {
-                        palette.surface
-                    })
-                    .gap_3()
-                    .when(selected_here, |el| {
-                        el.anchor_scroll(Some(self.reader_anchor.clone()))
-                    })
-                    .child(header)
-                    .when(open, |el| {
-                        el.child(
-                            v_flex()
-                                .w_full()
-                                .min_w_0()
-                                .gap_2()
-                                .child(
-                                    Button::new(SharedString::from(format!(
-                                        "message-details-{}-{}-{}",
-                                        row.key.account_id, row.key.folder_path, row.key.uid
-                                    )))
-                                    .ghost()
-                                    .small()
-                                    .self_start()
-                                    .label(if self.comfort.details.contains(&row.key) {
-                                        "Hide details"
-                                    } else {
-                                        "Message details"
-                                    })
-                                    .on_click({
-                                        let key = row.key.clone();
-                                        cx.listener(move |this, _, _, cx| {
-                                            if !this.comfort.details.remove(&key) {
-                                                this.comfort.details.insert(key.clone());
-                                            }
-                                            cx.notify();
-                                        })
-                                    }),
-                                )
-                                .when(self.comfort.details.contains(&row.key), |el| {
-                                    el.child(reader_recipient(
-                                        &row.key,
-                                        "From",
-                                        &if row.message.from_name.is_empty() {
-                                            row.message.from_addr.clone()
-                                        } else {
-                                            format!(
-                                                "{} <{}>",
-                                                row.message.from_name, row.message.from_addr
-                                            )
-                                        },
-                                        palette,
-                                    ))
-                                    .child(reader_recipient(&row.key, "Auth", &if selected_here {
-                                        snapshot.selected_sender_check.as_ref().map(|check| {
-                                            std::iter::once(check.summary.as_str()).chain(check.findings.iter().map(String::as_str)).collect::<Vec<_>>().join("\n")
-                                        }).unwrap_or_else(|| "Authentication results unavailable for this message.".to_owned())
-                                    } else { "Open this message to view its authentication results.".to_owned() }, palette))
-                                    .child(Button::new(SharedString::from(format!("sender-photo-{}-{}-{}", row.key.account_id, row.key.folder_path, row.key.uid)))
-                                        .ghost().small().self_start().label(if self.sender_photos.busy() { "Choosing photo…" } else { "Choose local photo…" }).disabled(self.sender_photos.busy())
-                                        .on_click({ let email = row.message.from_addr.clone(); cx.listener(move |this, _, _, cx| this.choose_sender_photo(email.clone(), cx)) }))
-                                    .child(reader_recipient(
-                                        &row.key,
-                                        "To",
-                                        &row.message.to,
-                                        palette,
-                                    ))
-                                    .child(reader_recipient(
-                                        &row.key,
-                                        "Date",
-                                        &row.message.datetime_full(),
-                                        palette,
-                                    ))
-                                    .when(
-                                        !row.message.reply_to.is_empty()
-                                            && row.message.reply_to != row.message.from_addr,
-                                        |el| {
-                                            el.child(reader_recipient(
-                                                &row.key,
-                                                "Reply to",
-                                                &row.message.reply_to,
-                                                palette,
-                                            ))
-                                        },
-                                    )
-                                    .when(
-                                        !row.message.cc.is_empty(),
-                                        |el| {
-                                            el.child(reader_recipient(
-                                                &row.key,
-                                                "Cc",
-                                                &row.message.cc,
-                                                palette,
-                                            ))
-                                        },
-                                    )
-                                }),
-                        )
-                        .when(selected_here, |el| {
-                            el.child(self.newsletter_panel(snapshot, palette, cx))
-                                .when(self.reader_find.is_open(), |el| {
-                                    el.child(self.reader_find_panel(palette, cx))
-                                })
-                        })
-                        .child(body_element)
-                        .when(selected_here, |el| {
-                            el.when_some(self.reader_export_status.clone(), |el, status| {
-                                el.child(
-                                    div()
-                                        .text_size(px(11.))
-                                        .text_color(palette.muted)
-                                        .child(status),
-                                )
-                            })
-                            .children(self.rule_preview.iter().cloned().map(|line| {
-                                div()
-                                    .text_size(px(11.))
-                                    .text_color(palette.muted)
-                                    .child(line)
-                            }))
-                            .when(
-                                self.rule_move_plan.is_some(),
-                                |el| {
-                                    el.child(
-                                        Button::new("prepare-previewed-rule-move")
-                                            .ghost()
-                                            .small()
-                                            .label("Review proposed move")
-                                            .disabled(self.rule_preview_busy || self.triage.busy())
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.apply_previewed_rule_move(cx)
-                                            })),
-                                    )
-                                },
-                            )
-                        })
-                        .when(cached.is_none() && !selected_here, |el| {
-                            let key = row.key.clone();
-                            el.child(
-                                Button::new(SharedString::from(format!(
-                                    "load-thread-body-{}-{}-{}",
-                                    key.account_id, key.folder_path, key.uid
-                                )))
-                                .ghost()
-                                .small()
-                                .self_start()
-                                .label("Load message")
-                                .on_click(cx.listener(
-                                    move |this, _, _, cx| {
-                                        this.live.update(cx, |live, cx| {
-                                            live.select_message(key.clone(), cx)
-                                        });
-                                    },
-                                )),
-                            )
-                        })
-                        .when(has_quote, |el| {
-                            let key = row.key.clone();
-                            el.child(
-                                Button::new(SharedString::from(format!(
-                                    "show-quote-{}-{}-{}",
-                                    key.account_id, key.folder_path, key.uid
-                                )))
-                                .ghost()
-                                .small()
-                                .self_start()
-                                .label(if quote_visible {
-                                    "Hide quoted history"
-                                } else {
-                                    "Show quoted history"
-                                })
-                                .accessibility_label(if quote_visible {
-                                    "Hide the original quoted message text"
-                                } else {
-                                    "Show the original quoted message text"
-                                })
-                                .on_click(cx.listener(
-                                    move |this, _, _, cx| {
-                                        if quote_visible {
-                                            this.visible_quotes.remove(&key);
-                                            this.hidden_quotes.insert(key.clone());
-                                        } else {
-                                            this.visible_quotes.insert(key.clone());
-                                            this.hidden_quotes.remove(&key);
-                                        }
-                                        let snapshot = this.live.read(cx).snapshot();
-                                        this.refresh_reader_text(&snapshot, cx);
-                                        cx.notify();
-                                    },
-                                )),
-                            )
-                        })
-                        .when(has_quote && quote_visible, |el| {
-                            if let Some(cached) = cached {
-                                el.child(div().w_full().min_w_0().pt_2().border_t_1().border_color(palette.border)
-                                    .child(gpui_kit::component::text::TextView::new(if plain { cached.plain_quote_state.as_ref().unwrap() } else { cached.quote_state.as_ref().unwrap() })
-                                        .selectable(true).w_full().min_w_0().text_size(px(14.)).line_height(relative(1.6))
-                                        .text_color(palette.muted)
-                                        .on_link_click(|url, _, _, cx| { if megamail_core::mail_text::safe_browser_url(url) { cx.open_url(url); } })))
-                            } else { el }
-                        })
-                        .when(
-                            members.len() > 1
-                                && cached.is_some()
-                                && !snapshot.folders.iter().any(|folder| {
-                                    folder.path == row.key.folder_path
-                                        && folder.kind == FolderKind::Drafts
-                                }),
-                            |el| {
-                                let reply = row.clone();
-                                let body = cached.unwrap().text.clone();
-                                let reply_all = reply.clone();
-                                let all_body = body.clone();
-                                let key = row.key.clone();
-                                let all_key = key.clone();
-                                el.child(
-                                    h_flex()
-                                        .w_full()
-                                        .min_w_0()
-                                        .flex_wrap()
-                                        .gap_1()
-                                        .pt_2()
-                                        .child(
-                                            Button::new(SharedString::from(format!(
-                                                "thread-reply-{}-{}-{}",
-                                                key.account_id, key.folder_path, key.uid
-                                            )))
-                                            .ghost()
-                                            .small()
-                                            .icon(Icon::new(IconName::CornerUpLeft))
-                                            .label("Reply")
-                                            .accessibility_label("Reply to this message")
-                                            .disabled(snapshot.pending_send)
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.live.update(cx, |live, cx| {
-                                                    live.select_message(key.clone(), cx)
-                                                });
-                                                let mut message = reply.message.clone();
-                                                message.body = body.to_string();
-                                                this.open_reply(message, window, cx);
-                                            })),
-                                        )
-                                        .child(
-                                            Button::new(SharedString::from(format!(
-                                                "thread-reply-all-{}-{}-{}",
-                                                all_key.account_id,
-                                                all_key.folder_path,
-                                                all_key.uid
-                                            )))
-                                            .ghost()
-                                            .small()
-                                            .label("Reply all")
-                                            .accessibility_label(
-                                                "Reply to all recipients of this message",
-                                            )
-                                            .disabled(snapshot.pending_send)
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.live.update(cx, |live, cx| {
-                                                    live.select_message(all_key.clone(), cx)
-                                                });
-                                                let mut message = reply_all.message.clone();
-                                                message.body = all_body.to_string();
-                                                this.open_reply_all(message, window, cx);
-                                            })),
-                                        ),
-                                )
-                            },
-                        )
-                        .when(selected_here, |el| {
-                            el.child(self.links_panel(snapshot, palette, cx)).child(
-                                self.attachments_panel(snapshot, row.key.clone(), palette, cx),
-                            )
-                        })
-                    })
-                    .into_any_element()
-            }));
-        if self.preferences.reduced_motion || cx.reduce_motion() {
-            content.into_any_element()
-        } else {
-            content
-                .with_animation(
-                    SharedString::from(format!(
-                        "conversation-reveal-{}-{}-{}",
-                        selected.key.account_id, selected.key.folder_path, selected.key.uid
-                    )),
-                    Animation::new(Duration::from_millis(160))
-                        .with_easing(|t| 1. - (1. - t).powi(3)),
-                    |element, t| element.opacity(0.88 + 0.12 * t),
-                )
-                .into_any_element()
-        }
-    }
-
-    fn provider_controls(
-        &self,
-        setup: &SetupState,
-        palette: Palette,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        use megamail_core::provider_auth::{MicrosoftAudience as Audience, Provider};
-        let admission_reason = self.live.read(cx).direct_add_block_reason();
-        let busy = self.demo
-            || self.loading_profiles
-            || self.startup_error.is_some()
-            || admission_reason.is_some()
-            || setup.connecting
-            || setup.discovering
-            || setup.thunderbird_loading
-            || self.live.read(cx).snapshot().thunderbird_loading;
-        let google = self
-            .auth_availability
-            .as_ref()
-            .is_some_and(|a| a.google.is_ok());
-        let microsoft = self
-            .auth_availability
-            .as_ref()
-            .is_some_and(|a| a.microsoft.is_ok());
-        v_flex().gap_2()
-            .child(h_flex().flex_wrap().gap_2()
-                .child(Button::new("google-browser-signin").secondary().small().label("Google · browser sign-in (IMAP/SMTP)").disabled(busy || !google)
-                    .on_click(cx.listener(|this, _, _, cx| this.begin_provider_authorization(Provider::GoogleImapSmtp, cx))))
-                .child(Button::new("microsoft-browser-signin").secondary().small().label("Microsoft · browser sign-in (Graph)").disabled(busy || !microsoft)
-                    .on_click(cx.listener(|this, _, _, cx| this.begin_provider_authorization(Provider::MicrosoftGraph(this.microsoft_audience), cx)))))
-            .child(Button::new("microsoft-audience").ghost().small().label(match self.microsoft_audience {
-                Audience::Personal => "Microsoft audience: personal", Audience::WorkOrSchool => "Microsoft audience: work/school", Audience::PersonalAndWork => "Microsoft audience: personal + work/school",
-            }).disabled(busy).on_click(cx.listener(|this, _, _, cx| {
-                this.microsoft_audience = match this.microsoft_audience { Audience::Personal => Audience::WorkOrSchool, Audience::WorkOrSchool => Audience::PersonalAndWork, Audience::PersonalAndWork => Audience::Personal }; cx.notify();
-            })))
-            .when(!google || !microsoft, |el| el.child(div().text_size(px(11.)).text_color(palette.muted).child("Browser sign-in is disabled without a configured MegaMail-owned desktop registration. App-password/manual IMAP and the separate Thunderbird runtime remain alternatives. Graph is not Exchange IMAP.")))
-            .when_some(admission_reason, |el, reason| el.child(div().text_size(px(11.)).text_color(palette.muted).child(reason)))
-            .when(self.auth_inflight, |el| el.child(Button::new("cancel-provider-signin").ghost().small().label("Cancel browser sign-in").on_click(cx.listener(|this, _, _, cx| this.cancel_provider_authorization(cx)))))
-            .into_any_element()
-    }
-
-    fn setup_view(&self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
-        let Some(setup) = self.setup.as_ref() else {
-            return v_flex().into_any_element();
-        };
-        let snapshot = self.live.read(cx).snapshot();
-        let has_mail_accounts = !snapshot.accounts.is_empty();
-        let thunderbird_waiting_for_mail = !snapshot.thunderbird_results.is_empty()
-            && snapshot
-                .thunderbird_results
-                .iter()
-                .all(|result| result.state == ThunderbirdAccountState::Connected)
-            && !snapshot.accounts.is_empty()
-            && snapshot.folders.is_empty()
-            && snapshot.page.is_empty();
-        let existing_emails = snapshot
-            .accounts
-            .iter()
-            .map(|account| account.email.to_ascii_lowercase())
-            .collect::<HashSet<_>>();
-        let email = setup.inputs.email.read(cx).value().to_string();
-        let candidate = setup.candidate();
-        let settings_need_review = setup.manual
-            || candidate.is_none()
-            || candidate.is_some_and(|candidate| candidate.requires_review());
-        let settings_reviewed = setup.review_is_current(cx);
-        let password_label =
-            if candidate.is_some_and(|candidate| candidate.app_password_help.is_some()) {
-                "Google app password"
-            } else {
-                "Password or app password"
-            };
-        let password_accessible_label = password_label.to_owned();
-        let username_suggestion = candidate
-            .map(|candidate| candidate.incoming.username.default_for(&email))
-            .unwrap_or_else(|| email.clone());
-        let incoming_placeholder = candidate.map_or("imap.example.com".to_owned(), |candidate| {
-            candidate.incoming.host.clone()
-        });
-        let incoming_port_placeholder = candidate.map_or("993".to_owned(), |candidate| {
-            candidate.incoming.port.to_string()
-        });
-        let outgoing_placeholder = candidate.map_or("smtp.example.com".to_owned(), |candidate| {
-            candidate.outgoing.host.clone()
-        });
-        let outgoing_port_placeholder = candidate.map_or("587".to_owned(), |candidate| {
-            candidate.outgoing.port.to_string()
-        });
-        v_flex()
-            .flex_1()
-            .min_h_0()
-            .bg(self.pane_surface(palette.background, 0.05))
-            .child(
-                v_flex()
-                    .id("setup-scroll")
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .items_center()
-                    .px_6()
-                    .py_7()
-                    .child(
-                        v_flex()
-                            .w_full()
-                            .max_w(px(600.))
-                            .gap_5()
-                            .child(
-                                h_flex()
-                                    .items_center()
-                                    .gap_3()
-                                    .child(
-                                        Icon::new(IconName::Mail)
-                                            .size(px(22.))
-                                            .text_color(palette.accent),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(22.))
-                                            .line_height(relative(1.2))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .child(if has_mail_accounts {
-                                                "Add another mailbox"
-                                            } else {
-                                                "Bring your mail"
-                                            }),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .max_w(px(520.))
-                                    .text_size(px(13.))
-                                    .line_height(relative(1.45))
-                                    .text_color(palette.muted)
-                                    .child(if has_mail_accounts {
-                                        "Import another Thunderbird mailbox or connect a provider with IMAP and SMTP settings."
-                                    } else {
-                                        "Import your Thunderbird mailboxes in one pass, or connect another provider with IMAP and SMTP settings."
-                                    }),
-                            )
-                            .when_some(self.startup_error.clone(), |row, error| {
-                                row.child(error_banner("Profile storage", &error, cx, palette))
-                            })
-                            .child(
-                                v_flex()
-                                    .gap_1()
-                                    .child(field_label("From Thunderbird", palette))
-                                    .child(
-                                        Button::new("import-thunderbird-settings")
-                                            .ghost()
-                                            .small()
-                                            .icon(Icon::new(if setup.thunderbird_loading || snapshot.thunderbird_loading { IconName::LoaderCircle } else { IconName::Download }))
-                                            .label(if setup.thunderbird_loading { "Reading Thunderbird…" } else if snapshot.thunderbird_loading { "Connecting Thunderbird…" } else { "Find mail accounts" })
-                                            .disabled(setup.thunderbird_loading || setup.discovering || setup.connecting || snapshot.thunderbird_loading)
-                                            .on_click(cx.listener(|this, _, _, cx| this.import_thunderbird_settings(cx))),
-                                    )
-                                    .child(
-                                        div()
-                                            .max_w(px(540.))
-                                            .text_size(px(11.))
-                                            .line_height(relative(1.4))
-                                            .text_color(palette.muted)
-                                            .child("Use the sign-in already stored in Thunderbird. MegaMail imports selected mailboxes through an isolated profile and never displays or logs passwords or OAuth tokens."),
-                                    ),
-                            )
-                            .when(!setup.thunderbird_profiles.is_empty(), |row| {
-                                row.child(thunderbird_picker(
-                                    &setup.thunderbird_profiles,
-                                    &setup.selected_thunderbird,
-                                    &snapshot.thunderbird_results,
-                                    &existing_emails,
-                                    setup.thunderbird_loading
-                                        || setup.connecting
-                                        || snapshot.thunderbird_loading,
-                                    palette,
-                                    cx,
-                                ))
-                            })
-                            .when_some(snapshot.thunderbird_error.clone(), |row, error| {
-                                row.child(error_banner(
-                                    "Thunderbird access",
-                                    &error,
-                                    cx,
-                                    palette,
-                                ))
-                            })
-                            .when_some(snapshot.thunderbird_notice.clone(), |row, notice| {
-                                row.child(
-                                    div()
-                                        .text_size(px(11.))
-                                        .line_height(relative(1.35))
-                                        .text_color(palette.muted)
-                                        .child(notice),
-                                )
-                            })
-                            .when(thunderbird_waiting_for_mail, |row| {
-                                row.child(
-                                    div()
-                                        .text_size(px(11.))
-                                        .line_height(relative(1.35))
-                                        .text_color(palette.muted)
-                                        .child("Thunderbird sign-in is ready. Loading folders and messages…"),
-                                )
-                            })
-                            .when(
-                                setup.thunderbird_profiles.is_empty()
-                                    && !snapshot.thunderbird_results.is_empty(),
-                                |row| {
-                                    row.child(thunderbird_results_panel(
-                                        &snapshot.thunderbird_results,
-                                        palette,
-                                    ))
-                                },
-                            )
-                            .when_some(setup.thunderbird_error.clone(), |row, error| {
-                                row.child(
-                                    div()
-                                        .text_size(px(11.))
-                                        .text_color(palette.muted)
-                                        .child(error),
-                                )
-                            })
-                            .child(div().h(px(1.)).w_full().bg(palette.border))
-                            .child(field_label("Add another mailbox", palette))
-                            .child(
-                                v_flex()
-                                    .gap_2()
-                                    .child(field_label("Email address", palette))
-                                    .child(
-                                        h_flex()
-                                            .items_center()
-                                            .gap_2()
-                                            .child(
-                                                Input::new(&setup.inputs.email)
-                                                    .content_type(InputContentType::EmailAddress)
-                                                    .aria_label("Email address")
-                                                    .disabled(setup.discovering || setup.connecting)
-                                                    .flex_1(),
-                                            )
-                                            .child(
-                                                Button::new("discover-account")
-                                                    .secondary()
-                                                    .small()
-                                                    .icon(Icon::new(IconName::Search))
-                                                    .label(if setup.discovering { "Looking…" } else { "Find settings" })
-                                                    .disabled(setup.discovering || setup.connecting)
-                                                    .on_click(cx.listener(|this, _, _, cx| this.start_discovery(cx))),
-                                            ),
-                                    ),
-                            )
-                            .when_some(setup.discovery_error.clone(), |row, error| {
-                                row.child(
-                                    div()
-                                        .text_size(px(11.))
-                                        .text_color(palette.muted)
-                                        .child(error),
-                                )
-                            })
-                            .child(self.provider_controls(setup, palette, cx))
-                            .when_some(setup.report.as_ref(), |row, report| {
-                                row.child(candidate_picker(report, setup.selected_candidate, cx))
-                            })
-                            .when(!setup.manual && setup.report.is_none(), |row| {
-                                row.child(
-                                    Button::new("show-manual-settings")
-                                        .ghost()
-                                        .small()
-                                        .label("Enter server settings manually")
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            if let Some(setup) = this.setup.as_mut() {
-                                                setup.manual = true;
-                                                setup.warning_reviewed = false;
-                                                setup.reviewed_settings = None;
-                                                cx.notify();
-                                            }
-                                        })),
-                                )
-                            })
-                            .when_some(candidate, |row, candidate| {
-                                row.child(candidate_summary(candidate, palette))
-                                    .when(candidate.oauth_advertised, |row| {
-                                        row.child(
-                                            div()
-                                                .text_size(px(11.))
-                                                .line_height(relative(1.4))
-                                                .text_color(palette.muted)
-                                                .child(if candidate.app_password_help.is_some() {
-                                                    "Google direct OAuth is not configured in MegaMail. Use a Google app password for this IMAP connection."
-                                                } else {
-                                                    "This provider advertises OAuth, but MegaMail does not have its own provider registration yet."
-                                                }),
-                                        )
-                                    })
-                                    .when_some(candidate.app_password_help, |row, url| {
-                                        row.child(
-                                            div()
-                                                .text_size(px(10.))
-                                                .text_color(palette.faint)
-                                                .child(format!("App password help: {url}")),
-                                        )
-                                    })
-                            })
-                            .when(setup.candidate().is_some(), |row| {
-                                row.child(
-                                    Button::new("toggle-manual-settings")
-                                        .ghost()
-                                        .small()
-                                        .label(if setup.manual { "Use discovered settings" } else { "Edit server settings" })
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            if let Some(setup) = this.setup.as_mut() {
-                                                setup.manual = !setup.manual;
-                                                setup.reviewed_settings = None;
-                                                setup.warning_reviewed = if setup.manual {
-                                                    false
-                                                } else {
-                                                    !setup.candidate().is_some_and(|candidate| candidate.requires_review())
-                                                };
-                                                cx.notify();
-                                            }
-                                        })),
-                                )
-                            })
-                            .when(setup.manual, |row| {
-                                row.child(
-                                    v_flex()
-                                        .gap_4()
-                                        .border_t_1()
-                                        .border_color(palette.border)
-                                        .pt_4()
-                                        .child(
-                                            div()
-                                                .text_size(px(14.))
-                                                .font_weight(FontWeight::MEDIUM)
-                                                .child("Server settings"),
-                                        )
-                                        .child(
-                                            h_flex()
-                                                .items_start()
-                                                .gap_4()
-                                                .child(server_fields(
-                                                    "Incoming · IMAP",
-                                                    &setup.inputs.imap_host,
-                                                    &setup.inputs.imap_port,
-                                                    &incoming_placeholder,
-                                                    &incoming_port_placeholder,
-                                                    setup.imap_tls,
-                                                    true,
-                                                    palette,
-                                                    cx,
-                                                ))
-                                                .child(server_fields(
-                                                    "Outgoing · SMTP",
-                                                    &setup.inputs.smtp_host,
-                                                    &setup.inputs.smtp_port,
-                                                    &outgoing_placeholder,
-                                                    &outgoing_port_placeholder,
-                                                    setup.smtp_tls,
-                                                    false,
-                                                    palette,
-                                                    cx,
-                                                )),
-                                        )
-                                        .child(
-                                            h_flex()
-                                                .items_center()
-                                                .gap_2()
-                                                .child(field_label("SMTP authentication", palette))
-                                                .child(
-                                                    Button::new("smtp-auth-password")
-                                                        .ghost()
-                                                        .small()
-                                                        .selected(setup.smtp_auth == megamail_core::discovery::AuthMethod::Password)
-                                                        .label("Password")
-                                                        .on_click(cx.listener(|this, _, _, cx| {
-                                                            if let Some(setup) = this.setup.as_mut() {
-                                                                setup.smtp_auth = megamail_core::discovery::AuthMethod::Password;
-                                                                setup.reviewed_settings = None;
-                                                                cx.notify();
-                                                            }
-                                                        })),
-                                                )
-                                                .child(
-                                                    Button::new("smtp-auth-none")
-                                                        .ghost()
-                                                        .small()
-                                                        .selected(setup.smtp_auth == megamail_core::discovery::AuthMethod::None)
-                                                        .label("No login")
-                                                        .on_click(cx.listener(|this, _, _, cx| {
-                                                            if let Some(setup) = this.setup.as_mut() {
-                                                                setup.smtp_auth = megamail_core::discovery::AuthMethod::None;
-                                                                setup.smtp_credentials_expanded = false;
-                                                                setup.reviewed_settings = None;
-                                                                cx.notify();
-                                                            }
-                                                        })),
-                                                ),
-                                        ),
-                                )
-                            })
-                            .when(setup.manual || candidate.is_some(), |row| row.child(
-                                v_flex()
-                                    .gap_3()
-                                    .border_t_1()
-                                    .border_color(palette.border)
-                                    .pt_4()
-                                    .child(
-                                        div()
-                                            .text_size(px(14.))
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .child("Sign in"),
-                                    )
-                                    .child(labeled_input(
-                                        "Display name",
-                                        Input::new(&setup.inputs.name)
-                                            .content_type(InputContentType::Name)
-                                            .aria_label("Display name"),
-                                        palette,
-                                    ))
-                                    .child(labeled_input(
-                                        "Username",
-                                        Input::new(&setup.inputs.username)
-                                            .content_type(InputContentType::Username)
-                                            .aria_label("Mail server username"),
-                                        palette,
-                                    ))
-                                    .child(labeled_input(
-                                        "SMTP username",
-                                        Input::new(&setup.inputs.smtp_username)
-                                            .content_type(InputContentType::Username)
-                                            .aria_label("SMTP username; leave blank to use the IMAP username"),
-                                        palette,
-                                    ))
-                                    .child(
-                                        div()
-                                            .text_size(px(10.))
-                                            .text_color(palette.faint)
-                                            .child(format!("Suggested username: {username_suggestion}")),
-                                    )
-                                    .child(labeled_input(
-                                        password_label,
-                                            Input::new(&setup.inputs.password)
-                                            .content_type(InputContentType::Password)
-                                            .mask_toggle()
-                                            .aria_label(password_accessible_label),
-                                        palette,
-                                    ))
-                                    .when(setup.smtp_auth == megamail_core::discovery::AuthMethod::Password, |column| {
-                                        column
-                                            .child(
-                                                Button::new("toggle-smtp-password")
-                                                    .ghost()
-                                                    .small()
-                                                    .label(if setup.smtp_credentials_expanded { "Use the same password for SMTP" } else { "Use a different SMTP password" })
-                                                    .on_click(cx.listener(|this, _, window, cx| {
-                                                        if let Some(setup) = this.setup.as_mut() {
-                                                            setup.smtp_credentials_expanded = !setup.smtp_credentials_expanded;
-                                                            if !setup.smtp_credentials_expanded {
-                                                                setup.inputs.smtp_password.update(cx, |input, cx| input.set_value("", window, cx));
-                                                            }
-                                                            cx.notify();
-                                                        }
-                                                    })),
-                                            )
-                                            .when(setup.smtp_credentials_expanded, |column| {
-                                                column.child(labeled_input(
-                                                    "SMTP password",
-                                                    Input::new(&setup.inputs.smtp_password)
-                                                        .content_type(InputContentType::Password)
-                                                        .mask_toggle()
-                                                        .aria_label("Separate SMTP password"),
-                                                    palette,
-                                                ))
-                                            })
-                                    }),
-                            ))
-                            .when((setup.manual || candidate.is_some()) && settings_need_review, |row| {
-                                row.child(
-                                    Button::new("review-server-settings")
-                                        .ghost()
-                                        .small()
-                                        .selected(settings_reviewed)
-                                        .icon(Icon::new(if settings_reviewed { IconName::Check } else { IconName::Info }))
-                                        .label("I reviewed these server settings")
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            if let Some(setup) = this.setup.as_mut() {
-                                                if setup.review_is_current(cx) {
-                                                    setup.warning_reviewed = false;
-                                                    setup.reviewed_settings = None;
-                                                } else {
-                                                    setup.warning_reviewed = true;
-                                                    setup.reviewed_settings = Some(setup.settings_fingerprint(cx));
-                                                }
-                                                cx.notify();
-                                            }
-                                        })),
-                                )
-                            })
-                            .when_some(setup.error.clone(), |row, error| {
-                                row.child(error_banner("Could not add account", &error, cx, palette))
-                            })
-                            ,
-                    ),
-            )
-            .child(
-                v_flex()
-                    .w_full()
-                    .flex_shrink_0()
-                    .items_center()
-                    .border_t_1()
-                    .border_color(palette.border)
-                    .px_6()
-                    .py_3()
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .max_w(px(600.))
-                            .items_center()
-                            .justify_between()
-                            .gap_3()
-                            .child(if setup.manual || candidate.is_some() {
-                                div()
-                                    .flex_1()
-                                    .text_size(px(11.))
-                                    .text_color(palette.muted)
-                                    .child(if self.auth_inflight {
-                                        "Finishing browser sign-in: validation, mailbox probe, then private save. Saved is not connected."
-                                    } else if setup.connecting {
-                                        "Testing both servers…"
-                                    } else if self.loading_profiles {
-                                        "Loading saved accounts…"
-                                    } else {
-                                        "Credentials stay in the OS keyring."
-                                    })
-                            } else {
-                                div()
-                                    .flex_1()
-                                    .text_size(px(11.))
-                                    .text_color(palette.muted)
-                                    .child("Find provider settings or import Thunderbird to continue.")
-                            })
-                            .when(has_mail_accounts, |row| {
-                                row.child(
-                                    Button::new("setup-back")
-                                        .ghost()
-                                        .small()
-                                        .label(if self.profiles.is_empty() {
-                                            "Open mail"
-                                        } else {
-                                            "Return"
-                                        })
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.view = this.setup_return_view;
-                                            cx.notify();
-                                        })),
-                                )
-                            })
-                            .when(setup.manual || candidate.is_some(), |row| {
-                                row.child(
-                                    Button::new("connect-account")
-                                        .primary()
-                                        .small()
-                                        .icon(Icon::new(if setup.connecting {
-                                            IconName::LoaderCircle
-                                        } else {
-                                            IconName::ArrowRight
-                                        }))
-                                        .label(if self.auth_inflight {
-                                            "Signing in…"
-                                        } else if setup.connecting {
-                                            "Testing…"
-                                        } else {
-                                            "Test and add"
-                                        })
-                                        .disabled(
-                                            setup.connecting
-                                                || setup.discovering
-                                                || setup.thunderbird_loading
-                                                || self.live.read(cx).direct_add_block_reason().is_some()
-                                                || self.loading_profiles
-                                                || self.startup_error.is_some()
-                                                || (settings_need_review && !settings_reviewed),
-                                        )
-                                        .on_click(cx.listener(|this, _, _, cx| this.connect_account(cx))),
-                                )
-                            }),
-                    ),
-            )
-            .into_any_element()
-    }
-
-    fn appearance_view(&self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
-        appearance_view::render(self, palette, cx)
-    }
-
-    fn composer_view(
-        &self,
-        snapshot: &MailboxSnapshot,
-        palette: Palette,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let Some(composer) = self.composer.as_ref() else {
-            return v_flex().into_any_element();
-        };
-        let profile = self
-            .profiles
-            .iter()
-            .find(|(id, _)| *id == composer.message.from_account_id)
-            .map(|(_, profile)| profile);
-        let from = profile.map_or_else(
-            || {
-                snapshot
-                    .accounts
-                    .iter()
-                    .find(|account| account.id == composer.message.from_account_id)
-                    .map(|account| account.email.clone())
-                    .unwrap_or_else(|| "Unknown account".to_owned())
-            },
-            |profile| profile.email.clone(),
-        );
-        let sender_choices = self.sender_choices(composer.message.from_account_id, snapshot, cx);
-        let active_sender = sender_choices
-            .iter()
-            .position(|choice| choice.alias.as_deref() == composer.message.from_alias.as_deref())
-            .unwrap_or(0);
-        let sender_label = sender_choices
-            .get(active_sender)
-            .map(|choice| choice.label.clone())
-            .unwrap_or(from);
-        let account_id = composer.message.from_account_id;
-        let from_control = if sender_choices.len() > 1 {
-            Button::new("cycle-sender-identity")
-                .ghost()
-                .small()
-                .icon(Icon::new(IconName::ChevronDown))
-                .label(format!("From {sender_label}"))
-                .accessibility_label("Switch sender address")
-                .disabled(!composer.can_edit() || profile.is_none())
-                .tooltip(if profile.is_some() { "Choose an existing configured sender identity; provider send-as authorization is not proven" } else { "Sender switching needs an owning account identity validator for this adapter" })
-                .on_click(
-                    cx.listener(move |this, _, _, cx| this.cycle_sender_identity(account_id, cx)),
-                )
-                .into_any_element()
-        } else {
-            div()
-                .text_size(px(11.))
-                .text_color(palette.muted)
-                .child(format!("From {sender_label}"))
-                .into_any_element()
-        };
-        let composer_saved = composer.is_saved(cx);
-        let composer_done = composer.send_queued || composer_saved;
-        v_flex()
-            .size_full()
-            .min_w_0()
-            .bg(palette.background)
-            .child(
-                h_flex()
-                    .h(px(44.))
-                    .flex_shrink_0()
-                    .items_center()
-                    .justify_between()
-                    .px_5()
-                    .border_b_1()
-                    .border_color(palette.border)
-                    .child(
-                        h_flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .text_size(px(14.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(if !composer.message.in_reply_to.is_empty() { "Reply" } else if composer.message.draft_origin.is_some() { "Edit draft" } else { "New message" }),
-                            )
-                            .child(from_control),
-                    )
-                    .child(Button::new("browse-while-composing").ghost().small().label("Back to mail · keep draft").on_click(cx.listener(|this, _, window, cx| { this.capture_recovery(cx); this.mailbox_focus.focus(window, cx); this.view = View::Mailbox; cx.notify(); })))
-                    .child(
-                        Button::new("close-composer")
-                            .ghost()
-                            .small()
-                            .icon(Icon::new(if composer_done {
-                                IconName::Check
-                            } else {
-                                IconName::ArrowLeft
-                            }))
-                            .label(if composer_done { "Done" } else { "Close" })
-                            .disabled(!composer.can_close())
-                            .accessibility_label(if composer.send_queued {
-                                "Close composer; queued message remains in Outbox"
-                            } else if composer_saved {
-                                "Close composer; saved draft remains in Drafts"
-                            } else {
-                                "Close composer; local recovery may remain, but session-only text will be lost"
-                            })
-                            .tooltip(if composer.send_queued {
-                                "Close composer; queued message remains in Outbox"
-                            } else if composer_saved {
-                                "Close composer; saved draft remains in Drafts"
-                            } else {
-                                "Close composer; local recovery may remain, but session-only text will be lost"
-                            })
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.capture_recovery(cx);
-                                let acknowledged = this.composer.as_ref().is_some_and(|c| this.recovery.is_none() || !c.recovery.requires_ack || if c.sent_complete { c.recovery.retired == Some(c.recovery.generation) } else { c.recovery.acknowledged == c.recovery.generation });
-                                if !acknowledged {
-                                    if let Some(composer) = &mut this.composer { composer.error = Some("Local recovery is pending or failed. Keep this composer open and retry; close/shutdown durability is not acknowledged.".into()); }
-                                } else if this.composer.as_ref().is_some_and(Composer::can_close) {
-                                    this.cleanup_composer_attachments(cx); this.composer = None; this.view = View::Mailbox;
-                                }
-                                cx.notify();
-                            })),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .id("composer-scroll")
-                    .overflow_y_scroll()
-                    .items_center()
-                    .px_6()
-                    .py_5()
-                    .child(
-                        v_flex()
-                            .w_full()
-                            .max_w(px(680.))
-                            .gap_3()
-                            .child(labeled_input(
-                                "To",
-                                Input::new(&composer.to)
-                                    .aria_label("To")
-                                    .disabled(!composer.can_edit()),
-                                palette,
-                            ))
-                            .child(labeled_input(
-                                "Cc",
-                                Input::new(&composer.cc)
-                                    .aria_label("Cc")
-                                    .disabled(!composer.can_edit()),
-                                palette,
-                            ))
-                            .child(labeled_input(
-                                "Bcc",
-                                Input::new(&composer.bcc)
-                                    .aria_label("Bcc")
-                                    .disabled(!composer.can_edit()),
-                                palette,
-                            ))
-                            .child(self.compose_tools_view(palette, cx))
-                            .when(self.live.read(cx).schedule_session(composer.message.from_account_id).is_some(), |el| el
-                                .child(labeled_input("Send Later", Input::new(&composer.schedule).aria_label("Scheduled date, time and numeric UTC offset").disabled(!composer.can_edit()), palette))
-                                .child(h_flex().flex_wrap().gap_2()
-                                    .child(Button::new("apply-send-time").ghost().small().label("Set time").disabled(!composer.can_edit()).on_click(cx.listener(|this, _, window, cx| this.set_compose_schedule(false, window, cx))))
-                                    .child(Button::new("clear-send-time").ghost().small().label("Send now instead").disabled(!composer.can_edit() || composer.message.send_at.is_none()).on_click(cx.listener(|this, _, window, cx| this.set_compose_schedule(true, window, cx)))))
-                                .child(div().text_size(px(11.)).text_color(palette.muted).child("Local scheduling requires MegaMail running and connected. When closed, delivery resumes after the next launch.")))
-                            .child(labeled_input(
-                                "Subject",
-                                Input::new(&composer.subject)
-                                    .aria_label("Subject")
-                                    .disabled(!composer.can_edit()),
-                                palette,
-                            ))
-                            .child(self.markup_controls(palette, cx))
-                            .child(
-                                Textarea::new(&composer.body)
-                                    .h(px(360.))
-                                    .aria_label("Message body")
-                                    .disabled(!composer.can_edit()),
-                            )
-                            .child(
-                                h_flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .child(
-                                        Button::new("add-attachments")
-                                            .secondary()
-                                            .small()
-                                            .icon(Icon::new(IconName::FileText))
-                                            .label(if composer.selecting_attachments {
-                                                "Choosing files…"
-                                            } else {
-                                                "Attach files"
-                                            })
-                                            .disabled(!composer.can_edit())
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.choose_attachments(window, cx)
-                                            })),
-                                    )
-                                    .child(
-                                        div().text_size(px(11.)).text_color(palette.muted).child(
-                                            if composer.message.attachments.is_empty() {
-                                                "No files attached".to_owned()
-                                            } else {
-                                                format!(
-                                                    "{} file{} attached",
-                                                    composer.message.attachments.len(),
-                                                    if composer.message.attachments.len() == 1 {
-                                                        ""
-                                                    } else {
-                                                        "s"
-                                                    }
-                                                )
-                                            },
-                                        ),
-                                    ),
-                            )
-                            .children(composer.message.attachments.iter().enumerate().map(
-                                |(index, path)| {
-                                    let name = Path::new(path)
-                                        .file_name()
-                                        .and_then(|name| name.to_str())
-                                        .unwrap_or("Attachment")
-                                        .to_owned();
-                                    h_flex()
-                                        .w_full()
-                                        .items_center()
-                                        .justify_between()
-                                        .gap_3()
-                                        .px_3()
-                                        .py_2()
-                                        .rounded(px(8.))
-                                        .bg(palette.surface)
-                                        .child(
-                                            div()
-                                                .min_w_0()
-                                                .flex_1()
-                                                .truncate()
-                                                .text_size(px(11.))
-                                                .child(name.clone()),
-                                        )
-                                        .child(
-                                            Button::new(SharedString::from(format!(
-                                                "remove-attachment-{index}"
-                                            )))
-                                            .ghost()
-                                            .small()
-                                            .label("Remove")
-                                            .disabled(!composer.can_edit())
-                                            .accessibility_label(format!(
-                                                "Remove attachment {name}"
-                                            ))
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                if let Some(composer) = this.composer.as_mut() {
-                                                    if composer.can_edit()
-                                                        && index
-                                                            < composer.message.attachments.len()
-                                                    {
-                                                        composer.message.attachments.remove(index);
-                                                        composer.recovery.dirty_input = true;
-                                                        composer.draft_saved = None;
-                                                    }
-                                                }
-                                                cx.notify();
-                                            })),
-                                        )
-                                },
-                            ))
-                            .when_some(composer.attachment_error.clone(), |row, error| {
-                                row.child(error_banner("Attachment", &error, cx, palette))
-                            })
-                            .child(div().text_size(px(11.)).text_color(palette.muted).child(composer.recovery.status.clone()))
-                            .when_some(self.recovery_error.clone(), |el, error| el.child(error_banner("Local recovery", &error, cx, palette)))
-                            .child(Button::new("retry-local-recovery").ghost().small().label(if composer.sent_complete { "Retry recovery cleanup" } else { "Retry local recovery" }).disabled(composer.operation_pending() || if composer.sent_complete { composer.recovery.cleanup_in_flight || composer.recovery.retired == Some(composer.recovery.generation) } else { composer.recovery.in_flight.is_some() || composer.recovery.acknowledged == composer.recovery.generation }).on_click(cx.listener(|this, _, _, cx| this.retry_native_recovery(cx))))
-                            .when(!composer.message.html.is_empty(), |el| el.child(Button::new("convert-recovered-html").ghost().small().label("Discard HTML alternative and edit plain text").disabled(composer.operation_pending()).on_click(cx.listener(|this, _, _, cx| {
-                                if let Some(composer) = &mut this.composer { if !composer.operation_pending() { composer.message.html.clear(); composer.recovery.dirty_input = true; composer.notice = Some("HTML was discarded explicitly. Only the recovered plain-text alternative will be edited/sent.".into()); } }
-                                this.capture_recovery(cx); cx.notify();
-                            }))))
-                            .when(composer.message.draft_origin.is_some() && self.live.read(cx).server_draft_retirement_unavailable(composer.message.from_account_id), |row| {
-                                row.child(div().text_size(px(11.)).text_color(palette.muted).child("IMAP Send/Save draft uses a separate copy. The original server draft is retained for manual review: generation-qualified retirement is unavailable. No automatic deletion or EXPUNGE is authorized by this composer."))
-                            })
-                            .when_some(composer.notice.clone(), |row, notice| {
-                                row.child(
-                                    div()
-                                        .text_size(px(11.))
-                                        .text_color(palette.muted)
-                                        .child(notice),
-                                )
-                            })
-                            .when(composer.send_uncertain, |row| {
-                                row.child(
-                                    v_flex()
-                                        .w_full()
-                                        .gap_2()
-                                        .rounded(px(8.))
-                                        .border_1()
-                                        .border_color(palette.border)
-                                        .bg(palette.surface)
-                                        .px_3()
-                                        .py_3()
-                                        .child(
-                                            div()
-                                                .text_size(px(12.))
-                                                .font_weight(FontWeight::MEDIUM)
-                                                .child("Delivery not confirmed"),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_size(px(11.))
-                                                .line_height(relative(1.4))
-                                                .text_color(palette.muted)
-                                                .child("The adapter did not confirm whether the server accepted this message. Inspect Sent and Outbox. Resend remains locked because ticket reconciliation is not available."),
-                                        )
-                                        .child(
-                                            h_flex()
-                                                .items_center()
-                                                .gap_2()
-                                                .child(
-                                                    Button::new("copy-uncertain-message")
-                                                        .ghost()
-                                                        .small()
-                                                        .icon(Icon::new(IconName::Copy))
-                                                        .label("Copy message text")
-                                                        .on_click(cx.listener(|this, _, _, cx| {
-                                                            let Some(composer) =
-                                                                this.composer.as_ref()
-                                                            else {
-                                                                return;
-                                                            };
-                                                            if !composer.send_uncertain {
-                                                                return;
-                                                            }
-                                                            let message = composer.outgoing(cx);
-                                                            let mut text = format!(
-                                                                "To: {}\nCc: {}\nBcc: {}\nSubject: {}\n\n{}",
-                                                                message.to,
-                                                                message.cc,
-                                                                message.bcc,
-                                                                message.subject,
-                                                                message.body,
-                                                            );
-                                                            if !message.attachments.is_empty() {
-                                                                let files = message
-                                                                    .attachments
-                                                                    .iter()
-                                                                    .filter_map(|path| {
-                                                                        Path::new(path)
-                                                                            .file_name()
-                                                                            .and_then(|name| name.to_str())
-                                                                    })
-                                                                    .collect::<Vec<_>>()
-                                                                    .join(", ");
-                                                                text.push_str(&format!(
-                                                                    "\n\nAttachments not copied: {files}"
-                                                                ));
-                                                            }
-                                                            cx.write_to_clipboard(
-                                                                ClipboardItem::new_string(text),
-                                                            );
-                                                        })),
-                                                )
-                                                .child(
-                                                    Button::new("confirm-not-sent")
-                                                        .secondary()
-                                                        .small()
-                                                        .label("Resend review unavailable")
-                                                        .disabled(true)
-                                                        .tooltip("A typed durable send-ticket reconciliation is required; a text confirmation cannot unlock resend")
-                                                        .on_click(cx.listener(|this, _, _, cx| {
-                                                            this.confirm_send_not_delivered(cx)
-                                                        })),
-                                                ),
-                                        ),
-                                )
-                            })
-                            .when_some(composer.error.clone(), |row, error| {
-                                row.child(error_banner("Composer", &error, cx, palette))
-                            })
-                            .when(!composer.send_uncertain && !snapshot.status.is_empty(), |row| {
-                                row.child(
-                                    div()
-                                        .text_size(px(11.))
-                                        .text_color(palette.muted)
-                                        .child(snapshot.status.clone()),
-                                )
-                            })
-                            .when_some(
-                                (!composer.send_uncertain)
-                                    .then(|| snapshot.action_error.clone())
-                                    .flatten(),
-                                |row, error| {
-                                row.child(error_banner("Mail action failed", &error, cx, palette))
-                                },
-                            ),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .w_full()
-                    .flex_shrink_0()
-                    .items_center()
-                    .border_t_1()
-                    .border_color(palette.border)
-                    .px_6()
-                    .py_3()
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .max_w(px(680.))
-                            .items_center()
-                            .justify_between()
-                            .child(
-                                div()
-                                    .text_size(px(11.))
-                                    .text_color(palette.faint)
-                                    .child(if composer.markup.enabled { "Formatted Markdown · HTML + plain text" } else if !composer.message.html.is_empty() { "Original HTML retained" } else { "Plain-text message" }),
-                            )
-                            .child(
-                                h_flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .child(
-                                        Button::new("save-draft")
-                                            .secondary()
-                                            .small()
-                                            .icon(Icon::new(IconName::FileText))
-                                            .label(if composer.draft_pending.is_some() {
-                                                "Saving…"
-                                            } else if composer_saved {
-                                                "Saved"
-                                            } else {
-                                                "Save draft"
-                                            })
-                                            .disabled(
-                                                self.demo || !composer.can_edit() || composer_saved || composer.recovery.blocks_provider_origin(&composer.message),
-                                            )
-                                            .tooltip(if composer.recovery.blocks_provider_origin(&composer.message) { "Recovered provider Draft/Outbox origins are unversioned; safe replacement/reconciliation is unavailable" } else { "Save to provider Drafts; this is separate from private local recovery" })
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.save_current_draft(cx)
-                                            })),
-                                    )
-                                    .child(
-                                        Button::new("send-message")
-                                            .primary()
-                                            .small()
-                                            .icon(Icon::new(IconName::Send))
-                                            .label(if composer.send_request_id.is_some() {
-                                                "Sending…"
-                                            } else if composer.send_queued {
-                                                "In Outbox"
-                                            } else if composer.message.send_at.is_some() {
-                                                "Schedule"
-                                            } else {
-                                                "Send"
-                                            })
-                                            .disabled(self.demo || !composer.can_edit() || composer.recovery.restored_hold)
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.send_current_message(cx)
-                                            })),
-                                    ),
-                            ),
-                    ),
-            )
-            .into_any_element()
-    }
-
-    fn send_current_message(&mut self, cx: &mut Context<Self>) {
-        if let Some(composer) = self
-            .composer
-            .as_mut()
-            .filter(|c| c.can_edit() && !c.recovery.restored_hold)
-        {
-            match megamail_core::rng::token(24) {
-                Ok(token) => {
-                    composer.message.client_message_id = Some(format!(
-                        "megamail-{token}@{}",
-                        self.profiles
-                            .iter()
-                            .find(|(id, _)| *id == composer.message.from_account_id)
-                            .and_then(|(_, p)| p.email.rsplit_once('@').map(|(_, domain)| domain))
-                            .unwrap_or("megamail.local")
-                    ))
-                }
-                Err(_) => {
-                    composer.error =
-                        Some("Could not create a safe send identity. Nothing was sent.".into());
-                    cx.notify();
-                    return;
-                }
-            }
-        }
-        self.capture_recovery(cx);
-        let Some(composer) = self.composer.as_mut() else {
-            return;
-        };
-        if self.demo {
-            composer.error = Some("Sending is disabled in the local demo.".into());
-            cx.notify();
-            return;
-        }
-        if !composer.can_edit() {
-            return;
-        }
-        if composer.markup.enabled
-            && (composer.markup.busy
-                || composer.markup.error.is_some()
-                || composer.markup.ready_source != composer.body.read(cx).value().as_ref())
-        {
-            composer.error = Some(
-                "Wait for the formatting preview to finish before sending, or choose Plain text."
-                    .into(),
-            );
-            cx.notify();
-            return;
-        }
-        if composer.recovery.restored_hold {
-            composer.error = Some("Recovered content is not permission to resend. Reconciliation with held/queued Outbox is unavailable; sending remains blocked. You can edit and save a provider draft.".into());
-            cx.notify();
-            return;
-        }
-        let desired_schedule = megamail_core::datefmt::parse_send_time(
-            &composer.schedule.read(cx).value(),
-            megamail_core::datefmt::now(),
-        );
-        match desired_schedule {
-            Err(error) => {
-                composer.error = Some(error.into());
-                cx.notify();
-                return;
-            }
-            Ok(at) if at != composer.message.send_at => {
-                composer.error = Some(
-                    "Use Set time to review this schedule, or Send now instead to clear it.".into(),
-                );
-                cx.notify();
-                return;
-            }
-            _ => {}
-        }
-        if composer.message.send_at.is_some()
-            && self
-                .live
-                .read(cx)
-                .schedule_session(composer.message.from_account_id)
-                .is_none()
-        {
-            composer.error = Some("This account cannot schedule mail in MegaMail. Clear the schedule or choose a direct IMAP account.".into());
-            cx.notify();
-            return;
-        }
-        let message = composer.outgoing(cx);
-        if message.to.trim().is_empty() {
-            composer.error = Some("Add at least one recipient before sending.".into());
-            cx.notify();
-            return;
-        }
-        composer.error = None;
-        composer.send_queued = false;
-        let outgoing_card = (!message.in_reply_to.is_empty()
-            && self
-                .live
-                .read(cx)
-                .schedule_session(message.from_account_id)
-                .is_some())
-        .then(|| comfort::OutgoingCard {
-            account: message.from_account_id,
-            request: 0,
-            parent: comfort::normalized_id(&message.in_reply_to),
-            message_id: message.client_message_id.clone().unwrap_or_default(),
-            body: message.body.clone(),
-            to: message.to.clone(),
-            status: "Sending…",
-        });
-        let request_id = self
-            .live
-            .update(cx, |live, cx| live.send_message(message, cx));
-        if let Some(request_id) = request_id {
-            if let Some(mut card) = outgoing_card {
-                card.request = request_id;
-                self.comfort.outgoing.push(card);
-            }
-            if let Some(composer) = self.composer.as_mut() {
-                composer.send_request_id = Some(request_id);
-                composer.send_generation = Some(composer.recovery.generation);
-                if let Some(service) = &self.recovery {
-                    self.request_attachment_leases.hold(
-                        true,
-                        composer.message.from_account_id,
-                        request_id,
-                        composer.recovery.lease.clone(),
-                        service.reaper(),
-                    );
-                }
-            }
-        }
-        cx.notify();
-    }
-
-    fn save_current_draft(&mut self, cx: &mut Context<Self>) {
-        self.capture_recovery(cx);
-        let Some(composer) = self.composer.as_ref() else {
-            return;
-        };
-        if self.demo {
-            if let Some(composer) = self.composer.as_mut() {
-                composer.error = Some("Draft saving is disabled in the local demo.".into());
-            }
-            cx.notify();
-            return;
-        }
-        if !composer.can_edit() {
-            return;
-        }
-        if composer.recovery.blocks_provider_origin(&composer.message) {
-            if let Some(composer) = &mut self.composer {
-                composer.error = Some("Recovered provider Draft/Outbox origins are not replacement authority. A versioned origin or durable ticket reconciliation is required; no provider mutation was dispatched.".into());
-            }
-            cx.notify();
-            return;
-        }
-        if composer.draft_save_completed {
-            if let Some(composer) = &mut self.composer {
-                composer.error = Some("Reopen the saved draft from Drafts before saving a replacement: this adapter does not return a versioned remote draft origin.".into());
-            }
-            cx.notify();
-            return;
-        }
-        let Some(ticket) = self.next_draft_ticket.checked_add(1) else {
-            return;
-        };
-        self.next_draft_ticket = ticket;
-        let message = composer.outgoing(cx);
-        let pending_message = message.clone();
-        let accepted = self
-            .live
-            .update(cx, |live, cx| live.save_draft(message, Some(ticket), cx));
-        if accepted {
-            if let Some(composer) = self.composer.as_mut() {
-                composer.draft_pending = Some(pending_message);
-                composer.draft_ticket = Some(ticket);
-                if let Some(service) = &self.recovery {
-                    self.request_attachment_leases.hold(
-                        false,
-                        composer.message.from_account_id,
-                        u64::from(ticket),
-                        composer.recovery.lease.clone(),
-                        service.reaper(),
-                    );
-                }
-                composer.error = None;
-            }
-        }
-        cx.notify();
-    }
-
-    fn choose_attachments(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(composer) = self.composer.as_mut() else {
-            return;
-        };
-        if !composer.can_edit() {
-            return;
-        }
-        composer.selecting_attachments = true;
-        composer.attachment_error = None;
-        let existing = composer.message.attachments.clone();
-        let picker = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: true,
-            prompt: Some("Attach files to this message".into()),
-        });
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let selection = picker.await;
-            let selected = match selection {
-                Ok(Ok(Some(paths))) => Some(paths),
-                Ok(Ok(None)) | Err(_) => None,
-                Ok(Err(error)) => {
-                    let _ = this.update(cx, |this, cx| {
-                        if let Some(composer) = this.composer.as_mut() {
-                            composer.selecting_attachments = false;
-                            composer.attachment_error =
-                                Some(format!("The file picker could not open: {error}"));
-                        }
-                        cx.notify();
-                    });
-                    return;
-                }
-            };
-            let Some(selected) = selected else {
-                let _ = this.update(cx, |this, cx| {
-                    if let Some(composer) = this.composer.as_mut() {
-                        composer.selecting_attachments = false;
-                    }
-                    cx.notify();
-                });
-                return;
-            };
-            let validation = cx
-                .background_spawn(async move { validate_attachment_paths(&existing, selected) })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                if let Some(composer) = this.composer.as_mut() {
-                    composer.selecting_attachments = false;
-                    match validation {
-                        Ok(paths) => {
-                            composer.message.attachments.extend(paths);
-                            composer.recovery.dirty_input = true;
-                            composer.draft_saved = None;
-                            composer.attachment_error = None;
-                        }
-                        Err(error) => composer.attachment_error = Some(error),
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    fn save_reader_attachment(
-        &mut self,
-        name: String,
-        content: Arc<Vec<u8>>,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.attachment_save_pending.is_some() {
-            return;
-        }
-        self.attachment_save_pending = Some(name.clone());
-        self.attachment_save_error = None;
-        self.attachment_save_status = None;
-        let suggested_name = safe_attachment_filename(&name);
-        let directory = std::env::var_os("XDG_DOWNLOAD_DIR")
-            .or_else(|| std::env::var_os("HOME"))
-            .map(PathBuf::from)
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-        let picker = cx.prompt_for_new_path(&directory, Some(&suggested_name));
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let selected_path = match picker.await {
-                Ok(Ok(Some(path))) => Some(path),
-                Ok(Ok(None)) | Err(_) => None,
-                Ok(Err(error)) => {
-                    let _ = this.update(cx, |this, cx| {
-                        this.attachment_save_pending = None;
-                        this.attachment_save_error =
-                            Some(format!("The save dialog could not open: {error}"));
-                        cx.notify();
-                    });
-                    return;
-                }
-            };
-            let Some(path) = selected_path else {
-                let _ = this.update(cx, |this, cx| {
-                    this.attachment_save_pending = None;
-                    cx.notify();
-                });
-                return;
-            };
-            let write_result = cx
-                .background_spawn(async move {
-                    std::fs::write(&path, content.as_slice())
-                        .map(|()| path)
-                        .map_err(|error| format!("Could not save the selected file: {error}"))
-                })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                this.attachment_save_pending = None;
-                match write_result {
-                    Ok(path) => {
-                        let saved_name = path
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .unwrap_or("attachment")
-                            .to_owned();
-                        this.attachment_save_status = Some(format!("Saved {saved_name}"));
-                    }
-                    Err(error) => this.attachment_save_error = Some(error),
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
 }
 
 const MAX_COMPOSE_ATTACHMENTS: usize = 20;
@@ -7798,13 +4820,20 @@ fn validate_attachment_paths(
 
 impl Render for MailApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Keys work from the first frame: with nothing focused, the list
+        // (or the open conversation) takes focus.
+        if self.view == View::Mailbox && window.focused(cx).is_none() && !self.command_palette.is_some() {
+            self.message_focus.focus(window, cx);
+        }
         let dark = cx.theme().is_dark();
         let palette = self.palette;
         let snapshot = self.live.read(cx).snapshot();
         let available_width = f32::from(window.viewport_size().width);
+        self.window_scale = window.scale_factor();
+        self.ensure_original_render(&snapshot, cx);
         let pane_scale = ((available_width - 1000.) / 280.).clamp(0., 1.);
         let rail_width = px(192. + 40. * pane_scale);
-        let list_width = px(280. + 52. * pane_scale);
+        let list_width = px(380. + 120. * pane_scale);
         let client_decorated = matches!(window.window_decorations(), Decorations::Client { .. });
         // Admission, not a refresh hook: run once after the mailbox root mounts,
         // and once on each Setup/Compose/Settings/modal -> Mailbox transition.
@@ -7847,156 +4876,15 @@ impl Render for MailApp {
                     .set_offset(gpui_kit::point(px(0.), px(0.)));
             }
         }
-        let context = if self.demo {
-            "Local demo · fictional mail · sending disabled".to_owned()
-        } else if self.view == View::Setup {
-            if snapshot.accounts.is_empty() {
-                "Set up a mail account".to_owned()
-            } else {
-                "Account settings".to_owned()
-            }
-        } else if self.view == View::Compose {
-            "Compose".to_owned()
-        } else if self.view == View::Appearance {
-            "Settings".to_owned()
-        } else {
-            snapshot
-                .current_account_id
-                .and_then(|id| snapshot.accounts.iter().find(|account| account.id == id))
-                .map(|account| account.email.clone())
-                .unwrap_or_else(|| "Mail".to_owned())
-        };
-        let toolbar = h_flex()
-            .w_full()
-            .h(px(38.))
-            .bg(palette.background)
-            .px_4()
-            .items_center()
-            .justify_between()
-            .when(client_decorated, |row| {
-                row.child(
-                    h_flex()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            Icon::new(IconName::Mail)
-                                .size(px(15.))
-                                .text_color(palette.accent),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(13.))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child("MegaMail"),
-                        ),
-                )
-            })
-            .child(
-                div()
-                    .text_size(px(10.))
-                    .text_color(palette.muted)
-                    .child(context),
-            )
-            .child(
-                h_flex()
-                    .items_center()
-                    .gap_1()
-                    .when(
-                        !snapshot.accounts.is_empty() && self.view != View::Setup,
-                        |row| {
-                            row.child(
-                                Button::new("toggle-sidebar")
-                                    .custom(floating_button_variant(cx, palette, dark))
-                                    .small()
-                                    .icon(Icon::new(if self.sidebar_collapsed {
-                                        IconName::PanelLeftOpen
-                                    } else {
-                                        IconName::PanelLeftClose
-                                    }))
-                                    .accessibility_label(if self.sidebar_collapsed {
-                                        "Expand navigation sidebar"
-                                    } else {
-                                        "Collapse navigation sidebar"
-                                    })
-                                    .tooltip(if self.sidebar_collapsed {
-                                        "Expand navigation sidebar"
-                                    } else {
-                                        "Collapse navigation sidebar"
-                                    })
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.sidebar_collapsed = !this.sidebar_collapsed;
-                                        cx.notify();
-                                    })),
-                            )
-                        },
-                    )
-                    .when(
-                        self.view == View::Mailbox && !snapshot.accounts.is_empty(),
-                        |row| {
-                            row.child(
-                                Button::new("refresh-mail")
-                                    .ghost()
-                                    .small()
-                                    .icon(Icon::new(IconName::RefreshCw))
-                                    .accessibility_label("Refresh mail")
-                                    .tooltip("Refresh mail")
-                                    .disabled(
-                                        !self
-                                            .action_state(cx)
-                                            .allows(desktop_actions::MailboxAction::RefreshMail),
-                                    )
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        if this
-                                            .action_state(cx)
-                                            .allows(desktop_actions::MailboxAction::RefreshMail)
-                                        {
-                                            this.live.update(cx, |live, cx| live.refresh(cx));
-                                        }
-                                    })),
-                            )
-                        },
-                    )
-                    .child(
-                        Button::new("toggle-appearance")
-                            .custom(floating_button_variant(cx, palette, dark))
-                            .small()
-                            .selected(self.view == View::Appearance)
-                            .icon(Icon::new(IconName::Palette))
-                            .accessibility_label(if self.view == View::Appearance {
-                                "Return from settings"
-                            } else {
-                                "Open settings"
-                            })
-                            .tooltip("Settings")
-                            .on_click(cx.listener(|this, _, _, cx| this.open_appearance(cx))),
-                    )
-                    .child(
-                        Button::new("toggle-theme")
-                            .ghost()
-                            .small()
-                            .disabled(
-                                self.appearance_busy || self.appearance_loading || self.theme_busy,
-                            )
-                            .icon(Icon::new(if dark { IconName::Sun } else { IconName::Moon }))
-                            .accessibility_label(if dark {
-                                "Switch to light theme"
-                            } else {
-                                "Switch to dark theme"
-                            })
-                            .tooltip(if dark {
-                                "Switch to light theme"
-                            } else {
-                                "Switch to dark theme"
-                            })
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.toggle_theme(window, cx)),
-                            ),
-                    ),
-            );
+        // No app header: the panes start at the top edge, like Superhuman.
+        // Client-decorated windows still get a bare strip to drag and close.
+        // The app bar: always there, above lists, conversations and settings
+        // alike — folders, search, layout, compose, settings.
+        let bar = self.app_bar(palette, window, cx);
         let chrome = if client_decorated {
-            TitleBar::new().h(px(38.)).child(toolbar).into_any_element()
+            TitleBar::new().h(px(46.)).child(bar).into_any_element()
         } else {
-            toolbar.into_any_element()
+            bar
         };
         let body = if self.view == View::Appearance {
             h_flex()
@@ -8004,6 +4892,13 @@ impl Render for MailApp {
                 .min_h_0()
                 .child(self.sidebar(&snapshot, palette, cx, rail_width))
                 .child(self.appearance_view(palette, cx))
+                .into_any_element()
+        } else if self.subscriptions.is_some() && self.view == View::Mailbox {
+            h_flex()
+                .flex_1()
+                .min_h_0()
+                .child(self.sidebar(&snapshot, palette, cx, rail_width))
+                .child(self.subscriptions_view(palette, cx))
                 .into_any_element()
         } else if self.view == View::Setup || self.loading_profiles {
             if self.loading_profiles {
@@ -8019,53 +4914,68 @@ impl Render for MailApp {
                 self.setup_view(palette, cx)
             }
         } else {
-            div()
+            let layout = self.preferences.layout;
+            let main = if layout != preferences::PaneLayout::Full {
+                use gpui_kit::component::resizable::{h_resizable, resizable_panel, v_resizable};
+                let list = self.message_pane(&snapshot, palette, cx, px(0.)).into_any_element();
+                let reader = if self.view == View::Compose {
+                    self.composer_view(&snapshot, palette, cx)
+                } else {
+                    self.reader(&snapshot, palette, cx)
+                };
+                if layout == preferences::PaneLayout::Right {
+                    h_resizable("split-right")
+                        .with_state(&self.split_right_panes)
+                        .child(resizable_panel().size(px(520.)).size_range(px(340.)..px(900.)).child(list))
+                        .child(resizable_panel().size_range(px(360.)..gpui_kit::Pixels::MAX).child(
+                            div().size_full().border_l_1().border_color(palette.border).child(reader),
+                        ))
+                        .into_any_element()
+                } else {
+                    v_resizable("split-below")
+                        .with_state(&self.split_below_panes)
+                        .child(resizable_panel().size(px(320.)).size_range(px(160.)..px(800.)).child(list))
+                        .child(resizable_panel().size_range(px(200.)..gpui_kit::Pixels::MAX).child(
+                            div().size_full().border_t_1().border_color(palette.border).child(reader),
+                        ))
+                        .into_any_element()
+                }
+            } else if self.view == View::Compose {
+                self.composer_view(&snapshot, palette, cx)
+            } else if self.comfort.outbox_open
+                || (self.conversation_open && snapshot.selected_message.is_some())
+            {
+                h_flex()
+                    .size_full()
+                    .min_h_0()
+                    .child(self.conversation_view(&snapshot, palette, cx))
+                    .when(snapshot.selected_message.is_some() && !self.comfort.outbox_open, |el| {
+                        el.child(self.contact_pane(&snapshot, palette, cx))
+                    })
+                    .into_any_element()
+            } else {
+                self.message_pane(&snapshot, palette, cx, px(0.)).into_any_element()
+            };
+            h_flex()
                 .flex_1()
                 .min_h_0()
                 .w_full()
-                .child(
-                    gpui_kit::component::resizable::h_resizable(if self.sidebar_collapsed {
-                        "mail-panes-compact"
-                    } else {
-                        "mail-panes"
-                    })
-                    .with_state(if self.sidebar_collapsed {
-                        &self.compact_mail_panes
-                    } else {
-                        &self.mail_panes
-                    })
-                    .child(
-                        gpui_kit::component::resizable::resizable_panel()
-                            .size(if self.sidebar_collapsed {
-                                px(48.)
-                            } else {
-                                rail_width
-                            })
-                            .size_range(if self.sidebar_collapsed {
-                                px(48.)..px(49.)
-                            } else {
-                                px(176.)..px(420.)
-                            })
+                .when(!self.sidebar_hidden, |el| {
+                    el.child(
+                        div()
+                            .w(px(232.))
+                            .h_full()
+                            .flex_shrink_0()
+                            .border_r_1()
+                            .border_color(palette.border)
                             .child(self.sidebar(&snapshot, palette, cx, px(0.))),
                     )
-                    .child(
-                        gpui_kit::component::resizable::resizable_panel()
-                            .size(list_width)
-                            .size_range(px(240.)..px(680.))
-                            .child(self.message_pane(&snapshot, palette, cx, px(0.))),
-                    )
-                    .child(
-                        gpui_kit::component::resizable::resizable_panel()
-                            .size_range(px(300.)..gpui_kit::Pixels::MAX)
-                            .child(if self.view == View::Compose {
-                                self.composer_view(&snapshot, palette, cx)
-                            } else {
-                                self.reader(&snapshot, palette, cx)
-                            }),
-                    ),
-                )
+                })
+                .child(div().flex_1().min_w_0().h_full().child(main))
                 .into_any_element()
         };
+        let palette_overlay = self.palette_view(palette, cx);
+        let undo_toast = self.undo_toast(palette, cx);
         window_border().child(
             v_flex()
                 .size_full()
@@ -8118,6 +5028,23 @@ impl Render for MailApp {
                     }
                 }))
                 .on_action(cx.listener(|this, _: &FocusMessages, window, cx| {
+                    if this.subscriptions.take().is_some() {
+                        cx.notify();
+                        return;
+                    }
+                    if this.view == View::Mailbox && (this.conversation_open || this.comfort.outbox_open) {
+                        this.conversation_open = false;
+                        this.comfort.outbox_open = false;
+                        this.message_focus.focus(window, cx);
+                        cx.notify();
+                        return;
+                    }
+                    if this.view == View::Appearance {
+                        this.view = this.appearance_return_view;
+                        this.message_focus.focus(window, cx);
+                        cx.notify();
+                        return;
+                    }
                     desktop_actions::focus_pane(
                         desktop_actions::MailboxAction::FocusMessages,
                         this.action_state(cx),
@@ -8132,6 +5059,12 @@ impl Render for MailApp {
                 }))
                 .on_action(cx.listener(|this, _: &FocusReader, window, cx| {
                     let snapshot = this.live.read(cx).snapshot();
+                    if !this.conversation_open && snapshot.selected_message.is_some() {
+                        this.conversation_open = true;
+                        this.message_focus.focus(window, cx);
+                        cx.notify();
+                        return;
+                    }
                     if let Some(identity) = this.reader_text_identity(&snapshot) {
                         if let Some(target) = this
                             .reader_text
@@ -8180,6 +5113,104 @@ impl Render for MailApp {
                         cx.notify();
                     }
                 }))
+                .on_action(cx.listener(|this, _: &ArchiveMessage, _, cx| {
+                    this.triage_selected(FolderKind::Archive, cx)
+                }))
+                .on_action(cx.listener(|this, _: &TrashMessage, _, cx| {
+                    this.triage_selected(FolderKind::Trash, cx)
+                }))
+                .on_action(cx.listener(|this, _: &ToggleStar, _, cx| {
+                    let snapshot = this.live.read(cx).snapshot();
+                    if let Some(row) = snapshot.selected_message {
+                        let starred = row.message.starred;
+                        this.live
+                            .update(cx, |live, cx| live.set_selected_starred(!starred, cx));
+                    }
+                }))
+                .on_action(cx.listener(|this, _: &ToggleUnread, _, cx| {
+                    let snapshot = this.live.read(cx).snapshot();
+                    if let Some(row) = snapshot.selected_message {
+                        let unread = row.message.unread;
+                        this.live
+                            .update(cx, |live, cx| live.set_selected_unread(!unread, cx));
+                    }
+                }))
+                .on_action(cx.listener(|this, _: &ForwardMessage, window, cx| {
+                    let snapshot = this.live.read(cx).snapshot();
+                    if this
+                        .action_state(cx)
+                        .allows(desktop_actions::MailboxAction::ReplyMessage)
+                    {
+                        if let Some(row) = snapshot.selected_message {
+                            this.open_forward(row.message.clone(), window, cx);
+                        }
+                    }
+                }))
+                .on_action(cx.listener(|this, _: &GoInbox, window, cx| {
+                    this.go_to_kind(FolderKind::Inbox, window, cx)
+                }))
+                .on_action(cx.listener(|this, _: &GoStarred, window, cx| {
+                    this.go_to_kind(FolderKind::Starred, window, cx)
+                }))
+                .on_action(cx.listener(|this, _: &GoSent, window, cx| {
+                    this.go_to_kind(FolderKind::Sent, window, cx)
+                }))
+                .on_action(cx.listener(|this, _: &GoDrafts, window, cx| {
+                    this.go_to_kind(FolderKind::Drafts, window, cx)
+                }))
+                .on_action(cx.listener(|this, _: &GoArchive, window, cx| {
+                    this.go_to_kind(FolderKind::Archive, window, cx)
+                }))
+                .on_action(cx.listener(|this, _: &CommandPalette, window, cx| {
+                    this.open_palette(window, cx)
+                }))
+                .on_action(cx.listener(|this, _: &ShowShortcuts, window, cx| {
+                    this.open_palette(window, cx)
+                }))
+                .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
+                    this.sidebar_hidden = !this.sidebar_hidden;
+                    this.sidebar_collapsed = false;
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &OpenSettings, _, cx| this.open_appearance(cx)))
+                .on_action(cx.listener(|this, _: &ManageSubscriptions, _, cx| this.open_subscriptions(cx)))
+                .on_action(cx.listener(|this, _: &ToggleReaderMode, _, cx| {
+                    let snapshot = this.live.read(cx).snapshot();
+                    let has_original = snapshot
+                        .selected_original
+                        .as_ref()
+                        .is_some_and(|o| o.source.is_some());
+                    let next = match this.reader_mode(&snapshot) {
+                        ReaderMode::Original => ReaderMode::Clean,
+                        ReaderMode::Clean => ReaderMode::Text,
+                        ReaderMode::Text if has_original => ReaderMode::Original,
+                        ReaderMode::Text => ReaderMode::Clean,
+                    };
+                    this.set_reader_mode(next, cx);
+                }))
+                .on_action(cx.listener(|this, _: &NextSplit, _, cx| {
+                    let next = this.split.next(1);
+                    this.set_split(next, cx)
+                }))
+                .on_action(cx.listener(|this, _: &PreviousSplit, _, cx| {
+                    let next = this.split.next(-1);
+                    this.set_split(next, cx)
+                }))
+                .on_action(cx.listener(|this, _: &ScreenerAllow, _, cx| this.screen_sender(true, cx)))
+                .on_action(cx.listener(|this, _: &ScreenerBlock, _, cx| this.screen_sender(false, cx)))
+                .on_action(cx.listener(|this, _: &Unsubscribe, window, cx| this.unsubscribe_selected(window, cx)))
+                .on_action(cx.listener(|this, _: &UndoSend, window, cx| this.undo_last_send(window, cx)))
+                .on_action(cx.listener(|this, _: &CycleLayout, _, cx| {
+                    let next = this.preferences.layout.next();
+                    this.change_preference(PreferenceChange::Layout(next), cx);
+                }))
+                .on_action(cx.listener(|this, _: &ToggleSenderColors, _, cx| {
+                    let current = this.original.as_ref().is_some_and(|s| s.original_colors);
+                    this.set_original_policy(None, Some(!current), cx)
+                }))
+                .on_action(cx.listener(|this, _: &ToggleTheme, window, cx| {
+                    this.toggle_theme(window, cx)
+                }))
                 .on_action(cx.listener(|this, _: &UnifiedInbox, window, cx| {
                     if this
                         .action_state(cx)
@@ -8202,7 +5233,9 @@ impl Render for MailApp {
                     palette.background,
                 ))
                 .child(chrome)
-                .child(body),
+                .child(body)
+                .children(undo_toast)
+                .children(palette_overlay),
         )
     }
 }
@@ -8230,127 +5263,377 @@ impl Drop for MailApp {
     }
 }
 
+/// "Create an app password" card with the provider's page and steps.
+fn app_password_card(guide: app_passwords::Guide, palette: Palette, cx: &mut Context<MailApp>) -> AnyElement {
+    let url = guide.url;
+    v_flex()
+        .w_full()
+        .gap_2()
+        .p_3()
+        .rounded(px(8.))
+        .border_1()
+        .border_color(palette.border)
+        .bg(palette.surface)
+        .child(
+            div()
+                .text_size(px(12.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(if guide.blocked.is_some() {
+                    format!("{} needs browser sign-in", guide.provider)
+                } else {
+                    format!("{} needs an app password", guide.provider)
+                }),
+        )
+        .when_some(guide.blocked, |el, note| {
+            el.child(div().text_size(px(11.)).line_height(relative(1.4)).text_color(palette.muted).child(note))
+        })
+        .children(guide.steps.iter().enumerate().map(|(index, step)| {
+            h_flex()
+                .gap_2()
+                .items_start()
+                .text_size(px(11.))
+                .line_height(relative(1.4))
+                .child(div().text_color(palette.faint).child(format!("{}.", index + 1)))
+                .child(div().flex_1().text_color(palette.muted).child(*step))
+        }))
+        .when(guide.blocked.is_none(), |el| {
+            el.child(
+                Button::new("open-app-password-page")
+                    .primary()
+                    .small()
+                    .self_start()
+                    .label(format!("Create {} app password", guide.provider))
+                    .tooltip(url)
+                    .on_click(cx.listener(move |_, _, _, cx| cx.open_url(url))),
+            )
+        })
+        .into_any_element()
+}
+
+fn trust_colors(trust: megamail_core::models::SenderTrust) -> Option<(gpui_kit::Hsla, &'static str, &'static str)> {
+    use megamail_core::models::SenderTrust;
+    match trust {
+        SenderTrust::Pass => Some((gpui_kit::hsla(145. / 360., 0.55, 0.42, 1.), "Verified", "The sender's domain was authenticated by your provider (DMARC / DKIM / SPF)")),
+        SenderTrust::Suspicious => Some((gpui_kit::hsla(38. / 360., 0.9, 0.5, 1.), "Check sender", "Authenticated, but the addressing looks off")),
+        SenderTrust::Fail => Some((gpui_kit::hsla(0., 0.72, 0.52, 1.), "Unverified sender", "Authentication failed: the From address is likely forged")),
+        SenderTrust::Unverified => None,
+    }
+}
+
+/// Small badge beside the sender address.
+fn trust_badge(check: &megamail_core::models::SenderCheck, palette: Palette) -> Option<AnyElement> {
+    let (color, label, tooltip) = trust_colors(check.trust)?;
+    let _ = palette;
+    Some(
+        h_flex()
+            .id("sender-trust-badge")
+            .flex_shrink_0()
+            .gap_1()
+            .items_center()
+            .px_1p5()
+            .py_0p5()
+            .rounded(px(4.))
+            .bg(color.opacity(0.14))
+            .text_color(color)
+            .text_size(px(10.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .child(Icon::new(match check.trust {
+                megamail_core::models::SenderTrust::Pass => IconName::Check,
+                _ => IconName::TriangleAlert,
+            }).size(px(11.)))
+            .child(label)
+            .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tooltip).build(window, cx))
+            .into_any_element(),
+    )
+}
+
+/// A plain-English warning above the body for forged or suspicious mail.
+fn trust_warning(check: &megamail_core::models::SenderCheck, palette: Palette) -> Option<AnyElement> {
+    use megamail_core::models::SenderTrust;
+    if !matches!(check.trust, SenderTrust::Fail | SenderTrust::Suspicious) {
+        return None;
+    }
+    let (color, ..) = trust_colors(check.trust)?;
+    // One line, details on hover: a warning, not a wall of text.
+    let details = std::iter::once(check.summary.clone())
+        .chain(check.findings.iter().cloned())
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(
+        h_flex()
+            .id("trust-warning")
+            .w_full()
+            .gap_2()
+            .items_center()
+            .px_3()
+            .py(px(6.))
+            .rounded(px(6.))
+            .bg(color.opacity(0.10))
+            .text_size(px(12.))
+            .text_color(color)
+            .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(details.clone()).build(window, cx))
+            .child(Icon::new(IconName::TriangleAlert).size(px(14.)))
+            .child(div().font_weight(FontWeight::MEDIUM).child(if check.trust == SenderTrust::Fail {
+                "Couldn't verify this sender."
+            } else {
+                "Something about this sender looks off."
+            }))
+            .child(div().text_color(palette.muted).child(if check.trust == SenderTrust::Fail {
+                "Be careful with links, attachments and payment requests."
+            } else {
+                "Hover for details."
+            }))
+            .into_any_element(),
+    )
+}
+
+fn quoted_html(quoted: &str) -> String {
+    let escape = |text: &str| {
+        text.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+    };
+    let mut lines = quoted.lines();
+    let attribution = lines.next().unwrap_or_default();
+    let body = lines
+        .map(|line| escape(line.strip_prefix("> ").or_else(|| line.strip_prefix('>')).unwrap_or(line)))
+        .collect::<Vec<_>>()
+        .join("<br>");
+    format!(
+        "<br><div>{}</div><blockquote style=\"margin:0 0 0 .8ex;border-left:1px solid #ccc;padding-left:1ex\">{}</blockquote>",
+        escape(attribution),
+        body
+    )
+}
+
+fn shortcut_keys(keys: &'static str, palette: Palette) -> impl IntoElement {
+    h_flex().gap_1().children(keys.split(' ').filter(|k| !k.is_empty()).map(move |key| {
+        div()
+            .min_w(px(18.))
+            .h(px(18.))
+            .px_1()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(4.))
+            .border_1()
+            .border_color(palette.border)
+            .text_size(px(10.))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(palette.muted)
+            .child(key)
+    }))
+}
+
 fn message_row(
+    message: &Message,
+    two_line: bool,
+    palette: Palette,
+    // None: avatars off. Some(None): no picture, show initials.
+    avatar: Option<Option<Arc<gpui_kit::RenderImage>>>,
+    unread: bool,
+    account_label: Option<String>,
+) -> impl IntoElement {
+    use gpui_kit::StyledImage as _;
+    let lines = if two_line {
+        message_lines_two(message, palette, unread, account_label).into_any_element()
+    } else {
+        message_lines(message, palette, unread, account_label).into_any_element()
+    };
+    match avatar {
+        None => lines.into_any_element(),
+        Some(picture) => h_flex()
+            .w_full()
+            .min_w_0()
+            .gap_2()
+            .items_center()
+            .child(match picture {
+                Some(image) => gpui_kit::img(image)
+                    .size(px(24.))
+                    .flex_shrink_0()
+                    .rounded_full()
+                    .object_fit(gpui_kit::ObjectFit::Cover)
+                    .into_any_element(),
+                None => div()
+                    .flex()
+                    .flex_shrink_0()
+                    .size(px(24.))
+                    .rounded_full()
+                    .items_center()
+                    .justify_center()
+                    .bg(comfort::identity_color(&message.from_addr, palette).opacity(0.14))
+                    .text_color(comfort::identity_color(&message.from_addr, palette))
+                    .text_size(px(11.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(initials(&message_sender(message)))
+                    .into_any_element(),
+            })
+            .child(div().flex_1().min_w_0().child(lines))
+            .into_any_element(),
+    }
+}
+
+fn message_lines(
     message: &Message,
     palette: Palette,
     unread: bool,
     account_label: Option<String>,
 ) -> impl IntoElement {
-    v_flex()
+    // Superhuman row: one line. Sender in a fixed column, subject and a
+    // muted preview in the middle, date on the right. Unread = dot + weight.
+    let subject = if message.subject.trim().is_empty() {
+        "(No subject)".to_owned()
+    } else {
+        message.subject.trim().to_owned()
+    };
+    let preview = message.preview.trim().to_owned();
+    h_flex()
         .w_full()
-        .gap_1()
+        .min_w_0()
+        .items_center()
+        .gap_3()
+        .child(
+            div()
+                .flex_shrink_0()
+                .size(px(6.))
+                .rounded_full()
+                .when(unread, |dot| dot.bg(palette.accent)),
+        )
+        .child(
+            div()
+                .w(px(190.))
+                .flex_shrink_0()
+                .truncate()
+                .text_size(px(13.))
+                .font_weight(if unread { FontWeight::SEMIBOLD } else { FontWeight::NORMAL })
+                .text_color(if unread { palette.text } else { palette.muted })
+                .child(message_sender(message)),
+        )
         .child(
             h_flex()
-                .items_center()
-                .justify_between()
+                .flex_1()
+                .min_w_0()
                 .gap_2()
-                .child(
-                    h_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            div()
-                                .flex()
-                                .flex_shrink_0()
-                                .size(px(20.))
-                                .rounded_full()
-                                .items_center()
-                                .justify_center()
-                                .text_size(px(9.))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .bg(comfort::identity_color(&message.from_addr, palette)
-                                    .opacity(0.12))
-                                .text_color(comfort::identity_color(&message.from_addr, palette))
-                                .child(initials(&message_sender(message))),
-                        )
-                        .when(unread, |row| {
-                            row.child(div().w(px(6.)).h(px(6.)).rounded_full().bg(palette.accent))
-                        })
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(px(13.))
-                                .font_weight(if unread {
-                                    FontWeight::SEMIBOLD
-                                } else {
-                                    FontWeight::MEDIUM
-                                })
-                                .text_color(comfort::identity_color(&message.from_addr, palette))
-                                .child(message_sender(message)),
-                        ),
-                )
+                .text_size(px(13.))
                 .child(
                     div()
-                        .text_size(px(12.))
-                        .text_color(palette.faint)
-                        .child(message.date.clone()),
+                        .flex_shrink_0()
+                        .max_w(relative(0.65))
+                        .truncate()
+                        .font_weight(if unread { FontWeight::SEMIBOLD } else { FontWeight::NORMAL })
+                        .text_color(if unread { palette.text } else { palette.muted })
+                        .child(subject),
+                )
+                .when(!preview.is_empty(), |line| {
+                    line.child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(palette.faint)
+                            .child(preview),
+                    )
+                }),
+        )
+        .when_some(account_label, |row, label| {
+            row.child(
+                div()
+                    .flex_shrink_0()
+                    .size(px(7.))
+                    .rounded_full()
+                    .bg(comfort::identity_color(&label, palette).opacity(0.8)),
+            )
+        })
+        .when(message.starred, |row| {
+            row.child(Icon::new(IconName::StarFill).size(px(12.)).text_color(palette.accent))
+        })
+        .when(message.has_attachment, |row| {
+            row.child(Icon::new(IconName::Paperclip).size(px(12.)).text_color(palette.faint))
+        })
+        .child(
+            div()
+                .w(px(76.))
+                .flex_shrink_0()
+                .flex()
+                .justify_end()
+                .text_size(px(12.))
+                .text_color(if unread { palette.text } else { palette.faint })
+                .child(short_date(&message.date)),
+        )
+}
+
+/// Narrow list (side-by-side layout): sender and date on top, subject and
+/// preview underneath.
+fn message_lines_two(
+    message: &Message,
+    palette: Palette,
+    unread: bool,
+    account_label: Option<String>,
+) -> impl IntoElement {
+    let subject = if message.subject.trim().is_empty() {
+        "(No subject)".to_owned()
+    } else {
+        message.subject.trim().to_owned()
+    };
+    let preview = message.preview.trim().to_owned();
+    v_flex()
+        .w_full()
+        .min_w_0()
+        .gap(px(3.))
+        .child(
+            h_flex()
+                .w_full()
+                .items_center()
+                .gap_2()
+                .child(div().flex_shrink_0().size(px(6.)).rounded_full().when(unread, |dot| dot.bg(palette.accent)))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(13.))
+                        .font_weight(if unread { FontWeight::SEMIBOLD } else { FontWeight::NORMAL })
+                        .text_color(if unread { palette.text } else { palette.muted })
+                        .child(message_sender(message)),
+                )
+                .when_some(account_label, |row, label| {
+                    row.child(div().flex_shrink_0().size(px(7.)).rounded_full().bg(comfort::identity_color(&label, palette).opacity(0.8)))
+                })
+                .when(message.starred, |row| row.child(Icon::new(IconName::StarFill).size(px(11.)).text_color(palette.accent)))
+                .when(message.has_attachment, |row| row.child(Icon::new(IconName::Paperclip).size(px(11.)).text_color(palette.faint)))
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .text_size(px(11.))
+                        .text_color(if unread { palette.text } else { palette.faint })
+                        .child(short_date(&message.date)),
                 ),
         )
         .child(
             h_flex()
-                .items_center()
-                .justify_between()
-                .gap_2()
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .text_size(px(12.))
-                        .font_weight(if unread {
-                            FontWeight::MEDIUM
-                        } else {
-                            FontWeight::NORMAL
-                        })
-                        .text_color(if unread { palette.text } else { palette.muted })
-                        .child(if message.subject.trim().is_empty() {
-                            "(No subject)".to_owned()
-                        } else {
-                            message.subject.clone()
-                        }),
-                )
-                .when(message.starred, |row| {
-                    row.child(
-                        Icon::new(IconName::StarFill)
-                            .size(px(12.))
-                            .text_color(palette.accent),
-                    )
-                })
-                .when(message.has_attachment, |row| {
-                    row.child(
-                        Icon::new(IconName::Paperclip)
-                            .size(px(12.))
-                            .text_color(palette.faint),
-                    )
-                }),
-        )
-        .child(
-            h_flex()
                 .w_full()
-                .gap_2()
+                .min_w_0()
+                .pl(px(14.))
+                .gap_1()
+                .text_size(px(12.))
                 .child(
                     div()
-                        .flex_1()
-                        .min_w_0()
+                        .flex_shrink_0()
+                        .max_w(relative(0.7))
                         .truncate()
-                        .text_size(px(12.))
-                        .text_color(palette.muted)
-                        .child(message.preview.clone()),
+                        .font_weight(if unread { FontWeight::MEDIUM } else { FontWeight::NORMAL })
+                        .text_color(if unread { palette.text } else { palette.muted })
+                        .child(subject),
                 )
-                .when_some(account_label, |row, label| {
-                    row.child(
-                        div()
-                            .max_w(px(88.))
-                            .truncate()
-                            .text_size(px(12.))
-                            .text_color(palette.faint)
-                            .child(label),
-                    )
+                .when(!preview.is_empty(), |line| {
+                    line.child(div().flex_1().min_w_0().truncate().text_color(palette.faint).child(preview))
                 }),
         )
+}
+
+/// "Today, 11:26 AM" → "11:26 AM"; "Yesterday" etc. stay.
+fn short_date(date: &str) -> String {
+    date.strip_prefix("Today, ").unwrap_or(date).to_owned()
 }
 
 fn candidate_auth_label(
@@ -9046,6 +6329,30 @@ fn tls_label(tls: TlsMode) -> &'static str {
     }
 }
 
+/// "Alice Smith <a@x>, bob@y.com" → "Alice Smith, bob"; empty → "(no recipients)".
+fn recipient_names(to: &str) -> String {
+    let names: Vec<String> = to
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let name = part.split('<').next().unwrap_or("").trim().trim_matches('"').trim();
+            if !name.is_empty() && !name.contains('@') {
+                name.to_owned()
+            } else {
+                let address = part.trim_matches(|c| c == '<' || c == '>').trim();
+                let address = address.rsplit('<').next().unwrap_or(address).trim_end_matches('>');
+                address.split('@').next().unwrap_or(address).to_owned()
+            }
+        })
+        .collect();
+    match names.len() {
+        0 => "(no recipients)".to_owned(),
+        1..=2 => names.join(", "),
+        n => format!("{}, {} +{}", names[0], names[1], n - 2),
+    }
+}
+
 fn message_sender(message: &Message) -> String {
     if message.from_name.trim().is_empty() {
         message.from_addr.clone()
@@ -9341,6 +6648,11 @@ fn main() {
         .with_writer(std::io::stderr)
         .init();
     let mut arguments = std::env::args_os().skip(1).peekable();
+    if arguments.peek().map(|arg| arg.as_os_str()) == Some(std::ffi::OsStr::new("mcp")) {
+        arguments.next();
+        let read_only = arguments.any(|arg| arg == "--read-only");
+        std::process::exit(mcp::run(read_only));
+    }
     if arguments.peek().map(|arg| arg.as_os_str())
         == Some(std::ffi::OsStr::new("--thunderbird-host"))
     {

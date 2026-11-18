@@ -34,7 +34,21 @@ impl State {
         self.busy
     }
 }
+const PDF_INPUT_MAX: usize = 32 * 1024 * 1024;
+/// Longest side of a rendered PDF page, in pixels.
+const PDF_RENDER_MAX: f32 = 1600.;
+
+fn is_pdf(bytes: &[u8]) -> bool {
+    // The header may follow a little junk; readers accept it within 1 KiB.
+    bytes[..bytes.len().min(1024)]
+        .windows(5)
+        .any(|window| window == b"%PDF-")
+}
+
 fn previewable(bytes: &[u8]) -> bool {
+    if is_pdf(bytes) {
+        return bytes.len() <= PDF_INPUT_MAX;
+    }
     !bytes.is_empty()
         && bytes.len() <= INPUT_MAX
         && image::guess_format(bytes).is_ok_and(|format| {
@@ -44,9 +58,50 @@ fn previewable(bytes: &[u8]) -> bool {
             )
         })
 }
+/// First page of a PDF, rasterized in pure Rust (hayro) on a white page.
+/// Malformed files are contained: a panic inside the interpreter becomes an error.
+fn decode_pdf(bytes: &[u8]) -> Result<(image::RgbaImage, (u32, u32)), String> {
+    use hayro::hayro_interpret::InterpreterSettings;
+    use hayro::hayro_syntax::Pdf;
+    use hayro::vello_cpu::color::palette::css::WHITE;
+    if bytes.len() > PDF_INPUT_MAX {
+        return Err("PDF preview supports files up to 32 MiB. Save this attachment to open it.".into());
+    }
+    let data = bytes.to_vec();
+    std::panic::catch_unwind(move || {
+        let pdf = Pdf::new(data).map_err(|_| "This PDF could not be read (it may be encrypted or damaged).".to_owned())?;
+        let pages = pdf.pages();
+        let page = pages.first().ok_or("This PDF has no pages.")?;
+        let (width, height) = page.render_dimensions();
+        if !(width > 0. && height > 0.) {
+            return Err("This PDF page has no size.".into());
+        }
+        let scale = (PDF_RENDER_MAX / width.max(height)).clamp(0.1, 3.);
+        let settings = hayro::RenderSettings {
+            x_scale: scale,
+            y_scale: scale,
+            bg_color: WHITE,
+            ..Default::default()
+        };
+        let pixmap = hayro::render(page, &hayro::RenderCache::new(), &InterpreterSettings::default(), &settings);
+        let (w, h) = (u32::from(pixmap.width()), u32::from(pixmap.height()));
+        // Opaque white background: premultiplied equals straight alpha.
+        let mut pixels = pixmap.data_as_u8_slice().to_vec();
+        for pixel in pixels.chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+        }
+        let image = image::RgbaImage::from_raw(w, h, pixels).ok_or("The PDF page could not be drawn.")?;
+        Ok((image, (w, h)))
+    })
+    .unwrap_or_else(|_| Err("This PDF could not be drawn.".into()))
+}
+
 fn decode(bytes: &[u8]) -> Result<(image::RgbaImage, (u32, u32)), String> {
+    if is_pdf(bytes) {
+        return decode_pdf(bytes);
+    }
     if !previewable(bytes) {
-        return Err("Preview supports PNG, JPEG and WebP files up to 8 MiB. Save other attachments to open them.".into());
+        return Err("Preview supports PNG, JPEG and WebP images up to 8 MiB and PDFs up to 32 MiB. Save other attachments to open them.".into());
     }
     let format =
         image::guess_format(bytes).map_err(|_| "This image format could not be recognized.")?;
@@ -238,8 +293,8 @@ pub(crate) fn preview_button(
     Button::new(SharedString::from(format!("preview-message-image-{index}")))
         .ghost()
         .small()
-        .label("Preview image")
-        .accessibility_label(format!("Preview image attachment {name}"))
+        .label(if is_pdf(&content) { "Preview PDF" } else { "Preview image" })
+        .accessibility_label(format!("Preview attachment {name}"))
         .disabled(busy)
         .on_click(cx.listener(move |this, _, _, cx| {
             this.preview_attachment(name.clone(), content.clone(), cx)
@@ -249,6 +304,43 @@ pub(crate) fn preview_button(
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A one-page PDF with a blue square, with a correct xref table.
+    fn tiny_pdf() -> Vec<u8> {
+        let content = "0 0 1 rg 20 20 100 100 re f";
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R >>".to_owned(),
+            format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()),
+        ];
+        let mut out = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for (index, object) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend(format!("{} 0 obj\n{object}\nendobj\n", index + 1).bytes());
+        }
+        let xref = out.len();
+        out.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).bytes());
+        for offset in offsets {
+            out.extend(format!("{offset:010} 00000 n \n").bytes());
+        }
+        out.extend(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1).bytes());
+        out
+    }
+
+    #[test]
+    fn pdf_first_page_renders_on_white() {
+        let pdf = tiny_pdf();
+        assert!(previewable(&pdf));
+        let (image, (w, h)) = decode(&pdf).unwrap();
+        assert_eq!(w, h);
+        // Corner is white page; centre is the blue square (stored BGRA).
+        assert_eq!(image.get_pixel(2, 2).0, [255, 255, 255, 255]);
+        let centre = image.get_pixel(w / 2, h / 2).0;
+        assert!(centre[0] > 200 && centre[2] < 60, "{centre:?}");
+        assert!(decode(b"%PDF-1.4 garbage").is_err());
+    }
+
     #[test]
     fn preview_validates_format_dimensions_and_gpui_channel_order() {
         let buffer = image::RgbaImage::from_pixel(2, 1, image::Rgba([10, 20, 30, 255]));

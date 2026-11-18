@@ -236,6 +236,11 @@ impl MailApp {
         )
     }
     pub(crate) fn mark_work(&mut self, status: Status, cx: &mut Context<Self>) {
+        self.mark_work_until(status, None, cx)
+    }
+
+    /// Set the work state; `until` is the snooze/remind time (default: one day).
+    pub(crate) fn mark_work_until(&mut self, status: Status, until: Option<i64>, cx: &mut Context<Self>) {
         if self.comfort.busy || !self.comfort.loaded {
             return;
         }
@@ -254,7 +259,7 @@ impl MailApp {
             ids,
             status,
             observed_inbound: incoming,
-            snooze_until: (status == Status::Snoozed).then_some(now + 86400),
+            snooze_until: (status == Status::Snoozed).then_some(until.unwrap_or(now + 86400)),
             updated: now,
         };
         let next = match self.comfort.ledger.with_record(record) {
@@ -330,54 +335,62 @@ impl MailApp {
         } else {
             status.label()
         };
-        v_flex()
-            .gap_2()
+        h_flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap_1()
             .child(
                 h_flex()
-                    .flex_wrap()
                     .items_center()
-                    .gap_2()
+                    .gap_1()
                     .child(
                         Button::new("conversation-work-state")
-                            .secondary()
-                            .small()
+                            .ghost()
+                            .xsmall()
+                            .dropdown_caret(true)
                             .label(label)
                             .disabled(!self.comfort.loaded || self.comfort.busy)
                             .tooltip("Local work state, independent of read/unread and delivery")
                             .dropdown_menu(move |menu, _, _| {
                                 let mut menu = menu;
                                 for state in Status::ALL {
+                                    if state == Status::Snoozed {
+                                        for (label, at) in crate::scheduling::later_presets(megamail_core::datefmt::now()) {
+                                            let owner = owner.clone();
+                                            menu = menu.item(
+                                                PopupMenuItem::element(move |_, _| div().child(format!("Snooze · {label}")))
+                                                    .on_click(move |_, _, cx| {
+                                                        let _ = owner.update(cx, |this, cx| this.mark_work_until(Status::Snoozed, Some(at), cx));
+                                                    }),
+                                            );
+                                        }
+                                        continue;
+                                    }
                                     let owner = owner.clone();
-                                    menu =
-                                        menu.item(
-                                            PopupMenuItem::element(move |_, _| {
-                                                div().child(if state == Status::Snoozed {
-                                                    "Snooze for 1 day"
-                                                } else {
-                                                    state.label()
-                                                })
-                                            })
+                                    menu = menu.item(
+                                        PopupMenuItem::element(move |_, _| div().child(state.label()))
                                             .on_click(move |_, _, cx| {
-                                                let _ = owner.update(cx, |this, cx| {
-                                                    this.mark_work(state, cx)
-                                                });
+                                                let _ = owner.update(cx, |this, cx| this.mark_work(state, cx));
                                             }),
-                                        );
+                                    );
                                 }
                                 menu
                             }),
                     )
-                    .child(
-                        div()
-                            .text_size(px(11.))
-                            .text_color(palette.muted)
-                            .child(feedback),
-                    )
-                    .child(
+                    .when(self.comfort.busy || self.comfort.error.is_some(), |el| {
+                        el.child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(palette.muted)
+                                .child(feedback),
+                        )
+                    })
+                    .when(thread.is_some_and(|t| t.members.len() > 1), |el| el.child(
                         Button::new("expand-conversation")
                             .ghost()
-                            .small()
-                            .label("Expand all")
+                            .xsmall()
+                            .icon(Icon::new(IconName::ChevronsUpDown))
+                            .tooltip("Expand all messages")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 let s = this.live.read(cx).snapshot();
                                 for t in s.conversations.iter().filter(|t| {
@@ -396,14 +409,15 @@ impl MailApp {
                     .child(
                         Button::new("collapse-conversation")
                             .ghost()
-                            .small()
-                            .label("Collapse history")
+                            .xsmall()
+                            .icon(Icon::new(IconName::ChevronUp))
+                            .tooltip("Collapse earlier messages")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.expanded_messages.clear();
                                 this.collapsed_messages.clear();
                                 cx.notify();
                             })),
-                    ),
+                    ))
             )
             .when_some(self.comfort.error.clone(), |el, error| {
                 el.child(
@@ -424,17 +438,27 @@ impl MailApp {
         let owner = cx.entity().downgrade();
         let work_owner = owner.clone();
         let scope_owner = owner.clone();
+        let chip = |label: &'static str, value: String| {
+            h_flex()
+                .gap_1()
+                .child(div().text_color(palette.muted).child(label))
+                .child(div().text_color(palette.text).font_weight(FontWeight::MEDIUM).child(value))
+        };
+        let attention = !snapshot.account_errors.is_empty();
         v_flex()
             .gap_2()
             .child(
                 h_flex()
-                    .flex_wrap()
-                    .gap_1()
+                    .w_full()
+                    .h(px(36.))
+                    .items_center()
+                    .gap_2()
                     .child(
                         Button::new("mail-sort")
-                            .ghost()
+                            .outline()
                             .small()
-                            .label(format!("Sort: {}", self.comfort.sort.label()))
+                            .dropdown_caret(true)
+                            .child(chip("Sort", self.comfort.sort.label().to_string()))
                             .tooltip(
                                 "Direct accounts sort the local cache before paging. Legacy adapters sort loaded headers.",
                             )
@@ -467,12 +491,9 @@ impl MailApp {
                         Button::new("reverse-sort")
                             .ghost()
                             .small()
-                            .label(if self.comfort.reverse {
-                                "Reverse"
-                            } else {
-                                "Default order"
-                            })
-                            .tooltip("Reverse the current sort order")
+                            .icon(Icon::new(if self.comfort.reverse { IconName::ArrowUp } else { IconName::ArrowDown }))
+                            .selected(self.comfort.reverse)
+                            .tooltip(if self.comfort.reverse { "Oldest / A first · click to flip" } else { "Newest / Z first · click to flip" })
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.comfort.reverse = !this.comfort.reverse;
                                 this.apply_mail_sort(cx);
@@ -482,9 +503,10 @@ impl MailApp {
                     )
                     .child(
                         Button::new("work-filter")
-                            .ghost()
+                            .outline()
                             .small()
-                            .label(self.comfort.filter.map_or("All work states", Status::label))
+                            .dropdown_caret(true)
+                            .child(chip("State", self.comfort.filter.map_or("Any", Status::label).to_string()))
                             .dropdown_menu(move |menu, _, _| {
                                 let clear = work_owner.clone();
                                 let mut menu = menu.item(
@@ -521,17 +543,18 @@ impl MailApp {
                                 }
                                 menu
                             }),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .flex_wrap()
-                    .gap_1()
+                    )
                     .child(
                         Button::new("search-scope")
-                            .ghost()
+                            .outline()
                             .small()
-                            .label("Search scope")
+                            .dropdown_caret(true)
+                            .child(chip("Search in", "All mail".to_string()))
+                            .tooltip(if snapshot.is_thunderbird_account {
+                                "Search: loaded headers. Try from: or subject:"
+                            } else {
+                                "Search: senders, subjects and the text of downloaded mail. body: matches exact text."
+                            })
                             .dropdown_menu(move |menu, _, _| {
                                 let owner = scope_owner.clone();
                                 let other = scope_owner.clone();
@@ -567,27 +590,26 @@ impl MailApp {
                             }),
                     )
                     .child(
+                        div().flex_1(),
+                    )
+                    .child(
                         Button::new("connection-health")
                             .ghost()
                             .small()
-                            .label(if snapshot.account_errors.is_empty() {
-                                "Sync details"
-                            } else {
-                                "Connection needs attention"
-                            })
+                            .child(
+                                h_flex()
+                                    .gap_1p5()
+                                    .items_center()
+                                    .child(div().size(px(7.)).rounded_full().bg(if attention { rgb(0xf59e0b).into() } else { palette.accent }))
+                                    .child(div().text_color(palette.muted).child(if attention { "Needs attention" } else { "Synced" })),
+                            )
+                            .selected(self.comfort.health_open)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.comfort.health_open = !this.comfort.health_open;
                                 cx.notify();
                             })),
                     ),
             )
-            .child(div().text_size(px(11.)).text_color(palette.muted).child(
-                if snapshot.is_thunderbird_account {
-                    "Search: loaded headers. Try from: or subject:"
-                } else {
-                    "Search: cached mail in this view. body: covers downloaded bodies only."
-                },
-            ))
             .when(self.comfort.health_open, |el| {
                 el.child(self.sync_details(snapshot, palette, cx))
             })
@@ -630,8 +652,7 @@ impl MailApp {
                         .small()
                         .w_full()
                         .justify_start()
-                        .icon(Icon::new(icon).size(px(14.)))
-                        .label(label)
+                        .child(nav_content(Icon::new(icon).size(px(14.)), label))
                         .selected(
                             snapshot.scope == MailboxScope::Unified
                                 && snapshot.unified_kind == kind,
@@ -654,8 +675,7 @@ impl MailApp {
                     .small()
                     .w_full()
                     .justify_start()
-                    .icon(Icon::new(IconName::Mail).size(px(14.)))
-                    .label(format!("Outbox · {}", snapshot.outbox.len()))
+                    .child(nav_content(Icon::new(IconName::Mail).size(px(14.)), format!("Outbox · {}", snapshot.outbox.len())))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.mailbox_focus.focus(window, cx);
                         this.comfort.outbox_open = true;

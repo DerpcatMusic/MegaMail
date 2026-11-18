@@ -9,10 +9,11 @@ publish = false
 [workspace]
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 gpui-kit = "=0.7.1"
 megamail-core = { path = "../../crates/mail-core" }
 zeron-theme = { path = "../../crates/zeron-theme" }
-image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+image = { version = "0.25.6", default-features = false, features = ["png", "jpeg", "webp", "ico"] }
 futures = "0.3"
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
@@ -21,6 +22,20 @@ base64 = "0.22"
 tokio = { version = "1", features = ["sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Inline "Original" reader: Blitz (Stylo CSS + Taffy layout + Parley text),
+# painted on the CPU into an image. Alpha engine: pinned exactly.
+blitz-dom = "=0.3.0-alpha.4"
+blitz-html = "=0.3.0-alpha.4"
+blitz-paint = "=0.3.0-alpha.4"
+blitz-traits = "=0.3.0-alpha.4"
+parley = { version = "0.9", default-features = false, features = ["std", "system"] }
+anyrender = "=0.10.0"
+anyrender_vello_cpu = "=0.13.0"
+ureq = { version = "2", default-features = false, features = ["tls"] }
+html2text = { version = "0.17", features = ["css"] }
+hayro = { version = "0.7", features = ["embed-fonts"] }
+resvg = "0.46"
+sha2 = "0.10"
 
 [profile.dev]
 debug = 0
@@ -31,3 +46,4 @@ gpui-pre = { path = "../../vendor/gpui-pre" }
 gpui-pre-wgpu = { path = "../../vendor/gpui-pre-wgpu" }
 
 cosmic-text = { path = "../../vendor/cosmic-text" }
+serde_fmt = { path = "../../vendor/serde_fmt" }

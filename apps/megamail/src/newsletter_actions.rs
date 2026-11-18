@@ -7,7 +7,7 @@ use gpui_kit::{
 };
 use megamail_core::{desktop::MailtoIntent, models::Unsubscribe};
 
-fn unsubscribe_intent(metadata: &Unsubscribe) -> Result<MailtoIntent, String> {
+pub(crate) fn unsubscribe_intent(metadata: &Unsubscribe) -> Result<MailtoIntent, String> {
     let intent = if let Some(uri) = &metadata.mailto {
         desktop_actions::external_compose(uri)
             .map_err(|_| "This newsletter's email link is invalid.".to_string())?
@@ -52,7 +52,7 @@ fn selected_metadata<'a>(
 }
 
 impl MailApp {
-    fn open_unsubscribe_draft(
+    pub(crate) fn open_unsubscribe_draft(
         &mut self,
         key: &MessageKey,
         expected: &Unsubscribe,
@@ -92,7 +92,7 @@ impl MailApp {
         self.view = View::Compose;
         cx.notify();
     }
-    fn open_unsubscribe_page(&mut self, key: &MessageKey, url: &str, cx: &mut Context<Self>) {
+    pub(crate) fn open_unsubscribe_page(&mut self, key: &MessageKey, url: &str, cx: &mut Context<Self>) {
         if self.view != View::Mailbox || self.composer.is_some() {
             return;
         }
@@ -125,17 +125,23 @@ impl MailApp {
         let expected = metadata.clone();
         let key = row.key.clone();
         let key_web = key.clone();
-        v_flex().w_full().gap_2()
-            .child(div().text_size(px(11.)).text_color(palette.muted).child(if metadata.in_headers { "Newsletter unsubscribe options from this message" } else { "Possible unsubscribe instructions found in this message" }))
-            .when(email, |el| el.child(Button::new("review-unsubscribe-email").ghost().small().label("Review unsubscribe email")
+        // One quiet line: the best option first, the rest as small links.
+        let one_click = metadata.one_click.is_some() && metadata.in_headers;
+        h_flex().w_full().flex_wrap().items_center().gap_1()
+            .text_size(px(12.)).text_color(palette.muted)
+            .child(Icon::new(IconName::Mail).size(px(13.)))
+            .child(div().pr_1().child(if metadata.in_headers { "Mailing list" } else { "Looks like a mailing list" }))
+            .when(one_click, |el| el.child(Button::new("one-click-unsubscribe").ghost().xsmall().label("Unsubscribe · Ctrl+U").tooltip("Sends the sender's one-click unsubscribe request (RFC 8058) and archives this message")
+                .disabled(self.demo)
+                .on_click(cx.listener(|this, _, window, cx| this.unsubscribe_selected(window, cx)))))
+            .when(email, |el| el.child(Button::new("review-unsubscribe-email").ghost().xsmall().label(if one_click { "by email" } else { "Unsubscribe by email" })
+                .tooltip("Opens the unsubscribe email for you to review before sending")
                 .disabled(self.demo || self.composer.is_some() || !self.live.read(cx).can_use_account(key.account_id))
                 .on_click(cx.listener(move |this, _, window, cx| this.open_unsubscribe_draft(&key, &expected, window, cx)))))
             .when_some(web, |el, url| el
-                .child(div().w_full().min_w_0().truncate().text_size(px(11.)).child(url.clone()))
-                .child(Button::new("review-unsubscribe-page").ghost().small().label("Review unsubscribe webpage").tooltip(url.clone()).disabled(self.composer.is_some())
+                .child(Button::new("review-unsubscribe-page").ghost().xsmall().label(if one_click || email { "webpage" } else { "Unsubscribe page" }).tooltip(url.clone()).disabled(self.composer.is_some())
                     .on_click(cx.listener(move |this, _, _, cx| this.open_unsubscribe_page(&key_web, &url, cx)))))
-            .when(metadata.one_click.is_some(), |el| el.child(div().text_size(px(11.)).text_color(palette.muted).child("Automatic one-click requests are unavailable. Use a reviewed email or webpage option when present.")))
-            .when_some(self.newsletter_status.clone(), |el, text| el.child(div().text_size(px(11.)).text_color(palette.muted).child(text)))
+            .when_some(self.newsletter_status.clone(), |el, text| el.child(div().pl_2().text_size(px(11.)).text_color(palette.muted).child(text)))
             .into_any_element()
     }
 }

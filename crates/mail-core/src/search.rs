@@ -360,6 +360,19 @@ impl SearchQuery {
     /// Missing/invalid/oversize text remains SQL NULL, including under NOT.
     /// This is a predicate, not a provider-search implementation or an index.
     pub fn sql_predicate(&self, allow_body: bool) -> Result<SqlPredicate, SearchError> {
+        self.sql_predicate_full_text(allow_body, false)
+    }
+
+    /// [`Self::sql_predicate`], where plain words also match the visible text
+    /// of eligible cached bodies through the `body_fts` index (word-prefix,
+    /// case- and accent-insensitive). `b` must be the eligible-body join, so
+    /// signed/encrypted bodies stay excluded. Pass `full_text` only when the
+    /// connection's cache has the index.
+    pub fn sql_predicate_full_text(
+        &self,
+        allow_body: bool,
+        full_text: bool,
+    ) -> Result<SqlPredicate, SearchError> {
         if self.requires_body() && !allow_body {
             return Err(SearchError::UnsupportedBody);
         }
@@ -387,6 +400,15 @@ impl SearchQuery {
                         };
                         parts.push(format!("{function}({column}, ?)"));
                         values.push(Value::Text(needle.clone()));
+                    }
+                    if full_text && allow_body && *field == TextField::AnyHeader {
+                        if let Some(expression) = fts_expression(needle) {
+                            parts.push(
+                                "b.rowid IN (SELECT rowid FROM body_fts WHERE body_fts MATCH ?)"
+                                    .into(),
+                            );
+                            values.push(Value::Text(expression));
+                        }
                     }
                     format!("({})", parts.join(" OR "))
                 }
@@ -435,6 +457,17 @@ impl SearchQuery {
             requires_body: self.requires_body(),
         })
     }
+}
+
+/// An FTS5 query for a free-text needle: every word, as a prefix, all required.
+pub fn fts_expression(needle: &str) -> Option<String> {
+    let words: Vec<String> = needle
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .take(TERMS_MAX)
+        .map(|word| format!("\"{}\"*", word.replace('"', "\"\"")))
+        .collect();
+    (!words.is_empty()).then(|| words.join(" AND "))
 }
 
 /// Bound SQL output. `clause` contains only fixed schema identifiers/placeholders.
