@@ -236,6 +236,11 @@ impl MailApp {
         )
     }
     pub(crate) fn mark_work(&mut self, status: Status, cx: &mut Context<Self>) {
+        self.mark_work_until(status, None, cx)
+    }
+
+    /// Set the work state; `until` is the snooze/remind time (default: one day).
+    pub(crate) fn mark_work_until(&mut self, status: Status, until: Option<i64>, cx: &mut Context<Self>) {
         if self.comfort.busy || !self.comfort.loaded {
             return;
         }
@@ -254,7 +259,7 @@ impl MailApp {
             ids,
             status,
             observed_inbound: incoming,
-            snooze_until: (status == Status::Snoozed).then_some(now + 86400),
+            snooze_until: (status == Status::Snoozed).then_some(until.unwrap_or(now + 86400)),
             updated: now,
         };
         let next = match self.comfort.ledger.with_record(record) {
@@ -330,44 +335,49 @@ impl MailApp {
         } else {
             status.label()
         };
-        v_flex()
-            .gap_2()
+        h_flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap_1()
             .child(
                 h_flex()
-                    .flex_wrap()
                     .items_center()
-                    .gap_2()
+                    .gap_1()
                     .child(
                         Button::new("conversation-work-state")
-                            .secondary()
-                            .small()
+                            .ghost()
+                            .xsmall()
+                            .dropdown_caret(true)
                             .label(label)
                             .disabled(!self.comfort.loaded || self.comfort.busy)
                             .tooltip("Local work state, independent of read/unread and delivery")
                             .dropdown_menu(move |menu, _, _| {
                                 let mut menu = menu;
                                 for state in Status::ALL {
+                                    if state == Status::Snoozed {
+                                        for (label, at) in crate::scheduling::later_presets(megamail_core::datefmt::now()) {
+                                            let owner = owner.clone();
+                                            menu = menu.item(
+                                                PopupMenuItem::element(move |_, _| div().child(format!("Snooze · {label}")))
+                                                    .on_click(move |_, _, cx| {
+                                                        let _ = owner.update(cx, |this, cx| this.mark_work_until(Status::Snoozed, Some(at), cx));
+                                                    }),
+                                            );
+                                        }
+                                        continue;
+                                    }
                                     let owner = owner.clone();
-                                    menu =
-                                        menu.item(
-                                            PopupMenuItem::element(move |_, _| {
-                                                div().child(if state == Status::Snoozed {
-                                                    "Snooze for 1 day"
-                                                } else {
-                                                    state.label()
-                                                })
-                                            })
+                                    menu = menu.item(
+                                        PopupMenuItem::element(move |_, _| div().child(state.label()))
                                             .on_click(move |_, _, cx| {
-                                                let _ = owner.update(cx, |this, cx| {
-                                                    this.mark_work(state, cx)
-                                                });
+                                                let _ = owner.update(cx, |this, cx| this.mark_work(state, cx));
                                             }),
-                                        );
+                                    );
                                 }
                                 menu
                             }),
                     )
-                    .when(self.comfort.busy || self.comfort.error.is_some() || suggested_waiting, |el| {
+                    .when(self.comfort.busy || self.comfort.error.is_some(), |el| {
                         el.child(
                             div()
                                 .text_size(px(11.))

@@ -45,7 +45,9 @@ pub(crate) struct Record {
 }
 impl Record {
     pub fn effective(&self, latest_inbound: i64, now: i64) -> Status {
-        if matches!(self.status, Status::Waiting | Status::Done)
+        // A reply brings back waiting, done and snoozed conversations alike
+        // (snooze doubles as "remind me if no reply").
+        if matches!(self.status, Status::Waiting | Status::Done | Status::Snoozed)
             && latest_inbound > self.observed_inbound
         {
             Status::NeedsReply

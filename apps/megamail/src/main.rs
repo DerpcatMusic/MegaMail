@@ -546,6 +546,8 @@ struct Composer {
     show_more: bool,
     /// Send one personalized copy per To recipient ({name}, {first_name}, {email}).
     individually: bool,
+    /// Snooze the replied-to conversation for 3 days on send; a reply brings it back.
+    remind: bool,
     _input_subscriptions: Vec<Subscription>,
 }
 
@@ -597,6 +599,7 @@ impl Composer {
             show_cc: false,
             show_more: false,
             individually: false,
+            remind: false,
             _input_subscriptions: Vec::new(),
         };
         composer.show_cc = !composer.message.cc.trim().is_empty()

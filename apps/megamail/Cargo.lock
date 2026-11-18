@@ -4934,6 +4934,7 @@ dependencies = [
  "blitz-html",
  "blitz-paint",
  "blitz-traits",
+ "chrono",
  "futures",
  "gpui-kit",
  "hayro",

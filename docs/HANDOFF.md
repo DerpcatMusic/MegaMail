@@ -85,7 +85,10 @@ update_messages (read/unread/star/archive/trash/spam/move). Uses saved profiles;
    HEIC images (some Instagram thumbnails) still can't decode.
 6. gpui-kit 0.10 / gpui-fast: needs re-porting the RTL/bidi patches in vendor/gpui-pre, gpui-base,
    gpui-pre-wgpu and cosmic-text onto gpui-pre 0.3.12 (or gpui-fast). Not started.
-5. Not built yet: remind-if-no-reply, snooze UI polish, send later UI, read receipts (privacy-safe no).
+5. Done: composer "Later" presets (this evening / tomorrow 8:00 / next week / 3 days) and "Remind" (snoozes
+   the replied-to conversation 3 days; any reply brings snoozed, waiting and done threads back). Snooze presets in
+   the work-state menu, which now sits in the reader toolbar. Not built: read receipts (privacy-safe no).
+   Known: on narrow panes the reader toolbar's collapse icon can be covered by Reply.
 
 ## Owner's machine facts
 - CachyOS (Arch-based) Linux, Hyprland/Noctalia, many fonts installed. Installed binary: `~/.local/bin/megamail`.

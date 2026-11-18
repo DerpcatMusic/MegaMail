@@ -849,26 +849,17 @@ impl MailApp {
                                         cx.notify();
                                     })),
                             ))
+                            .when(is_draft, |el| el.child(
+                                div().text_size(px(12.)).text_color(palette.muted).child("Draft"),
+                            ))
                             .child(
                                 div()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_size(px(12.))
-                                    .text_color(palette.muted)
-                                    .child(if is_draft {
-                                        "Draft".to_owned()
-                                    } else {
-                                        folder
-                                            .map(|folder| folder.name.clone())
-                                            .unwrap_or_default()
-                                    }),
-                            )
-                            .child(
-                                div()
+                                    .flex_shrink_0()
                                     .text_size(px(11.))
                                     .text_color(palette.faint)
                                     .child(self.position_label(snapshot)),
-                            ),
+                            )
+                            .when(!is_draft, |el| el.child(self.work_controls(snapshot, palette, cx))),
                     )
                     .child(
                         h_flex()
@@ -1030,7 +1021,6 @@ impl MailApp {
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(palette.text),
                             )
-                            .child(self.work_controls(snapshot, palette, cx))
                             .child(self.conversation_content(snapshot, &row, palette, cx))
                             .child(self.outgoing_cards(snapshot, palette)),
                     ),

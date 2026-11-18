@@ -9,6 +9,7 @@ publish = false
 [workspace]
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 gpui-kit = "=0.7.1"
 megamail-core = { path = "../../crates/mail-core" }
 zeron-theme = { path = "../../crates/zeron-theme" }

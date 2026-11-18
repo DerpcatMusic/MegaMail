@@ -482,6 +482,48 @@ impl MailApp {
                                                 this.save_current_draft(cx)
                                             })),
                                     )
+                                    .child({
+                                        let owner = cx.entity().downgrade();
+                                        let can_schedule = composer.can_edit()
+                                            && !self.demo
+                                            && self.live.read(cx).schedule_session(composer.message.from_account_id).is_some();
+                                        Button::new("send-later")
+                                            .ghost()
+                                            .small()
+                                            .label(composer.message.send_at.map_or_else(
+                                                || "Later".to_owned(),
+                                                |at| format!("Later · {}", megamail_core::datefmt::date_time(at)),
+                                            ))
+                                            .dropdown_caret(true)
+                                            .disabled(!can_schedule)
+                                            .tooltip(if can_schedule { "Send later" } else { "Send later needs a direct IMAP account" })
+                                            .dropdown_menu(move |menu, _, _| {
+                                                let mut menu = menu;
+                                                for (label, at) in crate::scheduling::later_presets(megamail_core::datefmt::now()) {
+                                                    let owner = owner.clone();
+                                                    menu = menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                                                        let _ = owner.update(cx, |this, cx| this.schedule_at(at, window, cx));
+                                                    }));
+                                                }
+                                                let owner = owner.clone();
+                                                menu.item(PopupMenuItem::new("Send now instead").on_click(move |_, window, cx| {
+                                                    let _ = owner.update(cx, |this, cx| this.set_compose_schedule(true, window, cx));
+                                                }))
+                                            })
+                                    })
+                                    .when(!composer.message.in_reply_to.is_empty(), |row| row.child(
+                                        Button::new("remind-no-reply")
+                                            .ghost()
+                                            .small()
+                                            .label("Remind")
+                                            .selected(composer.remind)
+                                            .tooltip("Bring this conversation back in 3 days if nobody replies")
+                                            .disabled(!composer.can_edit())
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                if let Some(c) = this.composer.as_mut() { c.remind = !c.remind; }
+                                                cx.notify();
+                                            })),
+                                    ))
                                     .child(
                                         Button::new("send-individually")
                                             .ghost()
@@ -673,6 +715,12 @@ impl MailApp {
                 original,
             });
             self.tick_undo_send(cx);
+        }
+        if request_id.is_some() && self.composer.as_ref().is_some_and(|c| c.remind && !c.message.in_reply_to.is_empty()) {
+            // ponytail: applies to the selected conversation, which is the one
+            // being replied to when replying from the reader.
+            let at = megamail_core::datefmt::now() + 3 * 86400;
+            self.mark_work_until(workflow::Status::Snoozed, Some(at), cx);
         }
         if let Some(request_id) = request_id {
             if let Some(mut card) = outgoing_card {
