@@ -158,19 +158,13 @@ impl MailApp {
                         v_flex()
                             .w_full()
                             .max_w(px(680.))
-                            .gap_3()
+                            .gap_1()
                             .child(
                                 h_flex()
                                     .w_full()
                                     .items_end()
                                     .gap_2()
-                                    .child(div().flex_1().min_w_0().child(labeled_input(
-                                        "To",
-                                        Input::new(&composer.to)
-                                            .aria_label("To")
-                                            .disabled(!composer.can_edit()),
-                                        palette,
-                                    )))
+                                    .child(div().flex_1().min_w_0().child(inline_field("To", Input::new(&composer.to).appearance(false).aria_label("To").disabled(!composer.can_edit()), palette)))
                                     .when(!composer.show_cc, |row| {
                                         row.child(
                                             Button::new("show-cc-bcc")
@@ -187,20 +181,8 @@ impl MailApp {
                                     }),
                             )
                             .when(composer.show_cc, |el| {
-                                el.child(labeled_input(
-                                    "Cc",
-                                    Input::new(&composer.cc)
-                                        .aria_label("Cc")
-                                        .disabled(!composer.can_edit()),
-                                    palette,
-                                ))
-                                .child(labeled_input(
-                                    "Bcc",
-                                    Input::new(&composer.bcc)
-                                        .aria_label("Bcc")
-                                        .disabled(!composer.can_edit()),
-                                    palette,
-                                ))
+                                el.child(inline_field("Cc", Input::new(&composer.cc).appearance(false).aria_label("Cc").disabled(!composer.can_edit()), palette))
+                                .child(inline_field("Bcc", Input::new(&composer.bcc).appearance(false).aria_label("Bcc").disabled(!composer.can_edit()), palette))
                             })
                             .when(composer.show_more, |el| el.child(self.compose_tools_view(palette, cx)))
                             .when(composer.show_more && self.live.read(cx).schedule_session(composer.message.from_account_id).is_some(), |el| el
@@ -209,14 +191,8 @@ impl MailApp {
                                     .child(Button::new("apply-send-time").ghost().small().label("Set time").disabled(!composer.can_edit()).on_click(cx.listener(|this, _, window, cx| this.set_compose_schedule(false, window, cx))))
                                     .child(Button::new("clear-send-time").ghost().small().label("Send now instead").disabled(!composer.can_edit() || composer.message.send_at.is_none()).on_click(cx.listener(|this, _, window, cx| this.set_compose_schedule(true, window, cx)))))
                                 .child(div().text_size(px(11.)).text_color(palette.muted).child("Local scheduling requires MegaMail running and connected. When closed, delivery resumes after the next launch.")))
-                            .child(labeled_input(
-                                "Subject",
-                                Input::new(&composer.subject)
-                                    .aria_label("Subject")
-                                    .disabled(!composer.can_edit()),
-                                palette,
-                            ))
-                                            .child(self.format_toolbar(palette, cx))
+                            .child(inline_field("Subject", Input::new(&composer.subject).appearance(false).aria_label("Subject").disabled(!composer.can_edit()), palette))
+                            .child(self.format_toolbar(palette, cx))
                             .child(
                                 Textarea::new(&composer.body)
                                     .h(px(320.))
@@ -480,7 +456,7 @@ impl MailApp {
                                         div()
                                             .text_size(px(11.))
                                             .text_color(palette.faint)
-                                            .child(if composer.markup.enabled { "Markdown" } else if !composer.message.html.is_empty() { "Original HTML" } else { "" }),
+                                            .child(if composer.markup.enabled { "" } else if !composer.message.html.is_empty() { "Original HTML" } else { "" }),
                                     ),
                             )
                             .child(
@@ -908,4 +884,17 @@ impl MailApp {
         })
         .detach();
     }
+}
+
+/// One Superhuman-style header row: a quiet label, a borderless input, a hairline.
+fn inline_field(label: &'static str, input: impl IntoElement, palette: Palette) -> impl IntoElement {
+    h_flex()
+        .w_full()
+        .min_w_0()
+        .items_center()
+        .gap_2()
+        .border_b_1()
+        .border_color(palette.border)
+        .child(div().w(px(56.)).flex_shrink_0().text_size(px(12.)).text_color(palette.muted).child(label))
+        .child(div().flex_1().min_w_0().child(input))
 }

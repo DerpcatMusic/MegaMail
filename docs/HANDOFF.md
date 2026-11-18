@@ -77,7 +77,14 @@ update_messages (read/unread/star/archive/trash/spam/move). Uses saved profiles;
    (labeled Reply, icon+All, icon expand/collapse), "Use my image" when a gradient hides the custom wallpaper.
    Icons must be listed in `icon_assets!(MailIcons, …)` in main.rs or they render blank.
 3. Keep removing vertical clutter in the reader; everything secondary goes into the top bar or the side panel.
-4. Squeeze the codebase (main.rs is ~11k lines): move reader, list, app bar into their own modules.
+4. Codebase split (done): main.rs 6.7k lines; list_ui, reader_ui, original_ui, setup_ui, composer_ui hold
+   the screens as `impl MailApp` blocks. Next candidates: render(), on_live_change, new().
+   Composer: Formatted (Markdown) by default with a toolbar and Ctrl+B/I/K; inline borderless To/Subject rows.
+   Mail rendering: second handle_messages/resolve pass applies CSS background images; bogus img sizes dropped;
+   "Always from this sender" image trust in image-senders.v1.json (DMARC-failing senders like AgroCafe).
+   HEIC images (some Instagram thumbnails) still can't decode.
+6. gpui-kit 0.10 / gpui-fast: needs re-porting the RTL/bidi patches in vendor/gpui-pre, gpui-base,
+   gpui-pre-wgpu and cosmic-text onto gpui-pre 0.3.12 (or gpui-fast). Not started.
 5. Not built yet: remind-if-no-reply, snooze UI polish, send later UI, read receipts (privacy-safe no).
 
 ## Owner's machine facts
