@@ -81,6 +81,7 @@ mod scheduling;
 mod sender_photos;
 mod splits;
 mod batch_send;
+mod image_trust;
 mod subscriptions;
 mod theme;
 mod thunderbird_adapter;
@@ -1063,6 +1064,8 @@ struct MailApp {
     accounts_expanded: bool,
     other_folders_expanded: bool,
     demo: bool,
+    /// Senders whose images load despite failed sender checks.
+    image_senders: std::collections::HashSet<String>,
     subscriptions: Option<subscriptions::Screen>,
     thunderbird_auto_open_pending: bool,
     thunderbird_auto_open_seen_loading: bool,
@@ -1268,6 +1271,7 @@ impl MailApp {
             other_folders_expanded: false,
             demo,
             subscriptions: None,
+            image_senders: Default::default(),
             thunderbird_auto_open_pending: false,
             thunderbird_auto_open_seen_loading: false,
             loading_profiles: !demo,
@@ -1321,11 +1325,13 @@ impl MailApp {
                         } else {
                             workflow::Ledger::load()
                         },
+                        if demo { Default::default() } else { image_trust::load() },
                     )
                 })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.appearance = loaded.0;
+                this.image_senders = loaded.4;
                 match loaded.1 {
                     Ok(theme) => this.theme = theme,
                     Err(error) => this.theme_error = Some(error),
@@ -4318,7 +4324,11 @@ impl MailApp {
                 check.trust,
                 megamail_core::models::SenderTrust::Fail | megamail_core::models::SenderTrust::Suspicious
             )
-        }) || {
+        }) && !snapshot
+            .selected_message
+            .as_ref()
+            .is_some_and(|m| self.image_senders.contains(&m.message.from_addr.to_ascii_lowercase()))
+            || {
             let folder = key.folder_path.to_ascii_lowercase();
             folder.contains("spam") || folder.contains("junk")
         };
@@ -4486,6 +4496,14 @@ impl MailApp {
                                             this.set_original_policy(Some(true), None, cx)
                                         })),
                                 )
+                                .child(
+                                    Button::new("original-always-load-images")
+                                        .ghost()
+                                        .xsmall()
+                                        .label("Always from this sender")
+                                        .tooltip("Load this sender's images automatically, even when their mail fails sender checks. Junk is never loaded.")
+                                        .on_click(cx.listener(|this, _, _, cx| this.trust_sender_images(cx))),
+                                )
                             })
 ,
                     )
@@ -4533,6 +4551,17 @@ impl MailApp {
             }
         })
         .detach();
+    }
+
+    fn trust_sender_images(&mut self, cx: &mut Context<Self>) {
+        let snapshot = self.live.read(cx).snapshot();
+        let Some(sender) = snapshot.selected_message.as_ref().map(|m| m.message.from_addr.to_ascii_lowercase()) else {
+            return;
+        };
+        self.image_senders.insert(sender);
+        let senders = self.image_senders.clone();
+        cx.background_spawn(async move { let _ = image_trust::save(&senders); }).detach();
+        self.set_original_policy(Some(true), None, cx);
     }
 
     fn set_original_policy(&mut self, remote: Option<bool>, colors: Option<bool>, cx: &mut Context<Self>) {

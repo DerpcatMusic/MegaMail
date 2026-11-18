@@ -272,6 +272,10 @@ fn render_now(html: &str, params: &Params) -> Result<(HtmlDocument, Rendered), S
     doc.add_user_agent_stylesheet(&base_css(params, recolor || declares_dark));
     doc.handle_messages();
     doc.resolve(0.);
+    // CSS background images are requested while styles resolve, after the
+    // first message pass; apply their (cached) bytes or they never paint.
+    doc.handle_messages();
+    doc.resolve(0.);
 
     // Anything that lays out wider than the pane (fixed-width designs, and
     // table cells whose padding overflows a percentage width) is shown whole,
@@ -573,7 +577,7 @@ fn tame_inline_tags(html: &str) -> String {
         }
         let Some(end) = tag_end(&html[start..]).map(|len| start + len) else { break };
         i = end;
-        if !matches!(name, "img" | "td" | "th") {
+        if !matches!(name, "img" | "td" | "th" | "div" | "a" | "span" | "table") {
             continue;
         }
         let tag = &html[start..end];
@@ -644,9 +648,47 @@ fn is_display_block(style: &str) -> bool {
 }
 
 fn tame_tag(name: &str, tag: &str) -> Option<String> {
+    if name == "img" {
+        // `width="undefined" height="NaN"` (template bugs) makes Blitz draw the
+        // image at zero size; clients ignore a size they can't parse.
+        let cleaned = strip_bogus_sizes(tag);
+        if cleaned != tag {
+            return Some(tame_style(name, &cleaned).unwrap_or(cleaned));
+        }
+    }
+    tame_style(name, tag)
+}
+
+fn strip_bogus_sizes(tag: &str) -> String {
+    let mut tag = tag.to_owned();
+    for name in ["width", "height"] {
+        let Some((open, close, value)) = attr(&tag, name) else { continue };
+        let v = value.trim().trim_end_matches("px").trim_end_matches('%');
+        if v.parse::<f32>().is_ok_and(|n| n.is_finite() && n >= 0.) {
+            continue;
+        }
+        let Some(start) = tag.to_ascii_lowercase()[..open].rfind(name) else { continue };
+        let quoted = tag.as_bytes().get(close).is_some_and(|b| matches!(b, b'"' | b'\''));
+        let end = if quoted { close + 1 } else { close };
+        tag.replace_range(start..end, "");
+    }
+    tag
+}
+
+fn tame_style(name: &str, tag: &str) -> Option<String> {
     let style = attr(tag, "style");
     let current = style.as_ref().map_or("", |(_, _, s)| s.as_str());
-    let new_style = if name == "img" {
+    let new_style = if !matches!(name, "img" | "td" | "th") {
+        // `background:url(…) center / cover` (Instagram thumbnails): Blitz
+        // drops the size from the shorthand, so spell out the longhands.
+        let lower = current.to_ascii_lowercase();
+        let size = ["cover", "contain"].into_iter().find(|s| lower.contains(&format!("/ {s}")) || lower.contains(&format!("/{s}")));
+        let (Some(size), false) = (size.filter(|_| lower.contains("url(")), has_property(current, "background-size")) else {
+            return None;
+        };
+        let sep = if current.trim_end().ends_with(';') { "" } else { ";" };
+        format!("{current}{sep}background-size:{size};background-position:center;background-repeat:no-repeat")
+    } else if name == "img" {
         let attr_px = |n: &str| attr(tag, n).and_then(|(_, _, v)| v.trim().trim_end_matches("px").parse::<f32>().ok());
         let width = style_px(current, "width").or_else(|| attr_px("width"));
         let height = style_px(current, "height").or_else(|| attr_px("height"));
@@ -1185,6 +1227,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bogus_image_sizes_are_dropped() {
+        let out = tame_inline_tags(r#"<img style="max-width:100%" src="a.jpg" width="undefined" height="NaN"><img width="24" src=b>"#);
+        assert!(!out.contains("undefined") && !out.contains("NaN"), "{out}");
+        assert!(out.contains(r#"width="24""#), "{out}");
+    }
+
+    #[test]
     fn inline_tags_get_layouts_blitz_can_draw() {
         let html = concat!(
             r#"<style>td{display:block}</style>"#,
@@ -1295,11 +1344,15 @@ mod tests {
                     Theme { dark: false, background: [255; 3], text: [0; 3], link: [0, 0, 255] }
                 },
                 original_colors: false,
-                allow_remote: false,
+                allow_remote: std::env::var("MM_REMOTE").is_ok(),
                 hide_history: false,
             };
             let start = std::time::Instant::now();
-            let (_, rendered) = render_now(&html, &params).expect("rendered");
+            let (_, mut rendered) = render_now(&html, &params).expect("rendered");
+            if let Some(done) = rendered.remote_done.take() {
+                let _ = futures::executor::block_on(done);
+                rendered = render_now(&html, &params).expect("rendered").1;
+            }
             eprintln!("dark={dark} {:?} fit={}", start.elapsed(), rendered.fit);
             let size = rendered.image.size(0);
             let mut bytes = rendered.image.as_bytes(0).unwrap().to_vec();
